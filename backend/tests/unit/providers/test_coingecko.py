@@ -93,8 +93,8 @@ async def test_fundamentals(provider):
     f = await provider.get_fundamentals("BTC-USD", "bitcoin:usd")
     assert f.name == "Bitcoin" and f.currency == "USD"
     assert f.market_cap == Decimal(1436838893464)
-    assert f.high_52w == Decimal(74125) and f.low_52w == Decimal(71238)
-    assert f.extra["ath"] == "126080" and f.extra["atl"] == "67.81"
+    assert f.high_52w is None and f.low_52w is None
+    assert f.extra == {"high_24h": "74125", "low_24h": "71238", "ath": "126080", "atl": "67.81"}
     assert f.pe is None and f.sector is None
 
 
@@ -103,6 +103,7 @@ async def test_fundamentals_missing_fields_none(provider):
     respx.get(f"{API}/coins/bitcoin").respond(200, json={"name": "Bitcoin"})
     f = await provider.get_fundamentals("BTC-USD", "bitcoin")
     assert f.market_cap is None and f.high_52w is None and f.low_52w is None
+    assert f.extra == {}
 
 
 @respx.mock
@@ -110,3 +111,23 @@ async def test_http_429_raises(provider):
     respx.get(f"{API}/simple/price").respond(429)
     with pytest.raises(httpx.HTTPStatusError):
         await provider.get_quotes([("BTC-USD", "bitcoin:usd")])
+
+
+@respx.mock
+async def test_quote_without_timestamp_skipped(provider):
+    respx.get(f"{API}/simple/price").respond(200, json={"bitcoin": {"usd": 1}})
+    assert await provider.get_quotes([("BTC-USD", "bitcoin:usd")]) == {}
+
+
+@respx.mock
+async def test_search_dedupes_by_symbol(provider):
+    respx.get(f"{API}/search").respond(
+        200,
+        json={"coins": [
+            {"symbol": "BTC", "name": "Bitcoin"},
+            {"symbol": "btc", "name": "Fake Bitcoin"},
+            {"symbol": "ETH", "name": "Ethereum"},
+        ]},
+    )
+    hits = await provider.search("b", 10)
+    assert [(h.symbol, h.name) for h in hits] == [("BTC-USD", "Bitcoin"), ("ETH-USD", "Ethereum")]

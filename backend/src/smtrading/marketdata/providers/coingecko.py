@@ -76,10 +76,9 @@ class CoinGeckoProvider(DataProvider):
                 if not entry or entry.get(vs) is None:
                     continue
                 updated = entry.get("last_updated_at")
-                ts = (
-                    datetime.fromtimestamp(int(updated), UTC) if updated is not None
-                    else datetime.now(UTC)
-                )
+                if updated is None:
+                    continue  # never fabricate a timestamp
+                ts = datetime.fromtimestamp(int(updated), UTC)
                 out[canonical] = Quote(
                     symbol=canonical,
                     bid=None,
@@ -92,18 +91,24 @@ class CoinGeckoProvider(DataProvider):
 
     async def search(self, query: str, limit: int) -> list[InstrumentHit]:
         data = await self._get("/search", {"query": query})
-        return [
-            InstrumentHit(
-                symbol=f"{coin['symbol'].upper()}-USD",
+        hits: dict[str, InstrumentHit] = {}
+        for coin in data.get("coins", []):
+            if not coin.get("symbol") or not coin.get("name"):
+                continue
+            symbol = f"{coin['symbol'].upper()}-USD"
+            if symbol in hits:
+                continue  # keep the first (highest-ranked) hit
+            hits[symbol] = InstrumentHit(
+                symbol=symbol,
                 name=coin["name"],
                 asset_class=AssetClass.crypto,
                 exchange=None,
                 currency="USD",
                 provider=self.name,
             )
-            for coin in data.get("coins", [])[:limit]
-            if coin.get("symbol") and coin.get("name")
-        ]
+            if len(hits) >= limit:
+                break
+        return list(hits.values())
 
     async def get_fundamentals(self, symbol: str, provider_symbol: str) -> Fundamentals:
         coin_id, vs = self._split(provider_symbol)
@@ -122,7 +127,8 @@ class CoinGeckoProvider(DataProvider):
         def at(key: str) -> Decimal | None:
             return _dec((md.get(key) or {}).get(vs))
 
-        # CoinGecko has no 52-week range: use the 24h high/low; all-time range goes to extra.
+        # CoinGecko has no 52-week range: leave it None; 24h and all-time ranges go to extra.
+        extra = {k: str(v) for k in ("high_24h", "low_24h", "ath", "atl") if (v := at(k)) is not None}
         return Fundamentals(
             symbol=symbol,
             name=data.get("name"),
@@ -132,10 +138,10 @@ class CoinGeckoProvider(DataProvider):
             pe=None,
             eps=None,
             dividend_yield=None,
-            high_52w=at("high_24h"),
-            low_52w=at("low_24h"),
+            high_52w=None,
+            low_52w=None,
             currency=vs.upper(),
-            extra={k: None if v is None else str(v) for k, v in (("ath", at("ath")), ("atl", at("atl")))},
+            extra=extra,
         )
 
     async def health_check(self) -> None:
