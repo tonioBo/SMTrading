@@ -14,8 +14,9 @@ COPY migrations ./migrations
 COPY docker ./docker
 RUN uv sync --frozen --no-dev && chmod +x docker/entrypoint-api.sh \
     && useradd --system --uid 10001 --no-create-home smt \
-    && chown -R smt /app
+    && mkdir -p /app/.cache && chown -R smt /app
 
-ENV PATH="/app/.venv/bin:$PATH"
+# yfinance writes its tz cache under $HOME/.cache; the runtime user owns /app/.cache
+ENV PATH="/app/.venv/bin:$PATH" HOME=/app
 USER smt
 CMD ["python", "-m", "smtrading.worker.main"]
