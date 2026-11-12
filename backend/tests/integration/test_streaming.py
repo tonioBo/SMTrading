@@ -32,6 +32,7 @@ class FakeStream(DataProvider):
     connections: ClassVar[list[list[tuple[str, str]]]] = []
     active: ClassVar[int] = 0
     polls: ClassVar[list[list[str]]] = []
+    first_quote_delay: ClassVar[float] = 0
 
     def _default_symbol(self, symbol, asset_class):
         return symbol.replace("-", "")
@@ -49,6 +50,7 @@ class FakeStream(DataProvider):
             raise ConnectionError("refused")
         cls.active += 1
         try:
+            await asyncio.sleep(cls.first_quote_delay)
             while True:
                 for canonical, _ in items:
                     yield Quote(canonical, None, None, Decimal("2.5"), datetime.now(UTC),
@@ -83,6 +85,7 @@ async def env(fresh_db, redis_url, monkeypatch):
     monkeypatch.setattr(FakeStream, "connections", [])
     monkeypatch.setattr(FakeStream, "active", 0)
     monkeypatch.setattr(FakeStream, "polls", [])
+    monkeypatch.setattr(FakeStream, "first_quote_delay", 0)
     monkeypatch.setattr(FakePoll, "polls", [])
     engine = make_engine(fresh_db)
     sm = async_sessionmaker(engine, expire_on_commit=False)
@@ -166,7 +169,11 @@ async def test_tracked_symbol_gets_streamed_quotes(manager):
     assert status["polling"] == []
     published = json.loads(await redis.get("md:stream_status"))
     assert published["streams"]["fake_stream:crypto"]["symbols"] == ["BTC-USD", "ETH-USD"]
-    assert FakeStream.polls == []
+    assert 0 < await redis.ttl("md:stream_status") <= 30
+    # once connected, the stream's symbols are no longer polled
+    polls = len(FakeStream.polls)
+    await asyncio.sleep(FAST * 4)
+    assert len(FakeStream.polls) == polls
 
 
 async def test_untrack_stops_stream(manager):
@@ -239,3 +246,179 @@ async def test_unknown_source_is_rejected(env):
     _, redis, _ = env
     with pytest.raises(ValueError):
         await track(redis, ["BTC-USD"], source="nope")
+
+
+async def test_stream_polled_until_first_quote(manager):
+    mgr, redis = manager
+    FakeStream.first_quote_delay = 0.5
+    await track(redis, ["BTC-USD"], source="orders")
+
+    async def connecting_and_polled():
+        s = mgr.status()["streams"].get("fake_stream:crypto")
+        return (s is not None and s["state"] == "connecting"
+                and mgr.status()["polling"] == ["BTC-USD"] and FakeStream.polls)
+
+    await _until(connecting_and_polled)
+    await _until(lambda: (mgr.status()["streams"]["fake_stream:crypto"]["state"]
+                          == "connected"), timeout=2)
+    assert mgr.status()["polling"] == []
+    assert len(FakeStream.connections) == 1
+
+
+async def test_quote_write_error_does_not_drop_stream(manager, monkeypatch):
+    import smtrading.marketdata.streaming as streaming_mod
+
+    real = streaming_mod.write_quote
+    failures = []
+
+    async def flaky(redis, q, **kw):
+        if not failures:
+            failures.append(q.symbol)
+            raise ConnectionError("redis blip")
+        return await real(redis, q, **kw)
+
+    monkeypatch.setattr(streaming_mod, "write_quote", flaky)
+    mgr, redis = manager
+    await track(redis, ["BTC-USD"], source="orders")
+
+    async def streamed():
+        q = await read_quote(redis, "BTC-USD")
+        return q is not None and q.provider == "fake_stream"
+
+    await _until(streamed)
+    assert failures == ["BTC-USD"]
+    assert len(FakeStream.connections) == 1
+    assert mgr.status()["streams"]["fake_stream:crypto"]["state"] == "connected"
+
+
+async def test_stopped_stream_generator_closed_promptly(env, monkeypatch):
+    import smtrading.marketdata.streaming as streaming_mod
+
+    router, redis, sm = env
+    blocked = asyncio.Event()
+
+    async def stuck(redis, q, **kw):
+        blocked.set()
+        await asyncio.sleep(3600)  # cancelled in the loop body, not inside the generator
+
+    monkeypatch.setattr(streaming_mod, "write_quote", stuck)
+    # keep a reference to the generator: GC finalisation must not be what closes it
+    gens = []
+    real_stream = FakeStream.stream
+
+    def keep(self, items):
+        gens.append(real_stream(self, items))
+        return gens[-1]
+
+    monkeypatch.setattr(FakeStream, "stream", keep)
+    mgr = StreamManager(router, redis, sm)
+    await track(redis, ["BTC-USD"], source="orders")
+    await mgr.reconcile()
+    await asyncio.wait_for(blocked.wait(), 1)
+    assert FakeStream.active == 1
+    await mgr._stop(list(mgr._streams))
+    assert FakeStream.active == 0  # aclosing ran the generator's finally right away
+
+
+async def _set_market(sm, symbol, market):
+    async with sm() as s:
+        (await s.get(Instrument, symbol)).market = market
+        await s.commit()
+
+
+async def test_closed_market_polled_at_most_every_300s(env):
+    from datetime import timedelta
+
+    router, redis, sm = env
+    await _set_market(sm, "AAPL", "NASDAQ")
+    saturday = datetime(2026, 11, 14, 15, 0, tzinfo=UTC)
+    now = [saturday]
+    mgr = StreamManager(router, redis, sm, now=lambda: now[0])
+    await track(redis, ["AAPL"], source="watchlists")
+    await mgr.reconcile()
+    await mgr.poll()
+    assert FakePoll.polls == [["AAPL"]]
+    now[0] += timedelta(seconds=10)
+    await mgr.poll()
+    assert FakePoll.polls == [["AAPL"]]  # closed: skipped
+    now[0] += timedelta(seconds=291)
+    await mgr.poll()
+    assert FakePoll.polls == [["AAPL"]] * 2  # 301s later: refreshed once
+    # open market (Monday 10:00 New York): every cycle
+    now[0] = datetime(2026, 11, 16, 15, 0, tzinfo=UTC)
+    await mgr.poll()
+    now[0] += timedelta(seconds=5)
+    await mgr.poll()
+    assert len(FakePoll.polls) == 4
+
+
+async def test_asset_class_groups_polled_concurrently(env, monkeypatch):
+    router, redis, sm = env
+    barrier = asyncio.Barrier(2)  # each group waits for the other: sequential would hang
+    FakeStream.fail_first = 100  # keeps BTC-USD out of streaming (backoff -> polled)
+    real_stream_q, real_poll_q = FakeStream.get_quotes, FakePoll.get_quotes
+
+    async def stream_q(self, items):
+        await asyncio.wait_for(barrier.wait(), 1)
+        return await real_stream_q(self, items)
+
+    async def poll_q(self, items):
+        await asyncio.wait_for(barrier.wait(), 1)
+        return await real_poll_q(self, items)
+
+    monkeypatch.setattr(FakeStream, "get_quotes", stream_q)
+    monkeypatch.setattr(FakePoll, "get_quotes", poll_q)
+    mgr = StreamManager(router, redis, sm)
+    await track(redis, ["AAPL", "BTC-USD"], source="orders")
+    await mgr.reconcile()
+    try:
+        await _until(lambda: mgr.status()["streams"]["fake_stream:crypto"]["state"] == "backoff")
+        await mgr.poll()
+    finally:
+        await mgr._stop(list(mgr._streams))
+    assert FakePoll.polls == [["AAPL"]] and FakeStream.polls == [["BTC-USD"]]
+
+
+class _ScriptedStream(DataProvider):
+    """Connection i follows script[i]: "fail" raises at once, "quote" yields one then ends."""
+
+    name = "scripted"
+
+    def __init__(self, script):
+        super().__init__({}, None)
+        self.script = list(script)
+
+    async def stream(self, items):
+        step = self.script.pop(0)
+        if step == "fail":
+            raise ConnectionError("refused")
+        yield Quote("BTC-USD", None, None, Decimal(1), datetime.now(UTC), self.name)
+
+
+async def test_backoff_progression_caps_and_resets(monkeypatch):
+    import smtrading.marketdata.streaming as streaming_mod
+    from smtrading.marketdata.streaming import _Stream
+
+    class _Stop(Exception):
+        pass
+
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 8:
+            raise _Stop
+
+    async def fake_write(redis, q, **kw):
+        return None
+
+    monkeypatch.setattr(streaming_mod.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(streaming_mod, "write_quote", fake_write)
+    provider = _ScriptedStream(["fail"] * 5 + ["quote"] + ["fail"] * 2)
+    mgr = StreamManager(None, None, None, backoff_max_s=8)
+    stream = _Stream(provider, AssetClass.crypto, (("BTC-USD", "BTCUSD"),))
+    with pytest.raises(_Stop):
+        await mgr._run_stream("scripted:crypto", stream)
+    # 1, 2, 4, 8, capped at 8; a delivered quote resets the delay to 1, then doubles again
+    assert sleeps == [1, 2, 4, 8, 8, 1, 2, 4]
+    assert stream.state == "backoff"

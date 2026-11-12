@@ -5,19 +5,25 @@ Tracking: each source (orders, positions, …) keeps its own Redis set `md:track
 
 StreamManager: one stream task per (provider, asset class) with the current symbol set,
 restarted when the set changes. A failing stream reconnects with exponential backoff
-(1, 2, 4, … up to `backoff_max_s`); while it is down its symbols are polled, as are symbols
-of classes without a stream provider.
+(1, 2, 4, … up to `backoff_max_s`); until a stream has delivered its first quote, and while
+it is down, its symbols are polled, as are symbols of classes without a stream provider.
+Polling skips symbols whose market is closed, refreshing them only every
+`closed_poll_every_s`.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from smtrading.common.errors import SMTError
+from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.instruments.service import canonical_symbol
 from smtrading.marketdata.cache import write_quote
@@ -29,8 +35,11 @@ log = logging.getLogger(__name__)
 SOURCES = frozenset({"orders", "positions", "alerts", "watchlists", "admin"})
 TRACKED_KEY = "md:tracked"
 STATUS_KEY = "md:stream_status"
+STATUS_TTL_S = 30  # a stale status (worker down) disappears instead of lying
+CONNECTING = "connecting"
 CONNECTED = "connected"
 BACKOFF = "backoff"
+CLOSED_POLL_EVERY_S = 300
 
 
 def _source_key(source: str) -> str:
@@ -92,7 +101,7 @@ class _Stream:
     provider: DataProvider
     asset_class: AssetClass
     items: tuple[tuple[str, str], ...]
-    state: str = CONNECTED
+    state: str = CONNECTING
     task: asyncio.Task | None = field(default=None, repr=False)
 
     @property
@@ -110,6 +119,8 @@ class StreamManager:
         reconcile_every_s: float = 5,
         poll_every_s: float = 5,
         backoff_max_s: float = 60,
+        closed_poll_every_s: float = CLOSED_POLL_EVERY_S,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ):
         self._router = router
         self._redis = redis
@@ -117,10 +128,14 @@ class StreamManager:
         self._reconcile_every_s = reconcile_every_s
         self._poll_every_s = poll_every_s
         self._backoff_max_s = backoff_max_s
+        self._closed_poll_every_s = closed_poll_every_s
+        self._now = now
         self._streams: dict[str, _Stream] = {}
         # symbols without a stream provider (or unmappable by it), by asset class
         self._poll_only: dict[AssetClass, list[str]] = {}
         self._unknown: set[str] = set()
+        self._markets: dict[str, str] = {}  # tracked symbol -> instrument market
+        self._last_poll: dict[str, datetime] = {}
 
     # ---------------------------------------------------------------- public
 
@@ -154,6 +169,8 @@ class StreamManager:
 
     async def reconcile(self) -> None:
         instrs = await self._instruments(await tracked_symbols(self._redis))
+        self._markets = {i.symbol: i.market for i in instrs}
+        self._last_poll = {s: t for s, t in self._last_poll.items() if s in self._markets}
         by_class: dict[AssetClass, list[Instrument]] = {}
         for i in instrs:
             by_class.setdefault(i.asset_class, []).append(i)
@@ -185,22 +202,47 @@ class StreamManager:
                 stream.task = asyncio.create_task(self._run_stream(key, stream))
                 self._streams[key] = stream
         self._poll_only = poll_only
-        await self._redis.set(STATUS_KEY, json.dumps(self.status()))
+        await self._redis.set(STATUS_KEY, json.dumps(self.status()), ex=STATUS_TTL_S)
 
     async def poll(self) -> None:
+        now = self._now()
+        groups = {}
         for asset_class, symbols in self._polling().items():
-            try:
-                # the router writes every fetched quote to the cache (write_quote)
-                await self._router.get_quotes(symbols, max_age_s=0)
-            except SMTError as e:
-                log.warning("polling %s %s failed: %s", asset_class, symbols, e)
+            due = [s for s in symbols if self._poll_due(s, now)]
+            if due:
+                groups[asset_class] = due
+                for s in due:
+                    self._last_poll[s] = now
+        await asyncio.gather(*(self._poll_group(ac, syms) for ac, syms in groups.items()))
 
     # ---------------------------------------------------------------- internals
+
+    def _poll_due(self, symbol: str, now: datetime) -> bool:
+        """Open market (or unknown): always. Closed: at most every closed_poll_every_s."""
+        market = self._markets.get(symbol)
+        if market is not None:
+            try:
+                is_open = market_status(market, now).is_open
+            except Exception:  # noqa: BLE001 - unknown market: keep polling
+                is_open = True
+            if not is_open:
+                last = self._last_poll.get(symbol)
+                return last is None or (now - last).total_seconds() >= self._closed_poll_every_s
+        return True
+
+    async def _poll_group(self, asset_class: AssetClass, symbols: list[str]) -> None:
+        try:
+            # the router writes every fetched quote to the cache (write_quote)
+            await self._router.get_quotes(symbols, max_age_s=0)
+        except SMTError as e:
+            log.warning("polling %s %s failed: %s", asset_class, symbols, e)
+        except Exception:
+            log.warning("polling %s %s failed", asset_class, symbols, exc_info=True)
 
     def _polling(self) -> dict[AssetClass, list[str]]:
         groups = {ac: list(syms) for ac, syms in self._poll_only.items()}
         for s in self._streams.values():
-            if s.state == BACKOFF:
+            if s.state != CONNECTED:
                 groups.setdefault(s.asset_class, []).extend(s.symbols)
         return {ac: sorted(syms) for ac, syms in groups.items() if syms}
 
@@ -253,12 +295,21 @@ class StreamManager:
     async def _run_stream(self, key: str, stream: _Stream) -> None:
         delay = 1.0
         while True:
-            stream.state = CONNECTED
+            stream.state = CONNECTING  # polled until the first quote proves the stream live
             delivered = False
             try:
-                async for q in stream.provider.stream(list(stream.items)):
-                    await write_quote(self._redis, q)
-                    delivered = True
+                async with contextlib.aclosing(
+                    stream.provider.stream(list(stream.items))
+                ) as quotes:
+                    async for q in quotes:
+                        if not delivered:
+                            delivered = True
+                            stream.state = CONNECTED
+                        try:
+                            await write_quote(self._redis, q)
+                        except Exception:
+                            log.warning("stream %s: writing %s failed", key, q.symbol,
+                                        exc_info=True)
                 raise ConnectionError("stream ended")
             except Exception as e:  # noqa: BLE001 - any failure: poll and reconnect later
                 if delivered:
