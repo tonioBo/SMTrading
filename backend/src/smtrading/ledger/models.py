@@ -52,6 +52,7 @@ def str_enum(cls: type[enum.StrEnum]) -> Enum:
     return Enum(
         cls,
         native_enum=False,
+        length=32,
         create_constraint=False,
         values_callable=lambda e: [m.value for m in e],
     )
