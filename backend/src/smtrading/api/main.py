@@ -2,7 +2,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -55,7 +55,7 @@ def create_app() -> FastAPI:
     app.state.close_resources = resources.close
 
     @app.get("/health")
-    async def health() -> dict:
+    async def health(response: Response) -> dict:
         db_ok = False
         redis_ok = False
         age: float | None = None
@@ -74,6 +74,8 @@ def create_app() -> FastAPI:
         except Exception:
             log.warning("health check failed", exc_info=True)
         healthy = db_ok and redis_ok and age is not None and age < HEARTBEAT_MAX_AGE_S
+        if not healthy:
+            response.status_code = 503
         return {
             "status": "ok" if healthy else "degraded",
             "db": db_ok,
