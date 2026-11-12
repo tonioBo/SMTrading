@@ -47,6 +47,8 @@ class FakeQuoteSource:
         )
 
     def set_fx(self, base: str, quote: str, rate: Decimal) -> None:
+        if not rate > 0:
+            raise ValueError("fx rate must be positive")
         base, quote = base.upper(), quote.upper()
         self._fx[(base, quote)] = rate
         with localcontext() as ctx:

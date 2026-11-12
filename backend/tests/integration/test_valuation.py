@@ -218,3 +218,73 @@ async def test_unknown_portfolio(db_session, qs):
     with pytest.raises(SMTError) as e:
         await value_portfolio(db_session, qs, uuid.uuid4())
     assert e.value.code == ErrorCode.NOT_FOUND
+
+
+def test_fake_fx_rejects_non_positive_rate():
+    qs = FakeQuoteSource()
+    for rate in (D(0), D(-1)):
+        with pytest.raises(ValueError):
+            qs.set_fx("EUR", "USD", rate)
+
+
+async def test_missing_projection_row_logs_warning(db_session, qs, aapl, caplog):
+    p = await create_portfolio(db_session, name="V-noproj", initial_cash=D(0))
+    await _post(db_session, p.id, AccountKind.position, "AAPL", D(1))
+    qs.set_quote("AAPL", None, None, D("100"))
+    with caplog.at_level("WARNING", logger="smtrading.valuation.service"):
+        v = await value_portfolio(db_session, qs, p.id)
+    assert v.positions[0].avg_price == D(0)
+    assert "no projection row" in caplog.text
+
+
+# ---------------------------------------------------------------- margin level (raw values)
+
+
+@pytest.fixture
+async def eu_instr(db_session):
+    if await db_session.get(Instrument, "TST.MI") is None:
+        db_session.add(Instrument(
+            symbol="TST.MI", name="Test", asset_class=AssetClass.eu_equity, market="MTA",
+            currency="EUR", lot_size=D(1), tick_size=D("0.001"), shortable=True,
+        ))
+        await db_session.flush()
+
+
+async def _levered(db_session, qs, name, mark, loan):
+    """1 TST.MI (EUR) bought with a EUR margin loan of `loan`; maint 50%, warn 75%."""
+    p = await create_portfolio(db_session, name=name, initial_cash=D(0))
+    await _post(db_session, p.id, AccountKind.position, "TST.MI", D(1))
+    await _post(db_session, p.id, AccountKind.margin_loan, "EUR", loan.copy_negate())
+    db_session.add(Position(portfolio_id=p.id, symbol="TST.MI", qty=D(1), avg_price=mark))
+    await db_session.flush()
+    qs.set_quote("TST.MI", None, None, mark)
+    return await value_portfolio(db_session, qs, p.id)
+
+
+async def test_margin_level_sub_cent_shortfall(db_session, qs, eu_instr):
+    v = await _levered(db_session, qs, "V-subcent", D("999.998"), D(500))
+    # equity 499.998 vs maint 499.999: rounded values are equal and would hide the shortfall
+    assert v.equity_eur == v.maint_req_eur == D("500.00")
+    assert v.equity_raw == D("499.998")
+    assert v.maint_req_raw == D("499.999")
+    assert v.exposure_raw == D("999.998")
+    assert v.initial_req_raw == D("999.998")
+    assert v.warn_req_raw == D("749.9985")
+    assert v.buying_power_raw == D("-500.000")
+    assert v.margin_level() == "maintenance"
+
+
+async def test_margin_level_warning_and_ok(db_session, qs, eu_instr):
+    v = await _levered(db_session, qs, "V-warn", D(1000), D("250.01"))
+    assert v.equity_raw == D("749.99") and v.warn_req_raw == D(750)
+    assert v.margin_level() == "warning"
+    v = await _levered(db_session, qs, "V-ok", D(1000), D(250))
+    assert v.margin_level() == "ok"  # equity == warn_req is not a warning
+
+
+async def test_margin_level_no_exposure_is_ok(db_session, qs):
+    p = await create_portfolio(db_session, name="V-flat", initial_cash=D(0))
+    await _post(db_session, p.id, AccountKind.margin_loan, "EUR", D(-10))
+    v = await value_portfolio(db_session, qs, p.id)
+    assert v.exposure_raw == 0
+    assert v.margin_level() == "ok"

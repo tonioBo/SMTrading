@@ -2,12 +2,15 @@
 
 Quantities come from the ledger `position` balances (source of truth); `avg_price` from
 the `positions` projection. Every amount is converted to EUR with qs.get_fx_rate(ccy, "EUR").
-Output *_eur fields are rounded to cents; comparisons upstream should use them as given.
+The *_eur totals are display values rounded to cents; risk decisions must use the *_raw
+totals or PortfolioValuation.margin_level(), which compare unrounded values.
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, localcontext
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import select
@@ -21,6 +24,8 @@ from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.models import Portfolio
 from smtrading.positions.models import Position
+
+log = logging.getLogger(__name__)
 
 EUR = "EUR"
 _PREC = 60
@@ -39,8 +44,13 @@ class PositionValuation:
     unrealized_pnl_eur: Decimal
 
 
+MarginLevel = Literal["ok", "warning", "maintenance"]
+
+
 @dataclass
 class PortfolioValuation:
+    """*_eur fields are display values (cents). Decisions use *_raw or margin_level()."""
+
     portfolio_id: UUID
     base_currency: str
     cash: dict[str, Decimal]
@@ -55,6 +65,22 @@ class PortfolioValuation:
     warn_req_eur: Decimal
     buying_power_eur: Decimal
     ts: datetime
+    # Unrounded EUR totals: the values risk decisions must compare.
+    equity_raw: Decimal
+    exposure_raw: Decimal
+    initial_req_raw: Decimal
+    maint_req_raw: Decimal
+    warn_req_raw: Decimal
+    buying_power_raw: Decimal
+
+    def margin_level(self) -> MarginLevel:
+        if self.exposure_raw == 0:
+            return "ok"
+        if self.equity_raw < self.maint_req_raw:
+            return "maintenance"
+        if self.equity_raw < self.warn_req_raw:
+            return "warning"
+        return "ok"
 
 
 def mark_price(quote: Quote) -> Decimal:
@@ -143,7 +169,13 @@ async def value_portfolio(
         ccy = currencies.get(sym)
         if ccy is None:
             raise SMTError(ErrorCode.SYMBOL_NOT_FOUND, "instrument not found", {"symbol": sym})
-        avg = avg_prices.get(sym, Decimal(0))
+        avg = avg_prices.get(sym)
+        if avg is None:
+            log.warning(
+                "position %s of portfolio %s has no projection row; avg_price=0",
+                sym, portfolio_id,
+            )
+            avg = Decimal(0)
         mark = mark_price(quote)
         with localcontext() as ctx:
             ctx.prec = _PREC
@@ -182,4 +214,6 @@ async def value_portfolio(
         equity_eur=_eur(equity), cash_eur=_eur(cash_eur), exposure_eur=_eur(exposure),
         initial_req_eur=_eur(initial), maint_req_eur=_eur(maint), warn_req_eur=_eur(warn),
         buying_power_eur=_eur(buying_power), ts=datetime.now(UTC),
+        equity_raw=equity, exposure_raw=exposure, initial_req_raw=initial,
+        maint_req_raw=maint, warn_req_raw=warn, buying_power_raw=buying_power,
     )

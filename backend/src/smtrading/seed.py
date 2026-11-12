@@ -13,6 +13,7 @@ from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.portfolios.models import Portfolio
 from smtrading.portfolios.service import create_portfolio
 from smtrading.risk.models import AppSetting, InterestKind, InterestRate, RiskProfile, SystemState
+from smtrading.risk.settings import DEFAULT_SPREAD_BPS, DEFAULT_STALE_QUOTE_S
 
 log = logging.getLogger("smtrading.seed")
 
@@ -33,8 +34,8 @@ _INTEREST_RATES = [
     (InterestKind.borrow, "forex", 0),
 ]
 _APP_SETTINGS = {
-    "stale_quote_s": {"us_equity": 120, "eu_equity": 1200, "crypto": 60, "forex": 600},
-    "default_spread_bps": {"us_equity": 2, "eu_equity": 5, "crypto": 5, "forex": 1},
+    "stale_quote_s": dict(DEFAULT_STALE_QUOTE_S),
+    "default_spread_bps": dict(DEFAULT_SPREAD_BPS),
 }
 _SYSTEM_STATE = {"kill_switch": {"on": False}}
 
