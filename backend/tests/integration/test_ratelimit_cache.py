@@ -40,6 +40,19 @@ async def test_token_bucket_capacity_cap_and_zero(r):
     assert await acquire(r, "z", -5, now=0.0) is False
 
 
+async def test_token_bucket_backwards_clock(r):
+    assert await acquire(r, "m", 1, now=1000.0) is True
+    assert await acquire(r, "m", 1, now=990.0) is False
+    assert await acquire(r, "m", 1, now=1000.0) is False
+    assert await acquire(r, "m", 1, now=1060.0) is True
+
+
+async def test_token_bucket_fractional_refill(r):
+    assert [await acquire(r, "f", 2, now=500.0) for _ in range(2)] == [True, True]
+    assert await acquire(r, "f", 2, now=515.0) is False
+    assert await acquire(r, "f", 2, now=530.0) is True
+
+
 async def test_token_bucket_default_now(r):
     assert await acquire(r, "t", 60) is True
 
