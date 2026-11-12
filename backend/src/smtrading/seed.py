@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.db import get_sessionmaker
+from smtrading.connectors.service import seed_connectors
 from smtrading.fees.models import FeeRule, FeeScope, FeeSide
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.portfolios.models import Portfolio
@@ -88,6 +89,7 @@ async def run_seed(session: AsyncSession) -> None:
         await create_portfolio(
             session, name=DEMO_PORTFOLIO_NAME, initial_cash=Decimal(100000), base_currency="EUR"
         )
+    await seed_connectors(session)
     await session.flush()
 
 

@@ -3,6 +3,7 @@ import asyncio
 from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
+import smtrading.connectors.models
 import smtrading.fees.models
 import smtrading.instruments.models
 import smtrading.ledger.models
