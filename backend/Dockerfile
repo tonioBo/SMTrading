@@ -9,6 +9,8 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY src ./src
+COPY alembic.ini ./
+COPY migrations ./migrations
 COPY docker ./docker
 RUN uv sync --frozen --no-dev && chmod +x docker/entrypoint-api.sh \
     && useradd --system --uid 10001 --no-create-home smt \
