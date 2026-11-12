@@ -375,6 +375,7 @@ async def test_timeout_falls_back(env, monkeypatch):
 
     router, _ = env
     monkeypatch.setattr(router_mod, "PROVIDER_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(router_mod, "QUOTE_TIMEOUT_PER_ITEM_S", 0.05)
     FakeA.mode = "slow"
     q = await router.get_quotes(["BTC-USD"])
     assert q["BTC-USD"].provider == "fake_b"
@@ -510,3 +511,177 @@ async def test_forming_bar_dropped_and_cache_stores_filtered(env):
     assert [b.ts for b in bars] == [closed]
     assert await router.get_bars("BTC-USD", Timeframe.h1, start, end) == bars
     assert [c for c in FakeA.calls if c[0] == "bars"] == [("bars", "BTC-USD")]
+
+
+# ---------------------------------------------------------------- final-review fixes
+
+
+async def test_provider_answer_missing_symbols_recorded_as_error(env):
+    router, _ = env
+    FakeA.mode = {"BTC-USD"}  # answers, but without ETH-USD
+    FakeB.mode = "error"
+    with pytest.raises(SMTError) as ei:
+        await router.get_quotes(["BTC-USD", "ETH-USD"])
+    assert ei.value.code == ErrorCode.PROVIDER_UNAVAILABLE
+    assert ei.value.details["errors"] == {
+        "fake_a": "missing: ETH-USD", "fake_b": "RuntimeError: boom",
+    }
+    assert ei.value.details["symbols"] == ["ETH-USD"]
+    # next provider tried with only the missing symbol
+    assert FakeB.calls == [("quote", ["ETH-USD"])]
+
+
+async def test_total_yahoo_outage_is_provider_unavailable(env, monkeypatch):
+    import smtrading.marketdata.providers.yahoo as yahoo_mod
+
+    class DownYF:
+        def fast_info(self, sym):
+            raise RuntimeError("yahoo down")
+
+    monkeypatch.setattr(yahoo_mod, "_YF", DownYF)
+    router, sm = env
+    async with sm() as s:
+        s.add(Connector(name="yahoo", enabled=True))
+        s.add(ProviderPriority(asset_class=AssetClass.us_equity, capability=Capability.quote,
+                               providers=["yahoo"]))
+        await s.commit()
+    with pytest.raises(SMTError) as ei:
+        await router.get_quotes(["AAPL"])
+    assert ei.value.code == ErrorCode.PROVIDER_UNAVAILABLE
+    assert ei.value.details["errors"] == {"yahoo": "RuntimeError: yahoo down"}
+
+
+async def test_batch_quote_costs_one_token_per_symbol(env):
+    router, sm = env
+    await _update_connector(sm, "fake_a", rate_limit_per_min=3)
+    first = await router.get_quotes(["BTC-USD", "ETH-USD"], max_age_s=0)
+    assert {q.provider for q in first.values()} == {"fake_a"}
+    # 1 token left: a 2-symbol batch no longer fits and falls through to fake_b
+    second = await router.get_quotes(["BTC-USD", "ETH-USD"], max_age_s=0)
+    assert {q.provider for q in second.values()} == {"fake_b"}
+    assert FakeA.calls == [("quote", ["BTC-USD", "ETH-USD"])]
+
+
+async def test_quote_timeout_scales_with_batch(env, monkeypatch):
+    import smtrading.marketdata.router as router_mod
+
+    router, _ = env
+    seen: list[float] = []
+    real = asyncio.wait_for
+
+    async def spy(aw, timeout):
+        if getattr(aw, "__qualname__", "").startswith("_Fake."):  # provider calls only
+            seen.append(timeout)
+        return await real(aw, timeout)
+
+    monkeypatch.setattr(router_mod.asyncio, "wait_for", spy)
+    await router.get_quotes(["BTC-USD"], max_age_s=0)
+    await router.get_quotes(["BTC-USD", "ETH-USD"], max_age_s=0)
+    await router.get_fx_rate("EUR", "USD")
+    assert seen == [10, 10, 10]
+    monkeypatch.setattr(router_mod, "PROVIDER_TIMEOUT_S", 1)
+    seen.clear()
+    await router.get_quotes(["BTC-USD", "ETH-USD"], max_age_s=0)
+    assert seen == [4]  # 2 symbols x QUOTE_TIMEOUT_PER_ITEM_S
+    assert router_mod._batch_timeout(1) == 2 and router_mod._batch_timeout(7) == 14
+
+
+async def test_rate_limiter_redis_error_fails_open(env, monkeypatch, caplog):
+    import logging
+
+    import smtrading.marketdata.router as router_mod
+
+    async def broken(*args, **kwargs):
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(router_mod, "acquire", broken)
+    router, _ = env
+    with caplog.at_level(logging.WARNING, logger="smtrading.marketdata.router"):
+        q = await router.get_quotes(["BTC-USD"])
+    assert q["BTC-USD"].provider == "fake_a"
+    assert any("rate limiter unavailable" in r.getMessage() for r in caplog.records)
+
+
+async def test_calendar_skips_class_without_provider(env):
+    from sqlalchemy import delete
+
+    router, sm = env
+    async with sm() as s:
+        await s.execute(
+            delete(ProviderPriority).where(
+                ProviderPriority.asset_class == AssetClass.crypto,
+                ProviderPriority.capability == Capability.calendar,
+            )
+        )
+        await s.commit()
+    events = await router.get_calendar(["AAPL", "BTC-USD"], date(2026, 2, 1), date(2026, 3, 1))
+    assert [(e.symbol, e.date) for e in events] == [("AAPL", date(2026, 2, 1))]
+
+
+async def _add_eurusd(sm):
+    async with sm() as s:
+        s.add(Instrument(symbol="EURUSD", name="EUR/USD", asset_class=AssetClass.forex,
+                         market="FX", currency="USD"))
+        await s.commit()
+
+
+async def test_news_skips_class_without_provider(env):
+    router, sm = env
+    await _add_eurusd(sm)  # no forex news priority configured
+    news = await router.get_news(["EURUSD", "AAPL"])
+    assert [n.id for n in news] == ["fake_b-1", "shared"]
+    assert FakeB.calls == [("news", ["AAPL"])]
+
+
+async def test_news_real_failure_still_raises(env, monkeypatch):
+    router, sm = env
+    await _add_eurusd(sm)
+
+    async def boom(self, symbols, limit):
+        raise RuntimeError("news down")
+
+    monkeypatch.setattr(FakeB, "get_news", boom)
+    with pytest.raises(SMTError) as ei:
+        await router.get_news(["EURUSD", "AAPL"])
+    assert ei.value.code == ErrorCode.PROVIDER_UNAVAILABLE
+    assert ei.value.details["errors"] == {"fake_b": "RuntimeError: news down"}
+
+
+async def test_single_class_without_provider_still_raises(env):
+    router, sm = env
+    await _add_eurusd(sm)  # no forex quote priority configured
+    with pytest.raises(SMTError) as ei:
+        await router.get_quotes(["EURUSD"])
+    assert ei.value.details["reason"] == "no_enabled_provider"
+
+
+async def test_bars_range_floored_so_close_requests_share_cache(env):
+    router, _ = env
+    start = datetime(2026, 1, 1, 10, 0, 7, tzinfo=UTC)
+    end = datetime(2026, 1, 1, 12, 0, 10, tzinfo=UTC)
+    a = await router.get_bars("BTC-USD", Timeframe.m1, start, end)
+    b = await router.get_bars("BTC-USD", Timeframe.m1, start + timedelta(seconds=1),
+                              end + timedelta(seconds=1))
+    assert a == b and a[0].ts == datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+    # daily bars floor to the hour (min(timeframe, 1h))
+    await router.get_bars("BTC-USD", Timeframe.d1, start, end)
+    await router.get_bars("BTC-USD", Timeframe.d1, start + timedelta(minutes=30),
+                          end + timedelta(minutes=30))
+    assert [c for c in FakeA.calls if c[0] == "bars"] == [("bars", "BTC-USD")] * 2
+    # a range inside one step cannot contain a bar start: no provider call
+    assert await router.get_bars("BTC-USD", Timeframe.m1, start, start + timedelta(seconds=30)) == []
+    assert len([c for c in FakeA.calls if c[0] == "bars"]) == 2
+
+
+def test_router_import_registers_providers():
+    import subprocess
+    import sys
+
+    code = (
+        "import smtrading.marketdata.router\n"
+        "from smtrading.marketdata.registry import PROVIDERS\n"
+        "print(','.join(sorted(PROVIDERS)))\n"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         check=True)
+    assert out.stdout.strip() == "binance,coingecko,frankfurter,kraken,yahoo"

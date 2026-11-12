@@ -211,6 +211,7 @@ class YahooProvider(DataProvider):
             Capability.news,
             Capability.fundamentals,
             Capability.calendar,
+            Capability.fx,
             Capability.search,
             Capability.screener,
         }
@@ -269,12 +270,24 @@ class YahooProvider(DataProvider):
 
         results = await asyncio.gather(*(one(c, ps) for c, ps in items), return_exceptions=True)
         out: dict[str, Quote] = {}
+        first_error: BaseException | None = None
         for (canonical, _), res in zip(items, results, strict=True):
             if isinstance(res, BaseException):
                 log.warning("yahoo quote failed for %s: %s", canonical, res)
+                first_error = first_error or res
             elif res[1] is not None:
                 out[canonical] = res[1]
+        # nothing at all and at least one call raised: an outage, not missing symbols
+        if not out and first_error is not None:
+            raise first_error
         return out
+
+    async def get_fx_rate(self, base: str, quote: str) -> Decimal:
+        fast = await self._call(self._yf.fast_info, f"{base}{quote}=X")
+        rate = _positive(fast.get("lastPrice"))
+        if rate is None:
+            raise RuntimeError(f"yahoo: no rate for {base}{quote}")
+        return rate
 
     async def get_bars(
         self,
@@ -365,6 +378,8 @@ class YahooProvider(DataProvider):
             return start <= d <= end
 
         for canonical, ps in symbols:
+            currency: str | None = None
+            currency_known = False
             cal = await self._call(self._yf.calendar, ps)
             for iso in cal.get("Earnings Date") or []:
                 d = date.fromisoformat(str(iso)[:10])
@@ -382,13 +397,30 @@ class YahooProvider(DataProvider):
                 d = date.fromisoformat(r["date"])
                 amount = _dec(r.get("amount"))
                 if keep(d) and amount is not None:
-                    events.append(CalendarEvent(canonical, "dividend", d, {"amount": str(amount)}))
+                    if not currency_known:  # only looked up when a dividend is reported
+                        currency, currency_known = await self._currency(ps), True
+                    events.append(
+                        CalendarEvent(
+                            canonical, "dividend", d, {"amount": str(amount), "currency": currency}
+                        )
+                    )
             for r in await self._call(self._yf.splits, ps):
                 d = date.fromisoformat(r["date"])
                 ratio = _dec(r.get("ratio"))
                 if keep(d) and ratio is not None:
                     events.append(CalendarEvent(canonical, "split", d, {"ratio": str(ratio)}))
         return sorted(events, key=lambda e: (e.date, e.symbol, e.kind))
+
+    async def _currency(self, ps: str) -> str | None:
+        """Trading currency from fast_info (falls back to None: callers use the
+        instrument's currency)."""
+        try:
+            fast = await self._call(self._yf.fast_info, ps)
+        except Exception as exc:  # noqa: BLE001 - enrichment only
+            log.warning("yahoo currency lookup failed for %s: %s", ps, exc)
+            return None
+        cur = fast.get("currency")
+        return cur if isinstance(cur, str) and cur else None
 
     @staticmethod
     def _hit_class(quote: dict) -> AssetClass | None:

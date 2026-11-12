@@ -53,6 +53,19 @@ async def test_token_bucket_fractional_refill(r):
     assert await acquire(r, "f", 2, now=530.0) is True
 
 
+async def test_token_bucket_cost(r):
+    # capacity 10: a 4-token batch twice, then a 4-token batch is refused (2 left) without
+    # consuming anything, and a 2-token one still fits
+    assert await acquire(r, "c", 10, cost=4, now=0.0) is True
+    assert await acquire(r, "c", 10, cost=4, now=0.0) is True
+    assert await acquire(r, "c", 10, cost=4, now=0.0) is False
+    assert await acquire(r, "c", 10, cost=2, now=0.0) is True
+    assert await acquire(r, "c", 10, now=0.0) is False
+    # a batch larger than the capacity is capped: a full bucket admits it once
+    assert await acquire(r, "big", 3, cost=50, now=0.0) is True
+    assert await acquire(r, "big", 3, now=0.0) is False
+
+
 async def test_token_bucket_default_now(r):
     assert await acquire(r, "t", 60) is True
 

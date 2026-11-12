@@ -78,7 +78,7 @@ def test_registered_and_capabilities():
     assert p is YahooProvider
     assert p.capabilities == {
         Capability.quote, Capability.bars, Capability.news, Capability.fundamentals,
-        Capability.calendar, Capability.search, Capability.screener,
+        Capability.calendar, Capability.fx, Capability.search, Capability.screener,
     }  # fmt: skip
     assert p.asset_classes == frozenset(AssetClass)
     assert p.requires_key is False and p.default_rate_limit_per_min == 60
@@ -189,7 +189,9 @@ async def test_calendar_filters_by_range(provider):
     earn = next(e for e in ev if e.kind == "earnings")
     assert earn.data["eps_estimate"] == "2.91057"
     div = next(e for e in ev if e.date == date(2026, 2, 9))
-    assert div.data == {"amount": "0.26"}
+    assert div.data == {"amount": "0.26", "currency": "USD"}
+    # the currency lookup happens once per symbol, not once per dividend
+    assert provider._yf.calls.count(("fast_info", "AAPL")) == 1
     assert [e.date for e in ev] == sorted(e.date for e in ev)
 
 
@@ -322,3 +324,40 @@ async def test_quote_concurrency_is_bounded(provider):
     quotes = await provider.get_quotes([(f"S{i}", f"S{i}") for i in range(12)])
     assert len(quotes) == 12
     assert 1 < state["max"] <= 4
+
+
+async def test_calendar_dividend_currency_falls_back_to_none(provider):
+    def boom(sym):
+        raise RuntimeError("429")
+
+    provider._yf.fast_info = boom
+    ev = await provider.get_calendar([("AAPL", "AAPL")], date(2026, 1, 1), date(2026, 12, 31))
+    divs = [e for e in ev if e.kind == "dividend"]
+    assert divs and all(e.data["currency"] is None for e in divs)
+
+
+async def test_all_quotes_failing_raises(provider):
+    def boom(sym):
+        raise RuntimeError("yahoo down")
+
+    provider._yf.fast_info = boom
+    with pytest.raises(RuntimeError, match="yahoo down"):
+        await provider.get_quotes([("AAPL", "AAPL"), ("ENI.MI", "ENI.MI")])
+
+
+async def test_no_price_without_errors_returns_empty(provider):
+    # no exception raised: an empty answer means "no data", not an outage
+    provider._yf.fasts["AAPL"] = {"lastPrice": None}
+    assert await provider.get_quotes([("AAPL", "AAPL")]) == {}
+
+
+async def test_fx_rate_from_fast_info(provider):
+    rate = await provider.get_fx_rate("EUR", "USD")
+    assert rate == Decimal("1.1057054996490479") and isinstance(rate, Decimal)
+    assert ("fast_info", "EURUSD=X") in provider._yf.calls
+
+
+async def test_fx_rate_without_price_raises(provider):
+    provider._yf.fasts["EURUSD=X"] = {"lastPrice": None}
+    with pytest.raises(RuntimeError):
+        await provider.get_fx_rate("EUR", "USD")

@@ -20,6 +20,10 @@ from typing import Any
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+# Importing the providers package registers every built-in provider in PROVIDERS, so router
+# users need no separate import. Providers depend only on provider/registry/types (never on
+# the router), so this cannot cycle.
+import smtrading.marketdata.providers  # noqa: F401
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.connectors.models import Connector
 from smtrading.connectors.service import (
@@ -57,6 +61,8 @@ from smtrading.marketdata.types import (
 log = logging.getLogger(__name__)
 
 PROVIDER_TIMEOUT_S = 10
+QUOTE_TIMEOUT_PER_ITEM_S = 2  # batch quote calls: timeout grows with the batch size
+BARS_FLOOR_MAX = timedelta(hours=1)
 INSTANCE_MAX_AGE_S = 60
 RATE_LIMITED = "rate_limited"
 
@@ -212,6 +218,18 @@ _TF_DURATION = {
 }
 
 
+def _batch_timeout(items: int) -> float:
+    return max(PROVIDER_TIMEOUT_S, QUOTE_TIMEOUT_PER_ITEM_S * items)
+
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _floor(dt: datetime, step: timedelta) -> datetime:
+    """Floor a UTC datetime to a multiple of `step` since the epoch."""
+    return dt - (dt - _EPOCH) % step
+
+
 async def _closed_bars(provider: DataProvider, args: tuple, tf: Timeframe) -> list[Bar]:
     """Drop still-forming candles (ts + duration > now); providers return raw bars."""
     bars = await provider.get_bars(*args)
@@ -321,8 +339,13 @@ class MarketDataRouter:
         outcome: _Outcome,
         call: Callable[[DataProvider], Awaitable[Any]],
         memo: dict[str, Any] | None = None,
+        batch: list | None = None,
     ) -> Any:
-        """One provider call. Returns the result or _MISS (outcome annotated)."""
+        """One provider call. Returns the result or _MISS (outcome annotated).
+
+        `batch`, when given, is filled by `call` with the items it sends: the call then costs
+        len(batch) rate-limit tokens and its timeout scales with the batch size.
+        """
         outcome.attempted = True
         if slot.build_error is not None:
             outcome.errors[slot.name] = slot.build_error
@@ -339,7 +362,7 @@ class MarketDataRouter:
                 outcome.errors[slot.name] = result
                 return _MISS
             return result[0]
-        result = await self._attempt_uncached(slot, outcome, call)
+        result = await self._attempt_uncached(slot, outcome, call, batch)
         if memo is not None:
             if result is not _MISS:
                 memo[slot.name] = (result,)
@@ -349,18 +372,34 @@ class MarketDataRouter:
                 memo[slot.name] = ProviderUnsupported()
         return result
 
+    async def _acquire(self, slot: _Slot, cost: int) -> bool:
+        """Rate-limit gate. A Redis failure fails open: the call proceeds."""
+        try:
+            return await acquire(self._redis, slot.name, slot.rate_limit, cost=cost)
+        except Exception:
+            log.warning("rate limiter unavailable for %s; proceeding", slot.name, exc_info=True)
+            return True
+
     async def _attempt_uncached(
-        self, slot: _Slot, outcome: _Outcome, call: Callable[[DataProvider], Awaitable[Any]]
+        self,
+        slot: _Slot,
+        outcome: _Outcome,
+        call: Callable[[DataProvider], Awaitable[Any]],
+        batch: list | None,
     ) -> Any:
         assert slot.provider is not None
         coro = None
         try:
             coro = call(slot.provider)  # symbol mapping happens here (may be unsupported)
-            if not await acquire(self._redis, slot.name, slot.rate_limit):
+            size = len(batch) if batch else 1
+            if not await self._acquire(slot, size):
                 outcome.errors[slot.name] = RATE_LIMITED
                 return _MISS
             awaitable, coro = coro, None
-            return await asyncio.wait_for(awaitable, PROVIDER_TIMEOUT_S)
+            timeout = (
+                PROVIDER_TIMEOUT_S if batch is None else _batch_timeout(size)
+            )
+            return await asyncio.wait_for(awaitable, timeout)
         except ProviderUnsupported:
             outcome.unsupported = True
             return _MISS
@@ -488,9 +527,13 @@ class MarketDataRouter:
                 if not pending:
                     break
                 todo = list(pending.values())
-                got = await self._attempt(
-                    slot, outcome, lambda p, todo=todo: p.get_quotes(self._map_items(p, todo))
-                )
+                sent: list[tuple[str, str]] = []
+
+                def call(p: DataProvider, todo=todo, sent=sent):
+                    sent[:] = self._map_items(p, todo)
+                    return p.get_quotes(list(sent))
+
+                got = await self._attempt(slot, outcome, call, batch=sent)
                 if got is _MISS:
                     continue
                 for sym in list(pending):
@@ -505,8 +548,11 @@ class MarketDataRouter:
                         await write_quote(self._redis, q)
                     except Exception:
                         log.warning("quote cache write failed for %s", sym, exc_info=True)
-                if pending:
-                    outcome.unsupported = True  # answered, but without these symbols
+                missing = sorted({s for s, _ in sent} & set(pending))
+                if missing:  # mappable, yet absent from the answer: a provider failure
+                    outcome.errors[slot.name] = "missing: " + ",".join(missing)
+                if len(pending) > len(missing):  # the rest it cannot map
+                    outcome.unsupported = True
             if pending:  # stop at the first failing group
                 raise outcome.error(
                     Capability.quote, {"asset_class": str(asset_class), "symbols": list(pending)}
@@ -527,6 +573,11 @@ class MarketDataRouter:
         if start >= end:
             raise _invalid("start must be before end")
         instr = (await self._resolve([symbol]))[canonical_symbol(symbol)]
+        # floor the range so requests made moments apart share one cache entry
+        step = min(_TF_DURATION[tf], BARS_FLOOR_MAX)
+        start, end = _floor(start, step), _floor(end, step)
+        if start >= end:  # the whole range sits inside one step: no bar can start in it
+            return []
 
         def call(p: DataProvider):
             ps = p.map_symbol(instr.symbol, instr.asset_class, instr.override(p.name))
@@ -558,16 +609,22 @@ class MarketDataRouter:
         self, capability: Capability, symbols: list[str], key_args: dict, ttl: int,
         make_call, dumps, loads,
     ) -> list:
+        """Fetch per asset class and merge. A class with no enabled provider for the
+        capability (nothing attempted) contributes nothing; a real failure raises."""
         instrs = await self._resolve(symbols)
         merged: list = []
         for asset_class, group in self._by_class(instrs).items():
             syms = sorted(i.symbol for i in group)
-            merged.extend(
-                await self._fetch_one(
-                    capability, asset_class, {"symbols": syms, **key_args}, ttl,
-                    make_call(group), dumps, loads, {"symbols": syms},
-                )
+            outcome = _Outcome()
+            got = await self._fetch(
+                capability, asset_class, {"symbols": syms, **key_args}, ttl,
+                make_call(group), dumps, loads, outcome,
             )
+            if got is _MISS:
+                if not outcome.attempted:
+                    continue
+                raise outcome.error(capability, {"symbols": syms})
+            merged.extend(got)
         return merged
 
     @_guard

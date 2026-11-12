@@ -1,12 +1,13 @@
 import time
 import weakref
 
-# Atomic token bucket. KEYS[1]=state hash; ARGV: capacity, refill/sec, now (s), ttl (s).
+# Atomic token bucket. KEYS[1]=state hash; ARGV: capacity, refill/sec, now (s), ttl (s), cost.
 _LUA = """
 local capacity = tonumber(ARGV[1])
 local rate = tonumber(ARGV[2])
 local now = tonumber(ARGV[3])
 local ttl = tonumber(ARGV[4])
+local cost = tonumber(ARGV[5])
 local st = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
 local tokens = tonumber(st[1])
 local ts = tonumber(st[2])
@@ -18,8 +19,8 @@ local elapsed = now - ts
 if elapsed < 0 then elapsed = 0 end
 tokens = math.min(capacity, tokens + elapsed * rate)
 local ok = 0
-if tokens >= 1 - 1e-9 then
-  tokens = tokens - 1
+if tokens >= cost - 1e-9 then
+  tokens = tokens - cost
   ok = 1
 end
 if tokens < 0 then tokens = 0 end
@@ -43,13 +44,18 @@ def _script(redis):
     return sc
 
 
-async def acquire(redis, provider: str, per_minute: int, *, now: float | None = None) -> bool:
-    """Take one token from the provider's bucket (capacity per_minute, refill per_minute/60 /s)."""
+async def acquire(
+    redis, provider: str, per_minute: int, *, cost: int = 1, now: float | None = None
+) -> bool:
+    """Take `cost` tokens from the provider's bucket (capacity per_minute, refill
+    per_minute/60 /s). All or nothing: a refused request consumes no tokens. A cost above
+    the capacity is capped to it (a full bucket always admits one batch)."""
     if per_minute <= 0:
         return False
+    cost = min(max(int(cost), 1), per_minute)
     script = _script(redis)
     ts = time.time() if now is None else now
     res = await script(
-        keys=[f"rl:{provider}"], args=[per_minute, per_minute / 60, ts, _KEY_TTL_S]
+        keys=[f"rl:{provider}"], args=[per_minute, per_minute / 60, ts, _KEY_TTL_S, cost]
     )
     return int(res) == 1

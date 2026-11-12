@@ -12,7 +12,6 @@ from redis.asyncio import Redis
 from smtrading.common.config import get_settings
 from smtrading.common.db import get_sessionmaker
 from smtrading.common.errors import SMTError
-from smtrading.marketdata import providers  # noqa: F401  (registers the providers)
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.marketdata.serialization import dumps
 from smtrading.marketdata.streaming import STATUS_KEY, track, untrack
