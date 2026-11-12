@@ -6,11 +6,12 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
+import websockets
 
 import smtrading.marketdata.providers  # noqa: F401
 from smtrading.instruments.models import AssetClass
 from smtrading.marketdata.provider import ProviderUnsupported
-from smtrading.marketdata.providers.binance import BinanceProvider
+from smtrading.marketdata.providers.binance import BinanceProvider, parse_binance_ws
 from smtrading.marketdata.registry import PROVIDERS
 from smtrading.marketdata.types import Capability, Timeframe
 
@@ -104,3 +105,38 @@ async def test_bars_weekly_interval(provider):
 async def test_health_check(provider):
     respx.get(f"{API}/ping").respond(200, json={})
     await provider.health_check()
+
+
+def test_parse_binance_ws():
+    msg = json.loads(fixture("binance_ws_book_ticker.json"))
+    [q] = parse_binance_ws(msg, {"BTCUSDT": "BTC-USD"})
+    assert q.symbol == "BTC-USD" and q.provider == "binance" and q.last is None
+    assert (q.bid, q.ask) == (Decimal("71424.86000000"), Decimal("71424.87000000"))
+    assert abs((datetime.now(UTC) - q.ts).total_seconds()) < 5
+
+
+def test_parse_binance_ws_ignores_unknown():
+    msg = json.loads(fixture("binance_ws_book_ticker.json"))
+    assert parse_binance_ws(msg, {"ETHUSDT": "ETH-USD"}) == []
+    assert parse_binance_ws({"result": None, "id": 1}, {"BTCUSDT": "BTC-USD"}) == []
+
+
+async def test_stream_end_to_end_then_connection_error():
+    paths: list[str] = []
+    msg = fixture("binance_ws_book_ticker.json")
+
+    async def handler(ws):
+        paths.append(ws.request.path)
+        await ws.send(msg)
+        await ws.send(msg.replace("71424.86", "71425.00"))
+
+    async with websockets.serve(handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        async with httpx.AsyncClient() as http:
+            provider = BinanceProvider({"ws_url": f"ws://127.0.0.1:{port}/stream"}, http)
+            quotes = []
+            with pytest.raises(ConnectionError):
+                async for q in provider.stream([("BTC-USD", "BTCUSDT"), ("ETH-USD", "ETHUSDT")]):
+                    quotes.append(q)
+    assert paths == ["/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker"]
+    assert [q.bid for q in quotes] == [Decimal("71424.86000000"), Decimal("71425.00000000")]

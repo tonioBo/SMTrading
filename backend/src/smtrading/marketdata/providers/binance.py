@@ -1,6 +1,9 @@
 import json
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from decimal import Decimal
+
+import websockets
 
 from smtrading.instruments.models import AssetClass
 from smtrading.marketdata.provider import DataProvider
@@ -8,6 +11,7 @@ from smtrading.marketdata.registry import register
 from smtrading.marketdata.types import Bar, Capability, Quote, Timeframe
 
 BASE_URL = "https://api.binance.com/api/v3"
+WS_URL = "wss://stream.binance.com:9443/stream"
 
 INTERVALS = {
     Timeframe.m1: "1m",
@@ -17,6 +21,27 @@ INTERVALS = {
     Timeframe.d1: "1d",
     Timeframe.w1: "1w",
 }
+
+
+def parse_binance_ws(msg: dict, reverse_map: dict[str, str]) -> list[Quote]:
+    """Pure parser for combined-stream bookTicker messages. reverse_map: "BTCUSDT" -> canonical.
+
+    bookTicker has no event time and no last price: ts is "now" (the stream is live), last=None.
+    """
+    data = msg.get("data") or {}
+    canonical = reverse_map.get(data.get("s", ""))
+    if canonical is None or "b" not in data or "a" not in data:
+        return []
+    return [
+        Quote(
+            symbol=canonical,
+            bid=Decimal(str(data["b"])),
+            ask=Decimal(str(data["a"])),
+            last=None,
+            ts=datetime.now(UTC),
+            provider="binance",
+        )
+    ]
 
 
 @register
@@ -89,6 +114,19 @@ class BinanceProvider(DataProvider):
             )
             for r in rows
         ]
+
+    async def stream(self, items: list[tuple[str, str]]) -> AsyncIterator[Quote]:
+        reverse = {ps: canonical for canonical, ps in items}
+        streams = "/".join(f"{ps.lower()}@bookTicker" for ps in reverse)
+        url = f"{self.config.get('ws_url', WS_URL)}?streams={streams}"
+        try:
+            async with websockets.connect(url) as ws:
+                async for raw in ws:
+                    for quote in parse_binance_ws(json.loads(raw), reverse):
+                        yield quote
+        except (TimeoutError, websockets.ConnectionClosed, OSError) as exc:
+            raise ConnectionError(f"binance websocket: {exc}") from exc
+        raise ConnectionError("binance websocket closed")
 
     async def health_check(self) -> None:
         resp = await self.http.get(f"{BASE_URL}/ping")

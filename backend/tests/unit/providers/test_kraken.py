@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -5,11 +6,12 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
+import websockets
 
 import smtrading.marketdata.providers  # noqa: F401
 from smtrading.instruments.models import AssetClass
 from smtrading.marketdata.provider import ProviderUnsupported
-from smtrading.marketdata.providers.kraken import KrakenProvider
+from smtrading.marketdata.providers.kraken import KrakenProvider, parse_kraken_ws
 from smtrading.marketdata.registry import PROVIDERS
 from smtrading.marketdata.types import Capability, Timeframe
 
@@ -120,3 +122,61 @@ async def test_bars_error_raises(provider):
 async def test_health_check(provider):
     respx.get(f"{API}/SystemStatus").respond(200, json={"error": [], "result": {"status": "online"}})
     await provider.health_check()
+
+
+def test_ws_symbol(provider):
+    assert provider.ws_symbol("BTC-USD") == "BTC/USD"
+
+
+def test_parse_kraken_ws_snapshot():
+    msg = json.loads(fixture("kraken_ws_ticker.json"), parse_float=Decimal)
+    [q] = parse_kraken_ws(msg, {"BTC/USD": "BTC-USD"})
+    assert q.symbol == "BTC-USD" and q.provider == "kraken"
+    assert (q.bid, q.ask, q.last) == (Decimal("71341.0"), Decimal("71341.1"), Decimal("71341.1"))
+    assert isinstance(q.bid, Decimal)
+    assert q.ts == datetime(2026, 11, 12, 22, 22, 20, 76908, tzinfo=UTC)
+
+
+def test_parse_kraken_ws_ignores_noise():
+    rev = {"BTC/USD": "BTC-USD"}
+    assert parse_kraken_ws({"channel": "heartbeat"}, rev) == []
+    assert parse_kraken_ws({"channel": "status", "type": "update", "data": [{}]}, rev) == []
+    assert parse_kraken_ws({"method": "subscribe", "success": True}, rev) == []
+    unknown = {"channel": "ticker", "type": "update", "data": [{"symbol": "DOGE/USD", "bid": 1}]}
+    assert parse_kraken_ws(unknown, rev) == []
+
+
+def test_parse_kraken_ws_update_without_timestamp_uses_now():
+    msg = {"channel": "ticker", "type": "update", "data": [{"symbol": "BTC/USD", "bid": 1, "ask": 2, "last": 3}]}
+    [q] = parse_kraken_ws(msg, {"BTC/USD": "BTC-USD"})
+    assert abs((datetime.now(UTC) - q.ts).total_seconds()) < 5
+
+
+async def test_stream_end_to_end_then_connection_error():
+    received: list[dict] = []
+    snapshot = fixture("kraken_ws_ticker.json")
+    update = json.dumps(
+        {"channel": "ticker", "type": "update", "data": [
+            {"symbol": "ETH/USD", "bid": 2010.1, "ask": 2010.2, "last": 2010.2,
+             "timestamp": "2026-11-12T22:23:00.000000Z"}]}
+    )
+
+    async def handler(ws):
+        received.append(json.loads(await ws.recv()))
+        await ws.send('{"channel":"heartbeat"}')
+        await ws.send(snapshot)
+        await ws.send(update)
+
+    async with websockets.serve(handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        async with httpx.AsyncClient() as http:
+            provider = KrakenProvider({"ws_url": f"ws://127.0.0.1:{port}"}, http)
+            quotes = []
+            with pytest.raises(ConnectionError):
+                async for q in provider.stream([("BTC-USD", "XBTUSD"), ("ETH-USD", "ETHUSD")]):
+                    quotes.append(q)
+    assert received == [
+        {"method": "subscribe", "params": {"channel": "ticker", "symbol": ["BTC/USD", "ETH/USD"]}}
+    ]
+    assert [q.symbol for q in quotes] == ["BTC-USD", "ETH-USD"]
+    assert quotes[1].last == Decimal("2010.2")

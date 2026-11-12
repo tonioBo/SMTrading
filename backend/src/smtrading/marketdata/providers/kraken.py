@@ -1,6 +1,9 @@
 import json
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+
+import websockets
 
 from smtrading.instruments.models import AssetClass
 from smtrading.marketdata.provider import DataProvider
@@ -8,6 +11,7 @@ from smtrading.marketdata.registry import register
 from smtrading.marketdata.types import Bar, Capability, Quote, Timeframe
 
 BASE_URL = "https://api.kraken.com/0/public"
+WS_URL = "wss://ws.kraken.com/v2"
 
 INTERVALS = {
     Timeframe.m1: 1,
@@ -26,6 +30,38 @@ def _dec(value: object) -> Decimal | None:
         return Decimal(str(value))
     except InvalidOperation:
         return None
+
+
+def _ws_timestamp(raw: object) -> datetime:
+    if isinstance(raw, str):
+        try:
+            return datetime.fromisoformat(raw).astimezone(UTC)
+        except ValueError:
+            pass
+    # WS ticks are live: when the message carries no timestamp, "now" is accurate.
+    return datetime.now(UTC)
+
+
+def parse_kraken_ws(msg: dict, reverse_map: dict[str, str]) -> list[Quote]:
+    """Pure parser for WS v2 ticker messages. reverse_map: "BTC/USD" -> canonical symbol."""
+    if msg.get("channel") != "ticker" or msg.get("type") not in ("snapshot", "update"):
+        return []
+    quotes: list[Quote] = []
+    for entry in msg.get("data") or []:
+        canonical = reverse_map.get(entry.get("symbol", ""))
+        if canonical is None:
+            continue
+        quotes.append(
+            Quote(
+                symbol=canonical,
+                bid=_dec(entry.get("bid")),
+                ask=_dec(entry.get("ask")),
+                last=_dec(entry.get("last")),
+                ts=_ws_timestamp(entry.get("timestamp")),
+                provider="kraken",
+            )
+        )
+    return quotes
 
 
 @register
@@ -55,6 +91,11 @@ class KrakenProvider(DataProvider):
         except ValueError:
             raise self._unsupported(f"symbol {symbol}") from None
         return f"{'XBT' if base == 'BTC' else base}{quote}"
+
+    @staticmethod
+    def ws_symbol(symbol: str) -> str:
+        """WS v2 uses "BTC/USD" (no XBT). Provider symbol overrides apply to REST only."""
+        return symbol.replace("-", "/")
 
     async def _get(self, path: str, params: dict) -> dict:
         resp = await self.http.get(f"{BASE_URL}{path}", params=params)
@@ -116,6 +157,21 @@ class KrakenProvider(DataProvider):
             for r in rows
         ]
         return [b for b in bars if b.ts <= end]
+
+    async def stream(self, items: list[tuple[str, str]]) -> AsyncIterator[Quote]:
+        reverse = {self.ws_symbol(canonical): canonical for canonical, _ in items}
+        url = self.config.get("ws_url", WS_URL)
+        subscribe = {"method": "subscribe", "params": {"channel": "ticker", "symbol": list(reverse)}}
+        try:
+            async with websockets.connect(url) as ws:
+                await ws.send(json.dumps(subscribe))
+                async for raw in ws:
+                    msg = json.loads(raw, parse_float=Decimal)
+                    for quote in parse_kraken_ws(msg, reverse):
+                        yield quote
+        except (TimeoutError, websockets.ConnectionClosed, OSError) as exc:
+            raise ConnectionError(f"kraken websocket: {exc}") from exc
+        raise ConnectionError("kraken websocket closed")
 
     async def health_check(self) -> None:
         await self._get("/SystemStatus", {})
