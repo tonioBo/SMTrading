@@ -180,3 +180,29 @@ async def test_stream_end_to_end_then_connection_error():
     ]
     assert [q.symbol for q in quotes] == ["BTC-USD", "ETH-USD"]
     assert quotes[1].last == Decimal("2010.2")
+
+
+async def test_stream_subscribe_rejected_raises():
+    async def handler(ws):
+        await ws.recv()
+        await ws.send(json.dumps({"method": "subscribe", "success": False,
+                                  "error": "Currency pair not supported XYZ/USD"}))
+        await ws.send(fixture("kraken_ws_ticker.json"))
+
+    async with websockets.serve(handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        async with httpx.AsyncClient() as http:
+            provider = KrakenProvider({"ws_url": f"ws://127.0.0.1:{port}"}, http)
+            quotes = []
+            with pytest.raises(ConnectionError, match="not supported"):
+                async for q in provider.stream([("BTC-USD", "XBTUSD")]):
+                    quotes.append(q)
+    assert quotes == []
+
+
+async def test_stream_handshake_failure_is_connection_error():
+    async with httpx.AsyncClient() as http:
+        provider = KrakenProvider({"ws_url": "ws://127.0.0.1:1"}, http)
+        with pytest.raises(ConnectionError):
+            async for _ in provider.stream([("BTC-USD", "XBTUSD")]):
+                pass

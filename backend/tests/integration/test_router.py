@@ -61,6 +61,13 @@ class _Fake(DataProvider):
         type(self).calls.append(("bars", symbol))
         if type(self).mode == "error":
             raise RuntimeError("boom")
+        if type(self).mode == "forming":
+            now = datetime.now(UTC)
+            closed = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+            return [
+                Bar(ts, Decimal(1), Decimal(2), Decimal("0.5"), Decimal("1.5"), Decimal(10))
+                for ts in (closed, closed + timedelta(hours=1))
+            ]
         return [Bar(start, Decimal(1), Decimal(2), Decimal("0.5"), Decimal("1.5"), Decimal(10))]
 
     async def search(self, query, limit):
@@ -491,3 +498,15 @@ async def test_fx_cached(env):
     assert await router.get_fx_rate("eur", "usd") == Decimal("1.0850")
     assert await router.get_fx_rate("EUR", "USD") == Decimal("1.0850")
     assert FakeA.calls == [("fx", "EUR", "USD")]
+
+
+async def test_forming_bar_dropped_and_cache_stores_filtered(env):
+    router, _ = env
+    FakeA.mode = "forming"
+    end = datetime.now(UTC)
+    start = end - timedelta(hours=5)
+    bars = await router.get_bars("BTC-USD", Timeframe.h1, start, end)
+    closed = end.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+    assert [b.ts for b in bars] == [closed]
+    assert await router.get_bars("BTC-USD", Timeframe.h1, start, end) == bars
+    assert [c for c in FakeA.calls if c[0] == "bars"] == [("bars", "BTC-USD")]

@@ -140,3 +140,29 @@ async def test_stream_end_to_end_then_connection_error():
                     quotes.append(q)
     assert paths == ["/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker"]
     assert [q.bid for q in quotes] == [Decimal("71424.86000000"), Decimal("71425.00000000")]
+
+
+@respx.mock
+async def test_bars_paginate(provider):
+    def row(ms):
+        return [ms, "1", "2", "0.5", "1.5", "10", ms + 59999, "0", 1, "0", "0", "0"]
+
+    first = [row(1_000_000 + i) for i in range(1000)]
+    second = [row(1_001_000 + i) for i in range(3)]
+    route = respx.get(f"{API}/klines").mock(
+        side_effect=[httpx.Response(200, json=first), httpx.Response(200, json=second)]
+    )
+    start = datetime.fromtimestamp(1000, UTC)
+    end = datetime.fromtimestamp(2000, UTC)
+    bars = await provider.get_bars("BTC-USD", "BTCUSDT", Timeframe.m1, start, end)
+    assert len(bars) == 1003 and route.call_count == 2
+    assert route.calls[0].request.url.params["limit"] == "1000"
+    assert route.calls[1].request.url.params["startTime"] == str(1_000_000 + 999 + 1)
+
+
+async def test_stream_handshake_failure_is_connection_error():
+    async with httpx.AsyncClient() as http:
+        provider = BinanceProvider({"ws_url": "ws://127.0.0.1:1/stream"}, http)
+        with pytest.raises(ConnectionError):
+            async for _ in provider.stream([("BTC-USD", "BTCUSDT")]):
+                pass

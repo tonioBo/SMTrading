@@ -136,6 +136,8 @@ class KrakenProvider(DataProvider):
     async def get_bars(
         self, symbol: str, provider_symbol: str, timeframe: Timeframe, start: datetime, end: datetime
     ) -> list[Bar]:
+        """Limitation: Kraken OHLC returns at most 720 rows after `since` (exclusive); wider
+        ranges are truncated to the oldest 720 candles and are not paginated."""
         result = await self._get(
             "/OHLC",
             {
@@ -167,6 +169,8 @@ class KrakenProvider(DataProvider):
                 await ws.send(json.dumps(subscribe))
                 async for raw in ws:
                     msg = json.loads(raw, parse_float=Decimal)
+                    if msg.get("method") == "subscribe" and msg.get("success") is False:
+                        raise ConnectionError(f"kraken subscribe rejected: {msg.get('error')}")
                     for quote in parse_kraken_ws(msg, reverse):
                         yield quote
         except (TimeoutError, websockets.ConnectionClosed, OSError) as exc:

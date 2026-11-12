@@ -13,6 +13,8 @@ from smtrading.marketdata.types import Bar, Capability, Quote, Timeframe
 BASE_URL = "https://api.binance.com/api/v3"
 WS_URL = "wss://stream.binance.com:9443/stream"
 
+KLINES_LIMIT = 1000
+
 INTERVALS = {
     Timeframe.m1: "1m",
     Timeframe.m5: "5m",
@@ -93,27 +95,36 @@ class BinanceProvider(DataProvider):
     async def get_bars(
         self, symbol: str, provider_symbol: str, timeframe: Timeframe, start: datetime, end: datetime
     ) -> list[Bar]:
-        rows = await self._get(
-            "/klines",
-            {
-                "symbol": provider_symbol,
-                "interval": INTERVALS[timeframe],
-                "startTime": int(start.timestamp() * 1000),
-                "endTime": int(end.timestamp() * 1000),
-                "limit": 1000,
-            },
-        )
-        return [
-            Bar(
-                ts=datetime.fromtimestamp(int(r[0]) / 1000, UTC),
-                open=Decimal(r[1]),
-                high=Decimal(r[2]),
-                low=Decimal(r[3]),
-                close=Decimal(r[4]),
-                volume=Decimal(r[5]),
+        # klines return at most 1000 rows per call: page forward until `end` or a short page.
+        out: list[Bar] = []
+        cursor = int(start.timestamp() * 1000)
+        end_ms = int(end.timestamp() * 1000)
+        while cursor <= end_ms:
+            rows = await self._get(
+                "/klines",
+                {
+                    "symbol": provider_symbol,
+                    "interval": INTERVALS[timeframe],
+                    "startTime": cursor,
+                    "endTime": end_ms,
+                    "limit": KLINES_LIMIT,
+                },
             )
-            for r in rows
-        ]
+            out.extend(
+                Bar(
+                    ts=datetime.fromtimestamp(int(r[0]) / 1000, UTC),
+                    open=Decimal(r[1]),
+                    high=Decimal(r[2]),
+                    low=Decimal(r[3]),
+                    close=Decimal(r[4]),
+                    volume=Decimal(r[5]),
+                )
+                for r in rows
+            )
+            if len(rows) < KLINES_LIMIT:
+                break
+            cursor = int(rows[-1][0]) + 1
+        return out
 
     async def stream(self, items: list[tuple[str, str]]) -> AsyncIterator[Quote]:
         reverse = {ps: canonical for canonical, ps in items}

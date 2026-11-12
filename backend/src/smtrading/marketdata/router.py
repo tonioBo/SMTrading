@@ -13,7 +13,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -200,6 +200,23 @@ def _utc(dt: datetime, name: str) -> datetime:
 def _positive(value: int, name: str) -> None:
     if not isinstance(value, int) or value <= 0:
         raise _invalid(f"{name} must be a positive integer", **{name: value})
+
+
+_TF_DURATION = {
+    Timeframe.m1: timedelta(minutes=1),
+    Timeframe.m5: timedelta(minutes=5),
+    Timeframe.m15: timedelta(minutes=15),
+    Timeframe.h1: timedelta(hours=1),
+    Timeframe.d1: timedelta(days=1),
+    Timeframe.w1: timedelta(weeks=1),
+}
+
+
+async def _closed_bars(provider: DataProvider, args: tuple, tf: Timeframe) -> list[Bar]:
+    """Drop still-forming candles (ts + duration > now); providers return raw bars."""
+    bars = await provider.get_bars(*args)
+    now = datetime.now(UTC)
+    return [b for b in bars if b.ts + _TF_DURATION[tf] <= now]
 
 
 class MarketDataRouter:
@@ -513,7 +530,7 @@ class MarketDataRouter:
 
         def call(p: DataProvider):
             ps = p.map_symbol(instr.symbol, instr.asset_class, instr.override(p.name))
-            return p.get_bars(instr.symbol, ps, tf, start, end)
+            return _closed_bars(p, (instr.symbol, ps, tf, start, end), tf)
 
         return await self._fetch_one(
             Capability.bars, instr.asset_class,
