@@ -22,7 +22,8 @@
   - limit buy quando `ask ≤ limit`; limit sell quando `bid ≥ limit`;
   - stop buy quando `ask ≥ stop`; stop sell quando `bid ≤ stop`;
   - trailing sell: `stop = hwm × (1 − pct/100)` oppure `hwm − amount`; trailing buy: `stop = lwm × (1 + pct/100)` oppure `lwm + amount`.
-- **Quota vecchia:** oltre `stale_quote_s[asset_class]` (default 60 per ogni classe) un ordine market viene rifiutato con `STALE_QUOTE`.
+- **Quota vecchia:** se `now - quote.ts` supera `stale_quote_s[asset_class]` (default: us_equity 120, eu_equity 1200 perché i dati Yahoo europei arrivano con circa 15 minuti di ritardo, crypto 60, forex 600), un ordine market viene rifiutato con `STALE_QUOTE`. `quote.ts` è l'ora dell'evento alla fonte.
+- Dividendi: se `data["currency"]` manca, si usa `instrument.currency`.
 - **Margine** (le grandezze sono in EUR):
   - `exposure = Σ|qty × mark|`, con `mark` = mid se ci sono bid e ask, altrimenti `last`;
   - `initial_req = exposure / leverage`;
@@ -108,7 +109,7 @@ backend/tests/integration/test_valuation.py, test_execution.py, test_execution_s
 - `RiskProfile`: `id, name UNIQUE, max_order_notional_eur|None, max_position_pct|None, max_daily_loss_pct|None, max_daily_loss_eur|None, allowed_symbols JSONB list, allowed_asset_classes JSONB list, allowed_markets JSONB list, short_allowed bool`.
 - `InterestRate`: PK `(kind ('loan'|'borrow'), key str)` (valuta oppure classe di asset), `annual_pct`.
 - `SystemState`: PK `key`, `value JSONB`, `updated_at`. Chiavi: `kill_switch` = `{"on": false}`.
-- `AppSetting`: PK `key`, `value JSONB`. Chiavi: `stale_quote_s` = `{"us_equity":60,"eu_equity":60,"crypto":60,"forex":60}`; `default_spread_bps` = `{"us_equity":2,"eu_equity":5,"crypto":5,"forex":1}`.
+- `AppSetting`: PK `key`, `value JSONB`. Chiavi: `stale_quote_s` = `{"us_equity":120,"eu_equity":1200,"crypto":60,"forex":600}`; `default_spread_bps` = `{"us_equity":2,"eu_equity":5,"crypto":5,"forex":1}`.
 - `EquitySnapshot`: `id, portfolio_id, ts, kind ('periodic'|'day_open'), local_date date|None, equity_eur, cash_eur, exposure_eur, margin_used_eur`. UNIQUE(portfolio_id, kind, local_date) per `day_open`.
 - `JobRun`: PK `(job, key)`, `ran_at`.
 - `Notification`: `id, portfolio_id|None, agent_id|None, kind str, payload JSONB, created_at`. Indice su `created_at`.

@@ -188,7 +188,7 @@ scripts/connect-paperclip.sh
 **Interfaces:** tutti i metodi richiedono un agente valido ma nessun portafoglio.
 - `search_instruments(query, asset_class?, limit=20)`: prima l'anagrafica locale (`instruments` con ILIKE su simbolo o nome), poi il router (`search`); unione senza duplicati con il campo `tradable` (true solo per i simboli presenti in `instruments` e attivi).
 - `get_instrument(symbol)` → anagrafica, più `market_status`.
-- `get_quote(symbols: list[str])` → `{symbol: quote_dto | {"error": code}}`; massimo 50 simboli.
+- `get_quote(symbols: list[str])` → `{symbol: quote_dto | {"error": code}}`; massimo 50 simboli. Prima tenta il batch `router.get_quotes(symbols)`; se fallisce, richiede i simboli uno alla volta in parallelo per isolare gli errori.
 - `get_bars(symbol, timeframe, from_ts?, to_ts?, limit=500)`: per default l'intervallo arriva fino ad adesso, a ritroso in base al timeframe.
 - `get_market_status(market?)`
 - `get_indicators(symbol, timeframe, indicators: list[{name, params}], lookback=100)`
