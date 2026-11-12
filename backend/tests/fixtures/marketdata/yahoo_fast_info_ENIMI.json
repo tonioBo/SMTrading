@@ -1,0 +1,22 @@
+{
+ "currency": "EUR",
+ "dayHigh": 25.71500015258789,
+ "dayLow": 25.190000534057617,
+ "exchange": "MIL",
+ "fiftyDayAverage": 24.969100074768065,
+ "lastPrice": 25.469999313354492,
+ "lastVolume": 6957750,
+ "marketCap": 72421139488.28908,
+ "open": 25.299999237060547,
+ "previousClose": 25.190000534057617,
+ "quoteType": "EQUITY",
+ "regularMarketPreviousClose": 25.200000762939453,
+ "shares": 2843389927,
+ "tenDayAverageVolume": 8108889,
+ "threeMonthAverageVolume": 7878545,
+ "timezone": "Europe/Rome",
+ "twoHundredDayAverage": 22.845385007858276,
+ "yearChange": 0.5311702808709321,
+ "yearHigh": 27.760000228881836,
+ "yearLow": 15.553999900817871
+}

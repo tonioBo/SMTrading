@@ -1,0 +1,22 @@
+{
+ "currency": "USD",
+ "dayHigh": 1.1106175184249878,
+ "dayLow": 1.1048502922058105,
+ "exchange": "CCY",
+ "fiftyDayAverage": 1.132857747077942,
+ "lastPrice": 1.1057054996490479,
+ "lastVolume": 0,
+ "marketCap": null,
+ "open": 1.1095085144042969,
+ "previousClose": 1.1097548007965088,
+ "quoteType": "CURRENCY",
+ "regularMarketPreviousClose": 1.1168941259384155,
+ "shares": null,
+ "tenDayAverageVolume": 0,
+ "threeMonthAverageVolume": 0,
+ "timezone": "Europe/London",
+ "twoHundredDayAverage": 1.1535513252019882,
+ "yearChange": -0.036511267574783034,
+ "yearHigh": 1.2023565769195557,
+ "yearLow": 1.1083648204803467
+}
