@@ -2,7 +2,7 @@ import asyncio
 import logging
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +13,9 @@ from smtrading.portfolios.models import Portfolio
 from smtrading.portfolios.service import create_portfolio
 
 log = logging.getLogger("smtrading.seed")
+
+# Serializes concurrent seed runs (e.g. two migrate containers), transaction-scoped.
+SEED_LOCK_KEY = 7300002
 
 DEFAULT_FEE_RULE_NAME = "Default globale"
 DEMO_PORTFOLIO_NAME = "Demo"
@@ -42,6 +45,7 @@ _INSTRUMENTS = [
 
 async def run_seed(session: AsyncSession) -> None:
     """Idempotent seed. Does not commit. Existing rows (and admin edits) are left untouched."""
+    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": SEED_LOCK_KEY})
     rows = [
         {
             "symbol": symbol,

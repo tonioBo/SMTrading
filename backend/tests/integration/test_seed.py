@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from smtrading.fees.models import FeeScope
 from smtrading.fees.resolver import load_rules
@@ -27,3 +27,14 @@ async def test_seed_idempotent(db_session):
     assert (await get_instrument(db_session, "AAPL")).shortable is True
     rules = await load_rules(db_session)
     assert len([r for r in rules if r.scope == FeeScope.global_]) == 1
+
+
+async def test_seed_takes_advisory_lock(db_session):
+    await run_seed(db_session)
+    held = await db_session.scalar(
+        text(
+            "select count(*) from pg_locks where locktype = 'advisory'"
+            " and objid = 7300002 and pid = pg_backend_pid() and granted"
+        )
+    )
+    assert held == 1

@@ -10,14 +10,16 @@ from testcontainers.postgres import PostgresContainer
 from testcontainers.redis import RedisContainer
 
 from smtrading.common.config import get_settings
-from smtrading.common.db import make_engine
+from smtrading.common.db import get_sessionmaker, make_engine
 
 
 @pytest.fixture(autouse=True)
 def _clear_settings_cache():
     get_settings.cache_clear()
+    get_sessionmaker.cache_clear()
     yield
     get_settings.cache_clear()
+    get_sessionmaker.cache_clear()
 
 
 @pytest.fixture(scope="session")

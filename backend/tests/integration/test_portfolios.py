@@ -91,3 +91,41 @@ async def test_unknown_portfolio(db_session):
         with pytest.raises(SMTError) as e:
             await op(db_session, uuid.uuid4(), Decimal(1), "EUR", author_id=None)
         assert e.value.code == ErrorCode.NOT_FOUND
+
+
+@pytest.mark.parametrize("amt", ["NaN", "sNaN", "Infinity", "-Infinity", "1E+30"])
+async def test_deposit_non_finite_or_unrepresentable_amount(db_session, funded, amt):
+    with pytest.raises(SMTError) as e:
+        await deposit(db_session, funded.id, Decimal(amt), "EUR", author_id="a")
+    assert e.value.code == ErrorCode.INVALID_AMOUNT
+
+
+@pytest.mark.parametrize("ccy", ["", "EURO", "E1R", "€UR", "US"])
+async def test_deposit_invalid_currency(db_session, funded, ccy):
+    with pytest.raises(SMTError) as e:
+        await deposit(db_session, funded.id, Decimal(1), ccy, author_id="a")
+    assert e.value.code == ErrorCode.INVALID_AMOUNT
+    assert e.value.details["field"] == "currency"
+
+
+async def test_create_portfolio_tiny_negative_cash(db_session):
+    # -0.001 would quantize to -0.00; the sign must be checked first.
+    with pytest.raises(SMTError) as e:
+        await create_portfolio(db_session, name="TinyNeg", initial_cash=Decimal("-0.001"))
+    assert e.value.code == ErrorCode.INVALID_AMOUNT
+
+
+@pytest.mark.parametrize("cash", ["NaN", "Infinity"])
+async def test_create_portfolio_non_finite_cash(db_session, cash):
+    with pytest.raises(SMTError) as e:
+        await create_portfolio(db_session, name="NF", initial_cash=Decimal(cash))
+    assert e.value.code == ErrorCode.INVALID_AMOUNT
+
+
+async def test_create_portfolio_invalid_base_currency(db_session):
+    with pytest.raises(SMTError) as e:
+        await create_portfolio(
+            db_session, name="BadCcy", initial_cash=Decimal(1), base_currency="EURO"
+        )
+    assert e.value.code == ErrorCode.INVALID_AMOUNT
+    assert e.value.details["field"] == "currency"

@@ -1,4 +1,5 @@
-from decimal import Decimal
+import re
+from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
 from sqlalchemy import select
@@ -10,10 +11,41 @@ from smtrading.ledger.models import Account, AccountBalance, AccountKind, Journa
 from smtrading.ledger.service import LineSpec, get_or_create_account, post_journal
 from smtrading.portfolios.models import Portfolio
 
+_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
+
+
+def _clean_currency(currency: str) -> str:
+    ccy = currency.strip().upper()
+    if not _CURRENCY_RE.match(ccy):
+        raise SMTError(
+            ErrorCode.INVALID_AMOUNT, "currency must be a 3-letter ISO code",
+            {"field": "currency", "value": currency},
+        )
+    return ccy
+
+
+def _check_finite(amount: Decimal, field: str) -> None:
+    if not amount.is_finite():
+        raise SMTError(
+            ErrorCode.INVALID_AMOUNT, f"{field} must be a finite number",
+            {"field": field, "value": str(amount)},
+        )
+
+
+def _quantize(amount: Decimal, ccy: str, field: str) -> Decimal:
+    try:
+        return quantize_money(amount, ccy)
+    except InvalidOperation:
+        raise SMTError(
+            ErrorCode.INVALID_AMOUNT, f"{field} cannot be represented",
+            {"field": field, "value": str(amount)},
+        ) from None
+
 
 def _clean_amount(amount: Decimal, currency: str) -> tuple[Decimal, str]:
-    ccy = currency.strip().upper()
-    return quantize_money(amount, ccy), ccy
+    ccy = _clean_currency(currency)
+    _check_finite(amount, "amount")
+    return _quantize(amount, ccy, "amount"), ccy
 
 
 async def _post_cash_move(
@@ -68,13 +100,15 @@ async def create_portfolio(
     leverage: Decimal = Decimal(1), slippage_bps: int = 0, timezone: str = "Europe/Rome",
     author_id: str | None = None,
 ) -> Portfolio:
-    ccy = base_currency.strip().upper()
-    cash_amount = quantize_money(initial_cash, ccy)
-    if cash_amount < 0:
+    ccy = _clean_currency(base_currency)
+    _check_finite(initial_cash, "initial_cash")
+    # Checked before quantizing: -0.001 would otherwise round to -0.00 and pass.
+    if initial_cash < 0:
         raise SMTError(
             ErrorCode.INVALID_AMOUNT, "initial cash must not be negative",
             {"initial_cash": str(initial_cash)},
         )
+    cash_amount = _quantize(initial_cash, ccy, "initial_cash")
     if await session.scalar(select(Portfolio.id).where(Portfolio.name == name)) is not None:
         raise SMTError(ErrorCode.INVALID_ORDER, "portfolio name already exists", {"name": name})
     portfolio = Portfolio(

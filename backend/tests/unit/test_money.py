@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import ROUND_UP, Decimal
 
 import pytest
 
@@ -24,3 +24,8 @@ def test_decimal_to_str(d, exp):
 def test_decimal_to_str_never_rounds_beyond_context_precision():
     s = "12345678901234567890.123456789012345678"
     assert decimal_to_str(Decimal(s)) == s
+
+
+def test_quantize_money_custom_rounding():
+    assert quantize_money(Decimal("1.001"), "EUR", rounding=ROUND_UP) == Decimal("1.01")
+    assert quantize_money(Decimal("1.001"), "EUR") == Decimal("1.00")
