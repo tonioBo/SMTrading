@@ -81,6 +81,7 @@ class Account(Base):
 
 class Journal(Base):
     __tablename__ = "journals"
+    __table_args__ = (UniqueConstraint("prev_hash", name="uq_journals_prev_hash"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     seq: Mapped[int] = mapped_column(BigInteger, Identity(), unique=True)

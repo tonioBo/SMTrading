@@ -448,3 +448,51 @@ async def test_verify_chain_detects_broken_link(fresh_db):
     report = await _verify(fresh_db)
     assert report.ok is False
     assert report.first_bad_journal_id == ids[2]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("quantity", Decimal("0.0000000000000000001")),  # 19 decimals
+        ("quantity", Decimal(10) ** 20),
+        ("quantity", Decimal("NaN")),
+        ("quantity", Decimal("sNaN")),
+        ("quantity", Decimal("Infinity")),
+        ("unit_price", Decimal("1.0000000000000000001")),  # 19 decimals
+        ("unit_price", Decimal("-1E+20")),
+        ("unit_price", Decimal("NaN")),
+    ],
+)
+async def test_out_of_bounds_line_values_rejected(db_session, cash_and_equity, field, value):
+    cash, eq = cash_and_equity
+    if field == "quantity":
+        lines = [LineSpec(cash.id, value), LineSpec(eq.id, Decimal(-1))]
+    else:
+        lines = [LineSpec(cash.id, Decimal(1), value, "USD"), LineSpec(eq.id, Decimal(-1))]
+    with pytest.raises(SMTError) as e:
+        await _post(db_session, lines)
+    assert e.value.code == ErrorCode.LEDGER_INVALID
+    assert e.value.details == {"field": field, "value": str(value)}
+
+
+async def test_18_decimal_quantity_accepted_and_chain_verifies(fresh_db):
+    tiny = Decimal("0.000000000000000001")
+    engine = make_engine(fresh_db)
+    sm = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sm() as s, s.begin():
+            p = Portfolio(name="precise")
+            s.add(p)
+            await s.flush()
+            cash = await get_or_create_account(
+                s, portfolio_id=p.id, asset="BTC", kind=AccountKind.cash
+            )
+            eq = await get_or_create_account(
+                s, portfolio_id=None, asset="BTC", kind=AccountKind.system_equity
+            )
+            await _post(s, [LineSpec(cash.id, tiny), LineSpec(eq.id, tiny.copy_negate())])
+        async with sm() as s:
+            assert await get_balance(s, cash.id) == tiny
+    finally:
+        await engine.dispose()
+    assert await _verify(fresh_db) == ChainReport(ok=True, checked=1, first_bad_journal_id=None)

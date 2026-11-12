@@ -33,6 +33,10 @@ CHAIN_LOCK_KEY = 7300001
 # Precision for Python-side sums: NUMERIC(38,18) exceeds the default 28 digits.
 _PREC = 60
 
+# Bounds of NUMERIC(38,18): at most 18 decimal places and 20 integer digits.
+_MIN_EXPONENT = -18
+_MAX_ABS = Decimal("1E20")
+
 # Portfolio account kinds that must never be negative unless explicitly allowed.
 _NON_NEGATIVE_KINDS = frozenset({AccountKind.cash, AccountKind.position, AccountKind.collateral})
 
@@ -80,6 +84,20 @@ def _invalid(message: str, details: dict | None = None) -> SMTError:
     return SMTError(ErrorCode.LEDGER_INVALID, message, details)
 
 
+def _check_bounds(field: str, value: Decimal) -> None:
+    """Reject (never quantize) values that NUMERIC(38,18) would round or refuse."""
+    # copy_abs and comparisons are exact: no context rounding.
+    if (
+        not value.is_finite()
+        or value.as_tuple().exponent < _MIN_EXPONENT
+        or value.copy_abs() >= _MAX_ABS
+    ):
+        raise _invalid(
+            f"{field} out of bounds: finite, at most 18 decimals, abs < 1E20",
+            {"field": field, "value": str(value)},
+        )
+
+
 async def post_journal(
     session: AsyncSession,
     *,
@@ -95,11 +113,17 @@ async def post_journal(
 ) -> Journal:
     if len(lines) < 2:
         raise _invalid("a journal needs at least two lines")
+    for ln in lines:
+        _check_bounds("quantity", ln.quantity)
+        if ln.unit_price is not None:
+            _check_bounds("unit_price", ln.unit_price)
     if any(ln.quantity == 0 for ln in lines):
         raise _invalid("journal lines must have a non-zero quantity")
 
-    # First statement of the posting: every chain read below happens under the lock,
-    # whatever the isolation level.
+    # First statement of the posting. Chain safety relies on READ COMMITTED: each
+    # statement below sees journals committed by whoever held the lock before us, so the
+    # prev_hash we read is the real tip. Under REPEATABLE READ/SERIALIZABLE the snapshot
+    # may predate that commit; UNIQUE(prev_hash) then makes a forking insert fail.
     await _lock_chain(session)
 
     account_ids = {ln.account_id for ln in lines}

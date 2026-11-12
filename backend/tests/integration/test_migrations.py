@@ -22,7 +22,10 @@ async def test_tables_exist(db_session):
 
 @pytest.mark.parametrize(
     "stmt",
-    ["update journals set reason='x'", "delete from journal_lines", "truncate journals cascade"],
+    [
+        "update journals set reason='x'", "delete from journal_lines", "truncate journals cascade",
+        "update accounts set asset='X'", "delete from accounts", "truncate accounts cascade",
+    ],
 )
 async def test_ledger_tables_immutable(db_session, stmt, posted_journal):
     with pytest.raises(DBAPIError, match="LEDGER_IMMUTABLE"):
@@ -45,3 +48,14 @@ async def test_migration_matches_models(migrated_db):
         )
     await engine.dispose()
     assert diff == []
+
+
+async def test_prev_hash_unique(db_session, posted_journal):
+    with pytest.raises(DBAPIError, match="uq_journals_prev_hash"):
+        await db_session.execute(
+            text(
+                "insert into journals (id, type, author_type, prev_hash, hash) values"
+                " (gen_random_uuid(), 'DEPOSIT', 'system', :ph, :h)"
+            ),
+            {"ph": "0" * 64, "h": "b" * 64},
+        )
