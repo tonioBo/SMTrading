@@ -2,7 +2,7 @@ import asyncio
 import logging
 from decimal import Decimal
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,7 @@ from smtrading.fees.models import FeeRule, FeeScope, FeeSide
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.portfolios.models import Portfolio
 from smtrading.portfolios.service import create_portfolio
+from smtrading.risk.models import AppSetting, InterestKind, InterestRate, RiskProfile, SystemState
 
 log = logging.getLogger("smtrading.seed")
 
@@ -20,6 +21,22 @@ SEED_LOCK_KEY = 7300002
 
 DEFAULT_FEE_RULE_NAME = "Default globale"
 DEMO_PORTFOLIO_NAME = "Demo"
+DEFAULT_RISK_PROFILE_NAME = "Default"
+
+_INTEREST_RATES = [
+    (InterestKind.loan, "EUR", 5),
+    (InterestKind.loan, "USD", 6),
+    (InterestKind.loan, "*", 6),
+    (InterestKind.borrow, "us_equity", 3),
+    (InterestKind.borrow, "eu_equity", 3),
+    (InterestKind.borrow, "crypto", 10),
+    (InterestKind.borrow, "forex", 0),
+]
+_APP_SETTINGS = {
+    "stale_quote_s": {"us_equity": 120, "eu_equity": 1200, "crypto": 60, "forex": 600},
+    "default_spread_bps": {"us_equity": 2, "eu_equity": 5, "crypto": 5, "forex": 1},
+}
+_SYSTEM_STATE = {"kill_switch": {"on": False}}
 
 _US = (AssetClass.us_equity, "USD", "0.000001", "0.01", True)
 _EU_MTA = (AssetClass.eu_equity, "EUR", "1", "0.001", True)
@@ -90,7 +107,47 @@ async def run_seed(session: AsyncSession) -> None:
             session, name=DEMO_PORTFOLIO_NAME, initial_cash=Decimal(100000), base_currency="EUR"
         )
     await seed_connectors(session)
+    await _seed_risk(session)
     await session.flush()
+
+
+async def _seed_risk(session: AsyncSession) -> None:
+    """Insert-if-missing: admin edits are never overwritten."""
+    await session.execute(
+        insert(InterestRate)
+        .values([{"kind": k, "key": key, "annual_pct": Decimal(r)} for k, key, r in _INTEREST_RATES])
+        .on_conflict_do_nothing()
+    )
+    await session.execute(
+        insert(AppSetting)
+        .values([{"key": k, "value": v} for k, v in _APP_SETTINGS.items()])
+        .on_conflict_do_nothing()
+    )
+    await session.execute(
+        insert(SystemState)
+        .values([{"key": k, "value": v} for k, v in _SYSTEM_STATE.items()])
+        .on_conflict_do_nothing()
+    )
+    profile_id = await session.scalar(
+        select(RiskProfile.id).where(RiskProfile.name == DEFAULT_RISK_PROFILE_NAME)
+    )
+    if profile_id is None:
+        profile = RiskProfile(
+            name=DEFAULT_RISK_PROFILE_NAME,
+            max_daily_loss_pct=Decimal(10),
+            allowed_symbols=[],
+            allowed_asset_classes=[],
+            allowed_markets=[],
+            short_allowed=True,
+        )
+        session.add(profile)
+        await session.flush()
+        profile_id = profile.id
+    await session.execute(
+        update(Portfolio)
+        .where(Portfolio.name == DEMO_PORTFOLIO_NAME, Portfolio.risk_profile_id.is_(None))
+        .values(risk_profile_id=profile_id)
+    )
 
 
 async def _main() -> None:

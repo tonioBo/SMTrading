@@ -4,10 +4,13 @@ from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
 import smtrading.connectors.models
+import smtrading.engine.models
 import smtrading.fees.models
 import smtrading.instruments.models
 import smtrading.ledger.models
-import smtrading.portfolios.models  # noqa: F401
+import smtrading.portfolios.models
+import smtrading.positions.models
+import smtrading.risk.models  # noqa: F401
 from smtrading.common.config import get_settings
 from smtrading.common.db import Base
 

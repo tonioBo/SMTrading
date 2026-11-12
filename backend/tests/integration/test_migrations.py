@@ -38,7 +38,7 @@ async def test_migration_matches_models(migrated_db):
 
     from smtrading.common.db import Base, make_engine
 
-    for mod in ("ledger", "instruments", "portfolios", "fees", "connectors"):
+    for mod in ("ledger", "instruments", "portfolios", "fees", "connectors", "engine", "positions", "risk"):
         importlib.import_module(f"smtrading.{mod}.models")
 
     engine = make_engine(migrated_db)
@@ -59,3 +59,36 @@ async def test_prev_hash_unique(db_session, posted_journal):
             ),
             {"ph": "0" * 64, "h": "b" * 64},
         )
+
+
+_ENGINE_TABLES = (
+    "orders", "fills", "positions", "risk_profiles", "interest_rates", "system_state",
+    "app_settings", "equity_snapshots", "job_runs", "notifications",
+)
+
+
+async def test_engine_tables_present(db_session):
+    got = set(
+        (
+            await db_session.execute(
+                text("select table_name from information_schema.tables where table_schema='public'")
+            )
+        ).scalars()
+    )
+    assert set(_ENGINE_TABLES) <= got
+
+
+async def test_order_qty_xor_notional(db_session, portfolio):
+    from smtrading.seed import run_seed
+
+    await run_seed(db_session)
+    ins = (
+        "insert into orders (id, portfolio_id, symbol, side, type, tif, qty, notional, filled_qty,"
+        " status, source) values (gen_random_uuid(), :p, 'AAPL', 'buy', 'market', 'day', {q}, {n},"
+        " 0, 'new', 'agent')"
+    )
+    for q, n in (("1", "1"), ("null", "null")):
+        with pytest.raises(DBAPIError, match="ck_orders_qty_xor_notional"):
+            async with db_session.begin_nested():
+                await db_session.execute(text(ins.format(q=q, n=n)), {"p": portfolio.id})
+    await db_session.execute(text(ins.format(q="1", n="null")), {"p": portfolio.id})
