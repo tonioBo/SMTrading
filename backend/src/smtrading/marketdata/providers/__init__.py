@@ -1,1 +1,1 @@
-from smtrading.marketdata.providers import coingecko, frankfurter  # noqa: F401  (registration)
+from smtrading.marketdata.providers import binance, coingecko, frankfurter, kraken  # noqa: F401  (registration)
