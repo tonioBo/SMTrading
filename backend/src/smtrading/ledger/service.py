@@ -71,6 +71,11 @@ async def get_balance(session: AsyncSession, account_id: UUID) -> Decimal:
     return Decimal(0) if balance is None else balance
 
 
+async def _lock_chain(session: AsyncSession) -> None:
+    # Transaction-scoped and re-entrant within the same transaction.
+    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": CHAIN_LOCK_KEY})
+
+
 def _invalid(message: str, details: dict | None = None) -> SMTError:
     return SMTError(ErrorCode.LEDGER_INVALID, message, details)
 
@@ -92,6 +97,10 @@ async def post_journal(
         raise _invalid("a journal needs at least two lines")
     if any(ln.quantity == 0 for ln in lines):
         raise _invalid("journal lines must have a non-zero quantity")
+
+    # First statement of the posting: every chain read below happens under the lock,
+    # whatever the isolation level.
+    await _lock_chain(session)
 
     account_ids = {ln.account_id for ln in lines}
     accounts = {
@@ -118,7 +127,6 @@ async def post_journal(
             {"unbalanced": unbalanced},
         )
 
-    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": CHAIN_LOCK_KEY})
     prev_hash = await session.scalar(
         select(Journal.hash).order_by(Journal.seq.desc()).limit(1)
     ) or GENESIS_HASH
@@ -129,7 +137,7 @@ async def post_journal(
         journal_id=journal_id, type=str(type), created_at=created_at,
         author_type=author_type, author_id=author_id, reason=reason,
         order_id=order_id, fill_id=fill_id, reversed_journal_id=reversed_journal_id,
-        lines=[(ln.account_id, ln.quantity) for ln in lines],
+        lines=[(ln.account_id, ln.quantity, ln.unit_price, ln.price_ccy) for ln in lines],
     )
     journal = Journal(
         id=journal_id, type=type, order_id=order_id, fill_id=fill_id,
@@ -160,8 +168,11 @@ async def post_journal(
         ).returning(AccountBalance.balance)
         balance = (await session.execute(stmt)).scalar_one()
         account = accounts[account_id]
+        # Only a journal that lowers an account can overdraw it: one that moves an
+        # already-negative balance towards zero (e.g. covering a short) is accepted.
         if (
-            account.portfolio_id is not None
+            per_account[account_id] < 0
+            and account.portfolio_id is not None
             and account.kind in _NON_NEGATIVE_KINDS
             and account.kind not in allow_negative
             and balance < 0
@@ -172,3 +183,137 @@ async def post_journal(
                  "balance": decimal_to_str(balance)},
             )
     return journal
+
+
+async def reverse_journal(
+    session: AsyncSession,
+    journal_id: UUID,
+    *,
+    reason: str,
+    author_type: str,
+    author_id: str | None,
+) -> Journal:
+    """Post a REVERSAL journal whose lines negate those of `journal_id`."""
+    if not reason or not reason.strip():
+        raise SMTError(ErrorCode.INVALID_REVERSAL, "a reversal needs a reason")
+
+    # Held before the checks so two concurrent reversals cannot both pass them.
+    await _lock_chain(session)
+    original_type = await session.scalar(select(Journal.type).where(Journal.id == journal_id))
+    if original_type is None:
+        raise SMTError(ErrorCode.NOT_FOUND, "journal not found", {"journal_id": str(journal_id)})
+    if original_type == JournalType.REVERSAL:
+        raise SMTError(
+            ErrorCode.INVALID_REVERSAL, "a reversal cannot be reversed",
+            {"journal_id": str(journal_id)},
+        )
+    existing = await session.scalar(
+        select(Journal.id).where(Journal.reversed_journal_id == journal_id)
+    )
+    if existing is not None:
+        raise SMTError(
+            ErrorCode.ALREADY_REVERSED, "journal already reversed",
+            {"journal_id": str(journal_id), "reversal_id": str(existing)},
+        )
+
+    original_lines = (
+        await session.execute(
+            select(
+                JournalLine.account_id, JournalLine.quantity,
+                JournalLine.unit_price, JournalLine.price_ccy,
+            )
+            .where(JournalLine.journal_id == journal_id)
+            .order_by(JournalLine.id)
+        )
+    ).all()
+    return await post_journal(
+        session,
+        type=JournalType.REVERSAL,
+        lines=[
+            LineSpec(account_id, quantity.copy_negate(), unit_price, price_ccy)
+            for account_id, quantity, unit_price, price_ccy in original_lines
+        ],
+        author_type=author_type,
+        author_id=author_id,
+        reason=reason,
+        reversed_journal_id=journal_id,
+    )
+
+
+@dataclass
+class ChainReport:
+    ok: bool
+    checked: int
+    first_bad_journal_id: UUID | None
+
+
+_VERIFY_BATCH = 500
+
+
+async def verify_chain(session: AsyncSession) -> ChainReport:
+    """Recompute every journal hash from stored values, in `seq` order.
+
+    A journal is bad when its prev_hash is not the previous journal's hash (GENESIS for
+    the first) or its hash does not match the recomputed one. `checked` counts the
+    journals examined, including the first bad one.
+    """
+    # Column selects (not entities) so values come from the database, never from
+    # objects already in the session's identity map.
+    expected_prev = GENESIS_HASH
+    checked = 0
+    last_seq: int | None = None
+    while True:
+        query = select(
+            Journal.seq, Journal.id, Journal.type, Journal.created_at, Journal.author_type,
+            Journal.author_id, Journal.reason, Journal.order_id, Journal.fill_id,
+            Journal.reversed_journal_id, Journal.prev_hash, Journal.hash,
+        ).order_by(Journal.seq).limit(_VERIFY_BATCH)
+        if last_seq is not None:
+            query = query.where(Journal.seq > last_seq)
+        batch = (await session.execute(query)).all()
+        if not batch:
+            return ChainReport(ok=True, checked=checked, first_bad_journal_id=None)
+
+        lines_by_journal: dict[UUID, list] = defaultdict(list)
+        for row in await session.execute(
+            select(
+                JournalLine.journal_id, JournalLine.account_id, JournalLine.quantity,
+                JournalLine.unit_price, JournalLine.price_ccy,
+            ).where(JournalLine.journal_id.in_([j.id for j in batch]))
+        ):
+            lines_by_journal[row.journal_id].append(
+                (row.account_id, row.quantity, row.unit_price, row.price_ccy)
+            )
+
+        for j in batch:
+            checked += 1
+            payload = canonical_payload(
+                journal_id=j.id, type=str(j.type), created_at=j.created_at,
+                author_type=j.author_type, author_id=j.author_id, reason=j.reason,
+                order_id=j.order_id, fill_id=j.fill_id,
+                reversed_journal_id=j.reversed_journal_id,
+                lines=lines_by_journal[j.id],
+            )
+            if j.prev_hash != expected_prev or j.hash != compute_hash(j.prev_hash, payload):
+                return ChainReport(ok=False, checked=checked, first_bad_journal_id=j.id)
+            expected_prev = j.hash
+        last_seq = batch[-1].seq
+
+
+async def verify_balances(session: AsyncSession) -> list[UUID]:
+    """Accounts whose materialized balance differs from the sum of their journal lines."""
+    line_sums = (
+        select(JournalLine.account_id, func.sum(JournalLine.quantity).label("total"))
+        .group_by(JournalLine.account_id)
+        .subquery()
+    )
+    rows = await session.execute(
+        select(Account.id)
+        .outerjoin(AccountBalance, AccountBalance.account_id == Account.id)
+        .outerjoin(line_sums, line_sums.c.account_id == Account.id)
+        .where(
+            func.coalesce(AccountBalance.balance, 0) != func.coalesce(line_sums.c.total, 0)
+        )
+        .order_by(Account.id)
+    )
+    return list(rows.scalars())

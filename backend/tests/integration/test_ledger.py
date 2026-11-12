@@ -4,17 +4,24 @@ from decimal import Decimal, localcontext
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from smtrading.common.db import make_engine
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.ledger.hashing import GENESIS_HASH, canonical_payload, compute_hash
 from smtrading.ledger.models import AccountKind, Journal, JournalLine, JournalType
 from smtrading.ledger.service import (
+    ChainReport,
     LineSpec,
     get_balance,
     get_or_create_account,
     post_journal,
+    reverse_journal,
+    verify_balances,
+    verify_chain,
 )
+from smtrading.portfolios.models import Portfolio
 
 
 async def _post(session, lines, **kw):
@@ -195,7 +202,7 @@ async def test_hash_round_trip_from_db(db_session, cash_and_equity):
         journal_id=row.id, type=str(row.type), created_at=row.created_at,
         author_type=row.author_type, author_id=row.author_id, reason=row.reason,
         order_id=row.order_id, fill_id=row.fill_id, reversed_journal_id=row.reversed_journal_id,
-        lines=[(ln.account_id, ln.quantity) for ln in db_lines],
+        lines=[(ln.account_id, ln.quantity, ln.unit_price, ln.price_ccy) for ln in db_lines],
     )
     assert row.hash == stored_hash
     assert compute_hash(prev, payload) == stored_hash
@@ -240,3 +247,204 @@ async def test_random_deposits_balance_equals_sum(db_session, cash_and_equity, a
         assert await get_balance(db_session, eq.id) == -total
     finally:
         await sp.rollback()
+
+
+async def test_negative_account_may_improve_without_allow_negative(db_session, portfolio):
+    pos = await get_or_create_account(
+        db_session, portfolio_id=portfolio.id, asset="AAPL", kind=AccountKind.position
+    )
+    other = await get_or_create_account(
+        db_session, portfolio_id=None, asset="AAPL", kind=AccountKind.system_equity
+    )
+    await _post(
+        db_session, [LineSpec(pos.id, Decimal(-5)), LineSpec(other.id, Decimal(5))],
+        type=JournalType.TRADE, allow_negative=frozenset({AccountKind.position}),
+    )
+    # Covering part of the short: still negative, but improving, so no allow_negative needed.
+    await _post(
+        db_session, [LineSpec(pos.id, Decimal(2)), LineSpec(other.id, Decimal(-2))],
+        type=JournalType.TRADE,
+    )
+    assert await get_balance(db_session, pos.id) == Decimal(-3)
+
+
+async def _rev(session, journal_id, reason="mistake"):
+    return await reverse_journal(
+        session, journal_id, reason=reason, author_type="admin", author_id="1"
+    )
+
+
+async def test_reverse_restores_balance(db_session, cash_and_equity):
+    cash, eq = cash_and_equity
+    big = Decimal("12345678901234567890.123456789012345678")
+    j = await _post(
+        db_session, [LineSpec(cash.id, big, Decimal("1.1"), "USD"), LineSpec(eq.id, big.copy_negate())]
+    )
+    r = await _rev(db_session, j.id)
+    assert r.type == JournalType.REVERSAL
+    assert r.reversed_journal_id == j.id
+    assert r.reason == "mistake"
+    assert r.prev_hash == j.hash
+    assert await get_balance(db_session, cash.id) == Decimal(0)
+    assert await get_balance(db_session, eq.id) == Decimal(0)
+    rev_lines = (
+        await db_session.execute(
+            select(JournalLine.account_id, JournalLine.quantity, JournalLine.unit_price,
+                   JournalLine.price_ccy).where(JournalLine.journal_id == r.id)
+        )
+    ).all()
+    assert set(rev_lines) == {
+        (cash.id, big.copy_negate(), Decimal("1.1"), "USD"), (eq.id, big, None, None)
+    }
+
+
+async def test_reverse_twice_rejected(db_session, cash_and_equity):
+    cash, eq = cash_and_equity
+    j = await _deposit(db_session, cash, eq, Decimal(100))
+    await _rev(db_session, j.id)
+    with pytest.raises(SMTError) as e:
+        await _rev(db_session, j.id)
+    assert e.value.code == ErrorCode.ALREADY_REVERSED
+
+
+async def test_reverse_a_reversal_rejected(db_session, cash_and_equity):
+    cash, eq = cash_and_equity
+    j = await _deposit(db_session, cash, eq, Decimal(100))
+    r = await _rev(db_session, j.id)
+    with pytest.raises(SMTError) as e:
+        await _rev(db_session, r.id)
+    assert e.value.code == ErrorCode.INVALID_REVERSAL
+
+
+@pytest.mark.parametrize("reason", ["", "  "])
+async def test_reverse_requires_reason(db_session, cash_and_equity, reason):
+    cash, eq = cash_and_equity
+    j = await _deposit(db_session, cash, eq, Decimal(100))
+    with pytest.raises(SMTError) as e:
+        await _rev(db_session, j.id, reason=reason)
+    assert e.value.code == ErrorCode.INVALID_REVERSAL
+
+
+async def test_reverse_unknown_journal(db_session):
+    with pytest.raises(SMTError) as e:
+        await _rev(db_session, uuid.uuid4())
+    assert e.value.code == ErrorCode.NOT_FOUND
+
+
+async def test_reverse_that_overdraws_rejected(db_session, cash_and_equity):
+    cash, eq = cash_and_equity
+    dep = await _deposit(db_session, cash, eq, Decimal(100))
+    await _post(
+        db_session, [LineSpec(cash.id, Decimal(-80)), LineSpec(eq.id, Decimal(80))],
+        type=JournalType.WITHDRAWAL,
+    )
+    with pytest.raises(SMTError) as e:
+        await _rev(db_session, dep.id)
+    assert e.value.code == ErrorCode.INSUFFICIENT_FUNDS
+
+
+async def test_verify_chain_ok_in_session(db_session, cash_and_equity):
+    cash, eq = cash_and_equity
+    j = await _deposit(db_session, cash, eq, Decimal(100))
+    await _rev(db_session, j.id)
+    assert await verify_chain(db_session) == ChainReport(ok=True, checked=2, first_bad_journal_id=None)
+
+
+async def test_verify_balances_empty_when_consistent(db_session, cash_and_equity):
+    cash, eq = cash_and_equity
+    j = await _deposit(db_session, cash, eq, Decimal("100.5"))
+    await _deposit(db_session, cash, eq, Decimal(3))
+    await _rev(db_session, j.id)
+    assert await verify_balances(db_session) == []
+
+
+async def test_verify_balances_reports_drift(db_session, cash_and_equity):
+    cash, eq = cash_and_equity
+    await _deposit(db_session, cash, eq, Decimal(100))
+    await db_session.execute(
+        text("update account_balances set balance = balance + 1 where account_id = :a"),
+        {"a": cash.id},
+    )
+    assert await verify_balances(db_session) == [cash.id]
+
+
+async def _seed_committed_chain(url):
+    """Commit three journals on a fresh database; return their ids in order."""
+    engine = make_engine(url)
+    sm = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sm() as s, s.begin():
+            p = Portfolio(name="tamper")
+            s.add(p)
+            await s.flush()
+            cash = await get_or_create_account(
+                s, portfolio_id=p.id, asset="EUR", kind=AccountKind.cash
+            )
+            eq = await get_or_create_account(
+                s, portfolio_id=None, asset="EUR", kind=AccountKind.system_equity
+            )
+            j1 = await _deposit(s, cash, eq, Decimal(100))
+            j2 = await _post(
+                s, [LineSpec(cash.id, Decimal(50), Decimal("1.1"), "USD"),
+                    LineSpec(eq.id, Decimal(-50))],
+                reason="original",
+            )
+            j3 = await _deposit(s, cash, eq, Decimal(7))
+        return [j1.id, j2.id, j3.id]
+    finally:
+        await engine.dispose()
+
+
+async def _tamper(url, table, sql, params):
+    engine = make_engine(url)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(f"alter table {table} disable trigger user"))
+            await conn.execute(text(sql), params)
+            await conn.execute(text(f"alter table {table} enable trigger user"))
+    finally:
+        await engine.dispose()
+
+
+async def _verify(url):
+    engine = make_engine(url)
+    try:
+        async with async_sessionmaker(engine)() as s:
+            return await verify_chain(s)
+    finally:
+        await engine.dispose()
+
+
+async def test_verify_chain_ok_and_detects_tampered_reason(fresh_db):
+    ids = await _seed_committed_chain(fresh_db)
+    assert await _verify(fresh_db) == ChainReport(ok=True, checked=3, first_bad_journal_id=None)
+    await _tamper(
+        fresh_db, "journals", "update journals set reason = 'forged' where id = :j",
+        {"j": ids[1]},
+    )
+    report = await _verify(fresh_db)
+    assert report.ok is False
+    assert report.first_bad_journal_id == ids[1]
+
+
+async def test_verify_chain_detects_tampered_unit_price(fresh_db):
+    ids = await _seed_committed_chain(fresh_db)
+    await _tamper(
+        fresh_db, "journal_lines",
+        "update journal_lines set unit_price = 1.2 where journal_id = :j and unit_price is not null",
+        {"j": ids[1]},
+    )
+    report = await _verify(fresh_db)
+    assert report.ok is False
+    assert report.first_bad_journal_id == ids[1]
+
+
+async def test_verify_chain_detects_broken_link(fresh_db):
+    ids = await _seed_committed_chain(fresh_db)
+    await _tamper(
+        fresh_db, "journals", "update journals set prev_hash = :h where id = :j",
+        {"h": "f" * 64, "j": ids[2]},
+    )
+    report = await _verify(fresh_db)
+    assert report.ok is False
+    assert report.first_bad_journal_id == ids[2]

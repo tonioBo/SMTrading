@@ -14,12 +14,16 @@ BASE = {
     "journal_id": J, "type": "DEPOSIT", "created_at": TS, "author_type": "admin", "author_id": "1",
     "reason": None, "order_id": None, "fill_id": None, "reversed_journal_id": None,
 }
-LINES = [(A, Decimal(10)), (B, Decimal(-10))]
+LINES = [(A, Decimal(10), None, None), (B, Decimal(-10), None, None)]
 
 
 def test_payload_independent_of_line_order_and_trailing_zeros():
-    p1 = canonical_payload(**BASE, lines=[(A, Decimal("10.0")), (B, Decimal(-10))])
-    p2 = canonical_payload(**BASE, lines=[(B, Decimal("-10.000")), (A, Decimal(10))])
+    p1 = canonical_payload(
+        **BASE, lines=[(A, Decimal("10.0"), Decimal("1.50"), "USD"), (B, Decimal(-10), None, None)]
+    )
+    p2 = canonical_payload(
+        **BASE, lines=[(B, Decimal("-10.000"), None, None), (A, Decimal(10), Decimal("1.5"), "USD")]
+    )
     assert p1 == p2
 
 
@@ -31,7 +35,10 @@ def test_hash_changes_with_prev_and_content():
 
 def test_high_precision_quantity_preserved():
     p = canonical_payload(
-        **BASE, lines=[(A, Decimal("0.123456789012345678")), (B, Decimal("-0.123456789012345678"))]
+        **BASE, lines=[
+            (A, Decimal("0.123456789012345678"), None, None),
+            (B, Decimal("-0.123456789012345678"), None, None),
+        ]
     )
     assert b"0.123456789012345678" in p
 
@@ -39,8 +46,8 @@ def test_high_precision_quantity_preserved():
 def test_differs_in_38th_significant_digit():
     q1 = Decimal("12345678901234567890.123456789012345678")
     q2 = Decimal("12345678901234567890.123456789012345679")
-    p1 = canonical_payload(**BASE, lines=[(A, q1), (B, -q1)])
-    p2 = canonical_payload(**BASE, lines=[(A, q2), (B, -q2)])
+    p1 = canonical_payload(**BASE, lines=[(A, q1, None, None), (B, q1.copy_negate(), None, None)])
+    p2 = canonical_payload(**BASE, lines=[(A, q2, None, None), (B, q2.copy_negate(), None, None)])
     assert p1 != p2
 
 
@@ -61,3 +68,24 @@ def test_compact_sorted_json():
     p = canonical_payload(**BASE, lines=LINES)
     assert b" " not in p
     assert p.startswith(b'{"author_id":"1"')
+
+
+def test_unit_price_and_price_ccy_covered_by_hash():
+    def h(price, ccy):
+        lines = [(A, Decimal(10), price, ccy), (B, Decimal(-10), None, None)]
+        return compute_hash(GENESIS_HASH, canonical_payload(**BASE, lines=lines))
+
+    assert h(Decimal("1.1"), "USD") != h(Decimal("1.2"), "USD")
+    assert h(Decimal("1.1"), "USD") != h(Decimal("1.1"), "EUR")
+    assert h(Decimal("1.1"), "USD") != h(None, "USD")
+    assert h(Decimal("1.10"), "USD") == h(Decimal("1.1"), "USD")
+
+
+def test_lines_with_same_account_and_quantity_sorted_by_price():
+    l1 = (A, Decimal(5), Decimal(2), "USD")
+    l2 = (A, Decimal(5), Decimal(1), "USD")
+    rest = (B, Decimal(-10), None, None)
+    assert canonical_payload(**BASE, lines=[l1, l2, rest]) == canonical_payload(
+        **BASE, lines=[rest, l2, l1]
+    )
+    assert b'"unit_price":null' in canonical_payload(**BASE, lines=LINES)
