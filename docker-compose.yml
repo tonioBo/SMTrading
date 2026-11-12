@@ -1,0 +1,59 @@
+name: smtrading
+
+x-app: &app
+  build: ./backend
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    SMT_DATABASE_URL: postgresql+asyncpg://smtrading:${POSTGRES_PASSWORD}@postgres:5432/smtrading
+    SMT_REDIS_URL: redis://redis:6379/0
+  networks: [smtrading-net]
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: smtrading
+      POSTGRES_DB: smtrading
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smtrading -d smtrading"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [smtrading-net]
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [smtrading-net]
+
+  api:
+    <<: *app
+    entrypoint: ["/app/docker/entrypoint-api.sh"]
+    ports:
+      - "8000:8000"
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "smtrading.worker.main"]
+
+volumes:
+  pgdata:
+
+networks:
+  smtrading-net:
+    name: smtrading-net
