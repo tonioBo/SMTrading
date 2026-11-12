@@ -68,6 +68,27 @@ async def test_quotes_decimal_and_key_resolution(provider):
 
 
 @respx.mock
+async def test_alias_pair_resolved_once_and_cached(provider):
+    full = json.loads(fixture("kraken_asset_pairs.json"))
+
+    def asset_pairs(request):
+        wanted = request.url.params["pair"].split(",")
+        if wanted == ["BTCUSD"]:  # alias lookup on its own: Kraken answers with the key
+            return httpx.Response(200, json={"error": [], "result": {
+                "XXBTZUSD": full["result"]["XXBTZUSD"]}})
+        return httpx.Response(200, json=full)
+
+    pairs = respx.get(f"{API}/AssetPairs").mock(side_effect=asset_pairs)
+    respx.get(f"{API}/Ticker").respond(200, text=fixture("kraken_ticker.json"))
+    items = [("BTC-USD", "BTCUSD"), ("ETH-USD", "ETHUSD")]
+    quotes = await provider.get_quotes(items)
+    assert quotes["BTC-USD"].last == Decimal("71373.80000")
+    assert set(quotes) == {"BTC-USD", "ETH-USD"}
+    await provider.get_quotes(items)
+    assert pairs.call_count == 2  # batch + one alias lookup, then fully cached
+
+
+@respx.mock
 async def test_quotes_error_raises(provider):
     respx.get(f"{API}/AssetPairs").respond(200, json={"error": ["EQuery:Unknown asset pair"]})
     with pytest.raises(RuntimeError, match="Unknown asset pair"):

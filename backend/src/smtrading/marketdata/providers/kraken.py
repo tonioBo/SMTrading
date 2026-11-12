@@ -74,7 +74,8 @@ class KrakenProvider(DataProvider):
 
     def __init__(self, config: dict, http):
         super().__init__(config, http)
-        self._pair_keys: dict[str, str] = {}  # altname ("XBTUSD") -> response key ("XXBTZUSD")
+        # requested pair (altname "XBTUSD", alias "BTCUSD" or key) -> response key "XXBTZUSD"
+        self._pair_keys: dict[str, str] = {}
 
     @staticmethod
     def _split(symbol: str) -> tuple[str, str]:
@@ -111,7 +112,15 @@ class KrakenProvider(DataProvider):
             return
         result = await self._get("/AssetPairs", {"pair": ",".join(missing)})
         for key, info in result.items():
+            self._pair_keys[key] = key
             self._pair_keys[info.get("altname", key)] = key
+        for pair in missing:
+            if pair in self._pair_keys:
+                continue
+            # an alias Kraken accepts but does not echo (e.g. "BTCUSD" for altname "XBTUSD"):
+            # resolve it alone, once, so later calls skip AssetPairs entirely
+            single = await self._get("/AssetPairs", {"pair": pair})
+            self._pair_keys[pair] = next(iter(single)) if len(single) == 1 else pair
 
     async def get_quotes(self, items: list[tuple[str, str]]) -> dict[str, Quote]:
         pairs = [ps for _, ps in items]
@@ -136,8 +145,9 @@ class KrakenProvider(DataProvider):
     async def get_bars(
         self, symbol: str, provider_symbol: str, timeframe: Timeframe, start: datetime, end: datetime
     ) -> list[Bar]:
-        """Limitation: Kraken OHLC returns at most 720 rows after `since` (exclusive); wider
-        ranges are truncated to the oldest 720 candles and are not paginated."""
+        """Limitation: Kraken OHLC only serves the most recent 720 candles of the interval;
+        `since` can narrow that window but never reach further back, and nothing is paginated.
+        Older parts of a wider range are therefore missing."""
         result = await self._get(
             "/OHLC",
             {
