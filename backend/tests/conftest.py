@@ -4,8 +4,8 @@ from pathlib import Path
 
 import httpx
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import make_url, text
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from testcontainers.postgres import PostgresContainer
 from testcontainers.redis import RedisContainer
 
@@ -83,6 +83,54 @@ async def db_session(migrated_db):
             await session.close()
             await trans.rollback()
     await engine.dispose()
+
+
+@pytest.fixture
+async def fresh_db(pg_url):
+    """A brand-new migrated database on the shared container, dropped at teardown.
+
+    For tests that must commit (ledger tables are immutable, so committed rows could
+    never be cleaned out of the shared migrated_db).
+    """
+    name = f"t_{uuid.uuid4().hex}"
+    admin = create_async_engine(
+        make_url(pg_url).set(database="postgres"), isolation_level="AUTOCOMMIT"
+    )
+    try:
+        async with admin.connect() as conn:
+            await conn.execute(text(f'CREATE DATABASE "{name}"'))
+        url = make_url(pg_url).set(database=name).render_as_string(hide_password=False)
+        run_migrations(url)
+        yield url
+    finally:
+        async with admin.connect() as conn:
+            await conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        await admin.dispose()
+
+
+@pytest.fixture
+async def portfolio(db_session):
+    from smtrading.portfolios.models import Portfolio
+
+    p = Portfolio(name="T")
+    db_session.add(p)
+    await db_session.flush()
+    return p
+
+
+@pytest.fixture
+async def cash_and_equity(db_session, portfolio):
+    """(cash EUR account of `portfolio`, system_equity EUR account)."""
+    from smtrading.ledger.models import AccountKind
+    from smtrading.ledger.service import get_or_create_account
+
+    cash = await get_or_create_account(
+        db_session, portfolio_id=portfolio.id, asset="EUR", kind=AccountKind.cash
+    )
+    eq = await get_or_create_account(
+        db_session, portfolio_id=None, asset="EUR", kind=AccountKind.system_equity
+    )
+    return cash, eq
 
 
 @pytest.fixture
