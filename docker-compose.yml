@@ -2,6 +2,7 @@ name: smtrading
 
 x-app: &app
   build: ./backend
+  image: smtrading-backend:local
   restart: unless-stopped
   env_file: .env
   environment:
@@ -13,6 +14,8 @@ x-app: &app
       condition: service_healthy
     redis:
       condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
 
 services:
   postgres:
@@ -40,6 +43,15 @@ services:
       timeout: 3s
       retries: 10
     networks: [smtrading-net]
+
+  # One-shot: schema migrations and idempotent seed, before api/worker start.
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["sh", "-c", "alembic upgrade head && python -m smtrading.seed"]
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   api:
     <<: *app
