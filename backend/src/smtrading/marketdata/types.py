@@ -85,7 +85,7 @@ class Fundamentals:
     market_cap: Decimal | None
     pe: Decimal | None
     eps: Decimal | None
-    dividend_yield: Decimal | None
+    dividend_yield: Decimal | None  # percent units for all providers: 0.3 means 0.3%
     high_52w: Decimal | None
     low_52w: Decimal | None
     currency: str | None

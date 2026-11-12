@@ -173,7 +173,7 @@ class KrakenProvider(DataProvider):
                         raise ConnectionError(f"kraken subscribe rejected: {msg.get('error')}")
                     for quote in parse_kraken_ws(msg, reverse):
                         yield quote
-        except (TimeoutError, websockets.ConnectionClosed, OSError) as exc:
+        except (TimeoutError, websockets.WebSocketException, OSError) as exc:
             raise ConnectionError(f"kraken websocket: {exc}") from exc
         raise ConnectionError("kraken websocket closed")
 

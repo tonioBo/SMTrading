@@ -121,7 +121,8 @@ async def test_quotes_zero_bid_ask_and_nan_price(provider):
 
 async def test_forex_quote(provider):
     q = (await provider.get_quotes([("EURUSD", "EURUSD=X")]))["EURUSD"]
-    assert q.last > 0 and q.bid == Decimal("1.1196954")
+    assert q.last > 0 and q.bid is None and q.ask is None
+    assert ("info", "EURUSD=X") not in provider._yf.calls
 
 
 async def test_bars_interval_mapping_and_conversion(provider):
@@ -274,3 +275,50 @@ async def test_health_check(provider):
     provider._yf.fasts["SPY"] = {"lastPrice": None}
     with pytest.raises(RuntimeError):
         await provider.health_check()
+
+
+async def test_info_failure_still_yields_quote(provider):
+    def boom(sym):
+        raise RuntimeError("429")
+
+    provider._yf.info = boom
+    q = (await provider.get_quotes([("AAPL", "AAPL")]))["AAPL"]
+    assert q.last is not None and q.bid is None and q.ask is None
+
+
+async def test_failing_symbol_is_dropped_others_returned(provider):
+    orig = provider._yf.fast_info
+
+    def flaky(sym):
+        if sym == "ENI.MI":
+            raise RuntimeError("boom")
+        return orig(sym)
+
+    provider._yf.fast_info = flaky
+    quotes = await provider.get_quotes(
+        [("AAPL", "AAPL"), ("ENI.MI", "ENI.MI"), ("EURUSD", "EURUSD=X")]
+    )
+    assert set(quotes) == {"AAPL", "EURUSD"}
+
+
+async def test_quote_concurrency_is_bounded(provider):
+    import threading
+    import time
+
+    lock = threading.Lock()
+    state = {"now": 0, "max": 0}
+    orig = provider._yf.fast_info
+
+    def slow(sym):
+        with lock:
+            state["now"] += 1
+            state["max"] = max(state["max"], state["now"])
+        time.sleep(0.05)
+        with lock:
+            state["now"] -= 1
+        return orig("AAPL")
+
+    provider._yf.fast_info = slow
+    quotes = await provider.get_quotes([(f"S{i}", f"S{i}") for i in range(12)])
+    assert len(quotes) == 12
+    assert 1 < state["max"] <= 4

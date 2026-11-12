@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import math
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -19,6 +20,10 @@ from smtrading.marketdata.types import (
     Timeframe,
 )
 
+log = logging.getLogger(__name__)
+MAX_CONCURRENT_CALLS = 4
+_NO_INFO_QUOTE_TYPES = frozenset({"CURRENCY", "CRYPTOCURRENCY"})
+
 INTERVALS = {
     Timeframe.m1: "1m",
     Timeframe.m5: "5m",
@@ -29,8 +34,6 @@ INTERVALS = {
 }
 
 _QUOTE_TYPE_CLASS = {
-    "EQUITY": AssetClass.us_equity,
-    "ETF": AssetClass.us_equity,
     "CRYPTOCURRENCY": AssetClass.crypto,
     "CURRENCY": AssetClass.forex,
 }
@@ -53,7 +56,7 @@ _EU_EXCHANGES = frozenset(
         "OSL",
     }
 )
-_EU_REGIONS = ("it", "de", "fr", "nl", "es", "gb")
+_EU_REGIONS = ("it", "de", "fr", "nl", "es", "gb", "ch")
 
 
 def _dec(value: object) -> Decimal | None:
@@ -231,12 +234,22 @@ class YahooProvider(DataProvider):
         return await asyncio.to_thread(fn, *args)
 
     async def get_quotes(self, items: list[tuple[str, str]]) -> dict[str, Quote]:
+        sem = asyncio.Semaphore(MAX_CONCURRENT_CALLS)
+
         async def one(canonical: str, ps: str) -> tuple[str, Quote | None]:
-            fast = await self._call(self._yf.fast_info, ps)
+            async with sem:
+                fast = await self._call(self._yf.fast_info, ps)
             last = _dec(fast.get("lastPrice"))
             if last is None:
                 return canonical, None
-            info = await self._call(self._yf.info, ps)
+            info: dict = {}
+            # forex and crypto have no meaningful bid/ask/time in info: skip the extra call.
+            if fast.get("quoteType") not in _NO_INFO_QUOTE_TYPES:
+                try:
+                    async with sem:
+                        info = await self._call(self._yf.info, ps) or {}
+                except Exception as exc:  # noqa: BLE001 - info is best-effort enrichment
+                    log.warning("yahoo info failed for %s: %s", ps, exc)
             # fast_info carries no timestamp: use info["regularMarketTime"] (epoch) if present,
             # otherwise the fetch time.
             rmt = info.get("regularMarketTime")
@@ -254,8 +267,14 @@ class YahooProvider(DataProvider):
                 provider=self.name,
             )
 
-        results = await asyncio.gather(*(one(c, ps) for c, ps in items))
-        return {c: q for c, q in results if q is not None}
+        results = await asyncio.gather(*(one(c, ps) for c, ps in items), return_exceptions=True)
+        out: dict[str, Quote] = {}
+        for (canonical, _), res in zip(items, results, strict=True):
+            if isinstance(res, BaseException):
+                log.warning("yahoo quote failed for %s: %s", canonical, res)
+            elif res[1] is not None:
+                out[canonical] = res[1]
+        return out
 
     async def get_bars(
         self,
@@ -330,7 +349,7 @@ class YahooProvider(DataProvider):
             market_cap=_dec(info.get("marketCap")),
             pe=_dec(info.get("trailingPE")),
             eps=_dec(info.get("trailingEps")),
-            dividend_yield=dy,  # as reported by yfinance (percent units in recent versions)
+            dividend_yield=dy,  # percent units (0.3 = 0.3%), as yfinance reports it
             high_52w=_dec(info.get("fiftyTwoWeekHigh")),
             low_52w=_dec(info.get("fiftyTwoWeekLow")),
             currency=info.get("currency"),

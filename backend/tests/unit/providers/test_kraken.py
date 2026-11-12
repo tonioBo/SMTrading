@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
+from http import HTTPStatus
 from pathlib import Path
 
 import httpx
@@ -206,3 +207,19 @@ async def test_stream_handshake_failure_is_connection_error():
         with pytest.raises(ConnectionError):
             async for _ in provider.stream([("BTC-USD", "XBTUSD")]):
                 pass
+
+
+async def test_stream_http_rejection_is_connection_error():
+    async def reject(connection, request):
+        return connection.respond(HTTPStatus.FORBIDDEN, "no\n")
+
+    async def handler(ws):  # pragma: no cover - never reached
+        pass
+
+    async with websockets.serve(handler, "127.0.0.1", 0, process_request=reject) as server:
+        port = server.sockets[0].getsockname()[1]
+        async with httpx.AsyncClient() as http:
+            provider = KrakenProvider({"ws_url": f"ws://127.0.0.1:{port}"}, http)
+            with pytest.raises(ConnectionError):
+                async for _ in provider.stream([("BTC-USD", "XBTUSD")]):
+                    pass

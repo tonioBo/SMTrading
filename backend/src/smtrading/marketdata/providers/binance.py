@@ -135,7 +135,7 @@ class BinanceProvider(DataProvider):
                 async for raw in ws:
                     for quote in parse_binance_ws(json.loads(raw), reverse):
                         yield quote
-        except (TimeoutError, websockets.ConnectionClosed, OSError) as exc:
+        except (TimeoutError, websockets.WebSocketException, OSError) as exc:
             raise ConnectionError(f"binance websocket: {exc}") from exc
         raise ConnectionError("binance websocket closed")
 
