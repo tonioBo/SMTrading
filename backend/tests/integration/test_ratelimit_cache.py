@@ -105,3 +105,35 @@ def test_ttl_constants():
         "fx": 60, "search": 86400, "screener": 900,
     }
     assert [bars_ttl(t) for t in Timeframe] == [60, 300, 900, 3600, 21600, 21600]
+
+
+async def test_write_quote_newer_ts_wins(r):
+    def mk(minute, last):
+        return Quote(
+            "AAPL", None, None, Decimal(last), datetime(2026, 1, 1, 12, minute, tzinfo=UTC), "yahoo"
+        )
+
+    newer, older, equal = mk(5, "10"), mk(1, "9"), mk(5, "11")
+    pubsub = r.pubsub()
+    await pubsub.subscribe("ticks:AAPL")
+    await pubsub.get_message(timeout=1)
+    assert await write_quote(r, newer) is True
+    assert await write_quote(r, older) is False
+    assert await read_quote(r, "AAPL") == newer
+    assert await write_quote(r, equal) is True  # equal ts: last writer wins
+    assert await read_quote(r, "AAPL") == equal
+    got = []
+    for _ in range(10):
+        msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.3)
+        if msg:
+            got.append(loads_quote(msg["data"]))
+    assert got == [newer, equal]  # the older quote was never published
+    await pubsub.aclose()
+
+
+async def test_write_quote_overwrites_legacy_entry_without_ts_us(r):
+    await r.hset("quote:AAPL", mapping={"last": "1", "ts": "2030-01-01T00:00:00+00:00",
+                                        "provider": "x"})
+    q = Quote("AAPL", None, None, Decimal(2), datetime(2026, 1, 1, tzinfo=UTC), "yahoo")
+    assert await write_quote(r, q) is True
+    assert (await read_quote(r, "AAPL")).last == Decimal(2)

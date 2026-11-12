@@ -45,21 +45,47 @@ def _opt(v: Decimal | None) -> str:
     return "" if v is None else str(v)
 
 
-async def write_quote(redis, q: Quote, *, fetched_at: datetime | None = None) -> None:
-    """Store the latest quote; `fetched_at` (default now, UTC) is when we received it."""
+# Atomic "newer ts wins": skip HSET+PUBLISH when the stored quote is strictly newer.
+# ts_us (integer microseconds since epoch) is compared numerically; entries written before
+# the guard existed have no ts_us and are always overwritten.
+_WRITE_QUOTE_LUA = """
+local cur = redis.call('HGET', KEYS[1], 'ts_us')
+if cur and tonumber(cur) > tonumber(ARGV[1]) then
+  return 0
+end
+redis.call('HSET', KEYS[1], unpack(ARGV, 3))
+redis.call('PUBLISH', KEYS[2], ARGV[2])
+return 1
+"""
+
+
+def _ts_us(ts: datetime) -> int:
+    return int(ts.astimezone(UTC).timestamp() * 1_000_000)
+
+
+async def write_quote(redis, q: Quote, *, fetched_at: datetime | None = None) -> bool:
+    """Store and publish the latest quote unless the cached one is newer (by event `ts`).
+
+    `fetched_at` (default now, UTC) is when we received it. Returns True when written.
+    """
     fetched = (fetched_at or datetime.now(UTC)).astimezone(UTC)
-    await redis.hset(
-        f"quote:{q.symbol}",
-        mapping={
-            "bid": _opt(q.bid),
-            "ask": _opt(q.ask),
-            "last": _opt(q.last),
-            "ts": q.ts.isoformat(),
-            "provider": q.provider,
-            "fetched_at": fetched.isoformat(),
-        },
+    ts_us = _ts_us(q.ts)
+    fields = {
+        "bid": _opt(q.bid),
+        "ask": _opt(q.ask),
+        "last": _opt(q.last),
+        "ts": q.ts.isoformat(),
+        "ts_us": str(ts_us),
+        "provider": q.provider,
+        "fetched_at": fetched.isoformat(),
+    }
+    flat = [x for kv in fields.items() for x in kv]
+    script = redis.register_script(_WRITE_QUOTE_LUA)
+    done = await script(
+        keys=[f"quote:{q.symbol}", f"ticks:{q.symbol}"],
+        args=[str(ts_us), serialization.dumps(q), *flat],
     )
-    await redis.publish(f"ticks:{q.symbol}", serialization.dumps(q))
+    return bool(done)
 
 
 async def read_quote(redis, symbol: str) -> Quote | None:
