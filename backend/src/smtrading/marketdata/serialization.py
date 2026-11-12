@@ -38,6 +38,7 @@ def _decode(value: Any, tp: Any) -> Any:
         if value is None:
             return None
         args = [a for a in typing.get_args(tp) if a is not type(None)]
+        assert len(args) == 1, "only `X | None` unions are supported"
         return _decode(value, args[0])
     if value is None:
         return None

@@ -28,9 +28,12 @@ class Timeframe(StrEnum):
     w1 = "1wk"
 
 
-def _require_utc(ts: datetime) -> None:
-    if ts.tzinfo is None or ts.utcoffset() != UTC.utcoffset(None):
-        raise ValueError("datetime must be timezone-aware UTC")
+def _normalize_utc(obj: object, name: str) -> None:
+    """Reject naive datetimes; convert aware ones to UTC (frozen dataclass)."""
+    ts = getattr(obj, name)
+    if ts.tzinfo is None:
+        raise ValueError("datetime must be timezone-aware")
+    object.__setattr__(obj, name, ts.astimezone(UTC))
 
 
 @dataclass(frozen=True)
@@ -43,7 +46,7 @@ class Quote:
     provider: str
 
     def __post_init__(self) -> None:
-        _require_utc(self.ts)
+        _normalize_utc(self, "ts")
 
 
 @dataclass(frozen=True)
@@ -56,7 +59,7 @@ class Bar:
     volume: Decimal
 
     def __post_init__(self) -> None:
-        _require_utc(self.ts)
+        _normalize_utc(self, "ts")
 
 
 @dataclass(frozen=True)
@@ -70,7 +73,7 @@ class NewsItem:
     symbols: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        _require_utc(self.ts)
+        _normalize_utc(self, "ts")
 
 
 @dataclass(frozen=True)

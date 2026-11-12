@@ -77,8 +77,9 @@ def test_datetime_emitted_iso_utc():
 def test_naive_and_non_utc_datetime_rejected():
     with pytest.raises(ValueError):
         Quote("X", None, None, None, datetime(2026, 1, 1), "p")
-    with pytest.raises(ValueError):
-        Bar(datetime(2026, 1, 1, tzinfo=timezone(timedelta(hours=2))), *[Decimal(1)] * 5)
+    b = Bar(datetime(2026, 1, 1, 12, tzinfo=timezone(timedelta(hours=2))), *[Decimal(1)] * 5)
+    assert b.ts == datetime(2026, 1, 1, 10, tzinfo=UTC)
+    assert b.ts.tzinfo is UTC
 
 
 def test_timeframe_values():
@@ -104,13 +105,14 @@ async def test_provider_defaults_unsupported():
 
 
 def test_register_decorator():
-    assert PROVIDERS == {}
+    before = set(PROVIDERS)
 
     @register
     class Q(DataProvider):
         name = "q-test"
 
     try:
+        assert set(PROVIDERS) - before == {"q-test"}
         assert PROVIDERS["q-test"] is Q
     finally:
         PROVIDERS.pop("q-test")
