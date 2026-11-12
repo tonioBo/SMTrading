@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import ClassVar
 
@@ -16,13 +16,20 @@ from smtrading.marketdata.cache import write_quote
 from smtrading.marketdata.provider import DataProvider, ProviderUnsupported
 from smtrading.marketdata.registry import PROVIDERS
 from smtrading.marketdata.router import MarketDataRouter
-from smtrading.marketdata.types import Bar, Capability, InstrumentHit, Quote, Timeframe
+from smtrading.marketdata.types import (
+    Bar,
+    CalendarEvent,
+    Capability,
+    InstrumentHit,
+    NewsItem,
+    Quote,
+    ScreenFilter,
+    Timeframe,
+)
 
 
 class _Fake(DataProvider):
-    capabilities = frozenset(
-        {Capability.quote, Capability.bars, Capability.search, Capability.stream}
-    )
+    capabilities = frozenset(Capability)
     asset_classes = frozenset({AssetClass.crypto})
     # behaviour, set per test: "ok" | "error" | "unsupported" | set of symbols to return
     mode: object = "ok"
@@ -37,6 +44,8 @@ class _Fake(DataProvider):
             raise ProviderUnsupported("nope")
         if mode == "slow":
             await asyncio.sleep(5)
+        if mode == "delay":
+            await asyncio.sleep(0.1)
         if mode == "config":
             return {s: Quote(s, None, None, Decimal(self.config.get("px", 0)), datetime.now(UTC),
                              self.name) for s, _ in items}
@@ -60,6 +69,41 @@ class _Fake(DataProvider):
             InstrumentHit("BTC-USD", "Bitcoin", AssetClass.crypto, None, "USD", self.name),
             InstrumentHit(f"{self.name.upper()}-USD", "X", AssetClass.crypto, None, "USD",
                           self.name),
+        ]
+
+    async def get_news(self, symbols, limit):
+        type(self).calls.append(("news", [s for s, _ in symbols]))
+        hour = 11 if self.name == "fake_a" else 12
+        return [
+            NewsItem("shared", datetime(2026, 1, 1, 10, tzinfo=UTC), "s", None, None, "x", ()),
+            NewsItem(f"{self.name}-1", datetime(2026, 1, 1, hour, tzinfo=UTC), "h", None, None,
+                     "x", tuple(s for s, _ in symbols)),
+        ]
+
+    async def get_calendar(self, symbols, start, end):
+        type(self).calls.append(("calendar", [s for s, _ in symbols]))
+        day = 10 if self.name == "fake_a" else 1
+        return [
+            CalendarEvent(s, "earnings", date(2026, 2, day), {"eps": "1.2"}) for s, _ in symbols
+        ]
+
+    async def get_fx_rate(self, base, quote):
+        type(self).calls.append(("fx", base, quote))
+        return Decimal("1.0850")
+
+    async def screen(self, f):
+        type(self).calls.append(("screen", f.limit))
+        return [
+            {
+                "symbol": "BTC-USD",
+                "market_cap": Decimal("1.5E12"),
+                "ts": datetime(2026, 1, 1, tzinfo=UTC),
+                "day": date(2026, 1, 1),
+                "nested": {"x": Decimal("0.1"), "l": [Decimal(2), "s", 3]},
+                "n": 1,
+            },
+            {"symbol": "BTC-USD", "dup": True},
+            {"symbol": "ETH-USD", "change_pct": Decimal("-1.25")},
         ]
 
     def _default_symbol(self, symbol, asset_class):
@@ -123,6 +167,21 @@ async def env(fresh_db, redis_url, monkeypatch):
                     asset_class=AssetClass.us_equity,
                     capability=Capability.search,
                     providers=["fake_b", "fake_a"],
+                ),
+                *(
+                    ProviderPriority(asset_class=ac, capability=cap, providers=ps)
+                    for ac, cap, ps in (
+                        (AssetClass.crypto, Capability.news, ["fake_a"]),
+                        (AssetClass.us_equity, Capability.news, ["fake_b"]),
+                        (AssetClass.crypto, Capability.calendar, ["fake_a"]),
+                        (AssetClass.us_equity, Capability.calendar, ["fake_b"]),
+                        (AssetClass.forex, Capability.fx, ["fake_a"]),
+                        (AssetClass.crypto, Capability.screener, ["fake_a"]),
+                    )
+                ),
+                Instrument(
+                    symbol="AAPL", name="Apple", asset_class=AssetClass.us_equity,
+                    market="us", currency="USD",
                 ),
             ]
         )
@@ -206,6 +265,8 @@ async def test_all_fail_provider_unavailable(env):
     assert set(errors) == {"fake_a", "fake_b"}
     assert errors["fake_a"] == "RuntimeError: boom"
     assert errors["fake_b"] == "rate_limited"
+    assert ei.value.details["asset_class"] == "crypto"
+    assert ei.value.details["symbols"] == ["BTC-USD"]
 
     with pytest.raises(SMTError) as ei:
         await router.get_bars(
@@ -261,7 +322,7 @@ async def test_stale_stream_quote_refetched(env):
     router, _ = env
     old = Quote("BTC-USD", None, None, Decimal(10), datetime.now(UTC) - timedelta(seconds=30),
                 "stream")
-    await write_quote(router._redis, old)
+    await write_quote(router._redis, old, fetched_at=old.ts)
     q = await router.get_quotes(["BTC-USD"], max_age_s=5)
     assert q["BTC-USD"].provider == "fake_a"
 
@@ -327,3 +388,106 @@ async def test_provider_instances_rebuilt_after_60s(env):
     assert (await router.get_quotes(["BTC-USD"], max_age_s=0))["BTC-USD"].last == 0
     now[0] += 31
     assert (await router.get_quotes(["BTC-USD"], max_age_s=0))["BTC-USD"].last == 7
+
+
+async def test_bad_config_skipped_and_reported_by_health(env):
+    router, sm = env
+    await _update_connector(sm, "fake_a", config_encrypted=b"not-a-valid-ciphertext")
+    q = await router.get_quotes(["BTC-USD"])
+    assert q["BTC-USD"].provider == "fake_b"
+    assert FakeA.calls == []
+    assert await router.check_health() == {"fake_a": False, "fake_b": True}
+    async with sm() as s:
+        a = await s.get(Connector, "fake_a")
+        assert a.health_status == "error" and a.last_error
+
+
+async def test_constructor_error_recorded_and_falls_back(env, monkeypatch):
+    router, _ = env
+
+    def broken_init(self, config, http):
+        raise ValueError("bad key")
+
+    monkeypatch.setattr(FakeA, "__init__", broken_init)
+    FakeB.mode = "error"
+    with pytest.raises(SMTError) as ei:
+        await router.get_quotes(["BTC-USD"])
+    assert ei.value.details["errors"] == {
+        "fake_a": "ValueError: bad key", "fake_b": "RuntimeError: boom",
+    }
+    FakeB.mode = "ok"
+    assert (await router.get_quotes(["BTC-USD"]))["BTC-USD"].provider == "fake_b"
+
+
+async def test_offhours_quote_fresh_by_fetched_at(env):
+    router, _ = env
+    old = Quote("BTC-USD", None, None, Decimal(10), datetime.now(UTC) - timedelta(hours=3),
+                "stream")
+    await write_quote(router._redis, old, fetched_at=datetime.now(UTC) - timedelta(seconds=2))
+    assert (await router.get_quotes(["BTC-USD"]))["BTC-USD"] == old
+    assert FakeA.calls == []
+    # max_age_s=0 always forces a refresh
+    assert (await router.get_quotes(["BTC-USD"], max_age_s=0))["BTC-USD"].provider == "fake_a"
+
+
+async def test_concurrent_quotes_single_flight(env):
+    router, _ = env
+    FakeA.mode = "delay"
+    results = await asyncio.gather(*(router.get_quotes(["BTC-USD"]) for _ in range(10)))
+    assert len(FakeA.calls) == 1
+    assert len({r["BTC-USD"] for r in results}) == 1
+
+
+async def test_no_enabled_provider_reason(env):
+    router, sm = env
+    await _update_connector(sm, "fake_a", enabled=False)
+    await _update_connector(sm, "fake_b", enabled=False)
+    with pytest.raises(SMTError) as ei:
+        await router.get_quotes(["BTC-USD"])
+    assert ei.value.code == ErrorCode.PROVIDER_UNAVAILABLE
+    assert ei.value.details["reason"] == "no_enabled_provider"
+
+
+async def test_screen_cache_roundtrip(env):
+    router, _ = env
+    f = ScreenFilter(asset_class=AssetClass.crypto, limit=5)
+    first = await router.screen(f)
+    second = await router.screen(f)
+    assert first == second
+    assert [r["symbol"] for r in second] == ["BTC-USD", "ETH-USD"]
+    row = second[0]
+    assert row["market_cap"] == Decimal("1.5E12") and isinstance(row["market_cap"], Decimal)
+    assert row["ts"] == datetime(2026, 1, 1, tzinfo=UTC)
+    assert row["day"] == date(2026, 1, 1)
+    assert row["nested"] == {"x": Decimal("0.1"), "l": [Decimal(2), "s", 3]}
+    assert second[1]["change_pct"] == Decimal("-1.25")
+    assert [c for c in FakeA.calls if c[0] == "screen"] == [("screen", 5)]
+
+
+async def test_news_merge_dedupe_sort_and_cache(env):
+    router, _ = env
+    first = await router.get_news(["BTC-USD", "AAPL"])
+    second = await router.get_news(["AAPL", "BTC-USD"])
+    assert [n.id for n in first] == ["fake_b-1", "fake_a-1", "shared"]
+    assert second == first
+    assert FakeA.calls == [("news", ["BTC-USD"])]
+    assert FakeB.calls == [("news", ["AAPL"])]
+    assert [n.id for n in await router.get_news(["BTC-USD", "AAPL"], limit=1)] == ["fake_b-1"]
+
+
+async def test_calendar_sorted_and_cached(env):
+    router, _ = env
+    args = (["BTC-USD", "AAPL"], date(2026, 2, 1), date(2026, 3, 1))
+    first = await router.get_calendar(*args)
+    assert [(e.symbol, e.date) for e in first] == [
+        ("AAPL", date(2026, 2, 1)), ("BTC-USD", date(2026, 2, 10)),
+    ]
+    assert await router.get_calendar(*args) == first
+    assert len(FakeA.calls) == len(FakeB.calls) == 1
+
+
+async def test_fx_cached(env):
+    router, _ = env
+    assert await router.get_fx_rate("eur", "usd") == Decimal("1.0850")
+    assert await router.get_fx_rate("EUR", "USD") == Decimal("1.0850")
+    assert FakeA.calls == [("fx", "EUR", "USD")]

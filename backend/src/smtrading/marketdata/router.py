@@ -36,7 +36,7 @@ from smtrading.marketdata.cache import (
     bars_ttl,
     cache_get,
     cache_set,
-    read_quote,
+    read_quote_meta,
     write_quote,
 )
 from smtrading.marketdata.provider import DataProvider, ProviderUnsupported
@@ -76,8 +76,9 @@ class _Instr:
 @dataclass(frozen=True)
 class _Slot:
     name: str
-    provider: DataProvider | None  # None: the provider lacks the capability
+    provider: DataProvider | None  # None: lacks the capability, or failed to build
     rate_limit: int
+    build_error: str | None = None  # "Type: msg" when construction/config failed
 
 
 @dataclass
@@ -86,8 +87,20 @@ class _Outcome:
 
     errors: dict[str, str] = field(default_factory=dict)
     unsupported: bool = False
+    attempted: bool = False  # at least one enabled, registered provider was considered
+
+    def merge(self, other: "_Outcome") -> None:
+        self.errors.update(other.errors)
+        self.unsupported |= other.unsupported
+        self.attempted |= other.attempted
 
     def error(self, capability: Capability, details: dict) -> SMTError:
+        if not self.attempted:
+            return SMTError(
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                f"no enabled provider for {capability}",
+                {"errors": {}, "reason": "no_enabled_provider", **details},
+            )
         if not self.errors and self.unsupported:
             return SMTError(
                 ErrorCode.SYMBOL_NOT_FOUND, f"no provider supports this {capability}", details
@@ -97,6 +110,10 @@ class _Outcome:
             f"no provider available for {capability}",
             {"errors": dict(self.errors), **details},
         )
+
+
+def _describe(e: BaseException) -> str:
+    return f"{type(e).__name__}: {e}"
 
 
 def _guard(fn):
@@ -191,6 +208,7 @@ class MarketDataRouter:
         self._redis = redis
         self._http = http
         self._instances: dict[str, tuple[DataProvider, float]] = {}
+        self._inflight: dict[str, asyncio.Task] = {}
         self._clock = time.monotonic
 
     # ---------------------------------------------------------------- infrastructure
@@ -224,13 +242,31 @@ class MarketDataRouter:
                 if conn.rate_limit_per_min is not None
                 else cls.default_rate_limit_per_min
             )
-            provider = (
-                await self._provider(session, name, cls)
-                if capability in cls.capabilities
-                else None
-            )
+            if capability not in cls.capabilities:
+                slots.append(_Slot(name, None, rate))
+                continue
+            try:
+                provider = await self._provider(session, name, cls)
+            except Exception as e:  # noqa: BLE001 - bad config/constructor: fall back
+                slots.append(_Slot(name, None, rate, build_error=_describe(e)))
+                continue
             slots.append(_Slot(name, provider, rate))
         return slots
+
+    def _flight_done(self, key: str, task: asyncio.Task) -> None:
+        self._inflight.pop(key, None)
+        if not task.cancelled():
+            task.exception()  # mark retrieved even if every waiter was cancelled
+
+    async def _single_flight(self, key: str, factory: Callable[[], Awaitable[Any]]) -> Any:
+        """Concurrent identical requests share one in-flight task."""
+        task = self._inflight.get(key)
+        if task is None:
+            task = asyncio.ensure_future(factory())
+            self._inflight[key] = task
+            task.add_done_callback(lambda t, key=key: self._flight_done(key, t))
+        # shield: a cancelled waiter must not cancel the work other waiters share
+        return await asyncio.shield(task)
 
     async def _plan(
         self, asset_class: AssetClass, capability: Capability
@@ -270,6 +306,10 @@ class MarketDataRouter:
         memo: dict[str, Any] | None = None,
     ) -> Any:
         """One provider call. Returns the result or _MISS (outcome annotated)."""
+        outcome.attempted = True
+        if slot.build_error is not None:
+            outcome.errors[slot.name] = slot.build_error
+            return _MISS
         if slot.provider is None:
             outcome.unsupported = True
             return _MISS
@@ -308,7 +348,7 @@ class MarketDataRouter:
             outcome.unsupported = True
             return _MISS
         except Exception as e:  # noqa: BLE001 - recorded, reported via PROVIDER_UNAVAILABLE
-            outcome.errors[slot.name] = f"{type(e).__name__}: {e}"
+            outcome.errors[slot.name] = _describe(e)
             return _MISS
         finally:
             if coro is not None and hasattr(coro, "close"):
@@ -326,20 +366,31 @@ class MarketDataRouter:
         outcome: _Outcome,
         memo: dict[str, Any] | None = None,
     ) -> Any:
-        """Cache → providers in priority order → cache. Returns the result or _MISS."""
+        """Cache → providers in priority order → cache. Returns the result or _MISS.
+
+        Identical concurrent fetches (same cache key) share one in-flight task; each caller
+        merges the shared outcome into its own.
+        """
         key = _cache_key(capability, {"asset_class": asset_class, **key_args})
-        hit = await self._cache_read(key)
-        if hit is not None:
-            try:
-                return loads(hit)
-            except Exception:
-                log.warning("cache entry %s undecodable", key, exc_info=True)
-        for slot in await self._plan(asset_class, capability):
-            result = await self._attempt(slot, outcome, call, memo)
-            if result is not _MISS:
-                await self._cache_write(key, dumps(result), ttl)
-                return result
-        return _MISS
+
+        async def run() -> tuple[Any, _Outcome]:
+            local = _Outcome()
+            hit = await self._cache_read(key)
+            if hit is not None:
+                try:
+                    return loads(hit), local
+                except Exception:
+                    log.warning("cache entry %s undecodable", key, exc_info=True)
+            for slot in await self._plan(asset_class, capability):
+                result = await self._attempt(slot, local, call, memo)
+                if result is not _MISS:
+                    await self._cache_write(key, dumps(result), ttl)
+                    return result, local
+            return _MISS, local
+
+        result, shared = await self._single_flight(key, run)
+        outcome.merge(shared)
+        return result
 
     async def _fetch_one(
         self, capability: Capability, asset_class: AssetClass, key_args: dict, ttl: int,
@@ -384,21 +435,37 @@ class MarketDataRouter:
         if not symbols:
             return {}
         instrs = await self._resolve(symbols)
+        key = f"quotes:{max_age_s}:" + ",".join(sorted(instrs))
+        result = await self._single_flight(key, lambda: self._quotes(instrs, max_age_s))
+        return {s: result[s] for s in instrs}
+
+    async def _fresh_cached_quote(self, sym: str, max_age_s: int, now: datetime) -> Quote | None:
+        if max_age_s == 0:  # explicit refresh
+            return None
+        try:
+            meta = await read_quote_meta(self._redis, sym)
+        except Exception:
+            log.warning("quote cache read failed for %s", sym, exc_info=True)
+            return None
+        if meta is None:
+            return None
+        q, fetched_at = meta
+        # an off-hours quote keeps an old ts, but was confirmed current at fetched_at
+        if (now - max(q.ts, fetched_at)).total_seconds() <= max_age_s:
+            return q
+        return None
+
+    async def _quotes(self, instrs: dict[str, _Instr], max_age_s: int) -> dict[str, Quote]:
         result: dict[str, Quote] = {}
         now = datetime.now(UTC)
         for sym in instrs:
-            try:
-                q = await read_quote(self._redis, sym)
-            except Exception:
-                log.warning("quote cache read failed for %s", sym, exc_info=True)
-                q = None
-            if q is not None and (now - q.ts).total_seconds() <= max_age_s:
+            q = await self._fresh_cached_quote(sym, max_age_s, now)
+            if q is not None:
                 result[sym] = q
 
-        outcome = _Outcome()
-        missing: list[str] = []
         pending_all = {s: i for s, i in instrs.items() if s not in result}
         for asset_class, group in self._by_class(pending_all).items():
+            outcome = _Outcome()  # per asset class: errors never mix across groups
             pending = {i.symbol: i for i in group}
             for slot in await self._plan(asset_class, Capability.quote):
                 if not pending:
@@ -423,10 +490,11 @@ class MarketDataRouter:
                         log.warning("quote cache write failed for %s", sym, exc_info=True)
                 if pending:
                     outcome.unsupported = True  # answered, but without these symbols
-            missing.extend(pending)
-        if missing:
-            raise outcome.error(Capability.quote, {"symbols": missing})
-        return {s: result[s] for s in instrs}
+            if pending:  # stop at the first failing group
+                raise outcome.error(
+                    Capability.quote, {"asset_class": str(asset_class), "symbols": list(pending)}
+                )
+        return result
 
     # ---------------------------------------------------------------- single symbol
 
@@ -616,7 +684,7 @@ class MarketDataRouter:
         except ProviderUnsupported:
             return name, None, None
         except Exception as e:  # noqa: BLE001 - recorded via record_health
-            return name, False, f"{type(e).__name__}: {e}"
+            return name, False, _describe(e)
 
     @_guard
     async def check_health(self) -> dict[str, bool]:
@@ -624,14 +692,19 @@ class MarketDataRouter:
 
         Providers that do not implement health_check are left untouched.
         """
+        targets: list[tuple[str, DataProvider]] = []
+        build_failures: list[tuple[str, bool | None, str | None]] = []
         async with self._sm() as session:
-            targets = []
             for c in await list_connectors(session):
                 cls = PROVIDERS.get(c.name)
-                if c.enabled and cls is not None:
+                if not c.enabled or cls is None:
+                    continue
+                try:
                     targets.append((c.name, await self._provider(session, c.name, cls)))
+                except Exception as e:  # noqa: BLE001 - recorded via record_health
+                    build_failures.append((c.name, False, _describe(e)))
         checks = await asyncio.gather(*(self._health(n, p) for n, p in targets))
-        results = [(n, ok, err) for n, ok, err in checks if ok is not None]
+        results = build_failures + [(n, ok, err) for n, ok, err in checks if ok is not None]
         async with self._sm() as session:
             for name, ok, err in results:
                 await record_health(session, name, ok, err)

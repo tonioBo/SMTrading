@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from smtrading.marketdata import serialization
@@ -45,7 +45,9 @@ def _opt(v: Decimal | None) -> str:
     return "" if v is None else str(v)
 
 
-async def write_quote(redis, q: Quote) -> None:
+async def write_quote(redis, q: Quote, *, fetched_at: datetime | None = None) -> None:
+    """Store the latest quote; `fetched_at` (default now, UTC) is when we received it."""
+    fetched = (fetched_at or datetime.now(UTC)).astimezone(UTC)
     await redis.hset(
         f"quote:{q.symbol}",
         mapping={
@@ -54,12 +56,19 @@ async def write_quote(redis, q: Quote) -> None:
             "last": _opt(q.last),
             "ts": q.ts.isoformat(),
             "provider": q.provider,
+            "fetched_at": fetched.isoformat(),
         },
     )
     await redis.publish(f"ticks:{q.symbol}", serialization.dumps(q))
 
 
 async def read_quote(redis, symbol: str) -> Quote | None:
+    meta = await read_quote_meta(redis, symbol)
+    return None if meta is None else meta[0]
+
+
+async def read_quote_meta(redis, symbol: str) -> tuple[Quote, datetime] | None:
+    """(quote, fetched_at). Entries written without fetched_at fall back to the quote ts."""
     raw = await redis.hgetall(f"quote:{symbol}")
     if not raw:
         return None
@@ -68,7 +77,7 @@ async def read_quote(redis, symbol: str) -> Quote | None:
     def dec(k: str) -> Decimal | None:
         return Decimal(h[k]) if h.get(k) else None
 
-    return Quote(
+    q = Quote(
         symbol=symbol,
         bid=dec("bid"),
         ask=dec("ask"),
@@ -76,3 +85,7 @@ async def read_quote(redis, symbol: str) -> Quote | None:
         ts=datetime.fromisoformat(h["ts"]),
         provider=h["provider"],
     )
+    fetched = datetime.fromisoformat(h["fetched_at"]) if h.get("fetched_at") else q.ts
+    if fetched.tzinfo is None:
+        fetched = fetched.replace(tzinfo=UTC)
+    return q, fetched.astimezone(UTC)
