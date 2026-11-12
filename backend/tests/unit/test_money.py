@@ -19,3 +19,8 @@ def test_quantize_money(amt, ccy, exp):
 )
 def test_decimal_to_str(d, exp):
     assert decimal_to_str(Decimal(d)) == exp
+
+
+def test_decimal_to_str_never_rounds_beyond_context_precision():
+    s = "12345678901234567890.123456789012345678"
+    assert decimal_to_str(Decimal(s)) == s
