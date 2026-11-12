@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
+from smtrading.marketdata import providers  # noqa: F401  (registers the providers)
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.marketdata.streaming import StreamManager
 
