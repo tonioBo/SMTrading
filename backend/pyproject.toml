@@ -11,6 +11,9 @@ dependencies = [
     "alembic",
     "pydantic-settings",
     "redis>=5",
+    "cryptography>=50.0.2",
+    "httpx>=0.28.1",
+    "websockets>=17.4",
 ]
 
 [dependency-groups]
