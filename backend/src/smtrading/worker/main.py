@@ -19,6 +19,8 @@ log = logging.getLogger("smtrading.worker")
 HEARTBEAT_KEY = "worker:heartbeat"
 HEARTBEAT_INTERVAL_S = 10
 RESTART_DELAY_S = 5
+HEALTH_FIRST_DELAY_S = 30
+HEALTH_INTERVAL_S = 300
 
 
 async def heartbeat(redis) -> None:
@@ -30,6 +32,19 @@ async def heartbeat(redis) -> None:
             log.warning("heartbeat write failed; retrying in %ss", HEARTBEAT_INTERVAL_S,
                         exc_info=True)
         await asyncio.sleep(HEARTBEAT_INTERVAL_S)
+
+
+async def health_checks(router) -> None:
+    """Health-check every enabled connector: first after 30s, then every 300s."""
+    await asyncio.sleep(HEALTH_FIRST_DELAY_S)
+    while True:
+        try:
+            results = await router.check_health()
+            log.info("connector health: %s", results)
+        except Exception:
+            log.warning("connector health check failed; retrying in %ss", HEALTH_INTERVAL_S,
+                        exc_info=True)
+        await asyncio.sleep(HEALTH_INTERVAL_S)
 
 
 async def supervise(name: str, factory: Callable[[], Awaitable[None]]) -> None:
@@ -63,6 +78,7 @@ async def run() -> None:
                         supervise("stream manager",
                                   lambda: StreamManager(router, redis, sessionmaker).run())
                     ),
+                    tg.create_task(supervise("health checks", lambda: health_checks(router))),
                 ]
                 await stop.wait()
                 log.info("shutdown requested")

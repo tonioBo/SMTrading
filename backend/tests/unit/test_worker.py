@@ -102,3 +102,56 @@ async def test_sigterm_shuts_down_cleanly(monkeypatch):
     assert cancelled == [True]
     assert redis.closed
     assert engine.disposed
+
+
+async def test_health_checks_first_after_30s_then_every_300s(monkeypatch, caplog):
+    sleeps: list[float] = []
+    checks: list[int] = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 4:
+            raise _Stop
+
+    class Router:
+        async def check_health(self):
+            checks.append(len(sleeps))
+            if len(checks) == 2:
+                raise RuntimeError("db down")
+            return {"yahoo": True}
+
+    monkeypatch.setattr(worker.asyncio, "sleep", fake_sleep)
+    with caplog.at_level(logging.WARNING, logger="smtrading.worker"), pytest.raises(_Stop):
+        await worker.health_checks(Router())
+    assert sleeps == [30, 300, 300, 300]
+    assert checks == [1, 2, 3]  # one check after each wait; a failure does not stop the loop
+    assert any("health check failed" in r.getMessage() for r in caplog.records)
+
+
+async def test_run_supervises_health_checks(monkeypatch):
+    started = asyncio.Event()
+
+    async def fake_health(router):
+        assert router is not None
+        started.set()
+        await asyncio.sleep(3600)
+
+    class FakeManager:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run(self):
+            await started.wait()
+            signal.raise_signal(signal.SIGTERM)
+            await asyncio.sleep(3600)
+
+    monkeypatch.setattr(
+        worker, "get_settings",
+        lambda: SimpleNamespace(redis_url="redis://unused:6379/0", database_url="x"),
+    )
+    monkeypatch.setattr(worker.Redis, "from_url", staticmethod(lambda url: _FlakyRedis()))
+    monkeypatch.setattr(worker, "make_engine", lambda url: _FakeEngine())
+    monkeypatch.setattr(worker, "StreamManager", FakeManager)
+    monkeypatch.setattr(worker, "health_checks", fake_health)
+    await asyncio.wait_for(worker.run(), 2)
+    assert started.is_set()
