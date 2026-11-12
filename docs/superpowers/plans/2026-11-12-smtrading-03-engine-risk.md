@@ -38,6 +38,11 @@
   - whitelist vuota = tutto permesso;
   - short consentito.
 
+- **Ordine dei lock:** prima il lock sulla riga del portafoglio (`FOR UPDATE`), poi il lock della catena (dentro `post_journal`). Nessun percorso, comprese liquidazione e reset, può prendere un lock su un portafoglio mentre tiene già il lock della catena.
+- Quando dopo un `SMTError` di `post_journal` si vuole continuare nella stessa transazione (es. salvare un ordine `rejected`), la chiamata va racchiusa in `session.begin_nested()`.
+- Ogni riga di cash, commissione e interesse passa da `quantize_money(…, ccy, rounding=…)`: l'arrotondamento per eccesso del cambio usa `ROUND_UP`. Solo le righe di posizione portano quantità non arrotondate, e `post_journal` rifiuta comunque più di 18 decimali o valori ≥ 1e20.
+- Per scrivere il seed si usa il lock consultivo già presente in `run_seed`.
+
 ## Review Focus
 
 1. **Lo stesso ordine eseguito due volte** (un tick e lo sweep in parallelo) → una sola esecuzione: il lock sul portafoglio e il controllo dello stato vengono fatti dentro la transazione. Test in Task 6.
@@ -73,7 +78,7 @@ backend/src/smtrading/
   corporate/snapshots.py   # take_snapshots, ensure_day_open
   jobs/scheduler.py        # loop dei job nel worker
   events.py                # publish_event, notify
-backend/migrations/versions/0003_engine.py
+backend/migrations/versions/0004_engine.py
 backend/tests/unit/test_pricing.py, test_triggers.py, test_positions_math.py
 backend/tests/integration/test_valuation.py, test_execution.py, test_execution_short.py,
   test_risk_checks.py, test_order_service.py, test_processor.py, test_margin.py, test_daily_loss.py, test_jobs.py, test_engine_e2e.py
@@ -83,7 +88,7 @@ backend/tests/integration/test_valuation.py, test_execution.py, test_execution_s
 
 ### Task 1: Schema del motore, modelli, seed del rischio
 
-**Files:** Create `engine/models.py`, `positions/models.py`, `risk/models.py`, `migrations/versions/0003_engine.py`. Modify `portfolios/models.py`, `migrations/env.py`, `seed.py`. Test: `tests/integration/test_migrations.py` (aggiunte), `test_seed.py` (aggiunte).
+**Files:** Create `engine/models.py`, `positions/models.py`, `risk/models.py`, `migrations/versions/0004_engine.py`. Modify `portfolios/models.py`, `migrations/env.py`, `seed.py`. Test: `tests/integration/test_migrations.py` (aggiunte), `test_seed.py` (aggiunte).
 
 **Interfaces — Produces:**
 - `OrderType(StrEnum)`: `market, limit, stop, stop_limit, trailing_stop`

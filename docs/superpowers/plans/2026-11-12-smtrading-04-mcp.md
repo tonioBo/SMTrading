@@ -44,7 +44,7 @@ backend/src/smtrading/
   mcp/tools_portfolio.py, tools_orders.py, tools_market.py, tools_alerts.py, resources.py
   mcp/smoke.py         # python -m smtrading.mcp.smoke --url ... --token ...
   performance/service.py   # get_performance (serie, rendimento, max drawdown, sharpe)
-backend/migrations/versions/0004_agents_mcp.py
+backend/migrations/versions/0005_agents_mcp.py
 backend/tests/integration/test_agents.py, test_mcp_*.py, test_performance.py
 docs/paperclip-mcp.md
 scripts/connect-paperclip.sh
@@ -54,7 +54,7 @@ scripts/connect-paperclip.sh
 
 ### Task 1: Agenti, token, permessi, audit (schema e servizio)
 
-**Files:** Create `agents/{__init__,models,service}.py`, `migrations/versions/0004_agents_mcp.py`. Modify `migrations/env.py`, `seed.py`. Test: `tests/integration/test_agents.py`, `test_seed.py` (aggiunte).
+**Files:** Create `agents/{__init__,models,service}.py`, `migrations/versions/0005_agents_mcp.py`. Modify `migrations/env.py`, `seed.py`. Test: `tests/integration/test_agents.py`, `test_seed.py` (aggiunte).
 
 **Interfaces — Produces:**
 - `Agent`: `id, name UNIQUE, token_prefix UNIQUE, token_hash, active bool, created_at, last_seen_at|None`

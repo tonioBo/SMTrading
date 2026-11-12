@@ -64,7 +64,7 @@ backend/src/smtrading/
   backtest/__init__.py, models.py (Backtest), strategies.py, engine.py (puro), runner.py
   mcp/tools_watch.py, mcp/tools_backtest.py
   admin/routes_brokers.py
-backend/migrations/versions/0006_brokers_watch_backtest.py
+backend/migrations/versions/0007_brokers_watch_backtest.py
 web/src/pages/Brokers.tsx (+ voce di menu "Broker")
 backend/tests/unit/providers/test_{alpaca,finnhub,twelvedata,revolutx}.py
 backend/tests/unit/test_backtest_engine.py
@@ -148,7 +148,7 @@ backend/tests/integration/test_brokers_*.py, test_watch.py, test_backtest_runner
 
 ### Task 5: Schema per broker, watchlist, alert e backtest
 
-**Files:** `migrations/versions/0006_brokers_watch_backtest.py`, `brokers/models.py`, `watch/models.py`, `backtest/models.py`; modifiche a `engine/models.py` (stato `partially_filled`, campi broker) e `portfolios/models.py` (`broker_link_id`). Test: `test_migrations.py` (drift).
+**Files:** `migrations/versions/0007_brokers_watch_backtest.py`, `brokers/models.py`, `watch/models.py`, `backtest/models.py`; modifiche a `engine/models.py` (stato `partially_filled`, campi broker) e `portfolios/models.py` (`broker_link_id`). Test: `test_migrations.py` (drift).
 
 **Interfaces — Produces:**
 - `BrokerLink`: `id, name UNIQUE, kind ('alpaca_paper'|'t212_demo'), config_encrypted, enabled, status ('ok'|'error'|'unknown'), last_error, created_at`.

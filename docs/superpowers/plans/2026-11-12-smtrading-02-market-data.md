@@ -20,6 +20,9 @@
 - Connettori attivi al primo avvio: `yahoo`, `kraken`, `binance`, `coingecko`, `frankfurter`.
 - Le chiavi e le configurazioni dei connettori sono salvate cifrate con AES-GCM; la chiave è `sha256(SMT_MASTER_KEY)`.
 - Nessun test unit o di integrazione fa chiamate di rete reali (respx o server WebSocket locali); solo la verifica manuale del Task 11 usa la rete.
+- Il seed degli strumenti usa `ON CONFLICT DO NOTHING`: per valorizzare `provider_symbols` sugli strumenti già esistenti serve una migrazione dati, oppure un upsert mirato solo su quel campo, mai il seed.
+- Le migrazioni e il seed girano nel servizio one-shot `migrate` (compose): il worker può usare il database da subito. Ogni nuova migrazione va aggiunta in `migrations/versions/` con numerazione progressiva (0003, …) (0003 è questa; 0002 è già usata dall'hardening del registro).
+- Nei test non si usa mai `get_sessionmaker()` direttamente: si crea un sessionmaker da `make_engine(url)` (la cache viene svuotata da un fixture autouse).
 
 ## Review Focus
 
@@ -57,7 +60,7 @@ backend/src/smtrading/
   connectors/models.py              # Connector, ProviderPriority
   connectors/service.py             # list/set connector, get/set priorities, DEFAULT_PRIORITIES
   instruments/market_hours.py       # market_status(), MarketStatus
-backend/migrations/versions/0002_connectors.py
+backend/migrations/versions/0003_connectors.py
 backend/tests/fixtures/marketdata/*.json   # risposte reali registrate (vedi i task)
 backend/tests/unit/test_crypto.py, test_serialization.py, test_indicators.py, test_market_hours.py
 backend/tests/unit/providers/test_frankfurter.py, test_coingecko.py, test_kraken.py, test_binance.py, test_yahoo.py
@@ -122,7 +125,7 @@ def test_bars_roundtrip(): ...
 ### Task 2: Tabelle dei connettori, priorità di default, servizio
 
 **Files:**
-- Create: `connectors/{__init__,models,service}.py`, `migrations/versions/0002_connectors.py`
+- Create: `connectors/{__init__,models,service}.py`, `migrations/versions/0003_connectors.py`
 - Modify: `migrations/env.py` (import dei modelli), `seed.py` (chiama `seed_connectors`)
 - Test: `tests/integration/test_connectors_service.py`
 

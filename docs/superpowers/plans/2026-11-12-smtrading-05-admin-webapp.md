@@ -28,6 +28,10 @@
 - Porte: `web` 3000 sull'host; `api` 8000 resta esposto (serve all'MCP e al debug).
 - Backup: servizio `backup` in compose che ogni 24h esegue `pg_dump | gzip` in `/backups/smtrading-YYYY-MM-DD.sql.gz` e conserva 14 giorni.
 
+- Validazione delle regole di commissione: gli scaglioni sono ordinati per `up_to` crescente e l'ultimo ha `up_to=null`; i valori degli scaglioni sono salvati nel JSONB come **stringhe** (JSONB non serializza i Decimal).
+- Nome di portafoglio duplicato → 400 con codice `INVALID_ORDER` e `details.field="name"`. In più va gestita l'`IntegrityError` di una creazione concorrente, trasformandola nello stesso errore.
+- `/health` risponde 503 quando lo stato è degradato.
+
 ## Review Focus
 
 1. **Sessione scaduta mentre la web app è aperta** → la prima chiamata riceve 401, il client porta al login conservando la pagina di ritorno e non resta in loop di errori. Test in Task 6.
@@ -47,7 +51,7 @@ backend/src/smtrading/admin/
   routes_auth.py, routes_portfolios.py, routes_agents.py, routes_fees.py, routes_risk.py,
   routes_connectors.py, routes_markets.py, routes_system.py, routes_dashboard.py, ws.py
   portfolio_ops.py   # reset_portfolio
-backend/migrations/versions/0005_admin.py
+backend/migrations/versions/0006_admin.py
 backend/tests/integration/test_admin_*.py
 web/
   Dockerfile, nginx.conf, package.json, vite.config.ts, tsconfig.json, tailwind.config.ts, index.html
@@ -65,7 +69,7 @@ docker-compose.yml (servizi web, backup)
 
 ### Task 1: Autenticazione admin, sessioni, CSRF, TOTP
 
-**Files:** `admin/{models,auth,errors,routes_auth}.py`, `migrations/versions/0005_admin.py`, `seed.py` (admin da `SMT_ADMIN_EMAIL` e `SMT_ADMIN_PASSWORD`, creato solo se manca), `api/main.py` (exception handler, router). Test: `tests/integration/test_admin_auth.py`.
+**Files:** `admin/{models,auth,errors,routes_auth}.py`, `migrations/versions/0006_admin.py`, `seed.py` (admin da `SMT_ADMIN_EMAIL` e `SMT_ADMIN_PASSWORD`, creato solo se manca), `api/main.py` (exception handler, router). Test: `tests/integration/test_admin_auth.py`.
 
 **Interfaces:**
 - `AdminUser`: `id, email UNIQUE, password_hash, totp_secret_encrypted bytea|None, totp_enabled bool, created_at, last_login_at`.
