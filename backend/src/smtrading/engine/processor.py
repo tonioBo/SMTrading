@@ -20,6 +20,13 @@ are locked FOR UPDATE (Ruling R11) and the decision is taken again on the locked
 so concurrent processors produce at most one fill. Redis effects are dispatched after
 commit (Ruling R10).
 
+Margin (Rulings R8, R10): ticks are also kept for symbols held by margin portfolios
+(margin loan or short; the map is refreshed by each sweep). After a symbol's orders are
+evaluated, each margin portfolio holding it is checked with `check_portfolio_margin` in
+its own transaction, at most once every `margin_check_every_s` per portfolio. After a
+fill, the daily loss limit of the portfolio is checked in a new transaction. Both are
+best-effort: errors are logged and never stop order processing.
+
 Errors: a business SMTError (`REJECTING_CODES`) rejects the order with its code in a new
 transaction, cancels its held bracket children (Ruling R17) and notifies the portfolio.
 Any other error (provider outage, rate limit, bugs) is rolled back and logged; the order
@@ -55,6 +62,8 @@ from smtrading.instruments.models import Instrument
 from smtrading.marketdata.serialization import loads_quote
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.models import Portfolio
+from smtrading.risk.daily_loss import check_daily_loss
+from smtrading.risk.margin import check_margin_and_commit, margin_holdings
 from smtrading.risk.settings import get_default_spread_bps, get_stale_threshold
 
 log = logging.getLogger("smtrading.engine.processor")
@@ -173,6 +182,7 @@ class OrderProcessor:
         *,
         sweep_every_s: float = 1.0,
         min_eval_interval_s: float = 0.25,
+        margin_check_every_s: float = 2.0,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._sm = sessionmaker
@@ -187,6 +197,9 @@ class OrderProcessor:
         self._dirty: set[str] = set()
         self._wake = asyncio.Event()
         self._failing: dict[str, datetime] = {}  # symbol -> quote fetch failed at
+        self._margin_check_every_s = margin_check_every_s
+        self._margin: dict[str, set[UUID]] = {}  # symbol -> margin portfolios holding it
+        self._margin_checked: dict[UUID, datetime] = {}
 
     # -- loops -----------------------------------------------------------------------
 
@@ -212,8 +225,9 @@ class OrderProcessor:
             await pubsub.aclose()
 
     def submit_tick(self, symbol: str, quote: Quote) -> None:
-        """Keep the latest quote; mark the symbol for evaluation if it has active orders."""
-        if symbol not in self._active:
+        """Keep the latest quote; mark the symbol for evaluation if it has active orders
+        or is held by a margin portfolio."""
+        if symbol not in self._active and symbol not in self._margin:
             return
         self._latest[symbol] = quote
         self._dirty.add(symbol)
@@ -233,10 +247,14 @@ class OrderProcessor:
                 continue
             self._dirty.discard(symbol)
             quote = self._latest.pop(symbol)
-            try:
-                await self.on_tick(symbol, quote)
-            except Exception:
-                log.exception("tick evaluation failed for %s", symbol)
+            if symbol in self._active:
+                try:
+                    await self.on_tick(symbol, quote)
+                except Exception:
+                    log.exception("tick evaluation failed for %s", symbol)
+            else:
+                self._last_eval[symbol] = now
+            await self._check_margin(symbol)
         return wait
 
     async def _drain_loop(self) -> None:
@@ -282,6 +300,7 @@ class OrderProcessor:
     async def sweep(self) -> None:
         ctx = _Pass(self._clock())
         await self._expire(ctx.now)
+        await self._refresh_margin()
         candidates = await self._candidates()
         self._active = {c.symbol for c in candidates}
         candidates = [c for c in candidates if ctx.is_open(c.market)]
@@ -309,6 +328,52 @@ class OrderProcessor:
             self._active = set(await session.scalars(
                 select(Order.symbol).where(Order.status.in_(_ACTIVE)).distinct()
             ))
+
+    async def _refresh_margin(self) -> None:
+        try:
+            async with self._sm() as session:
+                self._margin = await margin_holdings(session)
+        except Exception:
+            log.exception("refreshing margin holdings failed")
+
+    async def _check_margin(self, symbol: str) -> None:
+        """Margin check of the margin portfolios holding `symbol` (throttled, logged)."""
+        for portfolio_id in sorted(self._margin.get(symbol, ())):
+            now = self._clock()
+            last = self._margin_checked.get(portfolio_id)
+            if last is not None and (now - last).total_seconds() < self._margin_check_every_s:
+                continue
+            self._margin_checked[portfolio_id] = now
+            try:
+                result = await check_margin_and_commit(
+                    self._sm, self._qs, self._redis, portfolio_id, now=now
+                )
+            except Exception:
+                log.exception("margin check of portfolio %s failed", portfolio_id)
+                continue
+            if result == "liquidated":
+                await self._refresh_margin()
+                await self._refresh_active()
+
+    async def _after_fill(self, order_id: UUID) -> None:
+        """Daily loss check of the portfolio of a just filled order (best-effort)."""
+        try:
+            async with self._sm() as session:
+                order = await session.get(Order, order_id)
+                if order is None or order.status != OrderStatus.filled:
+                    return
+                portfolio = (
+                    await session.execute(
+                        select(Portfolio).where(Portfolio.id == order.portfolio_id)
+                        .with_for_update()
+                    )
+                ).scalar_one()
+                await check_daily_loss(session, self._qs, portfolio, self._clock())
+                await session.commit()
+        except SMTError as e:
+            log.warning("daily loss check after order %s skipped: %s", order_id, e.code)
+        except Exception:
+            log.exception("daily loss check after order %s failed", order_id)
 
     async def _quotes(self, symbols: list[str], now: datetime) -> dict[str, Quote]:
         """Quotes for `symbols`; a symbol whose fetch failed is skipped for 60s."""
@@ -374,7 +439,9 @@ class OrderProcessor:
                     return False
                 raise
             await dispatch_post_commit(session, self._redis)
-            return acted
+        if acted:
+            await self._after_fill(c.id)
+        return acted
 
     async def _settings(
         self, session: AsyncSession, ctx: _Pass, asset_class: str

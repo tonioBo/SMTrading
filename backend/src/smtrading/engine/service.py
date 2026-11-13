@@ -46,7 +46,8 @@ from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.marketdata.types import CalendarEvent, Quote
 from smtrading.portfolios.models import Portfolio
 from smtrading.risk.checks import CheckResult, pre_trade_check
-from smtrading.risk.settings import get_default_spread_bps
+from smtrading.risk.daily_loss import check_daily_loss_safely
+from smtrading.risk.settings import get_default_spread_bps, set_kill_switch
 
 OPEN_STATUSES = frozenset({
     OrderStatus.new, OrderStatus.held, OrderStatus.queued, OrderStatus.pending,
@@ -345,7 +346,17 @@ async def _evaluate_now(
 
 
 async def _activate(session: AsyncSession, qs: QuoteSource, order: Order, adm: _Admission) -> None:
-    """Move a freshly stored `new` order to queued/pending, executing it when it can."""
+    """Move a freshly stored `new` order to queued/pending, executing it when it can.
+
+    After an immediate fill the daily loss limit is checked (best-effort)."""
+    await _activate_order(session, qs, order, adm)
+    if order.status == OrderStatus.filled:
+        await check_daily_loss_safely(session, qs, order.portfolio_id, adm.now)
+
+
+async def _activate_order(
+    session: AsyncSession, qs: QuoteSource, order: Order, adm: _Admission
+) -> None:
     if order.status != OrderStatus.new:
         return
     instrument = adm.instrument
@@ -631,6 +642,25 @@ async def cancel_all_orders(
     if orders:
         await _cancel(session, orders, by)
     return len(orders)
+
+
+async def set_kill_switch_and_cancel(
+    session: AsyncSession, on: bool, *, cancel_open: bool, by: str = "admin"
+) -> int:
+    """Turn the kill switch on/off; with `on` and `cancel_open`, cancel every open order
+    (portfolio by portfolio, each portfolio row locked first). Returns how many."""
+    await set_kill_switch(session, on)
+    canceled = 0
+    if on and cancel_open:
+        portfolio_ids = list(await session.scalars(
+            select(Order.portfolio_id).distinct()
+            .where(Order.status.in_(OPEN_STATUSES))
+            .order_by(Order.portfolio_id)
+        ))
+        for portfolio_id in portfolio_ids:
+            canceled += await cancel_all_orders(session, portfolio_id, by=by)
+    queue_event(session, "kill_switch", {"on": bool(on), "canceled": canceled})
+    return canceled
 
 
 async def modify_order(

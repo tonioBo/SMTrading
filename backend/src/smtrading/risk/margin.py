@@ -1,0 +1,261 @@
+"""Margin monitor: warning notifications and forced liquidation (Ruling R8: raw values).
+
+- `check_portfolio_margin`: `margin_level()` "warning" notifies (at most once every 15
+  minutes per portfolio) and "maintenance" liquidates.
+- `liquidate`: closes positions, most negative unrealized P&L first, with system market
+  orders executed at once in a LIQUIDATION journal, until the portfolio is out of
+  maintenance; the symbol's open orders (and held bracket children) are canceled.
+- `margin_sweep`: the worker's periodic check of every margin portfolio (a margin loan
+  or a short position), plus the daily loss check of every portfolio holding positions.
+
+Nothing here commits: the caller commits, then dispatches the queued Redis effects
+(Ruling R10). The portfolio row is locked FOR UPDATE first (Ruling R11); execute_fill
+locks it again, harmlessly, before the chain lock. `redis` is accepted for interface
+parity and unused: events are queued on the session.
+"""
+
+import logging
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from typing import Literal
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from smtrading.common.errors import SMTError
+from smtrading.engine.execution import execute_fill
+from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType, TimeInForce
+from smtrading.engine.quotesource import QuoteSource
+from smtrading.engine.service import cancel_all_orders
+from smtrading.events import (
+    POST_COMMIT_KEY,
+    discard_post_commit,
+    dispatch_post_commit,
+    notify,
+    queue_event,
+)
+from smtrading.ledger.models import Account, AccountBalance, AccountKind, JournalType
+from smtrading.portfolios.models import Portfolio
+from smtrading.risk.daily_loss import check_daily_loss
+from smtrading.risk.models import Notification
+from smtrading.valuation.service import PortfolioValuation, value_portfolio
+
+log = logging.getLogger("smtrading.risk.margin")
+
+WARNING_THROTTLE = timedelta(minutes=15)
+MarginResult = Literal["ok", "warning", "liquidated"]
+
+
+async def _lock_portfolio(session: AsyncSession, portfolio_id: UUID) -> Portfolio:
+    return (
+        await session.execute(
+            select(Portfolio).where(Portfolio.id == portfolio_id).with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+
+
+def _margin_portfolios_subquery():
+    """Portfolio ids with a margin loan (< 0) or a short position."""
+    return (
+        select(Account.portfolio_id)
+        .join(AccountBalance, AccountBalance.account_id == Account.id)
+        .where(
+            Account.kind.in_((AccountKind.margin_loan, AccountKind.position)),
+            AccountBalance.balance < 0,
+        )
+    )
+
+
+async def margin_holdings(session: AsyncSession) -> dict[str, set[UUID]]:
+    """symbol -> margin portfolios holding a non-zero position in it."""
+    rows = await session.execute(
+        select(Account.asset, Account.portfolio_id)
+        .join(AccountBalance, AccountBalance.account_id == Account.id)
+        .where(
+            Account.kind == AccountKind.position, AccountBalance.balance != 0,
+            Account.portfolio_id.in_(_margin_portfolios_subquery()),
+        )
+    )
+    out: dict[str, set[UUID]] = {}
+    for symbol, portfolio_id in rows.all():
+        out.setdefault(symbol, set()).add(portfolio_id)
+    return out
+
+
+def _summary(v: PortfolioValuation) -> dict:
+    return {
+        "equity_eur": v.equity_eur, "exposure_eur": v.exposure_eur,
+        "maint_req_eur": v.maint_req_eur, "warn_req_eur": v.warn_req_eur,
+    }
+
+
+async def _warn(
+    session: AsyncSession, portfolio_id: UUID, valuation: PortfolioValuation, now: datetime
+) -> None:
+    last = await session.scalar(
+        select(Notification.created_at)
+        .where(Notification.portfolio_id == portfolio_id, Notification.kind == "margin_warning")
+        .order_by(Notification.created_at.desc())
+        .limit(1)
+    )
+    if last is not None and now - last < WARNING_THROTTLE:
+        return
+    payload = {"portfolio_id": portfolio_id, **_summary(valuation)}
+    notification = await notify(
+        session, portfolio_id=portfolio_id, kind="margin_warning", payload=payload
+    )
+    notification.created_at = now
+    await session.flush()
+    queue_event(session, "margin.warning", payload)
+
+
+async def check_portfolio_margin(
+    session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, *, redis=None,
+    now: datetime | None = None,
+) -> MarginResult:
+    now = now or datetime.now(UTC)
+    await _lock_portfolio(session, portfolio_id)
+    valuation = await value_portfolio(session, qs, portfolio_id)
+    level = valuation.margin_level()
+    if level == "maintenance":
+        if await liquidate(session, qs, portfolio_id, redis=redis):
+            return "liquidated"
+        level = "warning"  # nothing could be closed: at least warn
+    if level == "warning":
+        await _warn(session, portfolio_id, valuation, now)
+        return "warning"
+    return "ok"
+
+
+async def _close_now(
+    session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, symbol: str, held: Decimal
+) -> Order | None:
+    """A system market order for the whole position, filled at once; None if it failed."""
+    try:
+        quote = (await qs.get_quotes([symbol])).get(symbol)
+    except SMTError as e:
+        quote = None
+        log.warning("liquidation of %s/%s: no quote (%s)", portfolio_id, symbol, e.code)
+    if quote is None:
+        return None
+    order = Order(
+        portfolio_id=portfolio_id, symbol=symbol, type=OrderType.market,
+        side=OrderSide.sell if held > 0 else OrderSide.buy, qty=abs(held),
+        tif=TimeInForce.gtc, source="system", status=OrderStatus.new,
+    )
+    session.add(order)
+    await session.flush()
+    effects = session.info.setdefault(POST_COMMIT_KEY, [])
+    mark = len(effects)
+    try:
+        async with session.begin_nested():
+            result = await execute_fill(
+                session, qs, order.id, quote=quote, journal_type=JournalType.LIQUIDATION
+            )
+    except SMTError as e:
+        del session.info.setdefault(POST_COMMIT_KEY, [])[mark:]
+        await session.refresh(order)
+        order.status = OrderStatus.rejected
+        order.reject_code = str(e.code)
+        order.reject_message = (e.message or "")[:512]
+        order.updated_at = datetime.now(UTC)
+        await session.flush()
+        log.error("liquidation of %s/%s failed: %s %s", portfolio_id, symbol, e.code, e.message)
+        return None
+    if result is None:
+        return None
+    await cancel_all_orders(session, portfolio_id, symbol, by="system")
+    return result.order
+
+
+async def liquidate(
+    session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, *, redis=None
+) -> list[Order]:
+    """Close positions, most negative unrealized P&L (EUR) first, until the portfolio is
+    out of maintenance. Returns the filled liquidation orders."""
+    await _lock_portfolio(session, portfolio_id)
+    valuation = await value_portfolio(session, qs, portfolio_id)
+    before = _summary(valuation)
+    queue = sorted(valuation.positions, key=lambda p: (p.unrealized_pnl_eur, p.symbol))
+    closed: list[Order] = []
+    for position in queue:
+        if valuation.margin_level() != "maintenance":
+            break
+        order = await _close_now(session, qs, portfolio_id, position.symbol, position.qty)
+        if order is None:
+            continue
+        closed.append(order)
+        try:
+            valuation = await value_portfolio(session, qs, portfolio_id)
+        except SMTError as e:
+            log.warning("liquidation of %s stopped: revaluation failed (%s)",
+                        portfolio_id, e.code)
+            break
+    if closed:
+        payload = {
+            "portfolio_id": portfolio_id, "before": before, "after": _summary(valuation),
+            "orders": [
+                {"order_id": o.id, "symbol": o.symbol, "side": o.side, "qty": o.qty,
+                 "price": o.avg_fill_price}
+                for o in closed
+            ],
+        }
+        await notify(session, portfolio_id=portfolio_id, kind="liquidation", payload=payload)
+        queue_event(session, "liquidation", payload)
+        log.warning("portfolio %s liquidated: %s", portfolio_id,
+                    ", ".join(f"{o.symbol} {o.side} {o.qty}" for o in closed))
+    return closed
+
+
+async def check_margin_and_commit(
+    sessionmaker: async_sessionmaker[AsyncSession], qs: QuoteSource, redis,
+    portfolio_id: UUID, *, now: datetime | None = None,
+) -> MarginResult:
+    """check_portfolio_margin in its own transaction, then the post-commit effects."""
+    async with sessionmaker() as session:
+        try:
+            result = await check_portfolio_margin(session, qs, portfolio_id, now=now)
+            await session.commit()
+        except BaseException:
+            await session.rollback()
+            discard_post_commit(session)
+            raise
+        await dispatch_post_commit(session, redis)
+        return result
+
+
+async def margin_sweep(
+    sessionmaker: async_sessionmaker[AsyncSession], qs: QuoteSource, redis, *,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> None:
+    """Margin check of every margin portfolio, daily loss check of every portfolio with
+    positions; one transaction per portfolio, errors logged."""
+    async with sessionmaker() as session:
+        margin_ids = set(await session.scalars(_margin_portfolios_subquery().distinct()))
+        holding_ids = set(await session.scalars(
+            select(Account.portfolio_id).distinct()
+            .join(AccountBalance, AccountBalance.account_id == Account.id)
+            .where(
+                Account.kind == AccountKind.position, AccountBalance.balance != 0,
+                Account.portfolio_id.is_not(None),
+            )
+        ))
+    for portfolio_id in sorted(margin_ids | holding_ids):
+        if portfolio_id in margin_ids:
+            try:
+                await check_margin_and_commit(
+                    sessionmaker, qs, redis, portfolio_id, now=clock()
+                )
+            except Exception:
+                log.exception("margin check of portfolio %s failed", portfolio_id)
+        try:
+            async with sessionmaker() as session:
+                portfolio = await _lock_portfolio(session, portfolio_id)
+                await check_daily_loss(session, qs, portfolio, clock())
+                await session.commit()
+        except Exception:
+            log.exception("daily loss check of portfolio %s failed", portfolio_id)
+
