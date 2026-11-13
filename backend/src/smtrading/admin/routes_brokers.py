@@ -240,7 +240,7 @@ async def test_link(
 
 @router.get("/broker-links/{link_id}/positions")
 async def get_broker_positions(link_id: UUID, session: DbSession, redis: RedisClient) -> dict:
-    """A broker failure is recorded on the link and answered redacted."""
+    """The outcome is recorded on the link: a failure (answered redacted) or ok."""
     secrets = await _secrets(session, await _link(session, link_id))
     try:
         async with httpx.AsyncClient() as http:
@@ -257,6 +257,7 @@ async def get_broker_positions(link_id: UUID, session: DbSession, redis: RedisCl
         error = _error_text(e, secrets)
         await _record(session, redis, link_id, error)
         raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE, error) from None
+    await _record(session, redis, link_id, None)  # the broker answered: the link is ok
     return {"positions": [
         {"symbol": s, "qty": to_jsonable(Decimal(q))} for s, q in sorted(positions.items())
     ]}

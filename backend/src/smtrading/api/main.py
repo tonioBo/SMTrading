@@ -100,8 +100,10 @@ RuntimeFactory = Callable[[async_sessionmaker[AsyncSession], Redis], McpRuntime]
 def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     """`runtime_factory(sessionmaker, redis)` overrides the MCP runtime (tests inject a
     FakeQuoteSource); by default the MarketDataRouter is the MCP quote source."""
-    # uvicorn has configured its loggers by now: mask secrets in them, keep its handlers
-    configure_logging(add_handler=False,
+    # uvicorn has configured its own loggers (they keep their handlers, access log
+    # included) but not the root: add a WARNING root handler so smtrading.* records go
+    # through the redacting filter too, and mask secrets in uvicorn's handlers
+    configure_logging(logging.WARNING,
                       extra_loggers=("uvicorn", "uvicorn.error", "uvicorn.access"))
     resources = _Resources()
     mcp = build_mcp()

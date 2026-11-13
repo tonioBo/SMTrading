@@ -9,31 +9,59 @@ import logging
 import re
 
 _QUIET_LOGGERS = ("httpx", "httpcore")
-_SECRET_PARAM = re.compile(
-    r"(?i)(?<![A-Za-z0-9_])(token|apikey|api_key|key|secret|password)=[^&\s'\"]+"
+_NAMES = (
+    r"access_token|refresh_token|id_token|client_secret|private_key|api_key|apikey|"
+    r"token|secret|password|key"
 )
-_AUTH_SCHEME = re.compile(r"(?i)\b(Basic|Bearer)\s+[A-Za-z0-9+/=._~-]+")
+# name=value in queries and key=value texts
+_SECRET_PARAM = re.compile(rf"(?i)(?<![A-Za-z0-9_])({_NAMES})=[^&\s'\",;]+")
+# "name": "value" (JSON) and 'name': 'value' (Python reprs)
+_SECRET_JSON = re.compile(rf"""(?i)(["'])({_NAMES})\1(\s*:\s*)(["'])[^"']*\4""")
+# header lines: Authorization: [scheme] value, X-...-Token / X-API-Key: value
+_AUTH_HEADER = re.compile(
+    r"(?i)\b(authorization|proxy-authorization)(\s*[:=]\s*)(?:(basic|bearer|token)\s+)?[^\s,;'\"]+"
+)
+_TOKEN_HEADER = re.compile(r"(?i)\b(x-[a-z0-9-]*(?:token|key|secret))(\s*:\s*)[^\s,;'\"]+")
+_AUTH_SCHEME = re.compile(r"(?i)\b(Basic|Bearer)\s+(?!<redacted>)[A-Za-z0-9+/=._~-]+")
+# Telegram bot API: /bot<id>:<token>/method
+_TELEGRAM = re.compile(r"/bot\d+:[A-Za-z0-9_-]+")
+
+
+def _auth(m: re.Match) -> str:
+    scheme = f"{m.group(3)} " if m.group(3) else ""
+    return f"{m.group(1)}{m.group(2)}{scheme}<redacted>"
 
 
 def redact_log_text(text: str) -> str:
-    return _AUTH_SCHEME.sub(r"\1 <redacted>", _SECRET_PARAM.sub(r"\1=<redacted>", text))
+    text = _TELEGRAM.sub("/bot<redacted>", text)
+    text = _SECRET_JSON.sub(r"\1\2\1\3\4<redacted>\4", text)
+    text = _AUTH_HEADER.sub(_auth, text)
+    text = _TOKEN_HEADER.sub(r"\1\2<redacted>", text)
+    text = _AUTH_SCHEME.sub(r"\1 <redacted>", text)
+    return _SECRET_PARAM.sub(r"\1=<redacted>", text)
 
 
 class RedactingFilter(logging.Filter):
     """Rewrites the record's message (and traceback text) with secrets masked."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Never raises into the caller: a record that cannot be rendered is replaced by a
+        safe generic line (nothing of it, secrets included, is written)."""
         try:
             message = record.getMessage()
-        except (TypeError, ValueError):  # malformed %-args: let logging report it
-            return True
-        redacted = redact_log_text(message)
-        if redacted != message:
-            record.msg, record.args = redacted, None
-        if record.exc_info and not record.exc_text:
-            record.exc_text = logging.Formatter().formatException(record.exc_info)
-        if record.exc_text:
-            record.exc_text = redact_log_text(record.exc_text)
+            redacted = redact_log_text(message)
+            if redacted != message:
+                record.msg, record.args = redacted, None
+            if record.exc_info and not record.exc_text:
+                record.exc_text = logging.Formatter().formatException(record.exc_info)
+            if record.exc_text:
+                record.exc_text = redact_log_text(record.exc_text)
+        except Exception as e:  # noqa: BLE001 - logging must not break the caller
+            record.msg = (f"[log redaction failed: {type(e).__name__}] "
+                          f"record of {record.name} at {record.pathname}:{record.lineno}")
+            record.args = None
+            record.exc_info = None
+            record.exc_text = None
         return True
 
 

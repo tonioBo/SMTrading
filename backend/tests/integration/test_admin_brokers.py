@@ -429,3 +429,15 @@ async def test_link_refused_with_open_positions(admin, fake_alpaca):
     assert r.status_code == 400 and r.json()["code"] == "INVALID_ORDER"
     assert "Chiudi prima le posizioni aperte" in r.json()["message"]
     assert (await c.get(f"/api/portfolios/{pf['id']}")).json()["broker_link_id"] is None
+
+
+async def test_positions_success_clears_the_link_error(admin, fake_alpaca):
+    """N5: a successful broker read records the link as ok again."""
+    link = await _link(admin.client)
+    fake_alpaca.fail = "boom"
+    assert (await admin.client.get(f"/api/broker-links/{link['id']}/positions")).status_code == 400
+    assert (await admin.client.get("/api/broker-links")).json()[0]["status"] == "error"
+    fake_alpaca.fail = None
+    assert (await admin.client.get(f"/api/broker-links/{link['id']}/positions")).status_code == 200
+    listed = (await admin.client.get("/api/broker-links")).json()[0]
+    assert listed["status"] == "ok" and listed["last_error"] is None
