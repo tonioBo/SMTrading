@@ -379,3 +379,29 @@ async def test_kill_switch_catches_an_order_placed_concurrently(maker, qs):
     assert await asyncio.wait_for(task, 10) == 1
     async with maker() as s:
         assert (await s.get(Order, order.id)).status == OrderStatus.canceled
+
+
+# -- residual fix: liquidation memo prefetches the fee/funding fx of every close --------
+
+
+async def test_liquidation_closes_a_usd_position_after_an_eur_one(db_session, seeded, qs):
+    """EUR cash <= fee: the AAPL close converts its EUR fee into USD (R9) after the memo
+    was frozen by the ENI.MI close, so EUR->USD must have been prefetched."""
+    p = await _portfolio(db_session, 4)
+    await _buy(db_session, qs, p.id, "ENI.MI", 20000)  # 300k EUR
+    await _buy(db_session, qs, p.id, "AAPL", 800)  # 80k USD
+    # -110k: the ENI proceeds (~190k) only repay the EUR loan (~200k), EUR cash stays 0
+    qs.set_quote("ENI.MI", D("9.495"), D("9.505"), None)
+    assert (await value_portfolio(db_session, qs, p.id)).margin_level() == "maintenance"
+
+    closed = await liquidate(db_session, qs, p.id, now=OPEN)
+
+    assert [o.symbol for o in closed] == ["ENI.MI", "AAPL"]
+    assert all(o.status == OrderStatus.filled for o in closed)
+    assert await _position(db_session, p.id, "ENI.MI") == 0
+    assert await _position(db_session, p.id, "AAPL") == 0
+    rejected = await db_session.scalar(
+        select(func.count()).select_from(Order)
+        .where(Order.portfolio_id == p.id, Order.status == OrderStatus.rejected)
+    )
+    assert rejected == 0

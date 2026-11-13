@@ -60,8 +60,18 @@ MarginResult = Literal["ok", "warning", "liquidated"]
 
 
 async def _memo(session: AsyncSession, qs: QuoteSource, portfolio_id: UUID) -> MemoQuoteSource:
+    """Prefetched with every held symbol as a traded one, so the fee/funding fx pairs of
+    each liquidation close (rule/base/cash ccy <-> instrument ccy) are in the memo too."""
     memo = MemoQuoteSource.wrap(qs)
-    await prefetch_portfolio(session, memo, portfolio_id)
+    held = await session.scalars(
+        select(Account.asset)
+        .join(AccountBalance, AccountBalance.account_id == Account.id)
+        .where(
+            Account.portfolio_id == portfolio_id, Account.kind == AccountKind.position,
+            AccountBalance.balance != 0,
+        )
+    )
+    await prefetch_portfolio(session, memo, portfolio_id, symbols=sorted(set(held)))
     return memo
 
 

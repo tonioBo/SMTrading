@@ -15,7 +15,8 @@ that opens/adds (open), posted together in one TRADE journal:
   when no short in ccy is left, the remaining collateral is released to cash.
   Collateral is pooled per currency: what one short draws is not tied to its own
   proceeds, so a cover at a loss may use collateral posted by another short in ccy;
-- a fill that opens exposure must leave buying_power_raw >= 0 (Ruling R8);
+- a fill that opens exposure must leave buying_power_raw >= 0 (Ruling R8), measured on
+  a valuation without cached (stale) quotes, else PROVIDER_UNAVAILABLE (retryable);
 - status at fill (I3, not for LIQUIDATION journals): a locked portfolio fills nothing
   (PORTFOLIO_LOCKED); a reduce_only portfolio only fills purely reducing fills
   (REDUCE_ONLY); with the kill switch on, a fill that opens exposure is refused
@@ -557,6 +558,12 @@ async def execute_fill(
     # fills are never blocked.
     if not reducing:
         valuation = await value_portfolio(session, qs, portfolio.id, redis=redis)
+        if valuation.stale_symbols:  # retryable: the processor leaves the order resting
+            raise SMTError(
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                "valuation uses cached quotes for " + ", ".join(valuation.stale_symbols),
+                {"portfolio_id": str(portfolio.id), "symbol": symbol},
+            )
         if valuation.buying_power_raw < 0:
             raise _no_buying_power(
                 "buying power exceeded", buying_power_raw=valuation.buying_power_raw

@@ -439,3 +439,33 @@ async def test_buying_power_check_uses_raw_value(db_session, seeded, qs):
     qs.set_quote("ISP.MI", None, None, mark + D("0.006"))
     discard_post_commit(db_session)
     assert await _fill(db_session, qs, o) is not None
+
+
+# -- residual fix: exposure-increasing fills need a valuation without cached quotes ----
+
+
+async def test_increasing_fill_on_stale_valuation_is_retryable(db_session, seeded, qs, redis_url):
+    from smtrading.marketdata.cache import write_quote
+
+    r = aioredis.from_url(redis_url)
+    await r.flushdb()
+    try:
+        p = await _portfolio(db_session)
+        await _fill(db_session, qs, await _order(db_session, p, "AAPL", OrderSide.buy, qty=D(10)))
+        await _fill(db_session, qs, await _order(db_session, p, "ENI.MI", OrderSide.buy, qty=D(10)))
+        await write_quote(r, qs._quotes.pop("AAPL"))  # provider down, cache has AAPL
+
+        buy = await _order(db_session, p, "ENI.MI", OrderSide.buy, qty=D(10))
+        with pytest.raises(SMTError) as exc:
+            async with db_session.begin_nested():
+                await _fill(db_session, qs, buy, redis=r)
+        assert exc.value.code == ErrorCode.PROVIDER_UNAVAILABLE
+        assert "AAPL" in exc.value.message
+        await db_session.refresh(buy)
+        assert buy.status == OrderStatus.new  # left for a retry
+
+        sell = await _order(db_session, p, "ENI.MI", OrderSide.sell, qty=D(5))
+        assert await _fill(db_session, qs, sell, redis=r) is not None  # reducing: allowed
+        assert await _bal(db_session, p.id, "ENI.MI", AccountKind.position) == D(5)
+    finally:
+        await r.aclose()

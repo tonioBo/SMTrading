@@ -692,3 +692,45 @@ async def test_modify_held_stop_cannot_cross_the_sibling(db_session, qs, p):
     with pytest.raises(SMTError) as exc:
         await modify_order(db_session, qs, sl.id, stop_price=D("215.00"))
     assert exc.value.code == ErrorCode.INVALID_ORDER
+
+
+# -- residual fix: exit cancel scope, kill switch closes (Ruling R25) -----------------
+
+
+async def test_close_keeps_exits_of_a_pending_bracket_entry(db_session, qs, p):
+    _, tp1, sl1 = await place_bracket_order(  # market entry: exits released
+        db_session, qs, _req(p), take_profit=D("220.00"), stop_loss=D("180.00"), now=OPEN,
+    )
+    entry, tp2, sl2 = await place_bracket_order(  # resting entry: exits held
+        db_session, qs, _req(p, type=OrderType.limit, limit_price=D("195.00")),
+        take_profit=D("210.00"), stop_loss=D("190.00"), now=OPEN,
+    )
+
+    await close_position(db_session, qs, p.id, "AAPL", now=OPEN)
+
+    for o in (tp1, sl1, entry, tp2, sl2):
+        await db_session.refresh(o)
+    assert tp1.status == sl1.status == OrderStatus.canceled
+    assert entry.status == OrderStatus.pending
+    assert tp2.status == sl2.status == OrderStatus.held
+
+
+async def test_kill_switch_allows_closing_only(db_session, qs, p):
+    from smtrading.risk.settings import set_kill_switch
+
+    await place_order(db_session, qs, _req(p, qty=D(10)), now=OPEN)
+    await set_kill_switch(db_session, True)
+
+    for req in (_req(p, qty=D(1)), _req(p, side=OrderSide.sell, qty=D(20))):  # open, flip
+        with pytest.raises(SMTError) as exc:
+            await place_order(db_session, qs, req, now=OPEN)
+        assert exc.value.code == ErrorCode.KILL_SWITCH_ACTIVE
+    with pytest.raises(SMTError) as exc:  # nothing held: refused before any quote
+        await place_order(db_session, qs, _req(p, "ENI.MI", side=OrderSide.sell), now=OPEN)
+    assert exc.value.code == ErrorCode.KILL_SWITCH_ACTIVE
+
+    partial = await place_order(db_session, qs, _req(p, side=OrderSide.sell, qty=D(4)), now=OPEN)
+    assert partial.status == OrderStatus.filled
+    order = await close_position(db_session, qs, p.id, "AAPL", now=OPEN)
+    assert (order.qty, order.status) == (D(6), OrderStatus.filled)
+    assert await _position(db_session, p.id, "AAPL") == 0

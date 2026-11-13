@@ -8,6 +8,8 @@ uses unrounded values (valuation *_raw fields, Ruling R8).
   the market is closed: the age is checked again at execution).
 - `reduce_only` orders (Ruling R22) are clamped to the position at fill, so they never
   increase exposure: they are checked as reducing.
+- Ruling R25: with the kill switch on, only orders that strictly reduce the position
+  (|after| < |before|, no sign flip; e.g. reduce_only closes) are accepted.
 - With `redis`, the valuation may mark symbols with cached quotes (Ruling R23); only a
   strictly reducing order is accepted on such a stale valuation.
 """
@@ -16,6 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import ROUND_UP, Decimal, localcontext
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.errors import ErrorCode, SMTError
@@ -27,6 +30,7 @@ from smtrading.fees.calculator import compute_fx_fee, compute_trade_fee
 from smtrading.fees.resolver import FeeQuote, load_rules, resolve_rule
 from smtrading.instruments.models import Instrument
 from smtrading.instruments.service import validate_price, validate_quantity
+from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.risk.models import RiskProfile
@@ -94,6 +98,22 @@ def _check_order_shape(
             validate_price(instrument, price)
 
 
+def _kill_switch() -> _Reject:
+    return _Reject(ErrorCode.KILL_SWITCH_ACTIVE, "trading is halted by the kill switch")
+
+
+async def _held(session: AsyncSession, portfolio_id, symbol: str) -> Decimal:
+    balance = await session.scalar(
+        select(AccountBalance.balance)
+        .join(Account, Account.id == AccountBalance.account_id)
+        .where(
+            Account.portfolio_id == portfolio_id, Account.kind == AccountKind.position,
+            Account.asset == symbol,
+        )
+    )
+    return balance if balance is not None else Decimal(0)
+
+
 async def _quote(qs: QuoteSource, symbol: str) -> Quote | None:
     try:
         return (await qs.get_quotes([symbol])).get(symbol)
@@ -136,9 +156,13 @@ async def _run(
     limit_price: Decimal | None, stop_price: Decimal | None, check_quote_age: bool,
     reduce_only: bool, redis,
 ) -> CheckResult:
-    # 1-3: switches and whitelist
-    if await is_kill_switch_on(session):
-        raise _Reject(ErrorCode.KILL_SWITCH_ACTIVE, "trading is halted by the kill switch")
+    # 1-3: switches and whitelist; Ruling R25: with the kill switch on, only orders that
+    # strictly reduce the position pass (settled below, once the quantity is known)
+    kill_switch = await is_kill_switch_on(session)
+    if kill_switch:
+        held = await _held(session, portfolio.id, instrument.symbol)
+        if held == 0 or (held > 0) == (side == OrderSide.buy):
+            raise _kill_switch()
     if portfolio.status == PortfolioStatus.locked:
         raise _Reject(ErrorCode.PORTFOLIO_LOCKED, "portfolio is locked")
     profile = await effective_risk_profile(session, portfolio)
@@ -169,6 +193,8 @@ async def _run(
         after = before + qty if side == OrderSide.buy else before - qty
         increases = abs(after) > abs(before)
         reduces = abs(after) < abs(before) and _sign(after) in (0, _sign(before))
+    if kill_switch and not reduces:
+        raise _kill_switch()
     if valuation.stale_symbols and not reduces:
         raise _Reject(
             ErrorCode.PROVIDER_UNAVAILABLE,

@@ -45,6 +45,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.execution import execute_fill
@@ -822,15 +823,19 @@ async def _position_balances(
 async def _cancel_exits(
     session: AsyncSession, portfolio_id: UUID, symbol: str, *, by: str
 ) -> list[Order]:
-    """Ruling R16: cancel the symbol's open bracket exits (take_profit/stop_loss)."""
+    """Ruling R16: cancel the symbol's open bracket exits (take_profit/stop_loss). A
+    `held` exit whose entry is not filled belongs to a still-pending bracket and is kept."""
+    entry = aliased(Order)
     exits = list(await session.scalars(
         select(Order)
+        .outerjoin(entry, entry.id == Order.parent_id)
         .where(
             Order.portfolio_id == portfolio_id, Order.symbol == symbol,
             Order.role.in_(_CHILD_ROLES), Order.status.in_(OPEN_STATUSES),
+            (Order.status != OrderStatus.held) | (entry.status == OrderStatus.filled),
         )
         .order_by(Order.created_at, Order.id)
-        .with_for_update()
+        .with_for_update(of=Order)
         .execution_options(populate_existing=True)
     ))
     if exits:
