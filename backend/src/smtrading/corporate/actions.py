@@ -1,0 +1,212 @@
+"""Corporate actions with ex-date `day`: cash dividends and splits on held positions.
+
+Each portfolio is processed in its own transaction; every (symbol, day, kind, portfolio)
+is claimed in job_runs (`corp`) so it is applied at most once, and the whole day is
+marked `corporate / {day}` once every portfolio succeeded.
+"""
+
+import logging
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import date
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation, localcontext
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from smtrading.common.money import quantize_money
+from smtrading.corporate.interest import account_id, debit_lines, lock_portfolio
+from smtrading.engine.quotesource import QuoteSource
+from smtrading.instruments.models import Instrument
+from smtrading.jobs.runs import job_done, run_job_once
+from smtrading.ledger.models import Account, AccountBalance, AccountKind, JournalType
+from smtrading.ledger.service import LineSpec, get_balance, post_journal
+from smtrading.marketdata.types import CalendarEvent
+from smtrading.positions.models import Position
+
+log = logging.getLogger("smtrading.corporate.actions")
+
+JOB = "corporate"
+EVENT_JOB = "corp"
+AUTHOR = "corporate"
+KINDS = ("dividend", "split")  # dividends first: they are paid on the pre-split quantity
+_PREC = 60
+_Q18 = Decimal(1).scaleb(-18)
+
+
+@dataclass(frozen=True)
+class _Inst:
+    symbol: str
+    currency: str
+
+
+def _positive(value) -> Decimal | None:
+    try:
+        d = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    return d if d.is_finite() and d > 0 else None
+
+
+async def _dividend(
+    session: AsyncSession, portfolio_id: UUID, inst: _Inst, qty: Decimal,
+    event: CalendarEvent,
+) -> bool:
+    amount = _positive(event.data.get("amount"))
+    if amount is None:
+        log.warning("dividend of %s on %s has no valid amount: %s",
+                    inst.symbol, event.date, event.data)
+        return False
+    ccy = (event.data.get("currency") or inst.currency).upper()
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        total = quantize_money(abs(qty) * amount, ccy)
+    if total <= 0:
+        return False
+    if qty > 0:  # long: credited
+        lines = [
+            LineSpec(await account_id(session, portfolio_id, ccy, AccountKind.cash), total),
+            LineSpec(
+                await account_id(session, None, ccy, AccountKind.system_equity),
+                total.copy_negate(),
+            ),
+        ]
+    else:  # short: the lender's dividend is charged
+        lines = await debit_lines(session, portfolio_id, ccy, total, AccountKind.system_equity)
+    await post_journal(
+        session, type=JournalType.DIVIDEND, lines=lines, author_type="system",
+        author_id=AUTHOR, reason=f"dividend {inst.symbol} {amount} {ccy} x {qty} {event.date}",
+    )
+    return True
+
+
+async def _split(
+    session: AsyncSession, portfolio_id: UUID, inst: _Inst, qty: Decimal,
+    event: CalendarEvent,
+) -> bool:
+    ratio = _positive(event.data.get("ratio"))
+    if ratio is None:
+        log.warning("split of %s on %s has no valid ratio: %s",
+                    inst.symbol, event.date, event.data)
+        return False
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        delta = (qty * (ratio - 1)).quantize(_Q18, rounding=ROUND_HALF_EVEN)
+    if delta == 0:
+        return False
+    await post_journal(
+        session, type=JournalType.CORPORATE_ACTION,
+        lines=[
+            LineSpec(await account_id(session, portfolio_id, inst.symbol, AccountKind.position),
+                     delta),
+            LineSpec(await account_id(session, None, inst.symbol, AccountKind.system_equity),
+                     delta.copy_negate()),
+        ],
+        allow_negative=frozenset({AccountKind.position}) if qty < 0 else frozenset(),
+        author_type="system", author_id=AUTHOR,
+        reason=f"split {inst.symbol} ratio {ratio} {event.date}",
+    )
+    position = (
+        await session.execute(
+            select(Position)
+            .where(Position.portfolio_id == portfolio_id, Position.symbol == inst.symbol)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if position is None:
+        log.warning("split of %s: portfolio %s has no projection row", inst.symbol, portfolio_id)
+        return True
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        position.qty = qty + delta
+        position.avg_price = (position.avg_price / ratio).quantize(
+            _Q18, rounding=ROUND_HALF_EVEN
+        )
+    await session.flush()
+    return True
+
+
+_APPLY = {"dividend": _dividend, "split": _split}
+
+
+async def _apply_portfolio(
+    session: AsyncSession, portfolio_id: UUID, symbols: list[str],
+    events: dict[str, list[CalendarEvent]], instruments: dict[str, _Inst], day: date,
+) -> int:
+    await lock_portfolio(session, portfolio_id)
+    journals = 0
+    for symbol in symbols:
+        for event in events.get(symbol, []):
+            key = f"{symbol}:{day.isoformat()}:{event.kind}:{portfolio_id}"
+            if not await run_job_once(session, EVENT_JOB, key):
+                continue
+            # read after the lock: the ledger is the source of truth for quantities
+            qty = await get_balance(
+                session, await account_id(session, portfolio_id, symbol, AccountKind.position)
+            )
+            if qty == 0:
+                continue
+            if await _APPLY[event.kind](session, portfolio_id, instruments[symbol], qty, event):
+                journals += 1
+    return journals
+
+
+async def run_corporate_actions(session: AsyncSession, qs: QuoteSource, day: date) -> int:
+    """Apply the dividends and splits with ex-date `day`; returns the journals created.
+
+    Commits once per portfolio. A failing portfolio is rolled back, logged and left for
+    the next run; the day is marked done only when none failed.
+    """
+    key = day.isoformat()
+    if await job_done(session, JOB, key):
+        return 0
+    rows = (await session.execute(
+        select(Account.portfolio_id, Account.asset)
+        .join(AccountBalance, AccountBalance.account_id == Account.id)
+        .where(
+            Account.portfolio_id.is_not(None), Account.kind == AccountKind.position,
+            AccountBalance.balance != 0,
+        )
+        .order_by(Account.portfolio_id, Account.asset)
+    )).all()
+    holdings: dict[UUID, list[str]] = defaultdict(list)
+    for portfolio_id, symbol in rows:
+        holdings[portfolio_id].append(symbol)
+    symbols = sorted({s for held in holdings.values() for s in held})
+
+    events: dict[str, list[CalendarEvent]] = defaultdict(list)
+    instruments: dict[str, _Inst] = {}
+    if symbols:
+        for e in await qs.get_calendar(symbols, day, day):
+            if e.date == day and e.kind in KINDS:
+                events[e.symbol].append(e)
+        for evs in events.values():
+            evs.sort(key=lambda e: KINDS.index(e.kind))
+        instruments = {
+            symbol: _Inst(symbol, ccy) for symbol, ccy in (await session.execute(
+                select(Instrument.symbol, Instrument.currency)
+                .where(Instrument.symbol.in_(list(events)))
+            )).all()
+        }
+    await session.commit()
+
+    total, failed = 0, False
+    for portfolio_id, held in holdings.items():
+        affected = [s for s in held if s in events]
+        if not affected:
+            continue
+        try:
+            total += await _apply_portfolio(
+                session, portfolio_id, affected, events, instruments, day
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            failed = True
+            log.exception("corporate actions of portfolio %s for %s failed", portfolio_id, key)
+    if not failed:
+        await run_job_once(session, JOB, key)
+        await session.commit()
+    return total

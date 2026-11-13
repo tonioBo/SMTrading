@@ -4,7 +4,6 @@ import logging
 import signal
 import time
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
 
 import httpx
 from redis.asyncio import Redis
@@ -12,12 +11,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
-from smtrading.corporate.snapshots import take_snapshots
 from smtrading.engine.processor import OrderProcessor
+from smtrading.jobs.scheduler import JobScheduler
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.marketdata.streaming import StreamManager
-from smtrading.risk.daily_loss import reset_daily
-from smtrading.risk.margin import margin_sweep
 
 log = logging.getLogger("smtrading.worker")
 
@@ -26,8 +23,6 @@ HEARTBEAT_INTERVAL_S = 10
 RESTART_DELAY_S = 5
 HEALTH_FIRST_DELAY_S = 30
 HEALTH_INTERVAL_S = 300
-MARGIN_SWEEP_INTERVAL_S = 60
-SNAPSHOT_INTERVAL_S = 300
 
 
 async def heartbeat(redis) -> None:
@@ -52,24 +47,6 @@ async def health_checks(router) -> None:
             log.warning("connector health check failed; retrying in %ss", HEALTH_INTERVAL_S,
                         exc_info=True)
         await asyncio.sleep(HEALTH_INTERVAL_S)
-
-
-async def every(name: str, interval_s: float, job: Callable[[], Awaitable[None]]) -> None:
-    """Run `job()` now and then every `interval_s`; a failure is logged and retried."""
-    while True:
-        try:
-            await job()
-        except Exception:
-            log.exception("%s failed; retrying in %ss", name, interval_s)
-        await asyncio.sleep(interval_s)
-
-
-async def risk_sweep(sessionmaker, router, redis) -> None:
-    """Lift expired daily-loss blocks, then check margin and daily loss."""
-    async with sessionmaker() as session:
-        await reset_daily(session, datetime.now(UTC))
-        await session.commit()
-    await margin_sweep(sessionmaker, router, redis)
 
 
 async def supervise(name: str, factory: Callable[[], Awaitable[None]]) -> None:
@@ -108,14 +85,10 @@ async def run() -> None:
                         supervise("order processor",
                                   lambda: OrderProcessor(sessionmaker, redis, router).run())
                     ),
-                    tg.create_task(every(
-                        "risk sweep", MARGIN_SWEEP_INTERVAL_S,
-                        lambda: risk_sweep(sessionmaker, router, redis),
-                    )),
-                    tg.create_task(every(
-                        "equity snapshots", SNAPSHOT_INTERVAL_S,
-                        lambda: take_snapshots(sessionmaker, router),
-                    )),
+                    tg.create_task(
+                        supervise("job scheduler",
+                                  lambda: JobScheduler(sessionmaker, router, redis).run())
+                    ),
                 ]
                 await stop.wait()
                 log.info("shutdown requested")

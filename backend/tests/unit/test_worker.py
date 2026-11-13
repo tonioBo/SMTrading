@@ -194,3 +194,33 @@ async def test_run_supervises_order_processor(monkeypatch):
     assert started.is_set()
     assert seen["redis"] is redis
     assert isinstance(seen["qs"], worker.MarketDataRouter)
+
+
+async def test_run_supervises_job_scheduler(monkeypatch):
+    started = asyncio.Event()
+    seen = {}
+
+    class FakeScheduler:
+        def __init__(self, sessionmaker, qs, redis, **kwargs):
+            seen.update(sessionmaker=sessionmaker, qs=qs, redis=redis)
+
+        async def run(self):
+            started.set()
+            signal.raise_signal(signal.SIGTERM)
+            await asyncio.sleep(3600)
+
+    redis = _FlakyRedis()
+    monkeypatch.setattr(
+        worker, "get_settings",
+        lambda: SimpleNamespace(redis_url="redis://unused:6379/0", database_url="x"),
+    )
+    monkeypatch.setattr(worker.Redis, "from_url", staticmethod(lambda url: redis))
+    monkeypatch.setattr(worker, "make_engine", lambda url: _FakeEngine())
+    monkeypatch.setattr(worker, "StreamManager", _IdleProcessor)
+    monkeypatch.setattr(worker, "health_checks", lambda router: asyncio.sleep(3600))
+    monkeypatch.setattr(worker, "OrderProcessor", _IdleProcessor)
+    monkeypatch.setattr(worker, "JobScheduler", FakeScheduler)
+    await asyncio.wait_for(worker.run(), 2)
+    assert started.is_set()
+    assert seen["redis"] is redis
+    assert isinstance(seen["qs"], worker.MarketDataRouter)
