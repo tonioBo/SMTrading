@@ -17,7 +17,6 @@ from smtrading.common.logsetup import configure_logging
 from smtrading.connectors.service import seed_connectors
 from smtrading.fees.models import FeeRule, FeeScope, FeeSide
 from smtrading.instruments.catalog import seed_catalog
-from smtrading.instruments.models import AssetClass, Instrument, InstrumentSource
 from smtrading.portfolios.models import Portfolio
 from smtrading.portfolios.service import create_portfolio
 from smtrading.risk.models import AppSetting, InterestKind, InterestRate, RiskProfile, SystemState
@@ -48,29 +47,6 @@ _APP_SETTINGS = {
 }
 _SYSTEM_STATE = {"kill_switch": {"on": False}}
 
-_US = (AssetClass.us_equity, "USD", "0.000001", "0.01", True)
-_EU_MTA = (AssetClass.eu_equity, "EUR", "1", "0.001", True)
-_EU_XETRA = (AssetClass.eu_equity, "EUR", "1", "0.01", True)
-_CRYPTO = (AssetClass.crypto, "USD", "0.00000001", "0.01", False)
-_FX = (AssetClass.forex, "USD", "1", "0.00001", False)
-
-# symbol, name, market, (asset_class, currency, lot, tick, shortable)
-_INSTRUMENTS = [
-    ("AAPL", "Apple Inc.", "NASDAQ", _US),
-    ("MSFT", "Microsoft Corp.", "NASDAQ", _US),
-    ("NVDA", "NVIDIA Corp.", "NASDAQ", _US),
-    ("SPY", "SPDR S&P 500 ETF", "NYSE", _US),
-    ("ENI.MI", "Eni S.p.A.", "MTA", _EU_MTA),
-    ("ISP.MI", "Intesa Sanpaolo", "MTA", _EU_MTA),
-    ("SAP.DE", "SAP SE", "XETRA", _EU_XETRA),
-    ("VWCE.DE", "Vanguard FTSE All-World UCITS ETF", "XETRA", _EU_XETRA),
-    ("BTC-USD", "Bitcoin", "CRYPTO", _CRYPTO),
-    ("ETH-USD", "Ethereum", "CRYPTO", _CRYPTO),
-    ("EURUSD", "Euro / US Dollar", "FX", _FX),
-    ("GBPUSD", "British Pound / US Dollar", "FX", _FX),
-]
-
-
 async def run_seed(session: AsyncSession, *, admin: tuple[str, str] | None = None) -> str | None:
     """Idempotent seed. Does not commit. Existing rows (and admin edits) are left untouched.
 
@@ -80,26 +56,9 @@ async def run_seed(session: AsyncSession, *, admin: tuple[str, str] | None = Non
     Returns the plaintext demo-agent token when it was created by this run (print it only
     after the caller commits), else None."""
     await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": SEED_LOCK_KEY})
-    rows = [
-        {
-            "symbol": symbol,
-            "name": name,
-            "asset_class": asset_class,
-            "market": market,
-            "currency": currency,
-            "lot_size": Decimal(lot),
-            "tick_size": Decimal(tick),
-            "shortable": shortable,
-            "active": True,
-            "provider_symbols": {},
-            "source": InstrumentSource.catalog,
-        }
-        for symbol, name, market, (asset_class, currency, lot, tick, shortable) in _INSTRUMENTS
-    ]
-    await session.execute(
-        insert(Instrument).values(rows).on_conflict_do_nothing(index_elements=["symbol"])
-    )
-    await seed_catalog(session)  # the wider curated catalog, insert-only as well
+    # the curated catalog, insert-only: a fresh install gets the catalog values for every
+    # symbol; rows already in a database (incl. the 12 pre-catalog ones) are left as they are
+    await seed_catalog(session)
 
     if await session.scalar(
         select(FeeRule.id).where(FeeRule.name == DEFAULT_FEE_RULE_NAME).limit(1)
@@ -194,6 +153,39 @@ _DEFAULT_RISK_DESCRIPTION = (
 )
 
 
+PRESETS_SEEDED_KEY = "risk_presets_seeded"
+
+
+async def _seed_presets_once(session: AsyncSession) -> None:
+    """The preset profiles and the descriptions, once per database (I5): afterwards a
+    deleted or renamed preset, or a cleared description, is never brought back. A database
+    that already holds any preset (seeded before the flag existed) only gets the flag."""
+    existing = set(await session.scalars(select(RiskProfile.name)))
+    if not existing & {name for name, *_ in _RISK_PRESETS}:
+        for name, order, pos, loss, classes, symbols, short, description in _RISK_PRESETS:
+            session.add(
+                RiskProfile(
+                    name=name,
+                    description=description,
+                    max_order_notional_eur=Decimal(order),
+                    max_position_pct=Decimal(pos),
+                    max_daily_loss_pct=Decimal(loss),
+                    allowed_symbols=list(symbols),
+                    allowed_asset_classes=list(classes),
+                    allowed_markets=[],
+                    short_allowed=short,
+                )
+            )
+        await session.execute(
+            update(RiskProfile)
+            .where(RiskProfile.name == DEFAULT_RISK_PROFILE_NAME,
+                   RiskProfile.description.is_(None))
+            .values(description=_DEFAULT_RISK_DESCRIPTION)
+        )
+    session.add(AppSetting(key=PRESETS_SEEDED_KEY, value={"on": True}))
+    await session.flush()
+
+
 async def _seed_risk(session: AsyncSession) -> None:
     """Insert-if-missing: admin edits are never overwritten."""
     await session.execute(
@@ -226,30 +218,8 @@ async def _seed_risk(session: AsyncSession) -> None:
         session.add(profile)
         await session.flush()
         profile_id = profile.id
-    existing = set(await session.scalars(select(RiskProfile.name)))
-    for name, order, pos, loss, classes, symbols, short, _ in _RISK_PRESETS:
-        if name not in existing:  # insert-only: admin edits to a preset are never overwritten
-            session.add(
-                RiskProfile(
-                    name=name,
-                    max_order_notional_eur=Decimal(order),
-                    max_position_pct=Decimal(pos),
-                    max_daily_loss_pct=Decimal(loss),
-                    allowed_symbols=list(symbols),
-                    allowed_asset_classes=list(classes),
-                    allowed_markets=[],
-                    short_allowed=short,
-                )
-            )
-    await session.flush()
-    descriptions = {name: text_ for name, *_, text_ in _RISK_PRESETS}
-    descriptions[DEFAULT_RISK_PROFILE_NAME] = _DEFAULT_RISK_DESCRIPTION
-    for name, description in descriptions.items():  # only where still empty
-        await session.execute(
-            update(RiskProfile)
-            .where(RiskProfile.name == name, RiskProfile.description.is_(None))
-            .values(description=description)
-        )
+    if await session.get(AppSetting, PRESETS_SEEDED_KEY) is None:
+        await _seed_presets_once(session)
     await session.execute(
         update(Portfolio)
         .where(Portfolio.name == DEMO_PORTFOLIO_NAME, Portfolio.risk_profile_id.is_(None))

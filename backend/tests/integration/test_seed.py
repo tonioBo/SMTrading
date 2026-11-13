@@ -151,9 +151,8 @@ async def test_seed_catalog_insert_only(db_session):
     await run_seed(db_session)
     await db_session.refresh(mc)
     assert (mc.name, mc.tick_size, mc.active) == ("Edited", Decimal("0.5"), False)
-    # the pre-catalog seed rows keep their original sizes
     aapl = await db_session.get(Instrument, "AAPL")
-    assert aapl.tick_size == Decimal("0.01") and aapl.source == InstrumentSource.catalog
+    assert aapl.source == InstrumentSource.catalog
     sui = await db_session.get(Instrument, "SUI-USD")
     assert sui.provider_symbols["yahoo"] == "SUI20947-USD"
 
@@ -176,4 +175,74 @@ async def test_seed_risk_never_overwrites_existing(db_session):
     await db_session.refresh(prof)
     await db_session.refresh(default)
     assert prof.max_position_pct == Decimal(12) and prof.description == "mia"
-    assert default.description.startswith("Libero")
+    assert default.description is None  # cleared by the admin: never refilled (I5)
+
+
+async def test_fresh_seed_uses_catalog_rows(db_session):
+    """M15: on a fresh install the 12 pre-catalog symbols get the catalog values."""
+    from smtrading.instruments.models import Instrument
+
+    await run_seed(db_session)
+    aapl = await db_session.get(Instrument, "AAPL")
+    assert aapl.tick_size == Decimal("0.0001") and aapl.name == "Apple Inc."
+    assert (await db_session.get(Instrument, "ENI.MI")).tick_size == Decimal("0.0001")
+    btc = await db_session.get(Instrument, "BTC-USD")
+    assert btc.provider_symbols.get("coingecko") == "bitcoin:usd"
+
+
+async def test_existing_legacy_instrument_rows_are_not_modified(db_session):
+    from smtrading.instruments.models import Instrument
+
+    await run_seed(db_session)
+    aapl = await db_session.get(Instrument, "AAPL")
+    aapl.tick_size, aapl.name = Decimal("0.01"), "Apple (admin)"
+    await db_session.flush()
+    await run_seed(db_session)
+    await db_session.refresh(aapl)
+    assert (aapl.tick_size, aapl.name) == (Decimal("0.01"), "Apple (admin)")
+
+
+async def test_presets_seeded_once(db_session):
+    """I5: a deleted preset is not re-inserted, a cleared description stays cleared."""
+    from smtrading.risk.models import AppSetting, RiskProfile
+
+    await run_seed(db_session)
+    assert (await db_session.get(AppSetting, "risk_presets_seeded")) is not None
+    by_name = {p.name: p for p in await db_session.scalars(select(RiskProfile))}
+    await db_session.delete(by_name["0 · Difensivo"])
+    by_name["1 · Conservativo"].description = None
+    by_name["Default"].description = None
+    await db_session.flush()
+    await run_seed(db_session)
+    names = set(await db_session.scalars(select(RiskProfile.name)))
+    assert "0 · Difensivo" not in names
+    await db_session.refresh(by_name["1 · Conservativo"])
+    await db_session.refresh(by_name["Default"])
+    assert by_name["1 · Conservativo"].description is None
+    assert by_name["Default"].description is None
+
+
+async def test_presets_flag_set_on_existing_install_without_inserting(db_session):
+    """An install seeded before the flag: presets present (one deleted) -> flag only."""
+    from smtrading.risk.models import AppSetting, RiskProfile
+
+    await run_seed(db_session)
+    await db_session.delete(await db_session.get(AppSetting, "risk_presets_seeded"))
+    renamed = (await db_session.execute(
+        select(RiskProfile).where(RiskProfile.name == "2 · Prudente"))).scalar_one()
+    renamed.name = "Prudente (mio)"
+    await db_session.flush()
+    await run_seed(db_session)
+    names = set(await db_session.scalars(select(RiskProfile.name)))
+    assert "2 · Prudente" not in names and "Prudente (mio)" in names
+    assert (await db_session.get(AppSetting, "risk_presets_seeded")) is not None
+
+
+async def test_preset_symbols_in_catalog():
+    from smtrading.instruments.catalog import load_catalog
+    from smtrading.seed import _RISK_PRESETS
+
+    catalog = {r.symbol for r in load_catalog()}
+    for name, *_rest in _RISK_PRESETS:
+        symbols = _rest[4]
+        assert set(symbols) <= catalog, name
