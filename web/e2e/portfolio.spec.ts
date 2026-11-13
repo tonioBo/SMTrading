@@ -34,3 +34,20 @@ test("portafoglio: deposito e storno", async ({ page }) => {
   await page.getByRole("tab", { name: "Panoramica" }).click();
   await expect(cash).toContainText("5.000,00 €");
 });
+
+test("portafoglio: modifica delle impostazioni", async ({ page }) => {
+  const name = uniqueName();
+  await login(page);
+  await createPortfolio(page, name, "1000");
+  await page.getByRole("tab", { name: "Impostazioni" }).click();
+  const form = page.getByRole("form", { name: "Impostazioni del portafoglio" });
+  await form.getByLabel("Leva").fill("2,5");
+  await form.getByLabel("Slippage (bps)").fill("7");
+  await form.getByRole("button", { name: "Salva impostazioni" }).click();
+  await expect(form.getByRole("button", { name: "Salva impostazioni" })).toBeDisabled();
+
+  await page.reload();
+  await page.getByRole("tab", { name: "Impostazioni" }).click();
+  await expect(form.getByLabel("Leva")).toHaveValue("2,5");
+  await expect(form.getByLabel("Slippage (bps)")).toHaveValue("7");
+});

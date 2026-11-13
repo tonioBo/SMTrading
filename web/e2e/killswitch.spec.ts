@@ -1,13 +1,22 @@
 import { expect, test, type Page } from "@playwright/test";
 import { login } from "./helpers";
 
-/** Whatever happens, leave the kill-switch OFF. */
+/** Whatever happens, leave the kill-switch OFF: waits for the state to load and, when it
+ * is on, for the POST turning it off to finish and the header to show it. */
 async function ensureOff(page: Page) {
   await page.goto("/");
-  const off = page.getByRole("button", { name: "Disattiva kill-switch" });
-  if (await off.isVisible().catch(() => false)) {
-    await off.click();
+  const turnOn = page.getByRole("button", { name: "Attiva kill-switch" });
+  const turnOff = page.getByRole("button", { name: "Disattiva kill-switch" });
+  await expect(turnOn.or(turnOff)).toBeVisible();
+  if (await turnOff.isVisible()) {
+    await turnOff.click();
+    const posted = page.waitForResponse(
+      (r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/api/kill-switch",
+    );
     await page.getByRole("dialog").getByRole("button", { name: "Disattiva", exact: true }).click();
+    expect((await posted).ok()).toBe(true);
+    await expect(turnOn).toBeVisible();
+    await expect(page.getByText("Trading attivo")).toBeVisible();
   }
 }
 

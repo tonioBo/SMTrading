@@ -1,10 +1,10 @@
 import { expect, type Page } from "@playwright/test";
 
-/** Admin credentials come from the environment (scripts/e2e.sh reads .env); never logged. */
+/** Admin credentials come from the environment (scripts/e2e.sh generates them for its isolated stack); never logged. */
 export async function login(page: Page): Promise<void> {
   const email = process.env.SMT_ADMIN_EMAIL;
   const password = process.env.SMT_ADMIN_PASSWORD;
-  if (!email || !password) throw new Error("SMT_ADMIN_EMAIL/SMT_ADMIN_PASSWORD mancanti: controlla SMT_ADMIN_* in .env");
+  if (!email || !password) throw new Error("SMT_ADMIN_EMAIL/SMT_ADMIN_PASSWORD mancanti: lancia i test con scripts/e2e.sh");
   await page.goto("/login");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill(password);
@@ -12,7 +12,7 @@ export async function login(page: Page): Promise<void> {
   try {
     await expect(page.getByRole("button", { name: "Esci" })).toBeVisible({ timeout: 15_000 });
   } catch (err) {
-    throw new Error(`Login non riuscito: controlla SMT_ADMIN_* in .env (${(err as Error).message.split("\n")[0]})`);
+    throw new Error(`Login non riuscito (${(err as Error).message.split("\n")[0]})`);
   }
 }
 

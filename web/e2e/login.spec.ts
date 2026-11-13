@@ -20,3 +20,14 @@ test("credenziali errate mostrano un errore", async ({ page }) => {
   await expect(page.getByRole("alert")).toBeVisible();
   await expect(page).toHaveURL(/\/login/);
 });
+
+test("intestazioni di sicurezza sulla pagina e sulle API", async ({ page, request }) => {
+  const res = await page.goto("/login");
+  const headers = res!.headers();
+  expect(headers["content-security-policy"]).toContain("script-src 'self'");
+  expect(headers["x-frame-options"]).toBe("DENY");
+  expect(headers["x-content-type-options"]).toBe("nosniff");
+  const api = await request.get("/api/auth/me");
+  expect(api.status()).toBe(401);
+  expect(api.headers()["cache-control"]).toBe("no-store");
+});
