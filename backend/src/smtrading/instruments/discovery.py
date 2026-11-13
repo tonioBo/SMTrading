@@ -37,6 +37,8 @@ log = logging.getLogger(__name__)
 
 AUTO_ADD_KEY = "instruments.auto_add"
 DAILY_LIMIT = 25
+# attempts per agent and day, failures included (each one reaches the providers)
+DAILY_ATTEMPTS = 200
 COUNTER_TTL_S = 2 * 86400
 SEARCH_LIMIT = 10
 
@@ -224,6 +226,10 @@ def _counter_key(agent_id: UUID) -> str:
     return f"instruments:auto_add:{agent_id}:{datetime.now(UTC).date().isoformat()}"
 
 
+def _attempts_key(agent_id: UUID) -> str:
+    return f"instruments:auto_add_attempts:{agent_id}:{datetime.now(UTC).date().isoformat()}"
+
+
 async def auto_adds_today(redis: Any, agent_id: UUID) -> int:
     return int(await redis.get(_counter_key(agent_id)) or 0)
 
@@ -278,6 +284,17 @@ async def discover(
                 ErrorCode.RISK_LIMIT_EXCEEDED,
                 f"limite di {DAILY_LIMIT} strumenti aggiunti automaticamente al giorno raggiunto",
                 {"symbol": canonical, "limit": DAILY_LIMIT},
+            )
+    if counter is not None:
+        attempts_key = _attempts_key(agent_id)
+        attempts = await redis.incr(attempts_key)
+        await redis.expire(attempts_key, COUNTER_TTL_S)
+        if attempts > DAILY_ATTEMPTS:
+            await redis.decr(counter)
+            raise SMTError(
+                ErrorCode.RATE_LIMITED,
+                f"troppi tentativi di aggiunta automatica oggi (max {DAILY_ATTEMPTS})",
+                {"symbol": canonical, "limit": DAILY_ATTEMPTS},
             )
     try:
         instrument = await _create(session, router, shape, actor)

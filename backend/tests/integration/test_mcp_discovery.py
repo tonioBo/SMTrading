@@ -131,3 +131,22 @@ async def test_watchlist_alert_and_backtest_add_on_demand(env):
     err, out = await env["call"]("add_to_watchlist", {"watchlist_id": wl["id"],
                                                       "symbols": ["ZZOTC"]})
     assert err and out["code"] == "INVALID_ORDER"
+
+
+async def test_search_not_addable_when_auto_add_off(env, mcp_server):
+    from smtrading.instruments.discovery import set_auto_add
+
+    engine = make_engine(mcp_server.db_url)
+    async with AsyncSession(engine) as s:
+        await set_auto_add(s, False)
+        await s.commit()
+    try:
+        err, rows = await env["call"]("search_instruments", {"query": "zeta"})
+        assert not err
+        by = {r["symbol"]: r for r in rows}
+        assert by["ZZNEW"]["aggiungibile"] is False
+    finally:
+        async with AsyncSession(engine) as s:
+            await set_auto_add(s, True)
+            await s.commit()
+        await engine.dispose()

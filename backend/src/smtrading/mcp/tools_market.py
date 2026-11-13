@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from smtrading.agents.models import AgentPortfolio
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.instruments.discovery import Unsupported, classify_hit
+from smtrading.instruments.discovery import Unsupported, auto_add_enabled, classify_hit
 from smtrading.instruments.market_hours import MARKETS, all_market_status, market_status
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.instruments.service import canonical_symbol
@@ -156,13 +156,14 @@ async def _search_instruments(
     stored = set(await ctx.session.scalars(
         select(Instrument.symbol).where(Instrument.symbol.in_(list(candidates)))
     )) if candidates else set()
+    addable = await auto_add_enabled(ctx.session)  # with the toggle off nothing is added
     for sym, (c, h) in candidates.items():
         if sym in out or sym in stored:
             continue
         out[sym] = {
             "symbol": sym, "name": c.name, "asset_class": c.asset_class, "market": c.market,
             "exchange": h.exchange, "currency": c.currency, "tradable": False,
-            "in_catalogo": False, "aggiungibile": True, "provider": h.provider,
+            "in_catalogo": False, "aggiungibile": addable, "provider": h.provider,
         }
     return list(out.values())[:n]
 

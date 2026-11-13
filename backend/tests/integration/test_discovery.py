@@ -222,3 +222,24 @@ def test_classify_hit_for_search():
     with pytest.raises(Unsupported):
         classify_hit(hit("ZZE.MI", "x", AssetClass.eu_equity, "Milan", "USD"))
     assert classify_symbol("BRK-B").asset_class == AssetClass.us_equity
+
+
+async def test_failed_attempts_are_capped(db_session, router, agent, redis):
+    """M13a: failures give the daily slot back, but attempts are capped too (RATE_LIMITED)."""
+    calls = []
+
+    async def down(*a, **k):
+        calls.append(a)
+        raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE, "down", {"errors": {"yahoo": "Timeout"}})
+
+    router.probe_quote = down
+    await redis.set(discovery._attempts_key(agent.id), discovery.DAILY_ATTEMPTS - 1)
+    with pytest.raises(SMTError) as ei:
+        await _add(db_session, router, "ZZNQ", agent, redis)
+    assert ei.value.code == ErrorCode.PROVIDER_UNAVAILABLE
+    assert len(calls) == 1
+    with pytest.raises(SMTError) as ei:
+        await _add(db_session, router, "ZZNY", agent, redis)
+    assert ei.value.code == ErrorCode.RATE_LIMITED
+    assert len(calls) == 1  # no provider call once capped
+    assert await discovery.auto_adds_today(redis, agent.id) == 0
