@@ -98,7 +98,8 @@ funzionano allo stesso modo, ma l'esecuzione e' asincrona. `place_order` rispond
 l'ordine in stato aperto; il fill (o il rifiuto del broker) arriva dopo, quindi va
 controllato con `get_order`/`list_orders`. Un annullamento resta in attesa finche' il broker
 non lo conferma. Su questi portafogli nulla si esegue localmente: gli ordini non
-instradabili al broker sono rifiutati, il trailing stop diventa al trigger un market
+instradabili al broker sono rifiutati (subito o, se il broker non riconosce lo strumento,
+poco dopo con una notifica `order.rejected`), il trailing stop diventa al trigger un market
 reduce-only inviato al broker. Un portafoglio archiviato e' invisibile all'agente
 (`NOT_FOUND`).
 
@@ -145,6 +146,7 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
 - `remove_from_watchlist`: toglie simboli da una watchlist.
 - `delete_watchlist`: elimina una watchlist.
 - `create_alert`: crea un alert di prezzo (al massimo 100 attivi per agente): `price_above`/`price_below` (valore = prezzo) o `change_pct_above`/`change_pct_below` (valore = variazione percentuale dal prezzo alla creazione, es. `-5`). Il prezzo e' `last`, altrimenti il mid; scatta una sola volta e arriva in `get_triggered_alerts` come notifica `price_alert` (`payload`: `alert_id`, `symbol`, `condition`, `value`, `price`).
+- Modifiche dell'amministratore: se l'admin rimuove un simbolo da una watchlist, elimina una watchlist o annulla un alert, l'agente riceve in `get_triggered_alerts` una notifica `admin.watch_changed` (`payload`: `action` = `remove_symbol` | `delete_watchlist` | `cancel_alert`, `watchlist`, `symbol` o `alert_id`).
 - `list_alerts`: gli alert dell'agente, filtrabili per stato (`active`/`triggered`).
 - `delete_alert`: elimina un alert dell'agente.
 

@@ -96,7 +96,8 @@ alcun collegamento a conti reali.
 
 1. *Broker → Nuovo collegamento*: scegli il tipo e inserisci le chiavi del conto
    paper/demo; *Verifica* controlla la connessione.
-2. Assegna il collegamento a un portafoglio (non archiviato, senza ordini simulati aperti).
+2. Assegna il collegamento a un portafoglio (non archiviato, senza ordini simulati aperti
+   e **senza posizioni aperte**: il broker non conosce le posizioni simulate).
    *Scollega* lo toglie; non si può cambiare il collegamento finché ci sono ordini
    in corso sul broker.
 
@@ -114,7 +115,9 @@ Funzionamento:
 - Su un portafoglio collegato **nulla si esegue localmente**: i fill arrivano dal broker.
   Il trailing stop è simulato e al trigger diventa un ordine market reduce-only inviato al
   broker; la liquidazione per margine è instradata al broker; gli altri ordini non
-  instradabili sono rifiutati all'inserimento.
+  instradabili sono rifiutati (subito o, se il broker non riconosce lo strumento, poco
+  dopo con una notifica). Con il collegamento disattivato gli ordini sono rifiutati con
+  «Collegamento al broker disattivato» (il portafoglio resta in modalità *paper*).
 - *Reset* di un portafoglio collegato: rifiutato se ci sono posizioni aperte (chiudile
   prima); gli annullamenti richiesti vengono mantenuti.
 - *Riconciliazione* (*Riconcilia ora*, e periodica): confronta le posizioni del broker con
@@ -138,10 +141,14 @@ agente); spenta, un simbolo sconosciuto è `SYMBOL_NOT_FOUND`. L'origine di ogni
 
 ### Archivio portafogli
 
-*Portafogli → Archivia* congela un portafoglio (serve non avere ordini aperti): resta nel
-ledger, ma sparisce da elenchi, dashboard ed esportazioni, e agli agenti appare
-inesistente (`NOT_FOUND`); le assegnazioni restano. *Mostra archiviati* + *Ripristina* lo
-riattiva. Non si possono inserire o modificare ordini su un portafoglio archiviato.
+*Portafogli → Archivia* congela un portafoglio (serve non avere ordini aperti, non essere
+collegato a un broker e non avere posizioni allo scoperto né prestiti a margine, perché da
+archiviato non matura interessi): resta nel ledger, ma sparisce da elenchi, dashboard ed
+esportazioni, e agli agenti appare inesistente (`NOT_FOUND`); le assegnazioni restano.
+*Mostra archiviati* + *Ripristina* lo riattiva: prima applica i dividendi e i frazionamenti
+avvenuti mentre era archiviato (se il calendario non è leggibile il ripristino è rifiutato,
+riprova più tardi). Non si possono inserire o modificare ordini su un portafoglio
+archiviato.
 
 ### Agenti e Paperclip
 
@@ -153,6 +160,17 @@ token* ne emette uno nuovo). Collegamento a Paperclip: `docs/paperclip-mcp.md`.
 Il servizio `backup` salva ogni giorno un `pg_dump` compresso nel volume `backups`
 (`/backups/smtrading-AAAA-MM-GG.sql.gz`, ultimi 14 giorni). Conserva anche `.env`:
 `SMT_MASTER_KEY` serve a decifrare le chiavi di connettori e broker.
+
+I log dei processi (`docker compose logs`) non contengono chiavi: le richieste HTTP verso i
+fornitori non sono registrate e un filtro maschera token, API key, password e credenziali
+`Authorization` in ogni riga.
+
+### Aggiornamenti
+
+Dopo un `docker compose up -d --build` una scheda aperta con la versione precedente mostra
+«Nuova versione disponibile — Ricarica». Per un identificativo esplicito della build:
+`SMT_BUILD_ID=$(git rev-parse --short HEAD) docker compose up -d --build` (altrimenti
+l'immagine web usa l'ora della build).
 
 ## Test
 
