@@ -310,6 +310,7 @@ def _rejection_error(order: Order) -> SMTError:
         code = ErrorCode.INVALID_ORDER
     return SMTError(
         code, order.reject_message or "order rejected", {"order_id": str(order.id)},
+        persisted=True,
     )
 
 

@@ -27,11 +27,18 @@ class ErrorCode(StrEnum):
 
 
 class SMTError(Exception):
-    def __init__(self, code: ErrorCode, message: str, details: dict | None = None):
+    """`persisted` is True when the error reports a refusal already written to the session
+    (a rejected order): the caller should commit to keep it."""
+
+    def __init__(
+        self, code: ErrorCode, message: str, details: dict | None = None, *,
+        persisted: bool = False,
+    ):
         super().__init__(message)
         self.code = code
         self.message = message
         self.details = details
+        self.persisted = persisted
 
     def to_dict(self) -> dict:
         return {"code": str(self.code), "message": self.message, "details": self.details}

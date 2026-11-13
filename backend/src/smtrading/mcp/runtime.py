@@ -4,9 +4,11 @@ Tool bodies are `async def fn(ctx: ToolCtx) -> Any`. `run_tool` gives each call 
 session and a fresh `MemoQuoteSource` over the runtime quote source, then:
 
 - success: serialise with `dto.to_jsonable`, `commit()`, `dispatch_post_commit`;
-- `SMTError`: rollback + `discard_post_commit`, or with `commit_on_error=True` (rejected
-  orders are persisted) commit + dispatch; the error is returned as is;
-- `pydantic.ValidationError` / `ValueError` / `decimal.InvalidOperation`: INVALID_ORDER;
+- `SMTError`: rollback + `discard_post_commit`; with `commit_on_error=True` an error
+  flagged `persisted` (a rejected order written to the session) is committed and
+  dispatched instead, so the rejection is stored. The error is returned as is;
+- `pydantic.ValidationError` / `ValueError` / `decimal.InvalidOperation`: INVALID_ORDER
+  (a ValueError is logged, its text is not returned);
 - anything else: logged with its stack, returned as INTERNAL "internal error".
 
 The result is a `CallToolResult` with one JSON text block: the payload on success, or
@@ -80,7 +82,8 @@ def get_runtime() -> McpRuntime:
 
 def _text(payload: Any, *, is_error: bool = False) -> CallToolResult:
     return CallToolResult(
-        content=[TextContent(type="text", text=json.dumps(payload))], is_error=is_error
+        content=[TextContent(type="text", text=json.dumps(payload, allow_nan=False))],
+        is_error=is_error,
     )
 
 
@@ -101,8 +104,8 @@ async def _execute(
             # serialised inside the transaction: a result that cannot be rendered
             # rolls the call back instead of reporting an error for committed work
             result = to_jsonable(await fn(ctx))
-        except SMTError:
-            if commit_on_error:
+        except SMTError as e:
+            if commit_on_error and e.persisted:
                 await session.commit()
                 await dispatch_post_commit(session, runtime.redis)
             else:
@@ -134,6 +137,28 @@ async def _audit(
         log.exception("audit commit failed (method=%s)", method)
 
 
+def validation_error(e: pydantic.ValidationError) -> CallToolResult:
+    """INVALID_ORDER for arguments that fail the tool signature's schema: `details.field`
+    is the first failing argument; the rejected values are not echoed."""
+    errors = e.errors(include_input=False, include_url=False)
+    first = errors[0] if errors else {"loc": (), "msg": "invalid arguments"}
+    field = str(first["loc"][0]) if first["loc"] else None
+    message = f"{field}: {first['msg']}" if field else str(first["msg"])
+    return _error(str(ErrorCode.INVALID_ORDER), message, {"field": field} if field else {})
+
+
+async def reject_arguments(
+    method: str, params: dict[str, Any], e: pydantic.ValidationError
+) -> CallToolResult:
+    """The tool-call path for arguments refused before the tool body runs (by the SDK's
+    validation of the tool signature): the standard JSON error plus an audit row."""
+    response = validation_error(e)
+    runtime = get_runtime_or_none()
+    if runtime is not None:
+        await _audit(runtime, current_agent.get(), method, params, str(ErrorCode.INVALID_ORDER), 0)
+    return response
+
+
 async def run_tool(
     method: str,
     params: dict[str, Any],
@@ -152,9 +177,13 @@ async def run_tool(
     except SMTError as e:
         outcome = str(e.code)
         response = _error(outcome, e.message, e.details)
-    except (pydantic.ValidationError, ValueError, InvalidOperation) as e:
+    except pydantic.ValidationError as e:
         outcome = str(ErrorCode.INVALID_ORDER)
-        response = _error(outcome, str(e) or "invalid argument")
+        response = validation_error(e)
+    except (ValueError, InvalidOperation) as e:
+        log.warning("MCP tool %s: invalid argument: %r", method, e)
+        outcome = str(ErrorCode.INVALID_ORDER)
+        response = _error(outcome, "invalid argument")
     except Exception:
         log.exception("MCP tool %s failed", method)
         outcome = "INTERNAL"

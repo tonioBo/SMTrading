@@ -122,6 +122,27 @@ async def test_rejected_order_is_persisted(env):
     assert pending == []
 
 
+async def test_error_after_an_order_was_stored_rolls_back(env, monkeypatch):
+    """commit_on_error keeps persisted rejections only: an order already written as
+    pending is rolled back when another error (here PROVIDER_UNAVAILABLE) follows."""
+    from smtrading.common.errors import ErrorCode, SMTError
+    from smtrading.engine import service as engine
+
+    real = engine.place_order
+
+    async def flaky(session, qs, req, **kw):
+        order = await real(session, qs, req, **kw)
+        assert order.status == OrderStatus.pending
+        raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE, "provider down")
+
+    monkeypatch.setattr(engine, "place_order", flaky)
+    is_error, err = await _buy(env, type="limit", limit_price="40000")
+    assert is_error and err["code"] == "PROVIDER_UNAVAILABLE"
+    monkeypatch.setattr(engine, "place_order", real)
+    _, orders = await env["call"]("list_orders", {"portfolio_id": env["pid"]})
+    assert orders == []
+
+
 async def test_client_order_id_is_idempotent(env):
     _, first = await _buy(env, type="limit", limit_price="40000", client_order_id="c-1")
     is_error, again = await _buy(env, type="limit", limit_price="40000", client_order_id="c-1")
@@ -208,7 +229,7 @@ async def test_bracket_order(env):
     assert sl["role"] == "stop_loss" and D(sl["stop_price"]) == D(45000)
     assert tp["parent_id"] == sl["parent_id"] == entry["id"]
     assert tp["oco_group_id"] == sl["oco_group_id"] is not None
-    assert tp["reduce_only"] is True
+    assert tp["reduce_only"] is True and sl["reduce_only"] is True
 
 
 async def test_bracket_requires_prices(env):

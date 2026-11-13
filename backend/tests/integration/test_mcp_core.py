@@ -2,6 +2,7 @@ import json
 from decimal import Decimal
 
 import httpx
+import pytest
 from sqlalchemy import func, select
 
 from smtrading.agents import service as agents
@@ -220,31 +221,37 @@ async def test_run_tool_commit_semantics(fresh_db):
     token = current_agent.set(agent_id)
     seen = []
     try:
-        def make(name: str, fail: bool):
+        def make(name: str, fail: bool, persisted: bool = False):
             async def fn(ctx):
                 seen.append(ctx)
                 ctx.session.add(Portfolio(name=name))
                 queue_event(ctx.session, "evt", {"name": name})
                 if fail:
-                    raise SMTError(ErrorCode.INSUFFICIENT_FUNDS, "no")
+                    raise SMTError(ErrorCode.INSUFFICIENT_FUNDS, "no", persisted=persisted)
                 return {"name": name}
             return fn
 
         ok = await run_tool("t_ok", {}, make("ok", False))
         assert not ok.is_error and json.loads(ok.content[0].text) == {"name": "ok"}
-        bad = await run_tool("t_bad", {}, make("rolled", True))
+        bad = await run_tool("t_bad", {}, make("rolled", True, persisted=True))
         assert bad.is_error
-        kept = await run_tool("t_kept", {}, make("kept", True), commit_on_error=True)
+        kept = await run_tool(
+            "t_kept", {}, make("kept", True, persisted=True), commit_on_error=True
+        )
         assert kept.is_error and json.loads(kept.content[0].text)["code"] == "INSUFFICIENT_FUNDS"
+        # commit_on_error keeps persisted rejections only: any other error rolls back
+        other = await run_tool("t_other", {}, make("other", True), commit_on_error=True)
+        assert other.is_error
 
         async with runtime.sessionmaker() as s:
             names = set(await s.scalars(select(Portfolio.name)))
-        assert {"ok", "kept"} <= names and "rolled" not in names
+        assert "ok" in names and "kept" in names
+        assert "rolled" not in names and "other" not in names
         published = [json.loads(m)["name"] for _, m in runtime.redis.published]
         assert published == ["ok", "kept"]
         # each call gets its own memo over the runtime quote source
         assert all(isinstance(c.qs, MemoQuoteSource) for c in seen)
-        assert len({id(c.qs) for c in seen}) == 3
+        assert len({id(c.qs) for c in seen}) == 4
         assert all(c.agent_id == agent_id and c.router is None for c in seen)
     finally:
         current_agent.reset(token)
@@ -270,3 +277,75 @@ async def test_run_tool_without_agent_is_forbidden(fresh_db):
     finally:
         rt.set_runtime(prev)
         await engine.dispose()
+
+
+@pytest.mark.parametrize(("tool", "args", "field"), [
+    ("get_quote", {}, "symbols"),
+    ("get_triggered_alerts", {"limit": 1.5}, "limit"),
+    ("get_portfolio", {"portfolio_id": 7}, "portfolio_id"),
+])
+async def test_schema_errors_are_json_invalid_order_and_audited(
+    mcp_server, mcp_call, tool, args, field
+):
+    is_error, payload = await mcp_call(mcp_server.url, mcp_server.token, tool, args)
+    assert is_error
+    assert payload["code"] == "INVALID_ORDER"
+    assert payload["details"] == {"field": field}
+    assert payload["message"].startswith(f"{field}: ")
+    rows = await _audit_rows(mcp_server.db_url, tool)
+    assert [(r.outcome, r.agent_id, r.params) for r in rows] == [
+        ("INVALID_ORDER", mcp_server.agent_id, args)
+    ]
+
+
+async def test_two_agents_interleaved_keep_their_identity(mcp_server, mcp_call):
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from smtrading.portfolios.service import create_portfolio
+
+    engine = make_engine(mcp_server.db_url)
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as s:
+            p2 = await create_portfolio(s, name="Second", initial_cash=Decimal(10))
+            a2, token2 = await agents.create_agent(s, "second-agent")
+            await agents.assign_portfolio(s, a2.id, p2.id, "read")
+            await s.commit()
+    finally:
+        await engine.dispose()
+
+    who = [(mcp_server.token, "Demo"), (token2, "Second")] * 5
+    results = await asyncio.gather(
+        *(mcp_call(mcp_server.url, tok, "list_portfolios") for tok, _ in who)
+    )
+    for (_, expected), (is_error, payload) in zip(who, results, strict=True):
+        assert not is_error
+        assert [p["name"] for p in payload] == [expected]
+    rows = await _audit_rows(mcp_server.db_url, "list_portfolios")
+    by_agent = {}
+    for r in rows:
+        by_agent[r.agent_id] = by_agent.get(r.agent_id, 0) + 1
+    assert by_agent == {mcp_server.agent_id: 5, a2.id: 5}
+
+
+async def test_value_error_is_generic_invalid_argument(mcp_server, mcp_call, caplog):
+    async def _bad(ctx):
+        raise ValueError("internal detail 42")
+
+    @mcp_server.mcp.tool()
+    async def test_value_error():
+        return await run_tool("test_value_error", {}, _bad)
+
+    with caplog.at_level("WARNING", logger="smtrading.mcp"):
+        is_error, payload = await mcp_call(mcp_server.url, mcp_server.token, "test_value_error")
+    assert is_error
+    assert payload == {"code": "INVALID_ORDER", "message": "invalid argument", "details": {}}
+    assert "internal detail 42" in caplog.text
+
+
+def test_tool_text_rejects_nan():
+    from smtrading.mcp.runtime import _text
+
+    with pytest.raises(ValueError):
+        _text({"x": float("nan")})
