@@ -121,6 +121,14 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
 - `get_dividends`: eventi di dividendo di un simbolo.
 - `screen`: selezione di strumenti per filtri.
 - `get_triggered_alerts`: notifiche dei portafogli dell'agente (o indirizzate a lui): `{alerts, next_after_id}`; senza cursore dalla piu' recente, con `since`/`after_id` dalla piu' vecchia; `limit` 1-500.
+- `list_watchlists`: le watchlist dell'agente con i loro simboli.
+- `create_watchlist`: crea una watchlist vuota (nome unico per agente, al massimo 20).
+- `add_to_watchlist`: aggiunge simboli del catalogo a una watchlist (al massimo 200 per watchlist); le loro quotazioni vengono seguite in streaming.
+- `remove_from_watchlist`: toglie simboli da una watchlist.
+- `delete_watchlist`: elimina una watchlist.
+- `create_alert`: crea un alert di prezzo (al massimo 100 attivi per agente): `price_above`/`price_below` (valore = prezzo) o `change_pct_above`/`change_pct_below` (valore = variazione percentuale dal prezzo alla creazione, es. `-5`). Il prezzo e' `last`, altrimenti il mid; scatta una sola volta e arriva in `get_triggered_alerts` come notifica `price_alert` (`payload`: `alert_id`, `symbol`, `condition`, `value`, `price`).
+- `list_alerts`: gli alert dell'agente, filtrabili per stato (`active`/`triggered`).
+- `delete_alert`: elimina un alert dell'agente.
 
 ### Polling degli alert
 

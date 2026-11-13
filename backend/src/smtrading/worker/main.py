@@ -15,6 +15,7 @@ from smtrading.engine.processor import OrderProcessor
 from smtrading.jobs.scheduler import JobScheduler
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.marketdata.streaming import StreamManager
+from smtrading.watch.evaluator import AlertEvaluator
 
 log = logging.getLogger("smtrading.worker")
 
@@ -49,12 +50,19 @@ async def health_checks(router) -> None:
 
 
 async def supervise(name: str, factory: Callable[[], Awaitable[None]]) -> None:
-    """Run `factory()` forever: a crash is logged and the job restarted after a delay."""
+    """Run `factory()` forever: a crash is logged and the job restarted after a delay.
+
+    A cancel that the job turned into an error (e.g. a TaskGroup whose child failed while
+    it was being cancelled) still stops the loop instead of being swallowed.
+    """
+    task = asyncio.current_task()
     while True:
         try:
             await factory()
             log.warning("%s exited; restarting in %ss", name, RESTART_DELAY_S)
         except Exception:
+            if task is not None and task.cancelling():
+                raise asyncio.CancelledError from None
             log.exception("%s crashed; restarting in %ss", name, RESTART_DELAY_S)
         await asyncio.sleep(RESTART_DELAY_S)
 
@@ -83,6 +91,10 @@ async def run() -> None:
                     tg.create_task(
                         supervise("order processor",
                                   lambda: OrderProcessor(sessionmaker, redis, router).run())
+                    ),
+                    tg.create_task(
+                        supervise("alert evaluator",
+                                  lambda: AlertEvaluator(sessionmaker, redis, router).run())
                     ),
                     tg.create_task(
                         supervise("job scheduler",

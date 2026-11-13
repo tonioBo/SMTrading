@@ -8,11 +8,20 @@ from mcp.server.streamable_http_manager import StreamableHTTPASGIApp
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import ValidationError
 
-from smtrading.mcp import resources, tools_alerts, tools_market, tools_orders, tools_portfolio
+from smtrading.mcp import (
+    resources,
+    tools_alerts,
+    tools_market,
+    tools_orders,
+    tools_portfolio,
+    tools_watch,
+)
 from smtrading.mcp.runtime import reject_arguments
 
 SERVER_NAME = "SMTrading"
-_TOOL_MODULES = (tools_portfolio, tools_orders, tools_market, tools_alerts, resources)
+_TOOL_MODULES = (
+    tools_portfolio, tools_orders, tools_market, tools_alerts, tools_watch, resources,
+)
 
 
 class SMTradingServer(MCPServer):

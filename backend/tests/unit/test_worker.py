@@ -67,6 +67,26 @@ async def test_supervise_logs_crash_and_restarts(monkeypatch, caplog):
     assert any("crashed" in r.getMessage() for r in caplog.records)
 
 
+async def test_supervise_stops_when_cancelled_during_a_crash(monkeypatch):
+    """A job that turns its cancellation into an error (a TaskGroup whose child failed)
+    must not swallow the cancel: supervise ends instead of restarting."""
+    monkeypatch.setattr(worker, "RESTART_DELAY_S", 3600)
+    started = asyncio.Event()
+
+    async def job():
+        started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            raise RuntimeError("cleanup failed") from None
+
+    task = asyncio.create_task(worker.supervise("job", job))
+    await started.wait()
+    task.cancel()
+    done, _ = await asyncio.wait([task], timeout=1)
+    assert task in done and task.cancelled()
+
+
 class _IdleProcessor:
     def __init__(self, *args, **kwargs):
         pass
@@ -107,6 +127,7 @@ async def test_sigterm_shuts_down_cleanly(monkeypatch):
     monkeypatch.setattr(worker, "make_engine", lambda url: engine)
     monkeypatch.setattr(worker, "StreamManager", FakeManager)
     monkeypatch.setattr(worker, "OrderProcessor", _IdleProcessor)
+    monkeypatch.setattr(worker, "AlertEvaluator", _IdleProcessor)
     await asyncio.wait_for(worker.run(), 2)
     assert cancelled == [True]
     assert redis.closed
@@ -163,6 +184,7 @@ async def test_run_supervises_health_checks(monkeypatch):
     monkeypatch.setattr(worker, "StreamManager", FakeManager)
     monkeypatch.setattr(worker, "health_checks", fake_health)
     monkeypatch.setattr(worker, "OrderProcessor", _IdleProcessor)
+    monkeypatch.setattr(worker, "AlertEvaluator", _IdleProcessor)
     await asyncio.wait_for(worker.run(), 2)
     assert started.is_set()
 
@@ -190,6 +212,7 @@ async def test_run_supervises_order_processor(monkeypatch):
     monkeypatch.setattr(worker, "StreamManager", _IdleProcessor)
     monkeypatch.setattr(worker, "health_checks", lambda router: asyncio.sleep(3600))
     monkeypatch.setattr(worker, "OrderProcessor", FakeProcessor)
+    monkeypatch.setattr(worker, "AlertEvaluator", _IdleProcessor)
     await asyncio.wait_for(worker.run(), 2)
     assert started.is_set()
     assert seen["redis"] is redis
@@ -219,7 +242,39 @@ async def test_run_supervises_job_scheduler(monkeypatch):
     monkeypatch.setattr(worker, "StreamManager", _IdleProcessor)
     monkeypatch.setattr(worker, "health_checks", lambda router: asyncio.sleep(3600))
     monkeypatch.setattr(worker, "OrderProcessor", _IdleProcessor)
+    monkeypatch.setattr(worker, "AlertEvaluator", _IdleProcessor)
     monkeypatch.setattr(worker, "JobScheduler", FakeScheduler)
+    await asyncio.wait_for(worker.run(), 2)
+    assert started.is_set()
+    assert seen["redis"] is redis
+    assert isinstance(seen["qs"], worker.MarketDataRouter)
+
+
+async def test_run_supervises_alert_evaluator(monkeypatch):
+    started = asyncio.Event()
+    seen = {}
+
+    class FakeEvaluator:
+        def __init__(self, sessionmaker, redis, qs, **kwargs):
+            seen.update(sessionmaker=sessionmaker, redis=redis, qs=qs)
+
+        async def run(self):
+            started.set()
+            signal.raise_signal(signal.SIGTERM)
+            await asyncio.sleep(3600)
+
+    redis = _FlakyRedis()
+    monkeypatch.setattr(
+        worker, "get_settings",
+        lambda: SimpleNamespace(redis_url="redis://unused:6379/0", database_url="x"),
+    )
+    monkeypatch.setattr(worker.Redis, "from_url", staticmethod(lambda url: redis))
+    monkeypatch.setattr(worker, "make_engine", lambda url: _FakeEngine())
+    monkeypatch.setattr(worker, "StreamManager", _IdleProcessor)
+    monkeypatch.setattr(worker, "health_checks", lambda router: asyncio.sleep(3600))
+    monkeypatch.setattr(worker, "OrderProcessor", _IdleProcessor)
+    monkeypatch.setattr(worker, "JobScheduler", _IdleProcessor)
+    monkeypatch.setattr(worker, "AlertEvaluator", FakeEvaluator)
     await asyncio.wait_for(worker.run(), 2)
     assert started.is_set()
     assert seen["redis"] is redis

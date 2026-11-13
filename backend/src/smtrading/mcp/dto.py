@@ -22,6 +22,7 @@ from smtrading.marketdata.types import Bar, Quote
 from smtrading.positions.models import Position
 from smtrading.risk.models import Notification
 from smtrading.valuation.service import PortfolioValuation, PositionValuation
+from smtrading.watch.models import Alert
 
 ORDER_FIELDS = (
     "id", "portfolio_id", "agent_id", "client_order_id", "symbol", "side", "type", "tif",
@@ -58,6 +59,10 @@ INSTRUMENT_FIELDS = (
     "shortable", "active",
 )
 NOTIFICATION_FIELDS = ("id", "portfolio_id", "kind", "payload", "created_at")
+ALERT_FIELDS = (
+    "id", "symbol", "condition", "value", "ref_price", "status", "note", "created_at",
+    "triggered_at", "triggered_price",
+)
 
 
 def _pick(obj: Any, fields: tuple[str, ...]) -> dict[str, Any]:
@@ -112,6 +117,10 @@ def notification_dto(n: Notification) -> dict[str, Any]:
     return _pick(n, NOTIFICATION_FIELDS)
 
 
+def alert_dto(a: Alert) -> dict[str, Any]:
+    return _pick(a, ALERT_FIELDS)
+
+
 _CONVERTERS: dict[type, Any] = {
     Order: order_dto,
     Fill: fill_dto,
@@ -123,6 +132,7 @@ _CONVERTERS: dict[type, Any] = {
     Bar: bar_dto,
     Instrument: instrument_dto,
     Notification: notification_dto,
+    Alert: alert_dto,
 }
 
 

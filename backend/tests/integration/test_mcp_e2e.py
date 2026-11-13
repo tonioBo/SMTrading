@@ -30,6 +30,9 @@ ALL_TOOLS = {
     "get_dividends", "screen",
     # alerts
     "get_triggered_alerts",
+    # watchlists and price alerts
+    "list_watchlists", "create_watchlist", "add_to_watchlist", "remove_from_watchlist",
+    "delete_watchlist", "create_alert", "list_alerts", "delete_alert",
 }
 
 
