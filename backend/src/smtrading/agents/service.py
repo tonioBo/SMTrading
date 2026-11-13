@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -20,13 +21,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.agents.models import Agent, AgentPortfolio, McpAuditLog
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.portfolios.models import Portfolio
 
 log = logging.getLogger("smtrading.agents")
 
 _PREFIX_LEN = 8
 _SECRET_LEN = 40
 _PREFIX_ALPHABET = string.ascii_lowercase + string.digits
-_TOKEN_RE = re.compile(r"^smt_([a-z0-9]{8})_([A-Za-z0-9_-]{40})$")
+_TOKEN_RE = re.compile(r"smt_([a-z0-9]{8})_([A-Za-z0-9_-]{40})")
 _LAST_SEEN_EVERY = timedelta(minutes=1)
 _PERMISSIONS = ("read", "trade")
 
@@ -94,7 +96,9 @@ async def create_agent(session: AsyncSession, name: str) -> tuple[Agent, str]:
         raise SMTError(ErrorCode.INVALID_ORDER, f"agent {name!r} already exists")
     for _ in range(5):  # prefix collisions are astronomically rare; retry anyway
         token, prefix, secret = generate_token()
-        agent = Agent(name=name, token_prefix=prefix, token_hash=_hasher.hash(secret))
+        agent = Agent(
+            name=name, token_prefix=prefix, token_hash=await asyncio.to_thread(_hasher.hash, secret)
+        )
         try:
             async with session.begin_nested():
                 session.add(agent)
@@ -106,13 +110,17 @@ async def create_agent(session: AsyncSession, name: str) -> tuple[Agent, str]:
 
 
 async def rotate_token(session: AsyncSession, agent_id: uuid.UUID) -> str:
+    """Issue a new token. Callers must also call `token_cache.invalidate_agent(agent_id)`
+    after committing (another request may have re-cached the old token meanwhile); the cache TTL
+    bounds staleness in other processes."""
     agent = await _get_agent(session, agent_id)
     for _ in range(5):
         token, prefix, secret = generate_token()
+        new_hash = await asyncio.to_thread(_hasher.hash, secret)
         try:
             async with session.begin_nested():
                 agent.token_prefix = prefix
-                agent.token_hash = _hasher.hash(secret)
+                agent.token_hash = new_hash
                 await session.flush()
         except IntegrityError:
             continue
@@ -122,6 +130,8 @@ async def rotate_token(session: AsyncSession, agent_id: uuid.UUID) -> str:
 
 
 async def set_agent_active(session: AsyncSession, agent_id: uuid.UUID, active: bool) -> Agent:
+    """Callers must also call `token_cache.invalidate_agent(agent_id)` after committing; the
+    cache TTL bounds staleness in other processes."""
     agent = await _get_agent(session, agent_id)
     agent.active = active
     await session.flush()
@@ -137,6 +147,8 @@ def _touch(agent: Agent) -> None:
 
 async def authenticate(session: AsyncSession, token: str) -> Agent:
     """Resolve a bearer token to an active agent, or raise FORBIDDEN 'invalid token'."""
+    if not isinstance(token, str) or _TOKEN_RE.fullmatch(token) is None:
+        raise _invalid_token()
     cached_id = token_cache.get(token)
     if cached_id is not None:
         agent = await session.get(Agent, cached_id)
@@ -145,13 +157,10 @@ async def authenticate(session: AsyncSession, token: str) -> Agent:
             return agent
         token_cache.invalidate_agent(cached_id)
 
-    m = _TOKEN_RE.match(token or "")
-    if m is None:
-        raise _invalid_token()
-    prefix, secret = m.groups()
+    prefix, secret = _TOKEN_RE.fullmatch(token).groups()  # type: ignore[union-attr]
     agent = await session.scalar(select(Agent).where(Agent.token_prefix == prefix))
     try:
-        _hasher.verify(agent.token_hash if agent else _DUMMY_HASH, secret)
+        await asyncio.to_thread(_hasher.verify, agent.token_hash if agent else _DUMMY_HASH, secret)
     except VerificationError:
         raise _invalid_token() from None
     if agent is None or not agent.active:
@@ -170,6 +179,10 @@ async def assign_portfolio(
     session: AsyncSession, agent_id: uuid.UUID, portfolio_id: uuid.UUID, permission: str
 ) -> None:
     _check_permission(permission)
+    if await session.get(Agent, agent_id) is None:
+        raise SMTError(ErrorCode.NOT_FOUND, "agent not found")
+    if await session.get(Portfolio, portfolio_id) is None:
+        raise SMTError(ErrorCode.NOT_FOUND, "portfolio not found")
     stmt = insert(AgentPortfolio).values(
         agent_id=agent_id, portfolio_id=portfolio_id, permission=permission
     )

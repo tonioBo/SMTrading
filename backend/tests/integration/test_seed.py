@@ -104,20 +104,14 @@ async def test_seed_keeps_admin_edits_and_existing_profile_assignment(db_session
 async def test_seed_creates_agent_once(db_session, capsys):
     from smtrading.agents.models import Agent, AgentPortfolio
 
-    await run_seed(db_session)
-    out = capsys.readouterr().out
-    m = re.search(
-        r"^SMTrading: token agente paperclip-demo = (smt_\S+) \(salvalo: non verrà più mostrato\)$",
-        out,
-        re.MULTILINE,
-    )
-    assert m
+    token = await run_seed(db_session)
+    assert token is not None and re.fullmatch(r"smt_[a-z0-9]{8}_[A-Za-z0-9_-]{40}", token)
+    assert capsys.readouterr().out == ""  # printing is the committing caller's job
     agent = (await db_session.execute(select(Agent).where(Agent.name == "paperclip-demo"))).scalar_one()
-    assert m.group(1) not in agent.token_hash
+    assert token not in agent.token_hash
     demo = await db_session.scalar(select(Portfolio.id).where(Portfolio.name == "Demo"))
     link = await db_session.get(AgentPortfolio, (agent.id, demo))
     assert link is not None and link.permission == "trade"
 
-    await run_seed(db_session)
-    assert "token agente" not in capsys.readouterr().out
+    assert await run_seed(db_session) is None
     assert len((await db_session.execute(select(Agent))).scalars().all()) == 1

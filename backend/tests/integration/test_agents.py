@@ -241,6 +241,52 @@ async def test_authenticate_uses_cache_for_hash(db_session, monkeypatch):
         def verify(self, *a):
             calls.append(a)
 
+        def hash(self, *a):  # pragma: no cover
+            raise AssertionError
+
     monkeypatch.setattr(service, "_hasher", Spy())
     assert (await service.authenticate(db_session, token)).id == agent.id
     assert calls == []
+
+
+async def test_strict_token_parse(db_session):
+    _, token = await service.create_agent(db_session, "bot")
+    for bad in (token + "\n", "\n" + token, token + " ", None, 123, b"x"):
+        with pytest.raises(SMTError) as e:
+            await service.authenticate(db_session, bad)
+        assert e.value.code == ErrorCode.FORBIDDEN
+
+
+async def test_argon2_runs_off_event_loop(db_session, monkeypatch):
+    import threading
+
+    main = threading.get_ident()
+    seen = []
+    real = service._hasher
+
+    class Spy:
+        def hash(self, s):
+            seen.append(threading.get_ident())
+            return real.hash(s)
+
+        def verify(self, h, s):
+            seen.append(threading.get_ident())
+            return real.verify(h, s)
+
+    monkeypatch.setattr(service, "_hasher", Spy())
+    agent, token = await service.create_agent(db_session, "bot")
+    await service.authenticate(db_session, token)
+    await service.rotate_token(db_session, agent.id)
+    with pytest.raises(SMTError):
+        await service.authenticate(db_session, "smt_zzzzzzzz_" + "A" * 40)
+    assert len(seen) == 4 and main not in seen
+
+
+async def test_assign_missing_agent_or_portfolio_not_found(db_session, portfolio):
+    import uuid
+
+    agent, _ = await service.create_agent(db_session, "bot")
+    for a, p in ((agent.id, uuid.uuid4()), (uuid.uuid4(), portfolio.id)):
+        with pytest.raises(SMTError) as e:
+            await service.assign_portfolio(db_session, a, p, "read")
+        assert e.value.code == ErrorCode.NOT_FOUND
