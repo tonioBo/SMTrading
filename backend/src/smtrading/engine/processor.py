@@ -200,6 +200,7 @@ class OrderProcessor:
         self._margin_check_every_s = margin_check_every_s
         self._margin: dict[str, set[UUID]] = {}  # symbol -> margin portfolios holding it
         self._margin_checked: dict[UUID, datetime] = {}
+        self._margin_dirty: set[str] = set()  # ticked symbols with a margin check due
 
     # -- loops -----------------------------------------------------------------------
 
@@ -234,9 +235,10 @@ class OrderProcessor:
         self._wake.set()
 
     async def drain(self) -> float | None:
-        """Evaluate the dirty symbols that are not throttled, each with its latest quote.
+        """Evaluate the dirty symbols that are not throttled, each with its latest quote,
+        then run the margin checks due for the ticked symbols.
 
-        Returns the seconds until a throttled dirty symbol becomes due, or None.
+        Returns the seconds until a throttled symbol or margin check becomes due, or None.
         """
         now = self._clock()
         wait: float | None = None
@@ -254,19 +256,26 @@ class OrderProcessor:
                     log.exception("tick evaluation failed for %s", symbol)
             else:
                 self._last_eval[symbol] = now
-            await self._check_margin(symbol)
+            self._margin_dirty.add(symbol)
+        for symbol in sorted(self._margin_dirty):
+            margin_wait = await self._check_margin(symbol)
+            if margin_wait is None:
+                self._margin_dirty.discard(symbol)
+            else:  # throttled portfolios: checked again when due, not dropped
+                wait = margin_wait if wait is None else min(wait, margin_wait)
         return wait
 
     async def _drain_loop(self) -> None:
         while True:
             self._wake.clear()
             wait = await self.drain()
-            if self._dirty and wait is not None:
+            pending = self._dirty or self._margin_dirty
+            if pending and wait is not None:
                 try:
                     await asyncio.wait_for(self._wake.wait(), wait)
                 except TimeoutError:
                     pass
-            elif not self._dirty:
+            elif not pending:
                 await self._wake.wait()
 
     async def _sweep_loop(self) -> None:
@@ -336,12 +345,21 @@ class OrderProcessor:
         except Exception:
             log.exception("refreshing margin holdings failed")
 
-    async def _check_margin(self, symbol: str) -> None:
-        """Margin check of the margin portfolios holding `symbol` (throttled, logged)."""
+    async def _check_margin(self, symbol: str) -> float | None:
+        """Margin check of the margin portfolios holding `symbol` (throttled, logged).
+
+        Returns the seconds until a throttled portfolio is due again, or None.
+        """
+        wait: float | None = None
         for portfolio_id in sorted(self._margin.get(symbol, ())):
             now = self._clock()
             last = self._margin_checked.get(portfolio_id)
-            if last is not None and (now - last).total_seconds() < self._margin_check_every_s:
+            remaining = (
+                0.0 if last is None
+                else self._margin_check_every_s - (now - last).total_seconds()
+            )
+            if remaining > 0:
+                wait = remaining if wait is None else min(wait, remaining)
                 continue
             self._margin_checked[portfolio_id] = now
             try:
@@ -353,7 +371,11 @@ class OrderProcessor:
                 continue
             if result == "liquidated":
                 await self._refresh_margin()
-                await self._refresh_active()
+                try:
+                    await self._refresh_active()
+                except Exception:
+                    log.exception("refreshing active symbols failed")
+        return wait
 
     async def _after_fill(self, order_id: UUID) -> None:
         """Daily loss check of the portfolio of a just filled order (best-effort)."""

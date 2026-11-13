@@ -10,13 +10,14 @@ from decimal import Decimal, localcontext
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.errors import SMTError
 from smtrading.corporate.snapshots import ensure_day_open
 from smtrading.engine.quotesource import QuoteSource
 from smtrading.events import notify
+from smtrading.ledger.models import Account, AccountKind, Journal, JournalLine, JournalType
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.risk.profiles import effective_risk_profile
 from smtrading.valuation.service import value_portfolio
@@ -33,10 +34,39 @@ def next_local_midnight(portfolio: Portfolio, now: datetime) -> datetime:
     return datetime.combine(tomorrow, time(0), tzinfo=tz)
 
 
+async def net_cash_flows_eur(
+    session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, since: datetime,
+    until: datetime,
+) -> Decimal:
+    """Deposits minus withdrawals on the portfolio's cash accounts with
+    since < journal.created_at <= until, in EUR (Ruling R20)."""
+    rows = await session.execute(
+        select(Account.asset, func.sum(JournalLine.quantity))
+        .join(JournalLine, JournalLine.account_id == Account.id)
+        .join(Journal, Journal.id == JournalLine.journal_id)
+        .where(
+            Account.portfolio_id == portfolio_id, Account.kind == AccountKind.cash,
+            Journal.type.in_((JournalType.DEPOSIT, JournalType.WITHDRAWAL)),
+            Journal.created_at > since, Journal.created_at <= until,
+        )
+        .group_by(Account.asset)
+    )
+    total = Decimal(0)
+    for ccy, amount in rows.all():
+        rate = await qs.get_fx_rate(ccy, "EUR")
+        with localcontext() as ctx:
+            ctx.prec = _PREC
+            total += amount * rate
+    return total
+
+
 async def check_daily_loss(
     session: AsyncSession, qs: QuoteSource, portfolio: Portfolio, now: datetime
 ) -> bool:
     """True if this call has just set the portfolio reduce_only for a daily loss.
+
+    loss = day_open equity - equity now + net deposits since day_open (Ruling R20):
+    external cash flows are neither losses nor gains.
 
     The caller holds the portfolio row lock (FOR UPDATE). A loss equal to the limit
     counts as reached. Only `active` portfolios are checked.
@@ -50,10 +80,11 @@ async def check_daily_loss(
         return False
     day_open = await ensure_day_open(session, qs, portfolio, now)
     valuation = await value_portfolio(session, qs, portfolio.id)
+    flows = await net_cash_flows_eur(session, qs, portfolio.id, day_open.ts, now)
     with localcontext() as ctx:
         ctx.prec = _PREC
         start = day_open.equity_eur
-        loss = start - valuation.equity_raw
+        loss = start - valuation.equity_raw + flows
         limits: list[Decimal] = []
         if profile.max_daily_loss_eur is not None:
             limits.append(profile.max_daily_loss_eur)
@@ -70,7 +101,8 @@ async def check_daily_loss(
         session, portfolio_id=portfolio.id, kind="daily_loss",
         payload={
             "portfolio_id": portfolio.id, "day_open_equity_eur": start,
-            "equity_eur": valuation.equity_eur, "loss_eur": loss,
+            "equity_eur": valuation.equity_eur, "net_cash_flows_eur": flows,
+            "loss_eur": loss,
             "max_daily_loss_pct": profile.max_daily_loss_pct,
             "max_daily_loss_eur": profile.max_daily_loss_eur, "reduce_only_until": until,
         },

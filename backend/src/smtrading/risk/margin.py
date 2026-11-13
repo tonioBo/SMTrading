@@ -5,6 +5,8 @@
 - `liquidate`: closes positions, most negative unrealized P&L first, with system market
   orders executed at once in a LIQUIDATION journal, until the portfolio is out of
   maintenance; the symbol's open orders (and held bracket children) are canceled.
+  Ruling R19: a position whose market is closed or whose quote is missing/stale is
+  skipped (listed as `skipped` in the notification) and the next one is tried.
 - `margin_sweep`: the worker's periodic check of every margin portfolio (a margin loan
   or a short position), plus the daily loss check of every portfolio holding positions.
 
@@ -36,10 +38,14 @@ from smtrading.events import (
     notify,
     queue_event,
 )
+from smtrading.instruments.market_hours import market_status
+from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, JournalType
+from smtrading.marketdata.types import Quote
 from smtrading.portfolios.models import Portfolio
 from smtrading.risk.daily_loss import check_daily_loss
 from smtrading.risk.models import Notification
+from smtrading.risk.settings import get_stale_threshold
 from smtrading.valuation.service import PortfolioValuation, value_portfolio
 
 log = logging.getLogger("smtrading.risk.margin")
@@ -93,7 +99,8 @@ def _summary(v: PortfolioValuation) -> dict:
 
 
 async def _warn(
-    session: AsyncSession, portfolio_id: UUID, valuation: PortfolioValuation, now: datetime
+    session: AsyncSession, portfolio_id: UUID, valuation: PortfolioValuation, now: datetime,
+    skipped: list[str],
 ) -> None:
     last = await session.scalar(
         select(Notification.created_at)
@@ -103,7 +110,7 @@ async def _warn(
     )
     if last is not None and now - last < WARNING_THROTTLE:
         return
-    payload = {"portfolio_id": portfolio_id, **_summary(valuation)}
+    payload = {"portfolio_id": portfolio_id, **_summary(valuation), "skipped": skipped}
     notification = await notify(
         session, portfolio_id=portfolio_id, kind="margin_warning", payload=payload
     )
@@ -120,27 +127,47 @@ async def check_portfolio_margin(
     await _lock_portfolio(session, portfolio_id)
     valuation = await value_portfolio(session, qs, portfolio_id)
     level = valuation.margin_level()
+    skipped: list[str] = []
     if level == "maintenance":
-        if await liquidate(session, qs, portfolio_id, redis=redis):
+        closed, skipped, _ = await _liquidate(session, qs, portfolio_id, valuation, now)
+        if closed:
             return "liquidated"
         level = "warning"  # nothing could be closed: at least warn
     if level == "warning":
-        await _warn(session, portfolio_id, valuation, now)
+        await _warn(session, portfolio_id, valuation, now, skipped)
         return "warning"
     return "ok"
 
 
-async def _close_now(
-    session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, symbol: str, held: Decimal
-) -> Order | None:
-    """A system market order for the whole position, filled at once; None if it failed."""
+async def _closable_quote(
+    session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, symbol: str, now: datetime
+) -> Quote | None:
+    """The quote to close `symbol` at, or None (Ruling R19: market closed, quote missing
+    or older than the asset class stale threshold)."""
+    instrument = await session.get(Instrument, symbol)
+    if instrument is None or not market_status(instrument.market, now).is_open:
+        log.warning("liquidation of %s/%s skipped: market closed", portfolio_id, symbol)
+        return None
     try:
         quote = (await qs.get_quotes([symbol])).get(symbol)
     except SMTError as e:
-        quote = None
-        log.warning("liquidation of %s/%s: no quote (%s)", portfolio_id, symbol, e.code)
+        log.warning("liquidation of %s/%s skipped: no quote (%s)", portfolio_id, symbol, e.code)
+        return None
     if quote is None:
         return None
+    threshold = await get_stale_threshold(session, instrument.asset_class)
+    if (now - quote.ts).total_seconds() > threshold:
+        log.warning("liquidation of %s/%s skipped: quote older than %ss",
+                    portfolio_id, symbol, threshold)
+        return None
+    return quote
+
+
+async def _close_now(
+    session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, symbol: str, held: Decimal,
+    quote: Quote,
+) -> Order | None:
+    """A system market order for the whole position, filled at once; None if it failed."""
     order = Order(
         portfolio_id=portfolio_id, symbol=symbol, type=OrderType.market,
         side=OrderSide.sell if held > 0 else OrderSide.buy, qty=abs(held),
@@ -171,21 +198,25 @@ async def _close_now(
     return result.order
 
 
-async def liquidate(
-    session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, *, redis=None
-) -> list[Order]:
-    """Close positions, most negative unrealized P&L (EUR) first, until the portfolio is
-    out of maintenance. Returns the filled liquidation orders."""
-    await _lock_portfolio(session, portfolio_id)
-    valuation = await value_portfolio(session, qs, portfolio_id)
+async def _liquidate(
+    session: AsyncSession, qs: QuoteSource, portfolio_id: UUID,
+    valuation: PortfolioValuation, now: datetime,
+) -> tuple[list[Order], list[str], PortfolioValuation]:
+    """(closed orders, skipped symbols, last valuation); the caller holds the lock."""
     before = _summary(valuation)
+    # unrealized_pnl_eur is unrounded (Ruling R8)
     queue = sorted(valuation.positions, key=lambda p: (p.unrealized_pnl_eur, p.symbol))
     closed: list[Order] = []
+    skipped: list[str] = []
     for position in queue:
         if valuation.margin_level() != "maintenance":
             break
-        order = await _close_now(session, qs, portfolio_id, position.symbol, position.qty)
+        quote = await _closable_quote(session, qs, portfolio_id, position.symbol, now)
+        order = None if quote is None else await _close_now(
+            session, qs, portfolio_id, position.symbol, position.qty, quote
+        )
         if order is None:
+            skipped.append(position.symbol)
             continue
         closed.append(order)
         try:
@@ -202,11 +233,31 @@ async def liquidate(
                  "price": o.avg_fill_price}
                 for o in closed
             ],
+            "skipped": skipped,
         }
         await notify(session, portfolio_id=portfolio_id, kind="liquidation", payload=payload)
         queue_event(session, "liquidation", payload)
         log.warning("portfolio %s liquidated: %s", portfolio_id,
                     ", ".join(f"{o.symbol} {o.side} {o.qty}" for o in closed))
+    return closed, skipped, valuation
+
+
+async def liquidate(
+    session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, *, redis=None,
+    now: datetime | None = None, valuation: PortfolioValuation | None = None,
+) -> list[Order]:
+    """Close positions, most negative unrealized P&L (EUR) first, until the portfolio is
+    out of maintenance; positions whose market is closed or whose quote is stale are
+    skipped (Ruling R19). Returns the filled liquidation orders.
+
+    `valuation`, when given, must be taken under the portfolio lock of this transaction.
+    """
+    await _lock_portfolio(session, portfolio_id)
+    if valuation is None:
+        valuation = await value_portfolio(session, qs, portfolio_id)
+    closed, _, _ = await _liquidate(
+        session, qs, portfolio_id, valuation, now or datetime.now(UTC)
+    )
     return closed
 
 

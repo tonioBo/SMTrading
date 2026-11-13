@@ -29,6 +29,8 @@ from smtrading.valuation.service import value_portfolio
 
 D = Decimal
 OPEN = datetime(2026, 11, 10, 15, 0, tzinfo=UTC)  # Tuesday: NASDAQ open
+TUE = datetime(2026, 11, 10, 10, 0, tzinfo=UTC)  # Tuesday 11:00 Rome: MTA/XETRA open
+SATURDAY = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -85,16 +87,16 @@ def _events(session, type_):
 async def test_leveraged_long_warns_then_liquidates(db_session, seeded, qs):
     p = await _portfolio(db_session, 2)
     await _buy(db_session, qs, p.id, "ENI.MI", 13000)  # ~195k exposure on ~100k equity
-    assert await check_portfolio_margin(db_session, qs, p.id) == "ok"
+    assert await check_portfolio_margin(db_session, qs, p.id, now=TUE) == "ok"
 
     qs.set_quote("ENI.MI", D("10.995"), D("11.005"), None)  # equity ~48k < warn ~53.6k
-    assert await check_portfolio_margin(db_session, qs, p.id) == "warning"
+    assert await check_portfolio_margin(db_session, qs, p.id, now=TUE) == "warning"
     assert len(await _notifications(db_session, p.id, "margin_warning")) == 1
     assert len(_events(db_session, "margin.warning")) == 1
     assert await _position(db_session, p.id, "ENI.MI") == D(13000)
 
     qs.set_quote("ENI.MI", D("8.995"), D("9.005"), None)  # equity ~22k < maint 29.25k
-    assert await check_portfolio_margin(db_session, qs, p.id) == "liquidated"
+    assert await check_portfolio_margin(db_session, qs, p.id, now=TUE) == "liquidated"
     assert await _position(db_session, p.id, "ENI.MI") == 0
 
     order = await db_session.scalar(
@@ -125,7 +127,7 @@ async def test_liquidation_closes_worst_first_and_stops(db_session, seeded, qs):
     qs.set_quote("SAP.DE", D("98.99"), D("99.01"), None)  # -0.9k
     assert (await value_portfolio(db_session, qs, p.id)).margin_level() == "maintenance"
 
-    closed = await liquidate(db_session, qs, p.id)
+    closed = await liquidate(db_session, qs, p.id, now=TUE)
     assert [o.symbol for o in closed] == ["ENI.MI"]
     assert await _position(db_session, p.id, "ENI.MI") == 0
     assert await _position(db_session, p.id, "SAP.DE") == D(900)
@@ -149,7 +151,7 @@ async def test_liquidation_skips_a_symbol_without_quote(db_session, seeded, qs):
 
     flaky = _NoEni()
     flaky._quotes, flaky._fx = qs._quotes, qs._fx
-    closed = await liquidate(db_session, flaky, p.id)
+    closed = await liquidate(db_session, flaky, p.id, now=TUE)
     assert [o.symbol for o in closed] == ["SAP.DE"]  # ENI skipped, the next one closed
     assert await _position(db_session, p.id, "ENI.MI") == D(20000)
 
@@ -164,7 +166,7 @@ async def test_liquidation_cancels_open_orders_of_the_symbol(db_session, seeded,
     db_session.add(resting)
     await db_session.flush()
     qs.set_quote("ENI.MI", D("8.995"), D("9.005"), None)
-    assert await check_portfolio_margin(db_session, qs, p.id) == "liquidated"
+    assert await check_portfolio_margin(db_session, qs, p.id, now=TUE) == "liquidated"
     await db_session.refresh(resting)
     assert resting.status == OrderStatus.canceled
 
@@ -173,7 +175,7 @@ async def test_margin_warning_is_throttled(db_session, seeded, qs):
     p = await _portfolio(db_session, 2)
     await _buy(db_session, qs, p.id, "ENI.MI", 13000)
     qs.set_quote("ENI.MI", D("10.995"), D("11.005"), None)
-    t0 = datetime.now(UTC)
+    t0 = TUE
     assert await check_portfolio_margin(db_session, qs, p.id, now=t0) == "warning"
     assert await check_portfolio_margin(
         db_session, qs, p.id, now=t0 + timedelta(minutes=14)
@@ -257,8 +259,7 @@ async def _system_orders(maker, pid) -> int:
 
 async def test_processor_checks_margin_after_tick(maker, redis, qs):
     pid = await _leveraged_eni(maker, qs)
-    now = datetime.now(UTC)
-    proc = OrderProcessor(maker, redis, qs, clock=lambda: now)
+    proc = OrderProcessor(maker, redis, qs, clock=lambda: TUE)
     await proc.sweep()  # learns the margin holdings
 
     qs.set_quote("ENI.MI", D("8.995"), D("9.005"), None)
@@ -272,7 +273,7 @@ async def test_processor_checks_margin_after_tick(maker, redis, qs):
 
 async def test_processor_margin_check_is_throttled(maker, redis, qs):
     pid = await _leveraged_eni(maker, qs)
-    clock = [datetime.now(UTC)]
+    clock = [TUE]
     proc = OrderProcessor(
         maker, redis, qs, clock=lambda: clock[0], min_eval_interval_s=0
     )
@@ -285,13 +286,16 @@ async def test_processor_margin_check_is_throttled(maker, redis, qs):
     qs.set_quote("ENI.MI", D("8.995"), D("9.005"), None)  # maintenance
     clock[0] += timedelta(seconds=1)
     proc.submit_tick("ENI.MI", qs._quotes["ENI.MI"])
-    await proc.drain()
+    wait = await proc.drain()
     assert await _system_orders(maker, pid) == 0  # within 2s of the last check
+    assert wait == pytest.approx(1.0)
 
-    clock[0] += timedelta(seconds=2)
-    proc.submit_tick("ENI.MI", qs._quotes["ENI.MI"])
-    await proc.drain()
+    assert proc._margin_dirty == {"ENI.MI"}  # throttled, not dropped
+
+    clock[0] += timedelta(seconds=1)
+    assert await proc.drain() is None  # due now, without a new tick
     assert await _system_orders(maker, pid) == 1
+    assert proc._margin_dirty == set()
 
 
 async def test_margin_sweep_liquidates(maker, redis, qs):
@@ -301,6 +305,45 @@ async def test_margin_sweep_liquidates(maker, redis, qs):
         await _buy(s, qs, other.id, "SAP.DE", 10)
         await s.commit()
     qs.set_quote("ENI.MI", D("8.995"), D("9.005"), None)
-    await margin_sweep(maker, qs, redis)
+    await margin_sweep(maker, qs, redis, clock=lambda: TUE)
     assert await _system_orders(maker, pid) == 1
     assert await _system_orders(maker, other.id) == 0
+
+
+async def test_liquidation_skips_closed_market_and_stale_quotes(db_session, seeded, qs):
+    """Ruling R19: Saturday crypto crash with a (worse) US equity position."""
+    p = await _portfolio(db_session, 4)
+    qs.set_quote("AAPL", D("199.99"), D("200.01"), None, ts=SATURDAY)
+    qs.set_quote("BTC-USD", D("49999"), D("50001"), None, ts=SATURDAY)
+    await _buy(db_session, qs, p.id, "AAPL", 1000)  # 200k USD
+    await _buy(db_session, qs, p.id, "BTC-USD", 4)  # 200k USD
+    friday_close = SATURDAY - timedelta(hours=19)
+    qs.set_quote("AAPL", D("139.99"), D("140.01"), None, ts=friday_close)  # -48k EUR
+    qs.set_quote("BTC-USD", D("41999"), D("42001"), None, ts=SATURDAY)  # -25.6k EUR
+    assert (await value_portfolio(db_session, qs, p.id)).margin_level() == "maintenance"
+
+    assert await check_portfolio_margin(db_session, qs, p.id, now=SATURDAY) == "liquidated"
+    assert await _position(db_session, p.id, "AAPL") == D(1000)  # NASDAQ closed: skipped
+    assert await _position(db_session, p.id, "BTC-USD") == 0
+    (note,) = await _notifications(db_session, p.id, "liquidation")
+    assert note.payload["skipped"] == ["AAPL"]
+    assert [o["symbol"] for o in note.payload["orders"]] == ["BTC-USD"]
+
+
+async def test_stale_quote_is_not_liquidated_and_warns(db_session, seeded, qs):
+    p = await _portfolio(db_session, 2)
+    await _buy(db_session, qs, p.id, "ENI.MI", 13000)
+    # eu_equity stale threshold 1200s; this quote is 30 minutes old
+    qs.set_quote("ENI.MI", D("8.995"), D("9.005"), None, ts=TUE - timedelta(minutes=30))
+    assert await check_portfolio_margin(db_session, qs, p.id, now=TUE) == "warning"
+    assert await _position(db_session, p.id, "ENI.MI") == D(13000)
+    assert await _system_orders_in(db_session, p.id) == 0
+    (note,) = await _notifications(db_session, p.id, "margin_warning")
+    assert note.payload["skipped"] == ["ENI.MI"]
+
+
+async def _system_orders_in(session, pid) -> int:
+    return await session.scalar(
+        select(func.count()).select_from(Order)
+        .where(Order.portfolio_id == pid, Order.source == "system")
+    )

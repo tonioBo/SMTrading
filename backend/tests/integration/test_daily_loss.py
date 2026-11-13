@@ -15,7 +15,7 @@ from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType
 from smtrading.engine.quotesource import FakeQuoteSource
 from smtrading.engine.service import PlaceOrderRequest, place_order
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
-from smtrading.portfolios.service import create_portfolio
+from smtrading.portfolios.service import create_portfolio, deposit, withdraw
 from smtrading.risk import daily_loss
 from smtrading.risk.daily_loss import check_daily_loss, reset_daily
 from smtrading.risk.models import EquitySnapshot, Notification, RiskProfile, SnapshotKind
@@ -110,6 +110,20 @@ async def test_daily_loss_eur_limit(db_session, seeded, qs):
     await ensure_day_open(db_session, qs, p, NOW)
     qs.set_quote("ENI.MI", D("14.395"), D("14.405"), None)  # -600
     assert await check_daily_loss(db_session, qs, p, NOW) is True
+
+
+async def test_daily_loss_exactly_at_the_limit(db_session, seeded, qs):
+    p = await create_portfolio(
+        db_session, name=f"L-{uuid.uuid4().hex[:8]}", initial_cash=D(90000)
+    )
+    db_session.add(EquitySnapshot(
+        portfolio_id=p.id, ts=NOW - timedelta(hours=1), kind=SnapshotKind.day_open,
+        local_date=date(2026, 11, 10), equity_eur=D("100000.00"), cash_eur=D("100000.00"),
+        exposure_eur=D(0), margin_used_eur=D(0),
+    ))
+    await db_session.flush()
+    assert await check_daily_loss(db_session, qs, p, NOW) is True  # exactly 10%
+    assert p.status == PortfolioStatus.reduce_only
 
 
 async def test_reset_daily_ignores_other_reasons(db_session, seeded):
@@ -209,3 +223,45 @@ async def test_take_snapshots(maker, qs):
     kinds = sorted(r.kind for r in rows)
     assert kinds == [SnapshotKind.day_open, SnapshotKind.periodic, SnapshotKind.periodic]
     assert all(r.equity_eur == D("100000.00") for r in rows)
+
+
+async def _day_open_now(maker, qs, pid):
+    async with maker() as s:
+        await ensure_day_open(s, qs, await s.get(Portfolio, pid), datetime.now(UTC))
+        await s.commit()
+    await asyncio.sleep(0.05)
+
+
+async def test_withdrawal_is_not_a_daily_loss(maker, qs):
+    async with maker() as s:
+        pid = (await _portfolio(s)).id
+        await s.commit()
+    await _day_open_now(maker, qs, pid)
+    async with maker() as s:
+        await withdraw(s, pid, D(20000), "EUR", author_id="admin")
+        await s.commit()
+    async with maker() as s:
+        p = await s.get(Portfolio, pid)
+        assert await check_daily_loss(s, qs, p, datetime.now(UTC)) is False
+        assert p.status == PortfolioStatus.active
+
+
+async def test_deposit_does_not_hide_a_daily_loss(maker, qs):
+    async with maker() as s:
+        pid = (await _portfolio(s)).id
+        await _buy(s, qs, pid, 6000)
+        await s.commit()
+    await _day_open_now(maker, qs, pid)
+    async with maker() as s:
+        await deposit(s, pid, D(20000), "EUR", author_id="admin")
+        await s.commit()
+    qs.set_quote("ENI.MI", D("13.295"), D("13.305"), None)  # -10.2k
+    async with maker() as s:
+        p = await s.get(Portfolio, pid)
+        assert await check_daily_loss(s, qs, p, datetime.now(UTC)) is True
+        await s.commit()
+    async with maker() as s:
+        note = await s.scalar(select(Notification).where(
+            Notification.portfolio_id == pid, Notification.kind == "daily_loss"
+        ))
+        assert D(note.payload["net_cash_flows_eur"]) == D(20000)
