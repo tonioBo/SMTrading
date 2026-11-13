@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from smtrading import cli
 from smtrading.common.db import make_engine
+from smtrading.common.errors import SMTError
 from smtrading.corporate.interest import run_interest
 from smtrading.engine.models import Fill, Order, OrderSide, OrderStatus, OrderType
 from smtrading.engine.processor import OrderProcessor
@@ -286,3 +287,53 @@ def test_cli_rejects_a_malformed_quantity(capsys):
              "--side", "buy", "--qty", "abc"]
         )
     assert "invalid decimal" in capsys.readouterr().err
+
+
+async def test_cli_agent_create_list_rotate_deactivate(maker, redis, qs):
+    from smtrading.agents import service as agents
+
+    code, created = await _cli(maker, qs, redis, "agent", "create", "cli-bot",
+                               "--portfolio", "Demo", "--permission", "trade")
+    assert code == 0 and created["name"] == "cli-bot"
+    token = created["token"]
+    async with maker() as s:
+        assert (await agents.authenticate(s, token)).name == "cli-bot"
+        await s.commit()
+    assert agents.token_cache.get(token) is not None
+
+    code, rows = await _cli(maker, qs, redis, "agent", "list")
+    assert code == 0
+    bot = next(r for r in rows if r["name"] == "cli-bot")
+    assert bot["active"] is True and bot["token_prefix"] == token[4:12]
+    assert bot["portfolios"] == [{"portfolio": "Demo", "permission": "trade"}]
+    assert all("token" not in r and "token_hash" not in r for r in rows)
+
+    code, rotated = await _cli(maker, qs, redis, "agent", "rotate", "cli-bot")
+    assert code == 0 and rotated["token"] != token
+    assert agents.token_cache.get(token) is None  # invalidated after the commit
+    async with maker() as s:
+        with pytest.raises(SMTError):
+            await agents.authenticate(s, token)
+        assert (await agents.authenticate(s, rotated["token"])).name == "cli-bot"
+        await s.commit()
+
+    code, off = await _cli(maker, qs, redis, "agent", "deactivate", "cli-bot")
+    assert code == 0 and off["active"] is False
+    assert agents.token_cache.get(rotated["token"]) is None
+    async with maker() as s:
+        with pytest.raises(SMTError):
+            await agents.authenticate(s, rotated["token"])
+
+
+async def test_cli_agent_errors_roll_back(maker, redis, qs):
+    from smtrading.agents.models import Agent
+
+    code, out = await _cli(maker, qs, redis, "agent", "rotate", "nobody")
+    assert code == 1 and out["error"]["code"] == "NOT_FOUND"
+    code, out = await _cli(maker, qs, redis, "agent", "create", "x", "--portfolio", "Nope")
+    assert code == 1 and out["error"]["code"] == "NOT_FOUND"
+    code, out = await _cli(maker, qs, redis, "agent", "create", "y", "--permission", "trade")
+    assert code == 1 and out["error"]["code"] == "INVALID_ORDER"
+    async with maker() as s:
+        names = set(await s.scalars(select(Agent.name)))
+    assert not {"x", "y"} & names

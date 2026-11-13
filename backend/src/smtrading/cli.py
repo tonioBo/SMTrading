@@ -7,12 +7,17 @@
     positions --portfolio NAME
     valuation --portfolio NAME
     cancel ORDER_ID
+    agent list
+    agent create NAME [--portfolio Demo --permission read|trade]
+    agent rotate NAME        (prints the new token once; the old one stops working)
+    agent deactivate NAME
 
-Quotes come from the real MarketDataRouter. Each command runs in one transaction that is
-committed, then its Redis effects are dispatched (Ruling R10). On SMTError the
-transaction is still committed, so a rejected order stays stored, and the error is
-printed as JSON with exit code 1. Redis is also read for cached quotes when a provider
-quote is missing (Ruling R23).
+A token is printed only by `agent create` / `agent rotate`, once: it is never stored in
+clear. Quotes come from the real MarketDataRouter. Each command runs in one transaction
+that is committed, then its Redis effects are dispatched (Ruling R10). On an SMTError the
+error is printed as JSON with exit code 1; a rejected order (an error flagged `persisted`)
+is still committed so it stays stored, anything else is rolled back. Redis is also read
+for cached quotes when a provider quote is missing (Ruling R23).
 """
 
 import argparse
@@ -28,6 +33,8 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from smtrading.agents import service as agents
+from smtrading.agents.models import Agent, AgentPortfolio
 from smtrading.common.config import get_settings
 from smtrading.common.db import get_sessionmaker
 from smtrading.common.errors import ErrorCode, SMTError
@@ -41,7 +48,7 @@ from smtrading.engine.service import (
     list_orders,
     place_order,
 )
-from smtrading.events import dispatch_post_commit, json_safe
+from smtrading.events import discard_post_commit, dispatch_post_commit, json_safe
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.portfolios.models import Portfolio
 from smtrading.positions.service import get_positions
@@ -86,6 +93,19 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_parser(name, help=help).add_argument("--portfolio", required=True)
     cancel = sub.add_parser("cancel", help="cancel an open order")
     cancel.add_argument("order_id", type=UUID)
+
+    agent = sub.add_parser("agent", help="MCP agents and their tokens")
+    agent_sub = agent.add_subparsers(dest="agent_command", required=True)
+    agent_sub.add_parser("list", help="agents with their portfolios (no tokens)")
+    create = agent_sub.add_parser("create", help="create an agent; prints its token once")
+    create.add_argument("name")
+    create.add_argument("--portfolio", help="portfolio to assign (by name)")
+    create.add_argument("--permission", choices=["read", "trade"], default="read")
+    for name, help in (
+        ("rotate", "issue a new token (printed once); the old one stops working"),
+        ("deactivate", "disable an agent: its token stops working"),
+    ):
+        agent_sub.add_parser(name, help=help).add_argument("name")
     return parser
 
 
@@ -106,10 +126,63 @@ async def _portfolio_id(session: AsyncSession, name: str) -> UUID:
     return pid
 
 
+async def _agent(session: AsyncSession, name: str) -> Agent:
+    agent = await session.scalar(select(Agent).where(Agent.name == name))
+    if agent is None:
+        raise SMTError(ErrorCode.NOT_FOUND, "agent not found", {"agent": name})
+    return agent
+
+
+async def _agent_rows(session: AsyncSession) -> list[dict]:
+    links = await session.execute(
+        select(AgentPortfolio.agent_id, Portfolio.name, AgentPortfolio.permission)
+        .join(Portfolio, Portfolio.id == AgentPortfolio.portfolio_id)
+        .order_by(Portfolio.name)
+    )
+    portfolios: dict[UUID, list[dict]] = {}
+    for agent_id, name, permission in links:
+        portfolios.setdefault(agent_id, []).append({"portfolio": name, "permission": permission})
+    return [
+        {
+            "id": a.id, "name": a.name, "active": a.active, "token_prefix": a.token_prefix,
+            "created_at": a.created_at, "last_seen_at": a.last_seen_at,
+            "portfolios": portfolios.get(a.id, []),
+        }
+        for a in await session.scalars(select(Agent).order_by(Agent.name))
+    ]
+
+
+async def execute_agent(args: argparse.Namespace, session: AsyncSession) -> object:
+    """Token invalidation for rotate/deactivate happens on commit (agents.service)."""
+    match args.agent_command:
+        case "list":
+            return await _agent_rows(session)
+        case "create":
+            if args.portfolio is None and args.permission != "read":
+                raise SMTError(ErrorCode.INVALID_ORDER, "--permission needs --portfolio")
+            pid = await _portfolio_id(session, args.portfolio) if args.portfolio else None
+            agent, token = await agents.create_agent(session, args.name)
+            if pid is not None:
+                await agents.assign_portfolio(session, agent.id, pid, args.permission)
+            return {"id": agent.id, "name": agent.name, "token": token}
+        case "rotate":
+            agent = await _agent(session, args.name)
+            return {"id": agent.id, "name": agent.name,
+                    "token": await agents.rotate_token(session, agent.id)}
+        case "deactivate":
+            agent = await agents.set_agent_active(
+                session, (await _agent(session, args.name)).id, False
+            )
+            return {"id": agent.id, "name": agent.name, "active": agent.active}
+    raise AssertionError(args.agent_command)  # pragma: no cover
+
+
 async def execute(
     args: argparse.Namespace, session: AsyncSession, qs: QuoteSource, redis=None
 ) -> object:
     match args.command:
+        case "agent":
+            return await execute_agent(args, session)
         case "order":
             req = PlaceOrderRequest(
                 portfolio_id=await _portfolio_id(session, args.portfolio),
@@ -159,13 +232,18 @@ async def run_command(
     args: argparse.Namespace, sessionmaker: async_sessionmaker[AsyncSession],
     qs: QuoteSource, redis,
 ) -> tuple[int, str]:
-    """(exit code, JSON output); commits even on SMTError so rejections are kept."""
+    """(exit code, JSON output). Commits on success and on an SMTError flagged `persisted`
+    (a rejected order is kept); any other error rolls back."""
     async with sessionmaker() as session:
         try:
             result = await execute(args, session, qs, redis)
             code, out = 0, _dumps(result)
         except SMTError as e:
             code, out = 1, _dumps({"error": e.to_dict()})
+            if not e.persisted:
+                await session.rollback()
+                discard_post_commit(session)
+                return code, out
         await session.commit()
         await dispatch_post_commit(session, redis)
     return code, out
