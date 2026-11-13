@@ -1,16 +1,38 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
 import { streamStatusKey } from "@/api/hooks/connectors";
-import type { Instrument, InstrumentCreate, MarketStatus, QuotesResponse } from "@/api/types";
+import type { AutoAddSetting, Instrument, InstrumentCreate, InstrumentsPage, MarketStatus, QuotesResponse, UntrackResponse } from "@/api/types";
 
 export const instrumentsKey = ["instruments"] as const;
 export const marketsStatusKey = ["markets-status"] as const;
+export const autoAddKey = ["instruments-auto-add"] as const;
+export const INSTRUMENTS_PAGE = 100;
 
-export function useInstruments(query: string) {
+export interface InstrumentFilter {
+  query: string;
+  market: string;
+  offset: number;
+}
+
+export function useInstruments({ query, market, offset }: InstrumentFilter) {
+  const params = new URLSearchParams({ query, offset: String(offset), limit: String(INSTRUMENTS_PAGE) });
+  if (market) params.set("market", market);
   return useQuery({
-    queryKey: [...instrumentsKey, query],
-    queryFn: () => apiFetch<Instrument[]>(`/api/instruments?query=${encodeURIComponent(query)}`),
+    queryKey: [...instrumentsKey, query, market, offset],
+    queryFn: () => apiFetch<InstrumentsPage>(`/api/instruments?${params.toString()}`),
     placeholderData: keepPreviousData,
+  });
+}
+
+export function useAutoAdd() {
+  return useQuery({ queryKey: autoAddKey, queryFn: () => apiFetch<AutoAddSetting>("/api/instruments/auto-add") });
+}
+
+export function useSetAutoAdd() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (on: boolean) => apiFetch<AutoAddSetting>("/api/instruments/auto-add", { method: "PUT", body: { on } }),
+    onSuccess: (data) => qc.setQueryData(autoAddKey, data),
   });
 }
 
@@ -34,7 +56,7 @@ export function useTrack() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ symbol, track }: { symbol: string; track: boolean }) =>
-      apiFetch(`/api/marketdata/${track ? "track" : "untrack"}`, { method: "POST", body: { symbols: [symbol] } }),
+      apiFetch<Partial<UntrackResponse>>(`/api/marketdata/${track ? "track" : "untrack"}`, { method: "POST", body: { symbols: [symbol] } }),
     onSettled: () => void qc.invalidateQueries({ queryKey: streamStatusKey }),
   });
 }

@@ -96,6 +96,20 @@ async def tracked_symbols(redis) -> set[str]:
     return {_s(m) for m in await redis.smembers(TRACKED_KEY)}
 
 
+async def tracked_sources(redis) -> dict[str, list[str]]:
+    """symbol -> the sources following it (sorted), from the per-source sets."""
+    names = sorted(SOURCES)
+    async with redis.pipeline(transaction=False) as pipe:
+        for name in names:
+            pipe.smembers(_source_key(name))
+        members = await pipe.execute()
+    out: dict[str, list[str]] = {}
+    for name, syms in zip(names, members, strict=True):
+        for sym in syms:
+            out.setdefault(_s(sym), []).append(name)
+    return dict(sorted(out.items()))
+
+
 @dataclass
 class _Stream:
     provider: DataProvider

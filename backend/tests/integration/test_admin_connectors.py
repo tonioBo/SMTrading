@@ -182,13 +182,17 @@ async def test_provider_priorities(admin):
         assert (await c.put("/api/provider-priorities", json=bad)).status_code == 400
 
 
+_TRACK_KEYS = ["md:tracked", *(f"md:tracked:{s}" for s in (
+    "orders", "positions", "alerts", "watchlists", "admin"))]
+
+
 async def test_track_untrack_and_stream_status(admin):
     import redis.asyncio as aioredis
 
     c = admin.client
     redis = aioredis.Redis.from_url(admin.redis_url)
     try:
-        await redis.delete("md:tracked:admin", "md:tracked", "md:stream_status")
+        await redis.delete(*_TRACK_KEYS, "md:stream_status")
         st = (await c.get("/api/marketdata/stream-status")).json()
         assert st["available"] is False and st["streams"] == {}
         await redis.set("md:stream_status", json.dumps(
@@ -205,25 +209,46 @@ async def test_track_untrack_and_stream_status(admin):
             "AAPL", "BTC-USD"]
         r = await c.post("/api/marketdata/untrack", json={"symbols": ["AAPL"]})
         assert r.status_code == 200
+        assert r.json() == {"untracked": ["AAPL"], "still_tracked": {}}
         assert {m.decode() for m in await redis.smembers("md:tracked:admin")} == {"BTC-USD"}
+
+        # an agent's watchlist keeps following: the admin's untrack reports it
+        await redis.sadd("md:tracked:watchlists", "BTC-USD")
+        await redis.sadd("md:tracked", "BTC-USD")
+        st = (await c.get("/api/marketdata/stream-status")).json()
+        assert st["tracked_sources"] == {"BTC-USD": ["admin", "watchlists"]}
+        r = await c.post("/api/marketdata/untrack", json={"symbols": ["BTC-USD"]})
+        assert r.json() == {"untracked": ["BTC-USD"], "still_tracked": {"BTC-USD": ["watchlists"]}}
+        st = (await c.get("/api/marketdata/stream-status")).json()
+        assert st["tracked"] == ["BTC-USD"] and st["tracked_sources"] == {"BTC-USD": ["watchlists"]}
 
         r = await c.post("/api/marketdata/track", json={"symbols": ["NOPE-XX"]})
         assert r.status_code == 400 and r.json()["code"] == "SYMBOL_NOT_FOUND"
         assert (await c.post("/api/marketdata/track", json={"symbols": []})).status_code == 400
         assert (await c.post("/api/marketdata/track", json={"symbols": ["a b"]})).status_code == 400
     finally:
-        await redis.delete("md:tracked:admin", "md:tracked", "md:stream_status")
+        await redis.delete(*_TRACK_KEYS, "md:stream_status")
         await redis.aclose()
 
 
 async def test_instruments_crud_and_validation(admin):
     c = admin.client
-    rows = (await c.get("/api/instruments", params={"query": "aapl"})).json()
+    page = (await c.get("/api/instruments", params={"query": "aapl"})).json()
+    rows = page["items"]
     assert [r["symbol"] for r in rows] == ["AAPL"] and "provider_symbols" in rows[0]
-    crypto = (await c.get("/api/instruments", params={"asset_class": "crypto"})).json()
+    assert page["total"] == 1 and rows[0]["source"] == "catalog" and rows[0]["added_by"] is None
+    crypto = (await c.get("/api/instruments", params={"asset_class": "crypto"})).json()["items"]
     assert crypto and all(r["asset_class"] == "crypto" for r in crypto)
     assert (await c.get("/api/instruments", params={"asset_class": "bonds"})).status_code == 400
-    assert (await c.get("/api/instruments", params={"query": "%"})).json() == []
+    assert (await c.get("/api/instruments", params={"query": "%"})).json()["items"] == []
+    paris = (await c.get("/api/instruments", params={"market": "EURONEXT_PARIS"})).json()
+    assert paris["total"] >= 30 and all(r["market"] == "EURONEXT_PARIS" for r in paris["items"])
+    assert (await c.get("/api/instruments", params={"market": "LSE"})).status_code == 400
+    p1 = (await c.get("/api/instruments", params={"limit": 50})).json()
+    p2 = (await c.get("/api/instruments", params={"limit": 50, "offset": 50})).json()
+    assert p1["total"] == p2["total"] >= 400 and len(p1["items"]) == len(p2["items"]) == 50
+    assert p1["items"][-1]["symbol"] < p2["items"][0]["symbol"]
+    assert (await c.get("/api/instruments", params={"limit": 501})).status_code in (400, 422)
 
     new = {"symbol": "xyz", "name": "XYZ Corp", "asset_class": "us_equity", "market": "NYSE",
            "currency": "usd", "lot_size": "1", "tick_size": "0.01", "shortable": True}
@@ -251,6 +276,19 @@ async def test_instruments_crud_and_validation(admin):
     assert (await c.patch("/api/instruments/XYZ", json={"tick_size": "0"})).status_code == 400
     assert (await c.patch("/api/instruments/XYZ", json={"active": None})).status_code == 400
     assert (await c.patch("/api/instruments/NOPE", json={"active": True})).status_code == 404
+    manual = (await c.get("/api/instruments", params={"source": "manual"})).json()["items"]
+    assert [r["symbol"] for r in manual] == ["XYZ"]
+
+
+async def test_instruments_auto_add_toggle(admin):
+    c = admin.client
+    assert (await c.get("/api/instruments/auto-add")).json() == {"on": True, "daily_limit": 25}
+    r = await c.put("/api/instruments/auto-add", json={"on": False})
+    assert r.status_code == 200 and r.json()["on"] is False
+    assert (await c.get("/api/instruments/auto-add")).json()["on"] is False
+    await c.put("/api/instruments/auto-add", json={"on": True})
+    assert (await c.get("/api/instruments/auto-add")).json()["on"] is True
+    assert (await c.put("/api/instruments/auto-add", json={"on": "x"})).status_code in (400, 422)
 
 
 async def test_quotes_and_market_status(admin):
@@ -266,7 +304,8 @@ async def test_quotes_and_market_status(admin):
     assert "error" in r.json()["ZZZZ"]
 
     ms = (await c.get("/api/markets/status")).json()
-    assert [m["market"] for m in ms] == ["NASDAQ", "NYSE", "MTA", "XETRA", "CRYPTO", "FX"]
+    assert [m["market"] for m in ms] == [
+        "NASDAQ", "NYSE", "MTA", "XETRA", "EURONEXT_PARIS", "CRYPTO", "FX"]
     crypto = next(m for m in ms if m["market"] == "CRYPTO")
     assert crypto["is_open"] is True
 

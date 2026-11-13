@@ -445,6 +445,30 @@ export interface StreamStatus {
   /** false: the worker's status is stale or absent */
   available: boolean;
   tracked: string[];
+  /** symbol -> who follows it (orders, positions, alerts, watchlists, admin) */
+  tracked_sources?: Record<string, TrackSource[]>;
+}
+
+export type TrackSource = "orders" | "positions" | "alerts" | "watchlists" | "admin";
+
+export interface UntrackResponse {
+  untracked: string[];
+  /** symbols still followed by other sources after the admin stopped */
+  still_tracked: Record<string, TrackSource[]>;
+}
+
+export type InstrumentSource = "catalog" | "manual" | "auto";
+
+export interface InstrumentsPage {
+  items: Instrument[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface AutoAddSetting {
+  on: boolean;
+  daily_limit: number;
 }
 
 export interface Instrument {
@@ -458,6 +482,9 @@ export interface Instrument {
   shortable: boolean;
   active: boolean;
   provider_symbols: Record<string, string>;
+  source: InstrumentSource;
+  /** "auto:<agent name>" for on-demand instruments */
+  added_by: string | null;
 }
 
 export interface InstrumentCreate {

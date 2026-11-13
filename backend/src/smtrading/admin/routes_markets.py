@@ -7,25 +7,33 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from smtrading.admin.auth import DbSession, RedisClient, require_admin
 from smtrading.admin.common import _invalid, _transaction
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.instruments.discovery import DAILY_LIMIT, auto_add_enabled, set_auto_add
 from smtrading.instruments.market_hours import MARKETS, all_market_status
-from smtrading.instruments.models import AssetClass, Instrument
+from smtrading.instruments.models import AssetClass, Instrument, InstrumentSource
 from smtrading.instruments.service import canonical_symbol
-from smtrading.marketdata.streaming import STATUS_KEY, track, tracked_symbols, untrack
+from smtrading.marketdata.streaming import (
+    STATUS_KEY,
+    track,
+    tracked_sources,
+    tracked_symbols,
+    untrack,
+)
 from smtrading.mcp.dto import instrument_dto, parse_decimal, parse_enum, quote_dto, to_jsonable
 
 router = APIRouter(prefix="/api", tags=["markets"], dependencies=[Depends(require_admin)])
 
 MAX_TRACK_SYMBOLS = 100
 MAX_QUOTE_SYMBOLS = 50
-MAX_LIST = 200
+MAX_LIST = 500
+DEFAULT_LIST = 100
 MAX_NAME_LEN = 256
 _SYMBOL = re.compile(r"^[A-Z0-9][A-Z0-9.\-_/=^]{0,63}$")
 _CURRENCY = re.compile(r"^[A-Za-z]{3}$")
@@ -47,6 +55,10 @@ class InstrumentCreateIn(BaseModel):
     provider_symbols: dict[str, str] = {}
 
 
+class AutoAddIn(BaseModel):
+    on: bool
+
+
 class InstrumentPatchIn(BaseModel):
     """Only the fields present in the request are changed (`model_fields_set`)."""
 
@@ -59,7 +71,10 @@ class InstrumentPatchIn(BaseModel):
 
 
 def _dto(i: Instrument) -> dict[str, Any]:
-    return {**instrument_dto(i), "provider_symbols": dict(i.provider_symbols or {})}
+    return {
+        **instrument_dto(i), "provider_symbols": dict(i.provider_symbols or {}),
+        "source": str(i.source), "added_by": i.added_by,
+    }
 
 
 # ------------------------------------------------------------------ stream and tracking
@@ -74,6 +89,8 @@ async def stream_status(redis: RedisClient) -> dict:
         **status,
         "available": raw is not None,
         "tracked": sorted(await tracked_symbols(redis)),
+        # symbol -> who follows it: orders, positions, alerts, watchlists (agents), admin
+        "tracked_sources": await tracked_sources(redis),
     }
 
 
@@ -101,7 +118,9 @@ async def track_symbols(body: SymbolsIn, session: DbSession, redis: RedisClient)
 async def untrack_symbols(body: SymbolsIn, redis: RedisClient) -> dict:
     syms = await _clean_symbols(body)
     await untrack(redis, syms, source="admin")
-    return {"untracked": syms}
+    sources = await tracked_sources(redis)
+    # the admin stops following; other sources (agents' watchlists, orders...) may still
+    return {"untracked": syms, "still_tracked": {s: sources[s] for s in syms if s in sources}}
 
 
 # ------------------------------------------------------------------ instruments
@@ -129,18 +148,46 @@ def _provider_symbols(value: dict[str, str]) -> dict[str, str]:
 
 @router.get("/instruments")
 async def list_instruments(
-    session: DbSession, query: str | None = None, asset_class: str | None = None
-) -> list[dict]:
-    stmt = select(Instrument).order_by(Instrument.symbol).limit(MAX_LIST)
+    session: DbSession, query: str | None = None, asset_class: str | None = None,
+    market: str | None = None, source: str | None = None,
+    offset: int = Query(0, ge=0), limit: int = Query(DEFAULT_LIST, ge=1, le=MAX_LIST),
+) -> dict:
+    """A page of the catalog ordered by symbol: {items, total, offset, limit}."""
+    conds = []
     ac = parse_enum(AssetClass, asset_class, "asset_class")
     if ac is not None:
-        stmt = stmt.where(Instrument.asset_class == ac)
+        conds.append(Instrument.asset_class == ac)
+    if market:
+        if market not in MARKETS:
+            raise _invalid("market", f"market deve essere uno tra {list(MARKETS)}")
+        conds.append(Instrument.market == market)
+    src = parse_enum(InstrumentSource, source, "source")
+    if src is not None:
+        conds.append(Instrument.source == src)
     if query and query.strip():
         like = "%" + re.sub(r"([\\%_])", r"\\\1", query.strip()) + "%"
-        stmt = stmt.where(
+        conds.append(
             or_(Instrument.symbol.ilike(like, escape="\\"), Instrument.name.ilike(like, escape="\\"))
         )
-    return [_dto(i) for i in await session.scalars(stmt)]
+    total = await session.scalar(select(func.count()).select_from(Instrument).where(*conds))
+    rows = await session.scalars(
+        select(Instrument).where(*conds).order_by(Instrument.symbol).offset(offset).limit(limit)
+    )
+    return {"items": [_dto(i) for i in rows], "total": int(total or 0), "offset": offset,
+            "limit": limit}
+
+
+@router.get("/instruments/auto-add")
+async def get_auto_add(session: DbSession) -> dict:
+    """Automatic on-demand instruments for agents (instruments.discovery)."""
+    return {"on": await auto_add_enabled(session), "daily_limit": DAILY_LIMIT}
+
+
+@router.put("/instruments/auto-add")
+async def put_auto_add(body: AutoAddIn, session: DbSession, redis: RedisClient) -> dict:
+    async with _transaction(session, redis):
+        await set_auto_add(session, body.on)
+    return {"on": body.on, "daily_limit": DAILY_LIMIT}
 
 
 @router.post("/instruments")
