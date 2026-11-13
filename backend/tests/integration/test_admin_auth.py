@@ -440,3 +440,101 @@ async def test_seed_admin_existing_admin_is_not_an_error(db_session, caplog):
     with caplog.at_level("ERROR", logger="smtrading.seed"):
         await seed_admin(db_session, "kept@example.com", "short")  # e.g. .env edited later
     assert "admin not created" not in caplog.text
+
+
+async def _session_data(redis_url: str, sid: str) -> tuple[object, dict]:
+    import json
+
+    from redis.asyncio import Redis
+
+    redis = Redis.from_url(redis_url)
+    return redis, json.loads(await redis.get(f"adm:sess:{sid}"))
+
+
+async def test_session_absolute_lifetime(admin_app, admin_user, redis_url):
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    client, _ = admin_app
+    await _login(client, admin_user.email)
+    sid = client.cookies["smt_session"]
+    key = f"adm:sess:{sid}"
+    redis, data = await _session_data(redis_url, sid)
+    try:
+        # 23h old: still valid, but the idle renewal never goes past the 24h cap
+        data["created_at"] = (datetime.now(UTC) - timedelta(hours=23)).isoformat()
+        await redis.set(key, json.dumps(data), keepttl=True)
+        assert (await client.get("/api/auth/me")).status_code == 200
+        assert 0 < await redis.ttl(key) <= 3600
+        # past 24h: refused and destroyed, however recent the activity
+        data["created_at"] = (datetime.now(UTC) - timedelta(hours=24, seconds=1)).isoformat()
+        await redis.set(key, json.dumps(data), ex=12 * 3600)
+        assert (await client.get("/api/auth/me")).status_code == 401
+        assert await redis.exists(key) == 0
+        assert not await redis.sismember(f"adm:sess_idx:{admin_user.id}", sid)
+    finally:
+        await redis.aclose()
+
+
+async def test_login_failures_counted_per_entry(admin_app, admin_user):
+    client, _ = admin_app
+    lan = {"X-SMT-Entry": "lan"}
+    for i in range(5):  # a missing header counts as the LAN entry
+        r = await client.post(LOGIN_PATH, json={
+            "email": admin_user.email, "password": "wrong-password",
+        }, headers=lan if i % 2 else {})
+        assert r.status_code == 403
+    limited = await client.post(
+        LOGIN_PATH, json={"email": admin_user.email, "password": PASSWORD}, headers=lan
+    )
+    assert limited.status_code == 429
+    async with admin_app.new_client() as local:
+        r = await local.post(
+            LOGIN_PATH, json={"email": admin_user.email, "password": PASSWORD},
+            headers={"X-SMT-Entry": "local"},
+        )
+        assert r.status_code == 200  # the LAN failures do not lock the local entry out
+    bogus = await client.post(
+        LOGIN_PATH, json={"email": admin_user.email, "password": PASSWORD},
+        headers={"X-SMT-Entry": "anything"},
+    )
+    assert bogus.status_code == 429  # an unknown entry is the LAN one
+
+
+async def test_revoke_other_sessions(admin_app, admin_user, redis_url):
+    from redis.asyncio import Redis
+
+    me, _ = admin_app
+    await _login(me, admin_user.email)
+    async with admin_app.new_client() as other, admin_app.new_client() as third:
+        await _login(other, admin_user.email)
+        await _login(third, admin_user.email)
+        r = await me.post("/api/auth/sessions/revoke-others", headers=_csrf(me))
+        assert r.status_code == 200
+        assert r.json() == {"revoked": 2}
+        assert (await other.get("/api/auth/me")).status_code == 401
+        assert (await third.get("/api/auth/me")).status_code == 401
+        assert (await me.get("/api/auth/me")).status_code == 200
+        r = await me.post("/api/auth/sessions/revoke-others", headers=_csrf(me))
+        assert r.json() == {"revoked": 0}
+    assert (await me.post("/api/auth/sessions/revoke-others")).status_code == 403  # CSRF
+    redis = Redis.from_url(redis_url)
+    try:
+        members = await redis.smembers(f"adm:sess_idx:{admin_user.id}")
+        assert {m.decode() for m in members} == {me.cookies["smt_session"]}
+        await me.post("/api/auth/logout")
+        assert await redis.scard(f"adm:sess_idx:{admin_user.id}") == 0
+    finally:
+        await redis.aclose()
+
+
+@pytest.mark.parametrize(("scheme", "secure"), [("https", True), ("http", False)])
+async def test_cookies_secure_only_over_https(admin_app, admin_user, scheme, secure):
+    async with httpx.AsyncClient(
+        transport=admin_app.transport, base_url=f"{scheme}://test"
+    ) as client:
+        r = await _login(client, admin_user.email)
+        assert r.status_code == 200
+        cookies = r.headers.get_list("set-cookie")
+        assert len(cookies) == 2
+        assert all(("; Secure" in c) is secure for c in cookies)

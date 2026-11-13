@@ -1,7 +1,9 @@
 """Admin authentication: argon2 passwords, optional TOTP, Redis sessions, CSRF double-submit.
 
 Sessions live in Redis at `adm:sess:{id}` as JSON {admin_id, csrf, created_at, fp} with a
-12h TTL renewed on every authenticated request. `fp` fingerprints the admin's credentials
+12h idle TTL renewed on every authenticated request, and an absolute lifetime of 24h from
+`created_at` whatever the activity. Each admin's session ids are indexed in the set
+`adm:sess_idx:{admin_id}` (to close the other sessions). `fp` fingerprints the admin's credentials
 (password hash + TOTP state): changing either invalidates every session issued before. The session id travels in the httpOnly
 `smt_session` cookie; the CSRF token in the JS-readable `smt_csrf` cookie, which the web
 app echoes in `X-CSRF-Token` on every non-GET/HEAD/OPTIONS request.
@@ -33,13 +35,19 @@ from smtrading.common.errors import ErrorCode, SMTError
 SESSION_COOKIE = "smt_session"
 CSRF_COOKIE = "smt_csrf"
 CSRF_HEADER = "X-CSRF-Token"
-SESSION_TTL_S = 12 * 3600
+SESSION_TTL_S = 12 * 3600  # idle
+SESSION_MAX_AGE_S = 24 * 3600  # absolute, from created_at
 LOGIN_FAIL_LIMIT = 5
 LOGIN_FAIL_WINDOW_S = 15 * 60
 MIN_PASSWORD_LEN = 10
 TOTP_ISSUER = "SMTrading"
 TOTP_USED_TTL_S = 90  # covers valid_window=1 (previous, current, next 30s step)
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+# nginx tags each request with its entry point: the plain-http local one (127.0.0.1:3000)
+# or the LAN one. Login failures are counted per entry, so failures from the LAN cannot
+# lock the local entry out. A missing or unknown value counts as the LAN.
+ENTRY_HEADER = "X-SMT-Entry"
+ENTRY_LOCAL, ENTRY_LAN = "local", "lan"
 
 _hasher = PasswordHasher()  # argon2id defaults
 _DUMMY_HASH = _hasher.hash("smt-dummy-admin-password")
@@ -53,8 +61,16 @@ def _session_key(session_id: str) -> str:
     return f"adm:sess:{session_id}"
 
 
-def _fail_key(email: str) -> str:
-    return f"adm:login_fail:{normalize_email(email)}"
+def _session_index_key(admin_id) -> str:
+    return f"adm:sess_idx:{admin_id}"
+
+
+def request_entry(request: Request) -> str:
+    return ENTRY_LOCAL if request.headers.get(ENTRY_HEADER) == ENTRY_LOCAL else ENTRY_LAN
+
+
+def _fail_key(email: str, entry: str) -> str:
+    return f"adm:login_fail:{entry}:{normalize_email(email)}"
 
 
 def credentials_fingerprint(user: AdminUser) -> str:
@@ -102,9 +118,9 @@ async def _check_totp(redis: Redis, user: AdminUser, code: str | None) -> None:
         raise SMTError(ErrorCode.FORBIDDEN, "codice TOTP già usato")
 
 
-async def _count_attempt(redis: Redis, email: str) -> int:
+async def _count_attempt(redis: Redis, email: str, entry: str) -> int:
     """Count this login attempt (the counter is cleared on success); return the count."""
-    key = _fail_key(email)
+    key = _fail_key(email, entry)
     async with redis.pipeline(transaction=True) as pipe:
         pipe.incr(key)
         pipe.expire(key, LOGIN_FAIL_WINDOW_S, nx=True)  # window starts at the first attempt
@@ -121,23 +137,55 @@ async def create_session(redis: Redis, user: AdminUser) -> tuple[str, str]:
         "created_at": datetime.now(UTC).isoformat(),
         "fp": credentials_fingerprint(user),
     }
-    await redis.set(_session_key(session_id), json.dumps(value), ex=SESSION_TTL_S)
+    index = _session_index_key(user.id)
+    async with redis.pipeline(transaction=True) as pipe:
+        pipe.set(_session_key(session_id), json.dumps(value), ex=SESSION_TTL_S)
+        pipe.sadd(index, session_id)
+        pipe.expire(index, SESSION_MAX_AGE_S)  # outlives every session it lists
+        await pipe.execute()
     return session_id, csrf
 
 
-async def destroy_session(redis: Redis, session_id: str) -> None:
-    await redis.delete(_session_key(session_id))
+async def destroy_session(redis: Redis, session_id: str, admin_id=None) -> None:
+    """Delete the session and drop it from its admin's index (`admin_id` is read from the
+    session when not given)."""
+    key = _session_key(session_id)
+    if admin_id is None:
+        raw = await redis.get(key)
+        admin_id = json.loads(raw)["admin_id"] if raw is not None else None
+    await redis.delete(key)
+    if admin_id is not None:
+        await redis.srem(_session_index_key(admin_id), session_id)
+
+
+async def revoke_other_sessions(redis: Redis, admin_id, keep_session_id: str) -> int:
+    """Destroy every session of the admin except `keep_session_id`; return how many."""
+    index = _session_index_key(admin_id)
+    others = [
+        sid for sid in (m.decode() if isinstance(m, bytes) else m
+                        for m in await redis.smembers(index))
+        if sid != keep_session_id
+    ]
+    if not others:
+        return 0
+    async with redis.pipeline(transaction=True) as pipe:
+        pipe.delete(*(_session_key(sid) for sid in others))
+        pipe.srem(index, *others)
+        deleted, _ = await pipe.execute()
+    return int(deleted)
 
 
 async def login(
-    session: AsyncSession, redis: Redis, email: str, password: str, totp: str | None
+    session: AsyncSession, redis: Redis, email: str, password: str, totp: str | None,
+    *, entry: str = ENTRY_LAN,
 ) -> tuple[str, str]:
     """Return (session_id, csrf). Does not commit (sets `last_login_at`).
 
     Every attempt is counted first (no check-then-increment race); a successful login clears
-    the counter, so only failures accumulate: the 6th attempt after 5 failures is refused."""
-    if await _count_attempt(redis, email) > LOGIN_FAIL_LIMIT:
-        ttl = await redis.ttl(_fail_key(email))
+    the counter, so only failures accumulate: the 6th attempt after 5 failures is refused.
+    The counter is per (email, entry point)."""
+    if await _count_attempt(redis, email, entry) > LOGIN_FAIL_LIMIT:
+        ttl = await redis.ttl(_fail_key(email, entry))
         raise SMTError(
             ErrorCode.RATE_LIMITED, "troppi tentativi di accesso, riprova più tardi",
             {"retry_after_s": max(ttl, 1)},
@@ -153,7 +201,7 @@ async def login(
                 ErrorCode.FORBIDDEN, "codice TOTP richiesto", {"totp_required": True}
             )
         await _check_totp(redis, user, totp)
-    await redis.delete(_fail_key(email))
+    await redis.delete(_fail_key(email, entry))
     user.last_login_at = datetime.now(UTC)
     return await create_session(redis, user)
 
@@ -216,21 +264,30 @@ RedisClient = Annotated[Redis, Depends(get_redis)]
 async def load_admin_session(
     redis: Redis, db: AsyncSession, session_id: str | None, *, renew: bool
 ) -> tuple[AdminUser, dict] | None:
-    """(admin, session data) for a live session id, else None. `renew` resets the TTL.
+    """(admin, session data) for a live session id, else None. `renew` resets the idle TTL
+    (never beyond the absolute lifetime).
 
-    A session issued before the admin's password or TOTP state changed (fingerprint
-    mismatch), or whose admin is gone, is destroyed and gives None."""
+    A session past its absolute lifetime, issued before the admin's password or TOTP state
+    changed (fingerprint mismatch), or whose admin is gone, is destroyed and gives None."""
     if not session_id:
         return None
     key = _session_key(session_id)
-    raw = await (redis.getex(key, ex=SESSION_TTL_S) if renew else redis.get(key))
+    raw = await redis.get(key)
     if raw is None:
         return None
     data = json.loads(raw)
-    user = await db.get(AdminUser, uuid.UUID(data["admin_id"]))
-    if user is None or data.get("fp") != credentials_fingerprint(user):
-        await destroy_session(redis, session_id)
+    admin_id = uuid.UUID(data["admin_id"])
+    age = (datetime.now(UTC) - datetime.fromisoformat(data["created_at"])).total_seconds()
+    remaining = int(SESSION_MAX_AGE_S - age)
+    if remaining <= 0:
+        await destroy_session(redis, session_id, admin_id)
         return None
+    user = await db.get(AdminUser, admin_id)
+    if user is None or data.get("fp") != credentials_fingerprint(user):
+        await destroy_session(redis, session_id, admin_id)
+        return None
+    if renew:
+        await redis.expire(key, min(SESSION_TTL_S, remaining))
     return user, data
 
 

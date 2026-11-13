@@ -56,12 +56,27 @@ class _Close(Exception):
         self.code = code
 
 
+_DEFAULT_PORTS = {"http": ":80", "https": ":443"}
+
+
+def _authority(netloc: str, scheme: str) -> str:
+    """host[:port], lowercased, without the scheme's default port."""
+    netloc = netloc.lower()
+    default = _DEFAULT_PORTS.get(scheme.lower())
+    return netloc.removesuffix(default) if default else netloc
+
+
 def _origin_ok(websocket: WebSocket) -> bool:
+    """The browser's Origin (http or https) names the Host the request was sent to; a port
+    is compared only when it is not the scheme's default (https://x == Host x:443)."""
     origin = websocket.headers.get("origin")
     if origin is None:
         return True
     host = websocket.headers.get("host", "")
-    return bool(host) and urlsplit(origin).netloc.lower() == host.lower()
+    parts = urlsplit(origin)
+    if not host or parts.scheme.lower() not in _DEFAULT_PORTS:
+        return False
+    return _authority(parts.netloc, parts.scheme) == _authority(host, parts.scheme)
 
 
 async def _session_valid(websocket: WebSocket, redis: Redis, *, renew: bool) -> bool:

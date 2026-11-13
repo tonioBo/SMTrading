@@ -14,12 +14,19 @@ def _out(user: AdminUser) -> AdminOut:
     return AdminOut(email=user.email, totp_enabled=user.totp_enabled)
 
 
-_COOKIE_OPTS = {"path": "/", "samesite": "lax", "secure": False}  # local http only
+def _cookie_opts(request: Request) -> dict:
+    """`Secure` when the browser came over https. Behind nginx the scheme is its
+    `X-Forwarded-Proto`, applied by uvicorn's proxy-headers middleware only for the
+    trusted compose subnet (docker/entrypoint-api.sh); the local entry is plain http."""
+    return {"path": "/", "samesite": "lax", "secure": request.url.scheme == "https"}
 
 
-def _set_session_cookies(response: Response, session_id: str, csrf: str) -> None:
-    response.set_cookie(auth.SESSION_COOKIE, session_id, httponly=True, **_COOKIE_OPTS)
-    response.set_cookie(auth.CSRF_COOKIE, csrf, httponly=False, **_COOKIE_OPTS)
+def _set_session_cookies(
+    request: Request, response: Response, session_id: str, csrf: str
+) -> None:
+    opts = _cookie_opts(request)
+    response.set_cookie(auth.SESSION_COOKIE, session_id, httponly=True, **opts)
+    response.set_cookie(auth.CSRF_COOKIE, csrf, httponly=False, **opts)
 
 
 async def _reissue_session(
@@ -27,24 +34,27 @@ async def _reissue_session(
 ) -> None:
     """After a credential change (already committed): every older session, this one
     included, no longer matches the fingerprint; give the caller a fresh one."""
-    await auth.destroy_session(redis, request.state.admin_session_id)
+    await auth.destroy_session(redis, request.state.admin_session_id, user.id)
     session_id, csrf = await auth.create_session(redis, user)
-    _set_session_cookies(response, session_id, csrf)
+    _set_session_cookies(request, response, session_id, csrf)
 
 
 @router.post("/login")
 async def login(
     body: LoginIn,
+    request: Request,
     response: Response,
     session: DbSession,
     redis: RedisClient,
 ) -> AdminOut:
-    session_id, csrf = await auth.login(session, redis, body.email, body.password, body.totp)
+    session_id, csrf = await auth.login(
+        session, redis, body.email, body.password, body.totp, entry=auth.request_entry(request)
+    )
     await session.commit()
     user = await session.scalar(
         select(AdminUser).where(AdminUser.email == auth.normalize_email(body.email))
     )
-    _set_session_cookies(response, session_id, csrf)
+    _set_session_cookies(request, response, session_id, csrf)
     return _out(user)
 
 
@@ -55,14 +65,24 @@ async def logout(request: Request, redis: RedisClient) -> Response:
     if session_id:
         await auth.destroy_session(redis, session_id)
     response = Response(status_code=204)
-    response.delete_cookie(auth.SESSION_COOKIE, httponly=True, **_COOKIE_OPTS)
-    response.delete_cookie(auth.CSRF_COOKIE, httponly=False, **_COOKIE_OPTS)
+    opts = _cookie_opts(request)
+    response.delete_cookie(auth.SESSION_COOKIE, httponly=True, **opts)
+    response.delete_cookie(auth.CSRF_COOKIE, httponly=False, **opts)
     return response
 
 
 @router.get("/me")
 async def me(user: CurrentAdmin) -> AdminOut:
     return _out(user)
+
+
+@router.post("/sessions/revoke-others")
+async def revoke_other_sessions(
+    request: Request, user: CurrentAdmin, redis: RedisClient
+) -> dict:
+    """Close every session of this admin except the caller's."""
+    revoked = await auth.revoke_other_sessions(redis, user.id, request.state.admin_session_id)
+    return {"revoked": revoked}
 
 
 @router.post("/totp/setup")
