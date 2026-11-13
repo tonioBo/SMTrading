@@ -4,7 +4,7 @@ from decimal import Decimal
 from uuid import UUID
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.agents import service as agents
@@ -392,3 +392,31 @@ async def test_markets_hours_resource(mcp_server):
         "market": "CRYPTO", "is_open": True, "next_open": None, "next_close": None,
     }
     assert ("resource:markets://hours", "ok") in await _audit_methods(mcp_server.db_url)
+
+
+async def test_archived_portfolio_is_invisible_to_agents(mcp_server, mcp_call, book):
+    from smtrading.admin.portfolio_ops import archive_portfolio
+    from smtrading.engine.service import cancel_all_orders
+
+    async with _Db(mcp_server.db_url) as s:
+        await agents.assign_portfolio(s, mcp_server.agent_id, book["other_id"], "trade")
+        await cancel_all_orders(s, mcp_server.demo_id, by="admin")
+        await archive_portfolio(s, mcp_server.demo_id, by="admin")
+        await s.commit()
+        discard_post_commit(s)
+    url, token = mcp_server.url, mcp_server.token
+    is_error, listed = await mcp_call(url, token, "list_portfolios")
+    assert not is_error and [p["name"] for p in listed] == ["Other"]
+    demo = {"portfolio_id": str(mcp_server.demo_id)}
+    for tool, args in (
+        ("get_portfolio", demo), ("get_positions", demo),
+        ("place_order", {**demo, "symbol": "ENI.MI", "side": "buy", "type": "market",
+                         "qty": "1"}),
+    ):
+        is_error, payload = await mcp_call(url, token, tool, args)
+        assert is_error and payload["code"] == "NOT_FOUND", (tool, payload)
+    async with _Db(mcp_server.db_url) as s:  # the assignment is kept
+        assert await agents.get_permission(s, mcp_server.agent_id, mcp_server.demo_id) == "trade"
+        assert await s.scalar(select(func.count()).select_from(Order).where(
+            Order.portfolio_id == mcp_server.demo_id, Order.status == OrderStatus.rejected
+        )) == 0

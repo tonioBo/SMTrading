@@ -526,3 +526,75 @@ async def test_reset_unknown_instrument(admin):
     assert r.status_code == 400 and r.json()["code"] == "INVALID_ORDER"
     assert r.json()["details"] == {"symbols": ["ZZZ"]}
     assert await _journal_count(admin.sm) == before
+
+
+# --- archive (Task 13) ---------------------------------------------------------------
+
+
+async def test_archive_hides_freezes_and_restores(admin):
+    from smtrading.agents.models import McpAuditLog
+
+    c = admin.client
+    p = await _create(c)
+    pid = p["id"]
+    r = await c.post(f"/api/portfolios/{pid}/archive")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "archived" and body["archived_by"].startswith("admin-")
+    assert body["archived_at"] is not None and body["equity_eur"] == "10000"
+    assert (await c.post(f"/api/portfolios/{pid}/archive")).status_code == 200  # idempotent
+
+    assert pid not in {x["id"] for x in (await c.get("/api/portfolios")).json()}
+    listed = (await c.get("/api/portfolios", params={"include_archived": 1})).json()
+    assert next(x for x in listed if x["id"] == pid)["status"] == "archived"
+    assert (await c.get(f"/api/portfolios/{pid}")).json()["status"] == "archived"
+    assert (await c.get(f"/api/portfolios/{pid}/transactions")).status_code == 200
+    assert (await c.get(f"/api/portfolios/{pid}/transactions.csv")).status_code == 200
+
+    journals = await _journal_count(admin.sm)
+    items = (await c.get(f"/api/portfolios/{pid}/transactions")).json()["items"]
+    deposit_id = next(j["id"] for j in items if j["type"] == "DEPOSIT")
+    refused = [
+        await c.post(f"/api/journals/{deposit_id}/reverse", json={"reason": "x"}),
+        await c.patch(f"/api/portfolios/{pid}", json={"leverage": "2"}),
+        await c.post(f"/api/portfolios/{pid}/deposit", json={"amount": "10"}),
+        await c.post(f"/api/portfolios/{pid}/withdraw", json={"amount": "10"}),
+        await c.post(f"/api/portfolios/{pid}/reset", json={"new_cash": "1", "reason": "x"}),
+    ]
+    for r in refused:
+        assert r.status_code == 400, r.text
+        assert r.json()["code"] == "PORTFOLIO_ARCHIVED"
+        assert r.json()["message"] == "Portafoglio archiviato"
+    assert await _journal_count(admin.sm) == journals
+
+    r = await c.post(f"/api/portfolios/{pid}/unarchive")
+    assert r.status_code == 200 and r.json()["status"] == "active"
+    assert r.json()["archived_at"] is None
+    assert pid in {x["id"] for x in (await c.get("/api/portfolios")).json()}
+    async with admin.sm() as s:
+        methods = list(await s.scalars(
+            select(McpAuditLog.method).where(McpAuditLog.method.like("admin:portfolio.%"))
+            .order_by(McpAuditLog.id)
+        ))
+    assert methods == ["admin:portfolio.archive", "admin:portfolio.unarchive"]
+
+
+async def test_archive_refused_with_open_orders_via_api(admin):
+    from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType
+
+    c = admin.client
+    pid = (await _create(c))["id"]
+    async with admin.sm() as s:
+        s.add(Order(
+            portfolio_id=uuid.UUID(pid), symbol="AAPL", side=OrderSide.buy,
+            type=OrderType.limit, qty=D(1), limit_price=D(100), status=OrderStatus.pending,
+        ))
+        await s.commit()
+    r = await c.post(f"/api/portfolios/{pid}/archive")
+    assert r.status_code == 400
+    assert r.json() == {
+        "code": "INVALID_ORDER", "message": "Annulla prima gli ordini aperti",
+        "details": {"portfolio_id": pid},
+    }
+    missing = await c.post(f"/api/portfolios/{uuid.uuid4()}/archive")
+    assert missing.status_code == 404

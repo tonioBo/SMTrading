@@ -79,8 +79,8 @@ from smtrading.instruments.models import Instrument
 from smtrading.instruments.service import get_instrument, validate_price, validate_quantity
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.marketdata.types import Quote
-from smtrading.portfolios.locks import lock_portfolio
-from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.locks import lock_live_portfolio, lock_portfolio
+from smtrading.portfolios.models import Portfolio, ensure_not_archived, live_portfolio_ids
 from smtrading.risk.checks import CheckResult, pre_trade_check
 from smtrading.risk.daily_loss import check_daily_loss_safely
 from smtrading.risk.settings import get_default_spread_bps, set_kill_switch
@@ -257,7 +257,7 @@ async def _admit(
     With `check=False` the risk check is left to the caller (`_check_admission`)."""
     now = now or datetime.now(UTC)
     req = _validate_request(req)
-    portfolio = await lock_portfolio(session, req.portfolio_id)
+    portfolio = await lock_live_portfolio(session, req.portfolio_id)
     instrument = await get_instrument(session, req.symbol)
     market = market_status(instrument.market, now)
     memo = await _memo(session, qs, portfolio.id, [instrument.symbol])
@@ -498,6 +498,7 @@ async def preview_order(
         portfolio = await session.get(Portfolio, req.portfolio_id)
         if portfolio is None:
             raise SMTError(ErrorCode.NOT_FOUND, "portfolio not found")
+        ensure_not_archived(portfolio)
         instrument = await get_instrument(session, req.symbol)
         market = market_status(instrument.market, now)
         return await _run_check(session, qs, req, portfolio, instrument, market, redis)
@@ -735,7 +736,7 @@ async def cancel_all_orders(
     session: AsyncSession, portfolio_id: UUID, symbol: str | None = None, *,
     by: str = "agent",
 ) -> int:
-    await lock_portfolio(session, portfolio_id)
+    await lock_live_portfolio(session, portfolio_id)
     query = select(Order).where(
         Order.portfolio_id == portfolio_id, Order.status.in_(OPEN_STATUSES)
     )
@@ -763,7 +764,9 @@ async def set_kill_switch_and_cancel(
     await set_kill_switch(session, on)
     canceled = 0
     if on and cancel_open:
-        portfolio_ids = list(await session.scalars(select(Portfolio.id).order_by(Portfolio.id)))
+        portfolio_ids = list(await session.scalars(
+            live_portfolio_ids().order_by(Portfolio.id)  # archived: no open orders
+        ))
         for portfolio_id in portfolio_ids:
             canceled += await cancel_all_orders(session, portfolio_id, by=by)
     queue_event(session, "kill_switch", {"on": bool(on), "canceled": canceled})
@@ -792,6 +795,7 @@ async def modify_order(
     if not changes:
         raise _invalid("nothing to modify")
     order = await _lock_order(session, order_id)
+    ensure_not_archived(await session.get(Portfolio, order.portfolio_id))
     if order.status not in MODIFIABLE:
         raise _invalid(f"cannot modify a {order.status} order", order_id=order.id)
     replace = broker_live(order)
@@ -959,7 +963,7 @@ async def close_position(
 ) -> Order:
     """Reduce-only market order on the opposite side for |position| (or `qty` <=
     |position|); the symbol's open bracket exits are canceled (Ruling R16)."""
-    await lock_portfolio(session, portfolio_id)
+    await lock_live_portfolio(session, portfolio_id)
     symbol = (await get_instrument(session, symbol)).symbol
     held = (await _position_balances(session, portfolio_id, symbol)).get(symbol)
     if held is None:
@@ -980,7 +984,7 @@ async def close_all_positions(
     """One closing order per open position; rejections are returned, not raised.
 
     One memo, prefetched for every held symbol before the first close (I2)."""
-    await lock_portfolio(session, portfolio_id)
+    await lock_live_portfolio(session, portfolio_id)
     positions = await _position_balances(session, portfolio_id)
     qs = await _memo(session, qs, portfolio_id, list(positions))
     orders = []

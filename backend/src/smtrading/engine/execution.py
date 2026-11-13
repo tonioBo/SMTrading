@@ -76,7 +76,7 @@ from smtrading.ledger.models import Account, AccountBalance, AccountKind, Journa
 from smtrading.ledger.service import LineSpec, get_balance, get_or_create_account, post_journal
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.locks import lock_portfolio
-from smtrading.portfolios.models import Portfolio, PortfolioStatus
+from smtrading.portfolios.models import ARCHIVED_MESSAGE, Portfolio, PortfolioStatus
 from smtrading.portfolios.service import get_cash_balances
 from smtrading.positions.service import upsert_position
 from smtrading.risk.profiles import effective_risk_profile
@@ -447,6 +447,8 @@ async def _check_status(
 ) -> None:
     """I3: portfolio status and kill switch, enforced again at fill time."""
     details = {"portfolio_id": str(portfolio.id), "symbol": symbol}
+    if portfolio.status == PortfolioStatus.archived:
+        raise SMTError(ErrorCode.PORTFOLIO_ARCHIVED, ARCHIVED_MESSAGE, details)
     if portfolio.status == PortfolioStatus.locked:
         raise SMTError(ErrorCode.PORTFOLIO_LOCKED, "portfolio is locked", details)
     if portfolio.status == PortfolioStatus.reduce_only and not reducing:

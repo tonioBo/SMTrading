@@ -33,6 +33,7 @@ from smtrading.ledger.models import Account, AccountBalance, AccountKind, Journa
 from smtrading.ledger.service import LineSpec, get_balance, post_journal
 from smtrading.marketdata.types import CalendarEvent
 from smtrading.portfolios.locks import lock_portfolio
+from smtrading.portfolios.models import PortfolioStatus, live_portfolio_ids
 from smtrading.positions.models import Position
 
 log = logging.getLogger("smtrading.corporate.actions")
@@ -147,7 +148,8 @@ async def _apply_portfolio(
 ) -> int:
     """Dividends/splits on the `held` symbols; cancel the open orders on the
     `split_orders` symbols (Ruling R21). The caller commits."""
-    await lock_portfolio(session, portfolio_id)
+    if (await lock_portfolio(session, portfolio_id)).status == PortfolioStatus.archived:
+        return 0  # archived after the holdings were read
     journals = 0
     for symbol in held:
         for event in events.get(symbol, []):
@@ -193,8 +195,9 @@ async def run_corporate_actions(
         select(Account.portfolio_id, Account.asset)
         .join(AccountBalance, AccountBalance.account_id == Account.id)
         .where(
-            Account.portfolio_id.is_not(None), Account.kind == AccountKind.position,
-            AccountBalance.balance != 0,
+            # archived portfolios are frozen (Task 13): no dividends, no splits
+            Account.portfolio_id.in_(live_portfolio_ids()),
+            Account.kind == AccountKind.position, AccountBalance.balance != 0,
         )
         .order_by(Account.portfolio_id, Account.asset)
     )).all()
@@ -204,7 +207,9 @@ async def run_corporate_actions(
     open_orders: dict[UUID, set[str]] = defaultdict(set)
     for portfolio_id, symbol in (await session.execute(
         select(Order.portfolio_id, Order.symbol).distinct()
-        .where(Order.status.in_(OPEN_STATUSES))
+        .where(
+            Order.status.in_(OPEN_STATUSES), Order.portfolio_id.in_(live_portfolio_ids())
+        )
     )).all():
         open_orders[portfolio_id].add(symbol)
     symbols = sorted(

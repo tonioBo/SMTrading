@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from smtrading.agents.models import Agent, AgentPortfolio, McpAuditLog
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
 
 log = logging.getLogger("smtrading.agents")
 
@@ -306,8 +306,16 @@ async def require_permission(
     portfolio_id: uuid.UUID,
     needed: Literal["read", "trade"],
 ) -> None:
-    """`trade` implies `read`. Unassigned portfolio or insufficient permission -> FORBIDDEN."""
+    """`trade` implies `read`. Unassigned portfolio or insufficient permission -> FORBIDDEN.
+    An archived portfolio does not exist for agents (Task 13) -> NOT_FOUND; the
+    assignment itself is kept for when it is restored."""
     have = await get_permission(session, agent_id, portfolio_id)
+    if have is not None and await session.scalar(
+        select(Portfolio.status).where(Portfolio.id == portfolio_id)
+    ) == PortfolioStatus.archived:
+        raise SMTError(
+            ErrorCode.NOT_FOUND, "portfolio not found", {"portfolio_id": str(portfolio_id)}
+        )
     if have == "trade" or (have == "read" and needed == "read"):
         return
     raise SMTError(
@@ -318,9 +326,13 @@ async def require_permission(
 
 
 async def agent_portfolio_ids(session: AsyncSession, agent_id: uuid.UUID) -> list[uuid.UUID]:
+    """The agent's portfolios, archived ones excluded."""
     rows = await session.scalars(
         select(AgentPortfolio.portfolio_id)
-        .where(AgentPortfolio.agent_id == agent_id)
+        .where(
+            AgentPortfolio.agent_id == agent_id,
+            AgentPortfolio.portfolio_id.in_(live_portfolio_ids()),
+        )
         .order_by(AgentPortfolio.portfolio_id)
     )
     return list(rows)

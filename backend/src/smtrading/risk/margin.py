@@ -64,7 +64,7 @@ from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, JournalType
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.locks import lock_portfolio
-from smtrading.portfolios.models import Portfolio, PortfolioStatus
+from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
 from smtrading.risk.daily_loss import check_daily_loss
 from smtrading.risk.models import Notification
 from smtrading.risk.settings import get_stale_threshold
@@ -93,13 +93,15 @@ async def _memo(session: AsyncSession, qs: QuoteSource, portfolio_id: UUID) -> M
 
 
 def _margin_portfolios_subquery():
-    """Portfolio ids with a margin loan (< 0) or a short position."""
+    """Portfolio ids with a margin loan (< 0) or a short position; archived ones are
+    frozen and left out."""
     return (
         select(Account.portfolio_id)
         .join(AccountBalance, AccountBalance.account_id == Account.id)
         .where(
             Account.kind.in_((AccountKind.margin_loan, AccountKind.position)),
             AccountBalance.balance < 0,
+            Account.portfolio_id.in_(live_portfolio_ids()),
         )
     )
 
@@ -153,7 +155,8 @@ async def check_portfolio_margin(
     now: datetime | None = None,
 ) -> MarginResult:
     now = now or datetime.now(UTC)
-    await lock_portfolio(session, portfolio_id)
+    if (await lock_portfolio(session, portfolio_id)).status == PortfolioStatus.archived:
+        return "ok"  # frozen: never warned nor liquidated
     qs = await _memo(session, qs, portfolio_id)
     valuation = await value_portfolio(session, qs, portfolio_id, redis=redis)
     level = valuation.margin_level()
@@ -377,7 +380,7 @@ async def margin_sweep(
             .join(AccountBalance, AccountBalance.account_id == Account.id)
             .where(
                 Account.kind == AccountKind.position, AccountBalance.balance != 0,
-                Account.portfolio_id.is_not(None),
+                Account.portfolio_id.in_(live_portfolio_ids()),
             )
         ))
     for portfolio_id in sorted(margin_ids | holding_ids):

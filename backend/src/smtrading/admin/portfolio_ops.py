@@ -1,4 +1,5 @@
-"""Portfolio reset: back to a single cash balance, with a fresh day_open (Ruling R2).
+"""Portfolio reset (back to a single cash balance, with a fresh day_open: Ruling R2) and
+archive/unarchive (Task 13).
 
 Does not commit: the caller commits, then dispatches the queued post-commit effects.
 """
@@ -11,6 +12,7 @@ from uuid import UUID
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from smtrading.agents.service import write_audit
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.corporate.snapshots import ensure_day_open, local_date
 from smtrading.engine.models import OPEN_STATUSES, Order, OrderStatus
@@ -21,8 +23,8 @@ from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, JournalType
 from smtrading.ledger.service import LineSpec, get_or_create_account, post_journal
-from smtrading.portfolios.locks import lock_portfolio
-from smtrading.portfolios.models import PortfolioStatus
+from smtrading.portfolios.locks import lock_live_portfolio, lock_portfolio
+from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import clean_currency, deposit
 from smtrading.risk.models import EquitySnapshot, SnapshotKind
 
@@ -116,7 +118,7 @@ async def reset_portfolio(
         )
     currency = clean_currency(currency)
     memo = MemoQuoteSource.wrap(qs)
-    portfolio = await lock_portfolio(session, portfolio_id)
+    portfolio = await lock_live_portfolio(session, portfolio_id)
     saved = (portfolio.status, portfolio.reduce_only_reason, portfolio.reduce_only_until)
     now = datetime.now(UTC)
 
@@ -202,3 +204,71 @@ async def reset_portfolio(
         "canceled_orders": canceled, "closed_positions": len(result.closing_orders),
     })
     return result
+
+
+# --- archive -------------------------------------------------------------------------
+
+OPEN_ORDERS_MESSAGE = "Annulla prima gli ordini aperti"
+BROKER_LINKED_MESSAGE = "Scollega prima il broker"
+
+
+async def _audit(session: AsyncSession, method: str, portfolio: Portfolio, by: str, **extra):
+    await write_audit(
+        session, agent_id=None, method=method,
+        params={"portfolio_id": str(portfolio.id), "name": portfolio.name, "by": by, **extra},
+        outcome="ok", latency_ms=0,
+    )
+
+
+async def archive_portfolio(session: AsyncSession, portfolio_id: UUID, *, by: str) -> Portfolio:
+    """Archive a portfolio: hidden from lists, agents and dashboards, read-only, skipped
+    by every job; its ledger, positions and agent assignments stay as they are.
+
+    Refused (INVALID_ORDER) with open orders or a broker link. Idempotent: an archived
+    portfolio is returned unchanged. The current status is kept for `unarchive_portfolio`.
+    """
+    portfolio = await lock_portfolio(session, portfolio_id)
+    if portfolio.status == PortfolioStatus.archived:
+        return portfolio
+    details = {"portfolio_id": str(portfolio.id)}
+    if portfolio.broker_link_id is not None:
+        raise SMTError(ErrorCode.INVALID_ORDER, BROKER_LINKED_MESSAGE, details)
+    open_order = await session.scalar(
+        select(Order.id).where(
+            Order.portfolio_id == portfolio.id, Order.status.in_(OPEN_STATUSES)
+        ).limit(1)
+    )
+    if open_order is not None:
+        raise SMTError(ErrorCode.INVALID_ORDER, OPEN_ORDERS_MESSAGE, details)
+    prior = str(portfolio.status)
+    portfolio.archived_prior_status = prior
+    portfolio.status = PortfolioStatus.archived
+    portfolio.archived_at = datetime.now(UTC)
+    portfolio.archived_by = by
+    await session.flush()
+    await _audit(session, "admin:portfolio.archive", portfolio, by, prior_status=prior)
+    queue_event(session, "portfolio.archived", {"portfolio_id": portfolio.id})
+    return portfolio
+
+
+async def unarchive_portfolio(
+    session: AsyncSession, portfolio_id: UUID, *, by: str
+) -> Portfolio:
+    """Back to the status it had when archived (active when unknown). Idempotent."""
+    portfolio = await lock_portfolio(session, portfolio_id)
+    if portfolio.status != PortfolioStatus.archived:
+        return portfolio
+    try:
+        restored = PortfolioStatus(portfolio.archived_prior_status or "active")
+    except ValueError:
+        restored = PortfolioStatus.active
+    if restored == PortfolioStatus.archived:
+        restored = PortfolioStatus.active
+    portfolio.status = restored
+    portfolio.archived_at = None
+    portfolio.archived_by = None
+    portfolio.archived_prior_status = None
+    await session.flush()
+    await _audit(session, "admin:portfolio.unarchive", portfolio, by, status=str(restored))
+    queue_event(session, "portfolio.unarchived", {"portfolio_id": portfolio.id})
+    return portfolio

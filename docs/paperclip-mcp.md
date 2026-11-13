@@ -92,6 +92,8 @@ Passa i numeri come stringhe per mantenere la precisione esatta (es. `"qty": "0.
 Gli agenti non possono creare portafogli, depositare, prelevare o modificare i limiti.
 
 - `list_portfolios`: i portafogli utilizzabili dall'agente, con il permesso (`read`/`trade`).
+  I portafogli archiviati dall'amministratore non compaiono e, cercati per id, danno
+  `NOT_FOUND` (l'assegnazione resta e torna valida quando vengono ripristinati).
 - `get_portfolio`: valutazione mark-to-market (EUR): equity, esposizione, margini, potere d'acquisto, posizioni, P&L del giorno.
 - `get_positions`: posizioni aperte con prezzo medio, mark e P&L non realizzato.
 - `get_transactions`: movimenti del ledger del portafoglio, dal piu' recente, con filtri e paginazione (`before_seq`).
@@ -184,6 +186,7 @@ Un errore e' restituito con `isError: true` e un testo JSON
 - `KILL_SWITCH_ACTIVE`: kill switch globale attivo.
 - `REDUCE_ONLY`: il portafoglio accetta solo ordini che riducono le posizioni.
 - `PORTFOLIO_LOCKED`: portafoglio bloccato.
+- `PORTFOLIO_ARCHIVED`: portafoglio archiviato (sola lettura); un agente vede invece `NOT_FOUND`.
 - `STALE_QUOTE`: quotazione troppo vecchia.
 - `RISK_LIMIT_EXCEEDED`: limite di rischio superato.
 - `SHORT_NOT_ALLOWED`: vendita allo scoperto non consentita.

@@ -1,5 +1,10 @@
 """Admin API: portfolios, valuation, positions, performance, orders, ledger movements,
-cash moves, reversals and reset. Every route requires an admin session (router level).
+cash moves, reversals, reset and archive. Every route requires an admin session (router
+level).
+
+Archived portfolios (Task 13) are left out of the list unless `include_archived=1`; they
+stay readable by id, and every change (settings, cash moves, reversals touching them,
+reset) is refused with PORTFOLIO_ARCHIVED until they are restored.
 
 Handlers commit; on an error the session is rolled back and the queued post-commit
 effects are dropped. Decimals go out as plain strings (`mcp.dto.to_jsonable`).
@@ -23,7 +28,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
 from smtrading.admin.common import Quotes, _invalid, _transaction
 from smtrading.admin.idempotency import RESET_IN_FLIGHT_TTL_S, Idempotency, idempotent
-from smtrading.admin.portfolio_ops import reset_portfolio
+from smtrading.admin.portfolio_ops import (
+    archive_portfolio,
+    reset_portfolio,
+    unarchive_portfolio,
+)
 from smtrading.admin.schemas import (
     CashMoveIn,
     PortfolioCreateIn,
@@ -50,7 +59,7 @@ from smtrading.mcp.dto import (
     valuation_dto,
 )
 from smtrading.performance.service import get_performance
-from smtrading.portfolios.locks import lock_portfolio
+from smtrading.portfolios.locks import lock_live_portfolio
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.queries import day_pnl, list_portfolio_journals
 from smtrading.portfolios.service import create_portfolio, deposit, get_cash_balances, withdraw
@@ -158,6 +167,7 @@ PORTFOLIO_FIELDS = (
     "id", "name", "base_currency", "leverage", "maintenance_margin_pct",
     "warning_margin_pct", "slippage_bps", "status", "timezone", "risk_profile_id",
     "reduce_only_reason", "reduce_only_until", "created_at", "broker_link_id",
+    "archived_at", "archived_by",
 )
 
 
@@ -184,8 +194,13 @@ async def _summary(
 
 
 @router.get("/portfolios")
-async def list_portfolios(session: DbSession, redis: RedisClient, qs: Quotes) -> list[dict]:
-    portfolios = list(await session.scalars(select(Portfolio).order_by(Portfolio.name)))
+async def list_portfolios(
+    session: DbSession, redis: RedisClient, qs: Quotes, include_archived: bool = False
+) -> list[dict]:
+    query = select(Portfolio).order_by(Portfolio.name)
+    if not include_archived:
+        query = query.where(Portfolio.status != PortfolioStatus.archived)
+    portfolios = list(await session.scalars(query))
     return [await _summary(session, qs, redis, p) for p in portfolios]
 
 
@@ -231,7 +246,7 @@ async def patch_portfolio(
     fields = body.model_fields_set
     try:
         async with _transaction(session, redis):
-            p = await lock_portfolio(session, portfolio_id)
+            p = await lock_live_portfolio(session, portfolio_id)
             if "name" in fields:
                 name = _clean_name(body.name)
                 if await _name_taken(session, name, exclude=p.id):
@@ -471,7 +486,7 @@ async def _cash_move(
 ):
     async def run() -> dict:
         async with _transaction(session, redis):
-            portfolio = await _portfolio(session, portfolio_id)
+            portfolio = await lock_live_portfolio(session, portfolio_id)
             amount = parse_decimal(body.amount, "amount")
             journal = await mover(
                 session, portfolio_id, amount, body.currency or portfolio.base_currency,
@@ -538,7 +553,7 @@ async def reverse(
                 .where(JournalLine.journal_id == journal_id, Account.portfolio_id.is_not(None))
             )))
             for pid in portfolio_ids:  # portfolio rows before the chain lock (Ruling R11)
-                await lock_portfolio(session, pid)
+                await lock_live_portfolio(session, pid)
             journal = await reverse_journal(
                 session, journal_id, reason=reason, author_type="admin", author_id=admin.email,
             )
@@ -571,3 +586,25 @@ async def reset(
         return out
 
     return await idem.run(run)
+
+
+@router.post("/portfolios/{portfolio_id}/archive")
+async def archive(
+    portfolio_id: UUID, admin: CurrentAdmin, session: DbSession, redis: RedisClient,
+    qs: Quotes,
+) -> dict:
+    """Archive (idempotent): refused with open orders or a broker link."""
+    async with _transaction(session, redis):
+        p = await archive_portfolio(session, portfolio_id, by=admin.email)
+    return await _summary(session, qs, redis, p)
+
+
+@router.post("/portfolios/{portfolio_id}/unarchive")
+async def unarchive(
+    portfolio_id: UUID, admin: CurrentAdmin, session: DbSession, redis: RedisClient,
+    qs: Quotes,
+) -> dict:
+    """Restore (idempotent) with the status the portfolio had when archived."""
+    async with _transaction(session, redis):
+        p = await unarchive_portfolio(session, portfolio_id, by=admin.email)
+    return await _summary(session, qs, redis, p)

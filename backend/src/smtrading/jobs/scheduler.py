@@ -7,6 +7,8 @@
 - every 5 minutes: periodic equity snapshots and, with an http client, the broker
   reconciliation of every enabled broker link.
 
+Archived portfolios (Task 13) are frozen: every job leaves them out.
+
 Every job has its own transactions and commits; a failure is logged and the loop goes on.
 Daily jobs are idempotent through job_runs and retried every DAILY_RETRY_S until done.
 
@@ -30,7 +32,7 @@ from smtrading.corporate.interest import run_interest
 from smtrading.corporate.snapshots import ensure_day_open, take_snapshots
 from smtrading.engine.quotesource import QuoteSource
 from smtrading.jobs.runs import job_done
-from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
 from smtrading.risk.daily_loss import reset_daily
 from smtrading.risk.margin import margin_sweep
 from smtrading.risk.models import JobRun
@@ -165,15 +167,18 @@ class JobScheduler:
             log.exception("%s %s failed", job, key)
 
     async def _day_open(self) -> None:
-        """Lift expired daily-loss blocks; `day_open` snapshot of every portfolio."""
+        """Lift expired daily-loss blocks; `day_open` snapshot of every portfolio (archived
+        ones excluded)."""
         async with self._sm() as session:
             await reset_daily(session, self._clock())
             await session.commit()
-            ids = list(await session.scalars(select(Portfolio.id).order_by(Portfolio.id)))
+            ids = list(await session.scalars(live_portfolio_ids().order_by(Portfolio.id)))
         for portfolio_id in ids:
             try:
                 async with self._sm() as session:
                     portfolio = await session.get(Portfolio, portfolio_id)
+                    if portfolio.status == PortfolioStatus.archived:
+                        continue  # archived after the list was read
                     await ensure_day_open(session, self._qs, portfolio, self._clock())
                     await session.commit()
             except Exception:

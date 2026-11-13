@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.models import Portfolio, ensure_not_archived
 
 
 async def lock_portfolio(session: AsyncSession, portfolio_id: UUID) -> Portfolio:
@@ -23,3 +23,8 @@ async def lock_portfolio(session: AsyncSession, portfolio_id: UUID) -> Portfolio
             ErrorCode.NOT_FOUND, "portfolio not found", {"portfolio_id": str(portfolio_id)}
         )
     return portfolio
+
+
+async def lock_live_portfolio(session: AsyncSession, portfolio_id: UUID) -> Portfolio:
+    """lock_portfolio, then PORTFOLIO_ARCHIVED if the portfolio is archived."""
+    return ensure_not_archived(await lock_portfolio(session, portfolio_id))

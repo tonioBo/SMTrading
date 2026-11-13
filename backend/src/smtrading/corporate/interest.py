@@ -21,6 +21,7 @@ from smtrading.jobs.runs import job_done, run_job_once
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, JournalType
 from smtrading.ledger.service import LineSpec, get_balance, get_or_create_account, post_journal
 from smtrading.portfolios.locks import lock_portfolio
+from smtrading.portfolios.models import PortfolioStatus, live_portfolio_ids
 from smtrading.risk.models import InterestKind, InterestRate
 from smtrading.valuation.service import mark_price
 
@@ -119,7 +120,8 @@ async def _charge_portfolio(
     session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, day: date,
     rates: dict[tuple[InterestKind, str], Decimal],
 ) -> int:
-    await lock_portfolio(session, portfolio_id)
+    if (await lock_portfolio(session, portfolio_id)).status == PortfolioStatus.archived:
+        return 0  # archived after the list was read: frozen
     if not await run_job_once(session, JOB, f"{day.isoformat()}:{portfolio_id}"):
         return 0
     journals = 0
@@ -151,7 +153,7 @@ async def run_interest(session: AsyncSession, qs: QuoteSource, day: date) -> int
         select(Account.portfolio_id).distinct()
         .join(AccountBalance, AccountBalance.account_id == Account.id)
         .where(
-            Account.portfolio_id.is_not(None),
+            Account.portfolio_id.in_(live_portfolio_ids()),  # archived: frozen
             or_(Account.kind == AccountKind.margin_loan, Account.kind == AccountKind.position),
             AccountBalance.balance < 0,
         )

@@ -13,6 +13,9 @@ an admin session (router level). Read-only: nothing is committed.
   portfolio's latest value at or before it (a portfolio missing from a bucket carries its
   previous value, seeded with its last snapshot before the window: no false dips). Every
   series is also capped to 500 points.
+
+Archived portfolios (Task 13) are left out of everything: totals, list, margin alerts and
+the equity curves (their whole history).
 """
 
 import logging
@@ -23,7 +26,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 from redis.exceptions import RedisError
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, select, text
 from sqlalchemy.dialects.postgresql import distinct_on
 
 from smtrading.admin.auth import DbSession, RedisClient, require_admin
@@ -34,7 +37,7 @@ from smtrading.common.money import quantize_money
 from smtrading.connectors.models import Connector
 from smtrading.mcp.dto import to_jsonable
 from smtrading.performance.service import MAX_SERIES_POINTS, PERIODS, SPANS, downsample
-from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
 from smtrading.portfolios.queries import day_pnl_detail
 from smtrading.risk.models import EquitySnapshot, Notification, SnapshotKind
 from smtrading.risk.settings import is_kill_switch_on
@@ -52,7 +55,10 @@ _PCT_Q = Decimal("0.0001")
 
 @router.get("/dashboard")
 async def dashboard(session: DbSession, redis: RedisClient, qs: Quotes) -> dict[str, Any]:
-    portfolios = list(await session.scalars(select(Portfolio).order_by(Portfolio.name)))
+    portfolios = list(await session.scalars(
+        select(Portfolio).where(Portfolio.status != PortfolioStatus.archived)
+        .order_by(Portfolio.name)
+    ))
     total_equity = Decimal(0)
     total_pnl = Decimal(0)
     pct_pnl = Decimal(0)  # the % covers only the portfolios with a defined day %
@@ -91,7 +97,10 @@ async def dashboard(session: DbSession, redis: RedisClient, qs: Quotes) -> dict[
     )).all()
     alerts = list(await session.scalars(
         select(Notification)
-        .where(Notification.kind.in_(MARGIN_ALERT_KINDS))
+        .where(
+            Notification.kind.in_(MARGIN_ALERT_KINDS),
+            Notification.portfolio_id.in_(live_portfolio_ids()),
+        )
         .order_by(Notification.created_at.desc(), Notification.id.desc())
         .limit(MAX_MARGIN_ALERTS)
     ))
@@ -143,7 +152,10 @@ async def dashboard_equity(session: DbSession, period: str = "1m") -> dict[str, 
             {"field": "period", "allowed": list(PERIODS)},
         )
     now = datetime.now(UTC)
-    periodic = EquitySnapshot.kind == SnapshotKind.periodic
+    periodic = and_(
+        EquitySnapshot.kind == SnapshotKind.periodic,
+        EquitySnapshot.portfolio_id.in_(live_portfolio_ids()),
+    )
     span = SPANS[period]
     start = None if span is None else now - span
     if span is None:

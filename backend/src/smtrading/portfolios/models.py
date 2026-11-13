@@ -3,11 +3,12 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import DateTime, ForeignKey, Integer, Select, String, func, select
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from smtrading.common.db import Base
+from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.ledger.models import NUM, str_enum
 
 
@@ -15,6 +16,11 @@ class PortfolioStatus(enum.StrEnum):
     active = "active"
     reduce_only = "reduce_only"
     locked = "locked"
+    # hidden and frozen: no trading, no jobs; the ledger stays as it is (Task 13)
+    archived = "archived"
+
+
+ARCHIVED_MESSAGE = "Portafoglio archiviato"
 
 
 class Portfolio(Base):
@@ -38,3 +44,21 @@ class Portfolio(Base):
     reduce_only_reason: Mapped[str | None] = mapped_column(String(64))
     reduce_only_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     broker_link_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("broker_links.id"))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_by: Mapped[str | None] = mapped_column(String(128))
+    # the status to restore on unarchive (active, reduce_only or locked)
+    archived_prior_status: Mapped[str | None] = mapped_column(String(32))
+
+
+def live_portfolio_ids() -> Select:
+    """The ids of the portfolios that are not archived (for `.in_()` filters)."""
+    return select(Portfolio.id).where(Portfolio.status != PortfolioStatus.archived)
+
+
+def ensure_not_archived(portfolio: Portfolio) -> Portfolio:
+    """PORTFOLIO_ARCHIVED for an archived portfolio: it is read-only."""
+    if portfolio.status == PortfolioStatus.archived:
+        raise SMTError(
+            ErrorCode.PORTFOLIO_ARCHIVED, ARCHIVED_MESSAGE, {"portfolio_id": str(portfolio.id)}
+        )
+    return portfolio

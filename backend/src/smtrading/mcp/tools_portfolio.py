@@ -27,7 +27,7 @@ from smtrading.mcp.dto import (
 )
 from smtrading.mcp.runtime import ToolCtx, run_tool
 from smtrading.performance import service as performance
-from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.queries import day_pnl, list_portfolio_journals, today_day_open
 from smtrading.risk.daily_loss import net_cash_flows_eur
 from smtrading.risk.models import RiskProfile
@@ -71,7 +71,10 @@ async def _list_portfolios(ctx: ToolCtx) -> list[dict]:
     rows = await ctx.session.execute(
         select(Portfolio, AgentPortfolio.permission)
         .join(AgentPortfolio, AgentPortfolio.portfolio_id == Portfolio.id)
-        .where(AgentPortfolio.agent_id == ctx.agent_id)
+        .where(
+            AgentPortfolio.agent_id == ctx.agent_id,
+            Portfolio.status != PortfolioStatus.archived,  # invisible to agents (Task 13)
+        )
         .order_by(Portfolio.name)
     )
     return [

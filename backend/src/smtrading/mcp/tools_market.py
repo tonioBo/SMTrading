@@ -25,6 +25,7 @@ from smtrading.marketdata.types import ScreenFilter, Timeframe
 from smtrading.mcp.dto import instrument_dto, parse_decimal, parse_enum, parse_int, parse_ts
 from smtrading.mcp.instruments import ensure_instrument
 from smtrading.mcp.runtime import ToolCtx, run_tool
+from smtrading.portfolios.models import live_portfolio_ids
 from smtrading.positions.models import Position
 
 MAX_QUOTE_SYMBOLS = 50
@@ -263,7 +264,10 @@ async def _held_symbols(ctx: ToolCtx) -> list[str]:
     rows = await ctx.session.scalars(
         select(Position.symbol)
         .join(AgentPortfolio, AgentPortfolio.portfolio_id == Position.portfolio_id)
-        .where(AgentPortfolio.agent_id == ctx.agent_id, Position.qty != 0)
+        .where(
+            AgentPortfolio.agent_id == ctx.agent_id, Position.qty != 0,
+            Position.portfolio_id.in_(live_portfolio_ids()),
+        )
         .distinct()
     )
     return sorted(rows)

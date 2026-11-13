@@ -32,7 +32,7 @@ from smtrading.instruments.models import Instrument
 from smtrading.instruments.service import validate_price, validate_quantity
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.marketdata.types import Quote
-from smtrading.portfolios.models import Portfolio, PortfolioStatus
+from smtrading.portfolios.models import ARCHIVED_MESSAGE, Portfolio, PortfolioStatus
 from smtrading.risk.models import RiskProfile
 from smtrading.risk.profiles import effective_risk_profile
 from smtrading.risk.settings import get_default_spread_bps, get_stale_threshold, is_kill_switch_on
@@ -163,6 +163,8 @@ async def _run(
         held = await _held(session, portfolio.id, instrument.symbol)
         if held == 0 or (held > 0) == (side == OrderSide.buy):
             raise _kill_switch()
+    if portfolio.status == PortfolioStatus.archived:
+        raise _Reject(ErrorCode.PORTFOLIO_ARCHIVED, ARCHIVED_MESSAGE)
     if portfolio.status == PortfolioStatus.locked:
         raise _Reject(ErrorCode.PORTFOLIO_LOCKED, "portfolio is locked")
     profile = await effective_risk_profile(session, portfolio)

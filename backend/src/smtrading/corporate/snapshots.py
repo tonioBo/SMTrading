@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.common.errors import SMTError
 from smtrading.engine.quotesource import QuoteSource
-from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
 from smtrading.risk.models import EquitySnapshot, SnapshotKind
 from smtrading.valuation.service import PortfolioValuation, value_portfolio
 
@@ -70,17 +70,20 @@ async def take_snapshots(
     sessionmaker: async_sessionmaker[AsyncSession], qs: QuoteSource, *,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> None:
-    """A `periodic` snapshot of every portfolio (and its `day_open` if missing).
+    """A `periodic` snapshot of every portfolio but the archived ones (and its `day_open`
+    if missing).
 
     Each portfolio has its own transaction; errors are logged and skipped (a business
     or provider SMTError as a warning, without traceback).
     """
     async with sessionmaker() as session:
-        ids = list(await session.scalars(select(Portfolio.id).order_by(Portfolio.id)))
+        ids = list(await session.scalars(live_portfolio_ids().order_by(Portfolio.id)))
     for portfolio_id in ids:
         try:
             async with sessionmaker() as session:
                 portfolio = await session.get(Portfolio, portfolio_id)
+                if portfolio.status == PortfolioStatus.archived:
+                    continue  # archived after the list was read
                 now = clock()
                 await ensure_day_open(session, qs, portfolio, now)
                 valuation = await value_portfolio(session, qs, portfolio_id)

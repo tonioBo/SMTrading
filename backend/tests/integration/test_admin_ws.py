@@ -420,3 +420,68 @@ async def test_dashboard_equity_all_bins_on_history_span(server):
     body = (await server.client.get("/api/dashboard/equity", params={"period": "all"})).json()
     assert 1000 * 86400 // 500 <= body["bucket_s"] <= 1001 * 86400 // 500
     assert [p["equity_eur"] for p in body["series"]] == ["1", "2", "3"]
+
+
+# --- archived portfolios (Task 13) ---------------------------------------------------
+
+
+async def _archived_portfolio(server, name: str):
+    from smtrading.admin.portfolio_ops import archive_portfolio
+    from smtrading.portfolios.service import create_portfolio
+
+    async with server.sm() as s:
+        p = await create_portfolio(s, name=name, initial_cash=D(1000), timezone="UTC")
+        await archive_portfolio(s, p.id, by="test")
+        await s.commit()
+    return p
+
+
+async def test_ws_drops_events_of_archived_portfolios(server):
+    from smtrading.events import publish_event
+
+    archived = await _archived_portfolio(server, "Old")
+    async with connect(server.ws_url, additional_headers={"Cookie": server.cookie}) as ws:
+        await ws.send(json.dumps({"type": "subscribe_quotes", "symbols": ["AAPL"]}))
+        assert (await _recv(ws))["type"] == "subscribed"  # the relay has loaded its set
+        await publish_event(server.redis, "order.filled", {"portfolio_id": str(archived.id)})
+        await publish_event(server.redis, "portfolio.unarchived",
+                            {"portfolio_id": str(archived.id)})
+        msg = await _recv(ws)  # the dropped event was published first
+        assert msg["event"]["type"] == "portfolio.unarchived"
+        await publish_event(server.redis, "order.filled", {"portfolio_id": str(archived.id)})
+        assert (await _recv(ws))["event"]["type"] == "order.filled"  # relayed again
+        await publish_event(server.redis, "portfolio.archived",
+                            {"portfolio_id": str(archived.id)})
+        assert (await _recv(ws))["event"]["type"] == "portfolio.archived"
+        await publish_event(server.redis, "order.filled", {"portfolio_id": str(archived.id)})
+        await publish_event(server.redis, "marker", {})
+        assert (await _recv(ws))["event"]["type"] == "marker"
+
+
+async def test_dashboard_leaves_archived_portfolios_out(server):
+    from smtrading.events import notify
+    from smtrading.portfolios.service import create_portfolio
+    from smtrading.risk.models import EquitySnapshot, SnapshotKind
+
+    async with server.sm() as s:
+        live = await create_portfolio(s, name="Live", initial_cash=D(2000), timezone="UTC")
+        await s.commit()
+    archived = await _archived_portfolio(server, "Old")
+    now = datetime.now(UTC) - timedelta(minutes=10)
+    async with server.sm() as s:
+        for p, equity in ((live, "2000"), (archived, "1000")):
+            s.add(EquitySnapshot(
+                portfolio_id=p.id, ts=now, kind=SnapshotKind.periodic, local_date=None,
+                equity_eur=D(equity), cash_eur=D(equity), exposure_eur=D(0),
+                margin_used_eur=D(0),
+            ))
+        await notify(s, portfolio_id=archived.id, kind="margin_warning", payload={})
+        await s.commit()
+
+    body = (await server.client.get("/api/dashboard")).json()
+    assert [p["name"] for p in body["portfolios"]] == ["Live"]
+    assert body["total_equity_eur"] == "2000"
+    assert body["margin_alerts"] == []
+    curve = (await server.client.get("/api/dashboard/equity", params={"period": "1d"})).json()
+    assert [p["name"] for p in curve["portfolios"]] == ["Live"]
+    assert curve["series"][-1]["equity_eur"] == "2000"

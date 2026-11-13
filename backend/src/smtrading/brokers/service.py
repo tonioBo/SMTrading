@@ -11,7 +11,7 @@ from smtrading.common.crypto import decrypt_json, encrypt_json
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.execution import broker_live
 from smtrading.engine.models import OPEN_STATUSES, Order, OrderType
-from smtrading.portfolios.locks import lock_portfolio
+from smtrading.portfolios.locks import lock_live_portfolio
 from smtrading.portfolios.models import Portfolio
 
 
@@ -82,7 +82,7 @@ async def get_adapter(session: AsyncSession, link_id: uuid.UUID, http) -> Broker
 async def link_portfolio(
     session: AsyncSession, portfolio_id: uuid.UUID, link_id: uuid.UUID | None
 ) -> Portfolio:
-    pf = await lock_portfolio(session, portfolio_id)
+    pf = await lock_live_portfolio(session, portfolio_id)  # archived: never linked
     if link_id is not None:
         await _get(session, link_id)
     if link_id == pf.broker_link_id:

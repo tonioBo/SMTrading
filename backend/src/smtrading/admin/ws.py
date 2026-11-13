@@ -14,6 +14,10 @@
   `{"type":"unsubscribe_quotes","symbols":[...]}`; symbols are canonicalized, at most
   `MAX_SYMBOLS` subscribed per client.
 
+Events of archived portfolios (Task 13: payload `portfolio_id` archived) are not relayed;
+`portfolio.archived` / `portfolio.unarchived` themselves are, and update the relay's set
+of archived ids (also reloaded from the database at every ping).
+
 One Redis pub/sub connection per client, owned by a single relay task (subscription
 changes are queued to it); it is unsubscribed and closed on disconnect. A Redis failure
 (or any unexpected error, also during authentication) closes the socket with 1011.
@@ -30,11 +34,13 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
+from sqlalchemy import select
 
 from smtrading.admin.auth import SESSION_COOKIE, load_admin_session
 from smtrading.common.errors import ErrorCode
 from smtrading.events import EVENTS_CHANNEL
 from smtrading.instruments.service import canonical_symbol
+from smtrading.portfolios.models import Portfolio, PortfolioStatus
 
 log = logging.getLogger("smtrading.admin.ws")
 router = APIRouter()
@@ -48,6 +54,7 @@ MAX_SYMBOLS = 200
 MAX_SYMBOL_LEN = 64
 TICKS_PREFIX = "ticks:"
 _POLL_TIMEOUT_S = 0.1  # bounds the delay before a queued (un)subscription is applied
+ARCHIVED_EVENT, UNARCHIVED_EVENT = "portfolio.archived", "portfolio.unarchived"
 
 
 class _Close(Exception):
@@ -117,6 +124,29 @@ class _Relay:
         # (action, symbols, channels not yet confirmed by Redis), oldest first
         self.pending: deque[tuple[str, list[str], set[str]]] = deque()
         self._send_lock = asyncio.Lock()
+        self.archived: set[str] = set()  # ids of the archived portfolios (not relayed)
+
+    async def load_archived(self) -> None:
+        async with self.ws.app.state.sessionmaker() as db:
+            self.archived = {
+                str(pid) for pid in await db.scalars(
+                    select(Portfolio.id).where(Portfolio.status == PortfolioStatus.archived)
+                )
+            }
+
+    def relayed(self, event: Any) -> bool:
+        """False for an event of an archived portfolio; tracks (un)archive events."""
+        if not isinstance(event, dict):
+            return True
+        pid = event.get("portfolio_id")
+        kind = event.get("type")
+        if kind == ARCHIVED_EVENT and isinstance(pid, str):
+            self.archived.add(pid)
+        elif kind == UNARCHIVED_EVENT and isinstance(pid, str):
+            self.archived.discard(pid)
+        elif pid in self.archived:
+            return False
+        return True
 
     async def send(self, message: dict) -> None:
         async with self._send_lock:
@@ -178,6 +208,7 @@ class _Relay:
 
     async def relay_loop(self) -> None:
         """The only task touching the pub/sub connection."""
+        await self.load_archived()
         await self.pubsub.subscribe(EVENTS_CHANNEL)
         while True:
             while not self.commands.empty():
@@ -198,7 +229,8 @@ class _Relay:
                 log.warning("non-JSON message on %s dropped", channel)
                 continue
             if channel == EVENTS_CHANNEL:
-                await self.send({"type": "event", "event": payload})
+                if self.relayed(payload):
+                    await self.send({"type": "event", "event": payload})
             elif channel.startswith(TICKS_PREFIX) and channel[len(TICKS_PREFIX):] in self.symbols:
                 await self.send({"type": "quote", "quote": payload})
 
@@ -207,6 +239,7 @@ class _Relay:
             await asyncio.sleep(PING_INTERVAL_S)
             if not await _session_valid(self.ws, self.redis, renew=False):
                 raise _Close(CLOSE_UNAUTHENTICATED)
+            await self.load_archived()
             await self.send({"type": "ping"})
 
     async def close_pubsub(self) -> None:
