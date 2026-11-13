@@ -1,12 +1,12 @@
-import { Pencil, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { useAppSettings, useInterestRates, useSaveAppSettings, useSaveInterestRates, useSaveRiskProfile } from "@/api/hooks/risk";
 import { useRiskProfiles } from "@/api/hooks/portfolios";
 import type { AppSettings, AssetClass, InterestKind, InterestRate, RiskProfile, RiskProfileInput } from "@/api/types";
-import { DataTable, type Column } from "@/components/DataTable";
 import { FormField, selectClass } from "@/components/FormField";
 import { KillSwitchButton } from "@/components/KillSwitchButton";
+import { RiskProfileCard } from "@/components/RiskProfileCard";
 import { PageHeader } from "@/components/PageHeader";
 import { TagInput } from "@/components/TagInput";
 import { Button } from "@/components/ui/button";
@@ -15,7 +15,6 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { normalizeAmount, toInputDecimal } from "@/lib/decimal";
 import { errorField, errorMessage } from "@/lib/errors";
-import { formatQty } from "@/lib/format";
 
 const DESCRIPTION_MAX = 500;
 const ASSET_CLASSES: AssetClass[] = ["us_equity", "eu_equity", "crypto", "forex"];
@@ -143,55 +142,29 @@ function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onCl
   );
 }
 
-const list = (v: string[]) => (v.length ? v.join(", ") : "tutti");
-const limit = (v: string | null, suffix: string) => (v === null ? "—" : `${formatQty(v)}${suffix}`);
-
 function ProfilesSection() {
   const { data, isLoading, isError } = useRiskProfiles();
   const [editing, setEditing] = useState<RiskProfile | "new" | null>(null);
-  const columns: Column<RiskProfile>[] = [
-    { key: "name", header: "Nome", sortValue: (p) => p.name, cell: (p) => p.name },
-    { key: "order", header: "Max ordine", align: "right", cell: (p) => <span className="num">{limit(p.max_order_notional_eur, " €")}</span> },
-    { key: "pos", header: "Max posizione", align: "right", cell: (p) => <span className="num">{limit(p.max_position_pct, "%")}</span> },
-    {
-      key: "loss",
-      header: "Perdita giornaliera",
-      align: "right",
-      cell: (p) => (
-        <span className="num">
-          {limit(p.max_daily_loss_pct, "%")} / {limit(p.max_daily_loss_eur, " €")}
-        </span>
-      ),
-    },
-    { key: "description", header: "Quando usarlo", cell: (p) => p.description ?? "—" },
-    { key: "symbols", header: "Simboli", cell: (p) => list(p.allowed_symbols) },
-    { key: "classes", header: "Classi", cell: (p) => list(p.allowed_asset_classes) },
-    { key: "markets", header: "Mercati", cell: (p) => list(p.allowed_markets) },
-    { key: "short", header: "Short", cell: (p) => (p.short_allowed ? "Sì" : "No") },
-    {
-      key: "actions",
-      header: "Azioni",
-      align: "right",
-      cell: (p) => (
-        <Button size="sm" variant="outline" aria-label={`Modifica ${p.name}`} onClick={() => setEditing(p)}>
-          <Pencil />
-          Modifica
-        </Button>
-      ),
-    },
-  ];
   return (
     <Card>
-      <CardHeader className="flex-row items-center justify-between space-y-0">
+      <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 space-y-0">
         <CardTitle>Profili di rischio</CardTitle>
         <Button onClick={() => setEditing("new")}>
           <Plus />
           Nuovo profilo
         </Button>
       </CardHeader>
-      <CardContent className="overflow-x-auto">
+      <CardContent>
         {isError && <p className="mb-4 text-loss">Impossibile caricare i profili</p>}
-        <DataTable aria-label="Profili di rischio" columns={columns} rows={data} rowKey={(p) => p.id} loading={isLoading} empty="Nessun profilo" />
+        {isLoading && <p className="text-sm text-muted">Caricamento…</p>}
+        {data && data.length === 0 && <p className="text-sm text-muted">Nessun profilo</p>}
+        {data && data.length > 0 && (
+          <ul aria-label="Profili di rischio" className="grid gap-3 lg:grid-cols-2">
+            {data.map((p) => (
+              <RiskProfileCard key={p.id} profile={p} onEdit={() => setEditing(p)} />
+            ))}
+          </ul>
+        )}
       </CardContent>
       {editing && <ProfileDialog profile={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
     </Card>

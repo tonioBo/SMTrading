@@ -111,4 +111,54 @@ describe("Risk", () => {
     await waitFor(() => expect(ratePuts).toEqual([[{ kind: "loan", key: "*", annual_pct: "1.125" }]]));
     expect(await screen.findByLabelText("Tasso annuo % 1")).toHaveValue("1,125");
   });
+
+  it("shows each profile as a compact card: limit chips, clamped text, symbol count", async () => {
+    const user = userEvent.setup();
+    const long = "Strategia passiva su ETF ampi: ".repeat(8).trim();
+    const symbols = Array.from({ length: 20 }, (_, i) => `ETF${i}`);
+    server.use(
+      http.get("*/api/risk-profiles", () =>
+        HttpResponse.json([
+          {
+            id: "p5", name: "5 · Passivo ETF", max_order_notional_eur: "2500", max_position_pct: "30",
+            max_daily_loss_pct: "3", max_daily_loss_eur: null, allowed_symbols: symbols,
+            allowed_asset_classes: ["us_equity", "eu_equity"], allowed_markets: [], short_allowed: false,
+            description: long, portfolios_count: 2,
+          },
+        ]),
+      ),
+    );
+    renderApp("/rischio");
+    const card = await screen.findByRole("listitem", { name: "Profilo 5 · Passivo ETF" });
+    expect(within(card).getByText("Ordine max: 2.500 €")).toBeInTheDocument();
+    expect(within(card).getByText("Posizione max: 30%")).toBeInTheDocument();
+    expect(within(card).getByText("Perdita giorno: 3%")).toBeInTheDocument();
+    expect(within(card).getByText("Scoperto: no")).toBeInTheDocument();
+    expect(within(card).getByText("Classi: Azioni USA, Azioni EU")).toBeInTheDocument();
+    expect(within(card).getByText("Mercati: tutti")).toBeInTheDocument();
+    expect(within(card).getByText("2 portafogli attivi")).toBeInTheDocument();
+    const text = within(card).getByText(long);
+    expect(text).toHaveAttribute("title", long);
+    expect(text.className).toContain("line-clamp-2");
+    await user.click(within(card).getByRole("button", { name: "Mostra tutto" }));
+    expect(text.className).not.toContain("line-clamp-2");
+
+    expect(within(card).queryByRole("list", { name: /Simboli ammessi/ })).not.toBeInTheDocument();
+    await user.click(within(card).getByRole("button", { name: "Simboli: 20" }));
+    const list = within(card).getByRole("list", { name: "Simboli ammessi da 5 · Passivo ETF" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(20);
+  });
+
+  it("adds every symbol of a pasted list", async () => {
+    const user = userEvent.setup();
+    renderApp("/rischio");
+    await user.click(await screen.findByRole("button", { name: "Nuovo profilo" }));
+    const dialog = await screen.findByRole("dialog", { name: "Nuovo profilo di rischio" });
+    await user.type(within(dialog).getByLabelText("Nome"), "Lista");
+    await user.click(within(dialog).getByLabelText("Simboli ammessi"));
+    await user.paste("AAPL, MSFT NVDA");
+    await user.click(within(dialog).getByRole("button", { name: "Salva" }));
+    await waitFor(() => expect(profilePosts).toHaveLength(1));
+    expect(profilePosts[0]).toMatchObject({ allowed_symbols: ["AAPL", "MSFT", "NVDA"] });
+  });
 });

@@ -14,9 +14,12 @@ interface Props {
 export function TagInput({ id, value, onChange, placeholder, "aria-label": ariaLabel }: Props) {
   const [draft, setDraft] = useState("");
 
-  function commit() {
-    const tag = draft.trim();
-    if (tag && !value.includes(tag)) onChange([...value, tag]);
+  function commit(text: string = draft) {
+    // a pasted "AAPL, MSFT NVDA" adds every value
+    const tags = text.split(/[\s,;]+/).map((t) => t.trim()).filter(Boolean);
+    const next = [...value];
+    for (const tag of tags) if (!next.includes(tag)) next.push(tag);
+    if (next.length !== value.length) onChange(next);
     setDraft("");
   }
 
@@ -32,7 +35,7 @@ export function TagInput({ id, value, onChange, placeholder, "aria-label": ariaL
   return (
     <div className="space-y-2">
       {value.length > 0 && (
-        <ul className="flex flex-wrap gap-1">
+        <ul className="flex max-h-40 flex-wrap gap-1 overflow-y-auto">
           {value.map((tag) => (
             <li key={tag} className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-0.5 font-mono text-xs">
               {tag}
@@ -55,7 +58,14 @@ export function TagInput({ id, value, onChange, placeholder, "aria-label": ariaL
         placeholder={placeholder}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={onKeyDown}
-        onBlur={commit}
+        onBlur={() => commit()}
+        onPaste={(e) => {
+          const text = e.clipboardData.getData("text");
+          if (/[\s,;]/.test(text.trim())) {
+            e.preventDefault();
+            commit(draft + text);
+          }
+        }}
       />
     </div>
   );

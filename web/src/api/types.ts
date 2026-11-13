@@ -287,6 +287,8 @@ export interface RiskProfile {
   allowed_markets: string[];
   short_allowed: boolean;
   description: string | null;
+  /** live portfolios using it (list only; Default also counts those without a profile) */
+  portfolios_count?: number;
 }
 
 export type AgentPermission = "read" | "trade";
