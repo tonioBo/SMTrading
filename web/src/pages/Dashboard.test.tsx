@@ -1,4 +1,4 @@
-import { act, screen, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -8,31 +8,46 @@ import type { LiveEvent } from "@/lib/ws";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
 
-const handlers = vi.hoisted(() => new Set<(e: unknown) => void>());
+const live = vi.hoisted(() => ({
+  handlers: new Map<string, Set<(e: unknown) => void>>(),
+  status: "open" as string,
+  subscribed: [] as string[][],
+}));
 vi.mock("@/lib/ws", async () => {
   const { useEffect, useRef } = await import("react");
+  const socket = {
+    subscribeQuotes: (symbols: string[]) => {
+      live.subscribed.push(symbols);
+      return () => {};
+    },
+  };
   return {
-    useLiveSocket: () => ({ socket: null, status: "open" }),
-    // like the real hook: one subscription per mount, always calling the latest handler
-    useLiveMessage: (_type: string, handler: (e: unknown) => void) => {
+    useLiveSocket: () => ({ socket, status: live.status }),
+    // like the real hook: one subscription per mount and type, always the latest handler
+    useLiveMessage: (type: string, handler: (e: unknown) => void) => {
       const ref = useRef(handler);
       ref.current = handler;
       useEffect(() => {
         const call = (e: unknown) => ref.current(e);
-        handlers.add(call);
-        return () => void handlers.delete(call);
-      }, []);
+        if (!live.handlers.has(type)) live.handlers.set(type, new Set());
+        live.handlers.get(type)!.add(call);
+        return () => void live.handlers.get(type)?.delete(call);
+      }, [type]);
     },
   };
 });
 vi.mock("lightweight-charts", () => {
-  const series = { setData: vi.fn() };
+  const series = { setData: vi.fn(), update: vi.fn() };
   const chart = { addAreaSeries: () => series, timeScale: () => ({ fitContent: vi.fn() }), remove: vi.fn() };
   return { createChart: vi.fn(() => chart), ColorType: { Solid: "solid" } };
 });
 
 function emit(event: LiveEvent) {
-  act(() => handlers.forEach((h) => h(event)));
+  act(() => live.handlers.get("event")?.forEach((h) => h(event)));
+}
+
+function tick(symbol: string) {
+  act(() => live.handlers.get("quote")?.forEach((h) => h({ symbol, last: "1" })));
 }
 
 const dashboard: Dashboard = {
@@ -56,6 +71,7 @@ let killSwitchOn = false;
 let posted: unknown = null;
 let equity: { ts: string; equity_eur: string }[] = [];
 let current = dashboard;
+let fetches = 0;
 const server = setupServer(
   ...commonHandlers,
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
@@ -65,7 +81,10 @@ const server = setupServer(
     killSwitchOn = (posted as { on: boolean }).on;
     return HttpResponse.json({ on: killSwitchOn, canceled: 3 });
   }),
-  http.get("*/api/dashboard", () => HttpResponse.json(current)),
+  http.get("*/api/dashboard", () => {
+    fetches += 1;
+    return HttpResponse.json(current);
+  }),
   http.get("*/api/dashboard/equity", () => HttpResponse.json({ period: "1m", bucket_s: 300, series: equity, portfolios: [] })),
 );
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
@@ -75,7 +94,10 @@ afterEach(() => {
   posted = null;
   equity = [];
   current = dashboard;
-  handlers.clear();
+  fetches = 0;
+  live.handlers.clear();
+  live.status = "open";
+  live.subscribed = [];
 });
 afterAll(() => server.close());
 
@@ -139,6 +161,7 @@ describe("Dashboard", () => {
   });
 
   it("shows a mode badge per portfolio, the count per mode and the banner", async () => {
+    server.use(http.get("*/api/dashboard/modes", () => HttpResponse.json(dashboard.modes)));
     renderApp("/");
     const counts = await screen.findByRole("list", { name: "Portafogli per modalità" });
     expect(within(counts).getByText(/simulazione:/)).toHaveTextContent("simulazione: 1");
@@ -153,6 +176,7 @@ describe("Dashboard", () => {
 
   it("says simulation only when no portfolio has a broker, and flags real money in red", async () => {
     current = { ...dashboard, modes: { simulazione: 2, paper: 0, reale: 0 } };
+    server.use(http.get("*/api/dashboard/modes", () => HttpResponse.json(current.modes)));
     const { unmount } = renderApp("/");
     expect(await screen.findByRole("status", { name: "Modalità di trading" })).toHaveTextContent(
       "Simulazione – denaro virtuale, prezzi di mercato reali",
@@ -163,5 +187,45 @@ describe("Dashboard", () => {
     const banner = await screen.findByRole("status", { name: "Modalità di trading" });
     expect(banner).toHaveTextContent("denaro reale");
     expect(banner.className).toContain("text-loss");
+  });
+
+  it("follows the held symbols and refetches at most once per window while ticks arrive", async () => {
+    current = { ...dashboard, held_symbols: ["AAPL", "BTC-USD"] };
+    renderApp("/");
+    await screen.findByText("12.345,60 €");
+    await waitFor(() => expect(live.subscribed).toContainEqual(["AAPL", "BTC-USD"]));
+    const before = fetches;
+    current = { ...current, total_equity_eur: "13000" };
+    for (let i = 0; i < 6; i++) tick("AAPL");
+    expect(await screen.findByText("13.000,00 €")).toBeInTheDocument(); // leading refetch
+    expect(fetches).toBe(before + 1);
+    await waitFor(() => expect(fetches).toBe(before + 2), { timeout: 4500 }); // one trailing
+    await act(() => new Promise((r) => setTimeout(r, 300)));
+    expect(fetches).toBe(before + 2);
+  });
+
+  it("refetches on every relevant event, not on unrelated ones", async () => {
+    renderApp("/");
+    await screen.findByText("12.345,60 €");
+    const before = fetches;
+    emit({ type: "something.else" });
+    await act(() => new Promise((r) => setTimeout(r, 100)));
+    expect(fetches).toBe(before);
+    current = { ...dashboard, total_equity_eur: "999" };
+    emit({ type: "portfolio.cash", portfolio_id: "p1" });
+    expect(await screen.findByText("999,00 €")).toBeInTheDocument();
+    expect(fetches).toBe(before + 1);
+  });
+
+  it("shows «Live» with the update time, and «In pausa» when the WS is down", async () => {
+    const { unmount } = renderApp("/");
+    const indicator = await screen.findByRole("status", { name: "Aggiornamento dashboard" });
+    await waitFor(() => expect(indicator).toHaveTextContent("Live"));
+    expect(indicator).toHaveTextContent("aggiornato alle");
+    unmount();
+    live.status = "closed";
+    renderApp("/");
+    const paused = await screen.findByRole("status", { name: "Aggiornamento dashboard" });
+    await waitFor(() => expect(paused).toHaveTextContent("In pausa"));
   });
 });

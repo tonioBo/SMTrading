@@ -1,8 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/api/client";
 import type { Dashboard, EquityPeriod, EquitySeries, PortfolioMode } from "@/api/types";
-import { useLiveMessage, type LiveEvent } from "@/lib/ws";
+import { throttle } from "@/lib/throttle";
+import { useLiveMessage, useLiveSocket, type LiveEvent } from "@/lib/ws";
 
 export const dashboardKey = ["dashboard"] as const;
 /** under dashboardKey: invalidating the dashboard refreshes the banner too */
@@ -28,19 +29,51 @@ export const FEED_EVENT_LABELS: Record<string, string> = {
   "order.rejected": "Rifiutato",
 };
 
-/** Dashboard summary; refreshed when a fill, a margin event or the kill-switch arrives. */
+/** at most one dashboard refetch per window while ticks or events arrive */
+export const LIVE_REFETCH_MS = 3000;
+/** fallback polling, only while the WebSocket is not connected */
+export const FALLBACK_POLL_MS = 30_000;
+
+/** Events that change what the dashboard shows (orders, cash, portfolios, broker, risk). */
+const RELEVANT_EVENT =
+  /^(order\.|portfolio\.|position|journal|deposit|withdraw|reset|broker|reconcil|notification|price_alert|daily_loss|margin\.|liquidation|kill_switch)/;
+
+export function isDashboardEvent(type: string): boolean {
+  return RELEVANT_EVENT.test(type);
+}
+
+/**
+ * Real-time dashboard summary: quotes of the held symbols (WS) and every relevant event
+ * trigger a throttled refetch (leading + trailing, at most one per LIVE_REFETCH_MS);
+ * polling every 30 s only while the WS is disconnected.
+ */
 export function useDashboard() {
   const qc = useQueryClient();
+  const { socket, status } = useLiveSocket();
+  const refresh = useMemo(
+    () => throttle(() => void qc.invalidateQueries({ queryKey: dashboardKey, exact: true }), LIVE_REFETCH_MS),
+    [qc],
+  );
+  useEffect(() => () => refresh.cancel(), [refresh]);
   useLiveMessage("event", (event) => {
-    if (event.type === "order.filled" || event.type === "kill_switch" || event.type.startsWith("margin.")) {
-      void qc.invalidateQueries({ queryKey: dashboardKey });
+    if (!isDashboardEvent(event.type)) return;
+    if (event.type.startsWith("portfolio.") || event.type.startsWith("broker")) {
+      void qc.invalidateQueries({ queryKey: modesKey });
     }
+    refresh.call();
   });
-  return useQuery({
+  useLiveMessage("quote", () => refresh.call());
+  const query = useQuery({
     queryKey: dashboardKey,
     queryFn: () => apiFetch<Dashboard>("/api/dashboard"),
-    refetchInterval: 30_000,
+    refetchInterval: status === "open" ? false : FALLBACK_POLL_MS,
   });
+  const held = (query.data?.held_symbols ?? []).join(",");
+  useEffect(() => {
+    if (!socket || !held) return;
+    return socket.subscribeQuotes(held.split(","));
+  }, [socket, held]);
+  return { ...query, live: status === "open" };
 }
 
 /** Live portfolios per mode (cheap endpoint, no valuation) for the global banner. */

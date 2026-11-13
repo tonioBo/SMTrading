@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useDashboard, useLiveFeed, FEED_EVENT_LABELS } from "@/api/hooks/dashboard";
 import type { Dashboard as DashboardData, DashboardConnector, MarginAlert } from "@/api/types";
@@ -97,6 +98,26 @@ function MarginAlerts({ alerts, names }: { alerts: MarginAlert[]; names: Map<str
         )}
       </CardContent>
     </Card>
+  );
+}
+
+/** «Live» (green) while the WS is connected and the data is < 10 s old; else «In pausa». */
+export const LIVE_FRESH_MS = 10_000;
+
+function LiveIndicator({ live, updatedAt }: { live: boolean; updatedAt: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const fresh = live && updatedAt > 0 && now - updatedAt < LIVE_FRESH_MS;
+  const time = updatedAt ? new Date(updatedAt).toLocaleTimeString("it-IT") : "—";
+  return (
+    <span role="status" aria-label="Aggiornamento dashboard" className="inline-flex items-center gap-2 text-xs text-muted">
+      <span className={cn("inline-block h-2 w-2 rounded-full", fresh ? "bg-gain" : "bg-muted")} aria-hidden />
+      <span className={fresh ? "font-medium text-gain" : ""}>{fresh ? "Live" : "In pausa"}</span>
+      <span>· aggiornato alle {time}</span>
+    </span>
   );
 }
 
@@ -201,11 +222,12 @@ function PortfolioTable({ portfolios }: { portfolios: DashboardData["portfolios"
 }
 
 export default function Dashboard() {
-  const { data, isError } = useDashboard();
+  const { data, isError, live, dataUpdatedAt } = useDashboard();
 
   return (
     <div>
       <PageHeader title="Dashboard">
+        <LiveIndicator live={live} updatedAt={dataUpdatedAt} />
         <KillSwitchButton />
       </PageHeader>
       {isError && <p className="text-loss">Impossibile caricare la dashboard</p>}
@@ -241,7 +263,7 @@ export default function Dashboard() {
               <CardTitle>Equity aggregata</CardTitle>
             </CardHeader>
             <CardContent>
-              <EquityChart />
+              <EquityChart live={dataUpdatedAt ? { ts: dataUpdatedAt, equity_eur: data.total_equity_eur } : undefined} />
             </CardContent>
           </Card>
           <PortfolioTable portfolios={data.portfolios} />

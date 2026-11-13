@@ -60,6 +60,8 @@ export interface Dashboard {
   margin_alerts: MarginAlert[];
   kill_switch: boolean;
   worker_heartbeat_age_s: number | null;
+  /** symbols held by the live portfolios: their quotes drive the real-time refresh */
+  held_symbols?: string[];
 }
 
 export type EquityPeriod = "1d" | "1w" | "1m" | "3m" | "1y" | "all";
