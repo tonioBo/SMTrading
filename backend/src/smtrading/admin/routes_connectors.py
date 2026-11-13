@@ -59,20 +59,72 @@ def mask_value(value: Any) -> str:
     return MASK + text[-4:] if len(text) > 4 else MASK
 
 
+def _mask(value: Any, key: str | None) -> Any:
+    """Masks secret leaves at any depth; a secret key passes down into its lists."""
+    if isinstance(value, dict):
+        return {k: _mask(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_mask(v, key) for v in value]
+    if key is not None and _is_secret(key) and value not in (None, ""):
+        return mask_value(value)
+    return value
+
+
 def mask_config(config: dict[str, Any]) -> dict[str, Any]:
-    return {
-        k: (mask_value(v) if _is_secret(k) and v not in (None, "") else v)
-        for k, v in config.items()
-    }
+    return {k: _mask(v, k) for k, v in config.items()}
+
+
+def secret_values(value: Any, key: str | None = None) -> list[str]:
+    """Every secret leaf of a config, as text (longest first, for redaction)."""
+    if isinstance(value, dict):
+        found = [x for k, v in value.items() for x in secret_values(v, k)]
+    elif isinstance(value, list):
+        found = [x for v in value for x in secret_values(v, key)]
+    elif key is not None and _is_secret(key) and value not in (None, ""):
+        found = [str(value)]
+    else:
+        found = []
+    return sorted(set(found), key=len, reverse=True)
+
+
+def redact(text: str, secrets: list[str]) -> str:
+    for s in secrets:
+        text = text.replace(s, MASK)
+    return text
+
+
+def _masked_invalid(key: str) -> SMTError:
+    return _invalid("config", f"valore mascherato non valido per {key}")
+
+
+def _merge(new: Any, stored: Any, key: str | None) -> Any:
+    """`new` with masked secrets replaced by the stored value; omitted secret keys keep the
+    stored value, an explicit null removes a secret. Recurses into dicts and lists."""
+    if isinstance(new, dict):
+        old = stored if isinstance(stored, dict) else {}
+        out: dict[str, Any] = {}
+        for k, v in old.items():
+            if k not in new and _is_secret(k):
+                out[k] = v
+        for k, v in new.items():
+            if v is None and _is_secret(k):
+                continue
+            out[k] = _merge(v, old.get(k), k)
+        return out
+    if isinstance(new, list):
+        old = stored if isinstance(stored, list) else []
+        return [_merge(v, old[i] if i < len(old) else None, key) for i, v in enumerate(new)]
+    if (
+        key is not None and _is_secret(key) and isinstance(new, str) and new.startswith(MASK)
+    ):
+        if stored in (None, "") or new != mask_value(stored):
+            raise _masked_invalid(key)
+        return stored
+    return new
 
 
 def _merge_config(new: dict[str, Any], stored: dict[str, Any]) -> dict[str, Any]:
-    """The new config; a secret equal to its masked stored value keeps the stored value."""
-    out = dict(new)
-    for k, v in new.items():
-        if _is_secret(k) and k in stored and v == mask_value(stored[k]):
-            out[k] = stored[k]
-    return out
+    return _merge(new, stored, None)
 
 
 async def _connector(session: DbSession, name: str) -> Connector:
@@ -135,8 +187,9 @@ async def test_connector(name: str, session: DbSession, redis: RedisClient) -> d
     if cls is None:
         raise _invalid("name", "connettore non implementato")
     ok, error = True, None
+    config = await get_connector_config(session, name)
+    secrets = secret_values(config)
     try:
-        config = await get_connector_config(session, name)
         async with httpx.AsyncClient() as http:
             await asyncio.wait_for(cls(config, http).health_check(), HEALTH_TIMEOUT_S)
     except ProviderUnsupported:
@@ -144,7 +197,7 @@ async def test_connector(name: str, session: DbSession, redis: RedisClient) -> d
     except TimeoutError:
         ok, error = False, f"timeout dopo {HEALTH_TIMEOUT_S:g} s"
     except Exception as e:  # noqa: BLE001 - reported to the admin and recorded
-        ok, error = False, f"{type(e).__name__}: {e}"[:500]
+        ok, error = False, redact(f"{type(e).__name__}: {e}", secrets)[:500]
     async with _transaction(session, redis):
         await record_health(session, name, ok, error)
     return {"ok": ok, "error": error, "checked_at": datetime.now(UTC).isoformat()}

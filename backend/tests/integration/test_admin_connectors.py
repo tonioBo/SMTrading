@@ -93,7 +93,7 @@ class _FakeProvider:
 
     async def health_check(self):
         if type(self).fail:
-            raise RuntimeError("boom")
+            raise RuntimeError("boom token=" + str(type(self).seen_config.get("api_key")))
 
 
 async def _add_fake_connector(admin, monkeypatch, name="fake"):
@@ -156,8 +156,10 @@ async def test_connector_test_records_health(admin, monkeypatch):
     finally:
         _FakeProvider.fail = False
     assert r.json()["ok"] is False and "boom" in r.json()["error"]
+    assert "k-123456" not in r.json()["error"] and "••••" in r.json()["error"]
     row = next(x for x in (await c.get("/api/connectors")).json() if x["name"] == "fake")
     assert row["health_status"] == "error" and "boom" in row["last_error"]
+    assert "k-123456" not in row["last_error"]
     assert (await c.post("/api/connectors/revolutx/test")).status_code == 400
     assert (await c.post("/api/connectors/nope/test")).status_code == 404
 
@@ -367,3 +369,84 @@ async def test_connectors_markets_system_require_admin(admin):
     ):
         r = await c.request(method, url, json={} if method != "GET" else None)
         assert r.status_code == 401, url
+
+
+async def test_nested_config_masked_and_preserved(admin, monkeypatch):
+    from smtrading.connectors.service import get_connector_config
+
+    await _add_fake_connector(admin, monkeypatch)
+    c = admin.client
+    config = {
+        "auth": {"client_secret": "s3cr3t-value", "user": "bob"},
+        "accounts": [{"api_key": "key-one-1111", "label": "a"}, {"api_key": "key-two-2222"}],
+        "tokens": ["tok-aaaa-9999"],
+    }
+    r = await c.patch("/api/connectors/fake", json={"config": config})
+    assert r.status_code == 200, r.text
+    masked = r.json()["config_masked"]
+    assert masked == {
+        "auth": {"client_secret": "••••alue", "user": "bob"},
+        "accounts": [{"api_key": "••••1111", "label": "a"}, {"api_key": "••••2222"}],
+        "tokens": ["••••9999"],
+    }
+    assert "s3cr3t" not in json.dumps((await c.get("/api/connectors")).json())
+
+    # sending the masked structure back keeps every stored secret
+    r = await c.patch("/api/connectors/fake", json={"config": masked})
+    assert r.status_code == 200, r.text
+    async with admin.sm() as s:
+        assert await get_connector_config(s, "fake") == config
+
+    # a changed nested secret is stored; omitted secrets are kept, explicit null removes
+    r = await c.patch("/api/connectors/fake", json={"config": {
+        "auth": {"client_secret": "brand-new-secret", "user": "bob"},
+        "accounts": [{"api_key": "••••1111", "label": "a"}, {"api_key": None}],
+    }})
+    assert r.status_code == 200, r.text
+    async with admin.sm() as s:
+        stored = await get_connector_config(s, "fake")
+    assert stored["auth"]["client_secret"] == "brand-new-secret"
+    assert stored["accounts"] == [{"api_key": "key-one-1111", "label": "a"}, {}]
+    assert stored["tokens"] == ["tok-aaaa-9999"]  # omitted secret key kept
+
+
+async def test_patch_merge_semantics_and_bad_mask(admin, monkeypatch):
+    from smtrading.connectors.service import get_connector_config
+
+    await _add_fake_connector(admin, monkeypatch)
+    c = admin.client
+    await c.patch("/api/connectors/fake", json={"config": {"api_key": "abcdef123456", "region": "eu"}})
+    r = await c.patch("/api/connectors/fake", json={"config": {"region": "us"}})
+    assert r.status_code == 200
+    async with admin.sm() as s:
+        assert await get_connector_config(s, "fake") == {"api_key": "abcdef123456", "region": "us"}
+    r = await c.patch("/api/connectors/fake", json={"config": {"api_key": None}})
+    async with admin.sm() as s:
+        assert await get_connector_config(s, "fake") == {}
+    # a masked value with nothing stored (or not matching) is refused
+    r = await c.patch("/api/connectors/fake", json={"config": {"api_key": "••••3456"}})
+    assert r.status_code == 400 and r.json()["code"] == "INVALID_ORDER"
+    await c.patch("/api/connectors/fake", json={"config": {"api_key": "abcdef123456"}})
+    r = await c.patch("/api/connectors/fake", json={"config": {"api_key": "••••zzzz"}})
+    assert r.status_code == 400
+    async with admin.sm() as s:
+        assert await get_connector_config(s, "fake") == {"api_key": "abcdef123456"}
+
+
+async def test_dump_runs_with_minimal_env(admin, monkeypatch, tmp_path):
+    import sys
+
+    from smtrading.admin import routes_system
+
+    monkeypatch.setenv("SOME_SECRET_ENV", "leak")
+    script = tmp_path / "env_dump.py"
+    script.write_text("import os, json, sys\nsys.stdout.write(json.dumps(sorted(os.environ)))\n")
+    real = routes_system.dump_command
+    monkeypatch.setattr(
+        routes_system, "dump_command", lambda: ([sys.executable, str(script)], real()[1])
+    )
+    r = await admin.client.get("/api/system/backup")
+    assert r.status_code == 200
+    keys = set(json.loads(r.content))
+    assert "SOME_SECRET_ENV" not in keys and "SMT_MASTER_KEY" not in keys
+    assert {"PATH", "PGPASSWORD"} <= keys

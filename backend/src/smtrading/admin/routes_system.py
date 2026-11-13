@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.engine import make_url
 
@@ -33,7 +33,8 @@ def dump_command() -> tuple[list[str], dict[str, str]]:
         "-h", url.host or "localhost", "-p", str(url.port or 5432),
         "-U", url.username or "", "-d", url.database or "",
     ]
-    env = dict(os.environ)
+    env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+           "LANG": os.environ.get("LANG", "C.UTF-8")}
     if url.password:
         env["PGPASSWORD"] = url.password
     return argv, env
@@ -66,41 +67,58 @@ async def _stream(proc: asyncio.subprocess.Process, first: bytes) -> AsyncIterat
             log.error("pg_dump exited with %s mid-stream", proc.returncode)
     finally:
         drain.cancel()
-        if proc.returncode is None:  # client went away
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            await proc.wait()
+
+
+def _internal(message: str) -> JSONResponse:
+    return JSONResponse(
+        {"code": "INTERNAL", "message": message, "details": None}, status_code=500
+    )
+
+
+class DumpResponse(Response):
+    """Runs pg_dump inside the ASGI call, so the process is always reaped.
+
+    Starting it in the route handler would orphan it if the client left before the body
+    was iterated (the generator's `finally` never runs). Here the spawn, the peek at the
+    first chunk and the cleanup all live in one `__call__`, whose `finally` also runs on
+    cancellation. A failure before the first byte is still a clean 500; one after the
+    headers went out can only be logged."""
+
+    async def __call__(self, scope, receive, send) -> None:
+        argv, env = dump_command()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv, env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+        except OSError:
+            log.exception("cannot start pg_dump")
+            await _internal("pg_dump non disponibile")(scope, receive, send)
+            return
+        try:
+            first = await proc.stdout.read(_CHUNK)
+            if not first:
+                stderr = (await proc.stderr.read()).decode(errors="replace")[:500]
+                await proc.wait()
+                log.error("pg_dump failed (%s): %s", proc.returncode, stderr)
+                await _internal("backup non riuscito")(scope, receive, send)
+                return
+            name = f"smtrading-{datetime.now(UTC):%Y%m%d-%H%M}.dump"
+            await StreamingResponse(
+                _stream(proc, first),
+                media_type="application/octet-stream",
+                headers={"Content-Disposition": f'attachment; filename="{name}"'},
+            )(scope, receive, send)
+        finally:
+            if proc.returncode is None:  # client went away, or an error
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                await asyncio.shield(proc.wait())
 
 
 @router.get("/backup")
-async def download_backup():
-    """Streams a fresh `pg_dump --format=custom`. A failure before the first byte is a 500."""
-    argv, env = dump_command()
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv, env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-    except OSError:
-        log.exception("cannot start pg_dump")
-        return JSONResponse(
-            {"code": "INTERNAL", "message": "pg_dump non disponibile", "details": None},
-            status_code=500,
-        )
-    first = await proc.stdout.read(_CHUNK)
-    if not first:
-        stderr = (await proc.stderr.read()).decode(errors="replace")[:500]
-        await proc.wait()
-        log.error("pg_dump failed (%s): %s", proc.returncode, stderr)
-        return JSONResponse(
-            {"code": "INTERNAL", "message": "backup non riuscito", "details": None},
-            status_code=500,
-        )
-    name = f"smtrading-{datetime.now(UTC):%Y%m%d-%H%M}.dump"
-    return StreamingResponse(
-        _stream(proc, first),
-        media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{name}"'},
-    )
+async def download_backup() -> Response:
+    """Streams a fresh `pg_dump --format=custom` (see DumpResponse)."""
+    return DumpResponse()
 
 
 @router.get("/backups")
