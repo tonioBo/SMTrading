@@ -88,7 +88,7 @@ async def test_default_profile_blocks_short_at_fill_time(db_session, seeded, qs)
     default.short_allowed = False
     await db_session.flush()
     p = await _portfolio(db_session)
-    assert p.risk_profile_id is None
+    assert p.risk_profile_id == default.id  # create_portfolio assigns Default
     await _fill(db_session, qs, p, "ENI.MI", OrderSide.buy, D(10))
     resting = Order(
         portfolio_id=p.id, symbol="ENI.MI", side=OrderSide.sell, type=OrderType.limit,

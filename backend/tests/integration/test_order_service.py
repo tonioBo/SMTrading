@@ -158,7 +158,7 @@ async def test_rejection_is_persisted(db_session, qs, p):
 async def test_execution_failure_rolls_back_savepoint_and_rejects(
     db_session, qs, p, monkeypatch
 ):
-    async def failing_fill(session, qs, order_id, *, quote):
+    async def failing_fill(session, qs, order_id, *, quote, **kw):
         await execute_fill(session, qs, order_id, quote=quote)  # fill, journal, effects...
         raise SMTError(ErrorCode.INSUFFICIENT_BUYING_POWER, "boom")
 
@@ -596,3 +596,99 @@ async def test_bracket_entry_rejected_at_fill_cancels_children(db_session, qs, p
     }
     canceled = [e for e in _effects(db_session) if e[:2] == ("event", "order.canceled")]
     assert len(canceled) == 2
+
+
+# -- fix wave: M1, M5, bracket replay, held exits ordering ---------------------------
+
+
+async def test_oco_sibling_cancel_queues_an_event(db_session, qs, p):
+    a, b = await place_oco_order(
+        db_session, qs,
+        _req(p, type=OrderType.limit, limit_price=D("190.00")),
+        _req(p, type=OrderType.stop, stop_price=D("210.00")),
+        now=OPEN,
+    )
+    await _tick(db_session, qs, a, "189.90", "190.00")
+    await db_session.refresh(b)
+    assert b.status == OrderStatus.canceled
+    canceled = [e[2] for e in _effects(db_session) if e[:2] == ("event", "order.canceled")]
+    assert [e["order_id"] for e in canceled] == [b.id]
+
+
+async def test_replayed_rejection_is_raised_again(db_session, qs, p):
+    req = _req(p, qty=D(1000), client_order_id="big-2")  # insufficient buying power
+    for _ in range(2):
+        with pytest.raises(SMTError) as exc:
+            await place_order(db_session, qs, req, now=OPEN)
+        assert exc.value.code == ErrorCode.INSUFFICIENT_BUYING_POWER
+    assert await db_session.scalar(
+        select(func.count()).select_from(Order).where(Order.portfolio_id == p.id)
+    ) == 1
+
+
+async def test_replayed_bracket_rejection_is_raised_again(db_session, qs, p):
+    req = _req(p, qty=D(1000), client_order_id="br-big")
+    for _ in range(2):
+        with pytest.raises(SMTError) as exc:
+            await place_bracket_order(
+                db_session, qs, req, take_profit=D(250), stop_loss=D(150), now=OPEN
+            )
+        assert exc.value.code == ErrorCode.INSUFFICIENT_BUYING_POWER
+
+
+async def test_replayed_oco_rejection_is_raised_again(db_session, qs, p):
+    legs = (
+        _req(p, qty=D(1000), type=OrderType.limit, limit_price=D("190.00"),
+             client_order_id="oco-a"),
+        _req(p, qty=D(1000), type=OrderType.stop, stop_price=D("210.00"),
+             client_order_id="oco-b"),
+    )
+    for _ in range(2):
+        with pytest.raises(SMTError) as exc:
+            await place_oco_order(db_session, qs, *legs, now=OPEN)
+        assert exc.value.code == ErrorCode.INSUFFICIENT_BUYING_POWER
+
+
+async def test_bracket_replay_is_looked_up_before_price_validation(db_session, qs, p):
+    req = _req(p, client_order_id="br-1")
+    first = await place_bracket_order(
+        db_session, qs, req, take_profit=D(220), stop_loss=D(180), now=OPEN
+    )
+    qs.set_quote("AAPL", D("229.90"), D("230.00"), None)  # tp is now below the market
+    again = await place_bracket_order(
+        db_session, qs, req, take_profit=D(220), stop_loss=D(180), now=OPEN
+    )
+    assert [o.id for o in again] == [o.id for o in first]
+
+
+@pytest.mark.parametrize(("role", "change", "ok"), [
+    ("take_profit", {"limit_price": D("189.00")}, False),  # below the entry limit
+    ("take_profit", {"limit_price": D("230.00")}, True),
+    ("stop_loss", {"stop_price": D("196.00")}, False),  # above the entry limit
+    ("stop_loss", {"stop_price": D("170.00")}, True),
+])
+async def test_modify_held_exit_keeps_bracket_ordering(db_session, qs, p, role, change, ok):
+    _, tp, sl = await place_bracket_order(
+        db_session, qs, _req(p, type=OrderType.limit, limit_price=D("195.00")),
+        take_profit=D("210.00"), stop_loss=D("190.00"), now=OPEN,
+    )
+    child = tp if role == "take_profit" else sl
+    assert child.status == OrderStatus.held
+    if ok:
+        modified = await modify_order(db_session, qs, child.id, **change)
+        assert getattr(modified, next(iter(change))) == next(iter(change.values()))
+    else:
+        with pytest.raises(SMTError) as exc:
+            await modify_order(db_session, qs, child.id, **change)
+        assert exc.value.code == ErrorCode.INVALID_ORDER
+
+
+async def test_modify_held_stop_cannot_cross_the_sibling(db_session, qs, p):
+    """Market entry queued (no reference): the exits are still checked against each other."""
+    _, _, sl = await place_bracket_order(
+        db_session, qs, _req(p), take_profit=D("210.00"), stop_loss=D("190.00"), now=SATURDAY,
+    )
+    assert sl.status == OrderStatus.held
+    with pytest.raises(SMTError) as exc:
+        await modify_order(db_session, qs, sl.id, stop_price=D("215.00"))
+    assert exc.value.code == ErrorCode.INVALID_ORDER

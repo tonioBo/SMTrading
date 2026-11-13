@@ -140,18 +140,20 @@ async def test_liquidation_skips_a_symbol_without_quote(db_session, seeded, qs):
     await _buy(db_session, qs, p.id, "SAP.DE", 900)
     qs.set_quote("ENI.MI", D("11.995"), D("12.005"), None)
 
+    valuation = await value_portfolio(db_session, qs, p.id)  # taken while ENI was quoted
+
     class _NoEni(FakeQuoteSource):
-        """Valuation (all symbols) works, the single-symbol ENI quote does not."""
+        """Every request including ENI.MI fails (the source is all-or-error)."""
 
         async def get_quotes(self, symbols, *, max_age_s=5):
-            if symbols == ["ENI.MI"]:
+            if "ENI.MI" in symbols:
                 from smtrading.common.errors import ErrorCode, SMTError
                 raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE, "down")
             return await super().get_quotes(symbols, max_age_s=max_age_s)
 
     flaky = _NoEni()
     flaky._quotes, flaky._fx = qs._quotes, qs._fx
-    closed = await liquidate(db_session, flaky, p.id, now=TUE)
+    closed = await liquidate(db_session, flaky, p.id, now=TUE, valuation=valuation)
     assert [o.symbol for o in closed] == ["SAP.DE"]  # ENI skipped, the next one closed
     assert await _position(db_session, p.id, "ENI.MI") == D(20000)
 
@@ -347,3 +349,33 @@ async def _system_orders_in(session, pid) -> int:
         select(func.count()).select_from(Order)
         .where(Order.portfolio_id == pid, Order.source == "system")
     )
+
+
+async def test_kill_switch_catches_an_order_placed_concurrently(maker, qs):
+    """M2: a placement holding its portfolio lock when the switch is turned on is
+    canceled once it commits (the portfolio was not listed as having open orders)."""
+    import asyncio
+
+    async with maker() as s:
+        p = await _portfolio(s, 1)
+        await s.commit()
+    placing = maker()
+    order = await place_order(placing, qs, PlaceOrderRequest(
+        portfolio_id=p.id, symbol="AAPL", side=OrderSide.buy, type=OrderType.limit,
+        qty=D(1), limit_price=D("90.00"),
+    ), now=OPEN)  # holds the portfolio row lock, not committed yet
+
+    async def switch_on() -> int:
+        async with maker() as s:
+            n = await set_kill_switch_and_cancel(s, True, cancel_open=True)
+            await s.commit()
+            return n
+
+    task = asyncio.create_task(switch_on())
+    await asyncio.sleep(0.5)
+    assert not task.done()  # waiting for the portfolio lock
+    await placing.commit()
+    await placing.close()
+    assert await asyncio.wait_for(task, 10) == 1
+    async with maker() as s:
+        assert (await s.get(Order, order.id)).status == OrderStatus.canceled

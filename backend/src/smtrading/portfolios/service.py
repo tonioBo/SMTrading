@@ -9,7 +9,10 @@ from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import quantize_money
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, Journal, JournalType
 from smtrading.ledger.service import LineSpec, get_or_create_account, post_journal
+from smtrading.portfolios.locks import lock_portfolio
 from smtrading.portfolios.models import Portfolio
+from smtrading.risk.models import RiskProfile
+from smtrading.risk.profiles import DEFAULT_RISK_PROFILE_NAME
 
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 
@@ -60,11 +63,7 @@ async def _post_cash_move(
     if value <= 0:
         raise SMTError(ErrorCode.INVALID_AMOUNT, "amount must be positive", {"amount": str(amount)})
     # Lock order: portfolio row first, then the chain lock inside post_journal.
-    locked = await session.scalar(
-        select(Portfolio.id).where(Portfolio.id == portfolio_id).with_for_update()
-    )
-    if locked is None:
-        raise SMTError(ErrorCode.NOT_FOUND, "portfolio not found", {"portfolio_id": str(portfolio_id)})
+    await lock_portfolio(session, portfolio_id)
     cash = await get_or_create_account(
         session, portfolio_id=portfolio_id, asset=ccy, kind=AccountKind.cash
     )
@@ -102,8 +101,10 @@ async def withdraw(
 async def create_portfolio(
     session: AsyncSession, *, name: str, initial_cash: Decimal, base_currency: str = "EUR",
     leverage: Decimal = Decimal(1), slippage_bps: int = 0, timezone: str = "Europe/Rome",
-    author_id: str | None = None,
+    author_id: str | None = None, risk_profile_id: UUID | None = None,
 ) -> Portfolio:
+    """A new portfolio with its initial deposit; without `risk_profile_id` it gets the
+    seeded Default risk profile (if present)."""
     ccy = _clean_currency(base_currency)
     _check_finite(initial_cash, "initial_cash")
     # Checked before quantizing: -0.001 would otherwise round to -0.00 and pass.
@@ -115,9 +116,13 @@ async def create_portfolio(
     cash_amount = _quantize(initial_cash, ccy, "initial_cash")
     if await session.scalar(select(Portfolio.id).where(Portfolio.name == name)) is not None:
         raise SMTError(ErrorCode.INVALID_ORDER, "portfolio name already exists", {"name": name})
+    if risk_profile_id is None:
+        risk_profile_id = await session.scalar(
+            select(RiskProfile.id).where(RiskProfile.name == DEFAULT_RISK_PROFILE_NAME)
+        )
     portfolio = Portfolio(
         name=name, base_currency=ccy, leverage=leverage, slippage_bps=slippage_bps,
-        timezone=timezone,
+        timezone=timezone, risk_profile_id=risk_profile_id,
     )
     session.add(portfolio)
     await session.flush()

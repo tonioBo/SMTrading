@@ -20,7 +20,7 @@ from smtrading.instruments.models import Instrument
 from smtrading.jobs.runs import job_done, run_job_once
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, JournalType
 from smtrading.ledger.service import LineSpec, get_balance, get_or_create_account, post_journal
-from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.locks import lock_portfolio
 from smtrading.risk.models import InterestKind, InterestRate
 from smtrading.valuation.service import mark_price
 
@@ -29,16 +29,6 @@ log = logging.getLogger("smtrading.corporate.interest")
 JOB = "interest"
 AUTHOR = "interest"
 _PREC = 60
-
-
-async def lock_portfolio(session: AsyncSession, portfolio_id: UUID) -> Portfolio:
-    """FOR UPDATE on the portfolio row: taken before any cash write (Ruling R11)."""
-    return (
-        await session.execute(
-            select(Portfolio).where(Portfolio.id == portfolio_id).with_for_update()
-            .execution_options(populate_existing=True)
-        )
-    ).scalar_one()
 
 
 async def account_id(

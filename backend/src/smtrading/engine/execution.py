@@ -16,6 +16,15 @@ that opens/adds (open), posted together in one TRADE journal:
   Collateral is pooled per currency: what one short draws is not tied to its own
   proceeds, so a cover at a loss may use collateral posted by another short in ccy;
 - a fill that opens exposure must leave buying_power_raw >= 0 (Ruling R8);
+- status at fill (I3, not for LIQUIDATION journals): a locked portfolio fills nothing
+  (PORTFOLIO_LOCKED); a reduce_only portfolio only fills purely reducing fills
+  (REDUCE_ONLY); with the kill switch on, a fill that opens exposure is refused
+  (KILL_SWITCH_ACTIVE);
+- a reduce_only order (Ruling R22: closes, bracket exits) is clamped to |position|; with
+  nothing to reduce (flat, or held on the order's side) it is canceled with reason
+  `nothing_to_reduce` and no journal;
+- no network I/O under the chain lock (I2): every quote/fx rate is read through a
+  MemoQuoteSource, prefetched before the first post_journal and frozen from then on;
 - a purely reducing fill is never blocked:
   - R9: when cash[fee_ccy] cannot pay the whole fee, the whole fee is converted into ccy
     (ROUND_UP) and charged there, out of proceeds/collateral;
@@ -30,14 +39,22 @@ from datetime import UTC, datetime
 from decimal import ROUND_DOWN, ROUND_UP, Decimal, localcontext
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import decimal_to_str, quantize_money
-from smtrading.engine.models import Fill, Order, OrderSide, OrderStatus
+from smtrading.engine.models import (
+    FILLABLE_STATUSES,
+    OPEN_STATUSES,
+    Fill,
+    Order,
+    OrderSide,
+    OrderStatus,
+)
+from smtrading.engine.prefetch import prefetch_portfolio
 from smtrading.engine.pricing import QuoteView, fill_price, notional_to_qty
-from smtrading.engine.quotesource import QuoteSource
+from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.events import queue_event, queue_track, queue_untrack
 from smtrading.fees.calculator import FeeRuleData, compute_fx_fee, compute_trade_fee
 from smtrading.fees.resolver import load_rules, resolve_rule
@@ -45,18 +62,16 @@ from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, Journal, JournalType
 from smtrading.ledger.service import LineSpec, get_balance, get_or_create_account, post_journal
 from smtrading.marketdata.types import Quote
-from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.locks import lock_portfolio
+from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import get_cash_balances
 from smtrading.positions.service import upsert_position
 from smtrading.risk.profiles import effective_risk_profile
-from smtrading.risk.settings import get_default_spread_bps
+from smtrading.risk.settings import get_default_spread_bps, is_kill_switch_on
 from smtrading.valuation.service import value_portfolio
 
 _PREC = 60
-FILLABLE = frozenset(
-    {OrderStatus.new, OrderStatus.queued, OrderStatus.pending, OrderStatus.triggered}
-)
-_OPEN = FILLABLE | {OrderStatus.held}
+NOTHING_TO_REDUCE = "nothing_to_reduce"
 
 
 @dataclass
@@ -282,17 +297,26 @@ async def _activate_linked(session: AsyncSession, order: Order) -> None:
     """Cancel open OCO siblings; release held bracket children as one OCO group."""
     now = datetime.now(UTC)
     if order.oco_group_id is not None:
-        await session.execute(
-            update(Order)
+        siblings = list(await session.scalars(
+            select(Order)
             .where(
                 Order.oco_group_id == order.oco_group_id,
                 Order.id != order.id,
-                Order.status.in_(_OPEN),
+                Order.status.in_(OPEN_STATUSES),
                 (Order.parent_id.is_(None)) | (Order.parent_id != order.id),
             )
-            .values(status=OrderStatus.canceled, updated_at=now)
-            .execution_options(synchronize_session=False)
-        )
+            .order_by(Order.created_at, Order.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ))
+        for sibling in siblings:
+            sibling.status = OrderStatus.canceled
+            sibling.updated_at = now
+            queue_event(session, "order.canceled", {
+                "order_id": sibling.id, "portfolio_id": sibling.portfolio_id,
+                "agent_id": sibling.agent_id, "symbol": sibling.symbol, "by": "system",
+                "reason": "oco_sibling_filled",
+            })
     children = list(
         await session.scalars(
             select(Order)
@@ -312,6 +336,31 @@ async def _activate_linked(session: AsyncSession, order: Order) -> None:
             child.updated_at = now
 
 
+def _cancel_nothing_to_reduce(session: AsyncSession, order: Order) -> None:
+    order.status = OrderStatus.canceled
+    order.reject_message = NOTHING_TO_REDUCE
+    order.updated_at = datetime.now(UTC)
+    queue_event(session, "order.canceled", {
+        "order_id": order.id, "portfolio_id": order.portfolio_id, "agent_id": order.agent_id,
+        "symbol": order.symbol, "by": "system", "reason": NOTHING_TO_REDUCE,
+    })
+
+
+async def _check_status(
+    session: AsyncSession, portfolio: Portfolio, split: "_Split", symbol: str
+) -> None:
+    """I3: portfolio status and kill switch, enforced again at fill time."""
+    details = {"portfolio_id": str(portfolio.id), "symbol": symbol}
+    if portfolio.status == PortfolioStatus.locked:
+        raise SMTError(ErrorCode.PORTFOLIO_LOCKED, "portfolio is locked", details)
+    if portfolio.status == PortfolioStatus.reduce_only and not split.reducing:
+        raise SMTError(ErrorCode.REDUCE_ONLY, "portfolio is reduce-only", details)
+    if not split.reducing and await is_kill_switch_on(session):
+        raise SMTError(
+            ErrorCode.KILL_SWITCH_ACTIVE, "trading is halted by the kill switch", details
+        )
+
+
 async def execute_fill(
     session: AsyncSession,
     qs: QuoteSource,
@@ -319,29 +368,31 @@ async def execute_fill(
     *,
     quote: Quote,
     journal_type: JournalType = JournalType.TRADE,
+    redis=None,
 ) -> FillResult | None:
-    """Fill `order_id` at `quote`; None if the order is no longer fillable.
+    """Fill `order_id` at `quote`; None if the order is no longer fillable (or a
+    reduce_only order had nothing to reduce and was canceled).
 
     Ruling R12: a purely reducing fill (close/cover) is never blocked for lack of cash. It
     may take a margin loan even at leverage 1, but only after converting from the base
     currency and then from any other cash currency (FX journal with the usual fx fee).
+
+    `qs` is wrapped in a MemoQuoteSource (shared if it already is one) and frozen before
+    the first journal. `redis`, when given, lets the post-fill valuation fall back to
+    cached quotes (I4).
     """
+    qs = MemoQuoteSource.wrap(qs)
     portfolio_id = await session.scalar(select(Order.portfolio_id).where(Order.id == order_id))
     if portfolio_id is None:
         raise SMTError(ErrorCode.NOT_FOUND, "order not found", {"order_id": str(order_id)})
-    portfolio = (
-        await session.execute(
-            select(Portfolio).where(Portfolio.id == portfolio_id).with_for_update()
-            .execution_options(populate_existing=True)
-        )
-    ).scalar_one()
+    portfolio = await lock_portfolio(session, portfolio_id)
     order = (
         await session.execute(
             select(Order).where(Order.id == order_id).with_for_update()
             .execution_options(populate_existing=True)
         )
     ).scalar_one()
-    if order.status not in FILLABLE:
+    if order.status not in FILLABLE_STATUSES:
         return None
 
     instrument = await session.get(Instrument, order.symbol)
@@ -358,6 +409,15 @@ async def execute_fill(
     qty = order.qty if order.qty is not None else notional_to_qty(
         order.notional, price, instrument.lot_size
     )
+    buy = side == OrderSide.buy
+    accts = _Accounts(session, portfolio.id)
+    held = await accts.balance(symbol, AccountKind.position)
+    if order.reduce_only:
+        if held == 0 or (held > 0) == buy:
+            _cancel_nothing_to_reduce(session, order)
+            await session.flush()
+            return None
+        qty = min(qty, abs(held))
 
     rule = resolve_rule(
         await load_rules(session), portfolio_id=portfolio.id,
@@ -370,12 +430,11 @@ async def execute_fill(
         fee = compute_trade_fee(rule, notional * to_rule_ccy)
     fee_ccy = rule.currency
 
-    accts = _Accounts(session, portfolio.id)
-    held = await accts.balance(symbol, AccountKind.position)
-    buy = side == OrderSide.buy
     split = _split_fill(held, buy, qty, price, notional, ccy)
     after, close_notional, open_notional = split.after, split.close_notional, split.open_notional
     reducing = split.reducing
+    if journal_type != JournalType.LIQUIDATION:
+        await _check_status(session, portfolio, split, symbol)
     if after < 0 and not buy:
         await _check_short_allowed(session, portfolio, instrument)
 
@@ -419,6 +478,10 @@ async def execute_fill(
         qs, accts, rule=rule, base=base, may_borrow=portfolio.leverage > 1 or reducing,
         other_sources=other_sources, needs=dict(needs), incoming=dict(incoming),
     )
+
+    if not reducing:  # the post-fill valuation needs quotes and fx rates (I2)
+        await prefetch_portfolio(session, qs, portfolio.id, symbols=[symbol])
+    qs.freeze()  # chain lock from here to commit: no more provider calls
 
     fill_id = uuid.uuid4()
     journals: list[Journal] = []
@@ -493,7 +556,7 @@ async def execute_fill(
     # Exposure-increasing fills must leave buying power >= 0 (raw, Ruling R8); reducing
     # fills are never blocked.
     if not reducing:
-        valuation = await value_portfolio(session, qs, portfolio.id)
+        valuation = await value_portfolio(session, qs, portfolio.id, redis=redis)
         if valuation.buying_power_raw < 0:
             raise _no_buying_power(
                 "buying power exceeded", buying_power_raw=valuation.buying_power_raw

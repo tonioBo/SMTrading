@@ -15,6 +15,19 @@ Transactions and side effects (Rulings R10, R11):
 - Immediate executions run in a SAVEPOINT: on SMTError the savepoint and the effects it
   queued are discarded, and the order is stored as `rejected` with that code.
 
+Quotes (I2): every public call reads market data through one MemoQuoteSource,
+prefetched for the portfolio and the order's symbol before anything is written;
+execute_fill freezes it before its first journal, so nothing after a fill in the same
+transaction (which holds the chain lock until commit) reaches the provider. `redis`,
+when given, is only read: valuations fall back to cached quotes (Ruling R23).
+
+Idempotency: a request whose client_order_id matches a stored order with the same
+parameters returns that order; a stored rejection is raised again (M5).
+
+Reduce-only (Ruling R22): closing orders and bracket exits are `reduce_only`; at fill
+they are clamped to the position, or canceled when there is nothing to reduce. Closing a
+position also cancels that symbol's open bracket exits in the portfolio (Ruling R16).
+
 Market closed: market orders are `queued` (the processor executes them at the open);
 other types rest as `pending` and are only evaluated once the market is open, because a
 queued order is executed at market. While the market is closed the quote age is not
@@ -24,8 +37,9 @@ checked at placement; it is checked again at execution.
 import dataclasses
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
+from itertools import pairwise
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -34,25 +48,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.execution import execute_fill
-from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType, TimeInForce
+from smtrading.engine.models import (
+    OPEN_STATUSES,
+    Order,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    TimeInForce,
+)
+from smtrading.engine.prefetch import prefetch_portfolio
 from smtrading.engine.pricing import QuoteView, effective_bid_ask
-from smtrading.engine.quotesource import QuoteSource
+from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.engine.triggers import OrderView, TriggerAction, evaluate
 from smtrading.events import POST_COMMIT_KEY, queue_event, queue_track, queue_untrack
 from smtrading.instruments.market_hours import MarketStatus, market_status
 from smtrading.instruments.models import Instrument
 from smtrading.instruments.service import get_instrument, validate_price, validate_quantity
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
-from smtrading.marketdata.types import CalendarEvent, Quote
+from smtrading.marketdata.types import Quote
+from smtrading.portfolios.locks import lock_portfolio
 from smtrading.portfolios.models import Portfolio
 from smtrading.risk.checks import CheckResult, pre_trade_check
 from smtrading.risk.daily_loss import check_daily_loss_safely
 from smtrading.risk.settings import get_default_spread_bps, set_kill_switch
 
-OPEN_STATUSES = frozenset({
-    OrderStatus.new, OrderStatus.held, OrderStatus.queued, OrderStatus.pending,
-    OrderStatus.triggered,
-})
 MODIFIABLE = frozenset({OrderStatus.pending, OrderStatus.queued, OrderStatus.held})
 _SELF_EXPIRING_MARKETS = ("CRYPTO", "FX")  # DAY orders expire at local midnight
 _MAX_VALUE = Decimal("1e20")
@@ -82,6 +101,7 @@ class PlaceOrderRequest:
     client_order_id: str | None = None
     agent_id: str | None = None
     source: str = "agent"
+    reduce_only: bool = False
 
 
 def _invalid(message: str, **details) -> SMTError:
@@ -128,38 +148,14 @@ def _validate_request(req: PlaceOrderRequest) -> PlaceOrderRequest:
     return req
 
 
-class _IgnoreQuoteAge:
-    """QuoteSource view with quotes stamped `now`: no STALE_QUOTE while a market is closed."""
-
-    def __init__(self, qs: QuoteSource) -> None:
-        self._qs = qs
-
-    async def get_quotes(self, symbols: list[str], *, max_age_s: int = 5) -> dict[str, Quote]:
-        quotes = await self._qs.get_quotes(symbols, max_age_s=max_age_s)
-        ts = datetime.now(UTC)
-        return {s: dataclasses.replace(q, ts=ts) for s, q in quotes.items()}
-
-    async def get_fx_rate(self, base: str, quote: str) -> Decimal:
-        return await self._qs.get_fx_rate(base, quote)
-
-    async def get_calendar(
-        self, symbols: list[str], start: date, end: date
-    ) -> list[CalendarEvent]:
-        return await self._qs.get_calendar(symbols, start, end)
-
-
-async def _lock_portfolio(session: AsyncSession, portfolio_id: UUID) -> Portfolio:
-    portfolio = (
-        await session.execute(
-            select(Portfolio).where(Portfolio.id == portfolio_id).with_for_update()
-            .execution_options(populate_existing=True)
-        )
-    ).scalar_one_or_none()
-    if portfolio is None:
-        raise SMTError(
-            ErrorCode.NOT_FOUND, "portfolio not found", {"portfolio_id": str(portfolio_id)}
-        )
-    return portfolio
+async def _memo(
+    session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, symbols: list[str]
+) -> MemoQuoteSource:
+    """The call's memo, prefetched for the portfolio and `symbols` (I2). Run after the
+    portfolio lock and before any write."""
+    memo = MemoQuoteSource.wrap(qs)
+    await prefetch_portfolio(session, memo, portfolio_id, symbols=symbols)
+    return memo
 
 
 async def _lock_order(session: AsyncSession, order_id: UUID) -> Order:
@@ -167,7 +163,7 @@ async def _lock_order(session: AsyncSession, order_id: UUID) -> Order:
     portfolio_id = await session.scalar(select(Order.portfolio_id).where(Order.id == order_id))
     if portfolio_id is None:
         raise SMTError(ErrorCode.NOT_FOUND, "order not found", {"order_id": str(order_id)})
-    await _lock_portfolio(session, portfolio_id)
+    await lock_portfolio(session, portfolio_id)
     return (
         await session.execute(
             select(Order).where(Order.id == order_id).with_for_update()
@@ -209,7 +205,7 @@ def _day_expiry(
 def _same_params(order: Order, req: PlaceOrderRequest, symbol: str) -> bool:
     return (
         order.symbol == symbol and order.side == req.side and order.type == req.type
-        and order.tif == req.tif
+        and order.tif == req.tif and order.reduce_only == req.reduce_only
         and all(getattr(order, name) == getattr(req, name) for name in _PARAMS)
     )
 
@@ -221,32 +217,38 @@ class _Admission:
     instrument: Instrument
     market: MarketStatus
     now: datetime
+    qs: MemoQuoteSource
+    redis: object = None
     existing: Order | None = None
     check: CheckResult | None = None
 
 
 async def _run_check(
     session: AsyncSession, qs: QuoteSource, req: PlaceOrderRequest, portfolio: Portfolio,
-    instrument: Instrument, market: MarketStatus,
+    instrument: Instrument, market: MarketStatus, redis=None,
 ) -> CheckResult:
     return await pre_trade_check(
-        session, qs if market.is_open else _IgnoreQuoteAge(qs),
-        portfolio=portfolio, instrument=instrument, side=req.side, qty=req.qty,
+        session, qs, portfolio=portfolio, instrument=instrument, side=req.side, qty=req.qty,
         notional=req.notional, order_type=req.type, limit_price=req.limit_price,
-        stop_price=req.stop_price,
+        stop_price=req.stop_price, check_quote_age=market.is_open,
+        reduce_only=req.reduce_only, redis=redis,
     )
 
 
 async def _admit(
-    session: AsyncSession, qs: QuoteSource, req: PlaceOrderRequest, now: datetime | None
+    session: AsyncSession, qs: QuoteSource, req: PlaceOrderRequest, now: datetime | None,
+    redis=None, *, check: bool = True,
 ) -> _Admission:
-    """Validated request + locked portfolio + idempotency lookup + risk check (no writes)."""
+    """Validated request + locked portfolio + idempotency lookup + risk check (no writes).
+
+    With `check=False` the risk check is left to the caller (`_check_admission`)."""
     now = now or datetime.now(UTC)
     req = _validate_request(req)
-    portfolio = await _lock_portfolio(session, req.portfolio_id)
+    portfolio = await lock_portfolio(session, req.portfolio_id)
     instrument = await get_instrument(session, req.symbol)
     market = market_status(instrument.market, now)
-    adm = _Admission(req, portfolio, instrument, market, now)
+    memo = await _memo(session, qs, portfolio.id, [instrument.symbol])
+    adm = _Admission(req, portfolio, instrument, market, now, memo, redis)
     if req.client_order_id is not None:
         # under the portfolio lock: a concurrent duplicate waits and then sees this row
         existing = await session.scalar(
@@ -263,8 +265,15 @@ async def _admit(
                 )
             adm.existing = existing
             return adm
-    adm.check = await _run_check(session, qs, req, portfolio, instrument, market)
+    if check:
+        await _check_admission(session, adm)
     return adm
+
+
+async def _check_admission(session: AsyncSession, adm: _Admission) -> None:
+    adm.check = await _run_check(
+        session, adm.qs, adm.req, adm.portfolio, adm.instrument, adm.market, adm.redis
+    )
 
 
 def _reject(order: Order, code: ErrorCode | str, message: str | None) -> None:
@@ -282,7 +291,7 @@ async def _persist(session: AsyncSession, adm: _Admission, **extra) -> Order:
         type=req.type, tif=req.tif, qty=req.qty, notional=req.notional,
         limit_price=req.limit_price, stop_price=req.stop_price, trail_pct=req.trail_pct,
         trail_amount=req.trail_amount, filled_qty=Decimal(0), status=OrderStatus.new,
-        source=req.source, **extra,
+        source=req.source, reduce_only=req.reduce_only, **extra,
     )
     if check is not None and not check.ok:
         _reject(order, check.code, check.message)
@@ -294,18 +303,30 @@ async def _persist(session: AsyncSession, adm: _Admission, **extra) -> Order:
 
 
 def _rejection_error(order: Order) -> SMTError:
+    try:
+        code = ErrorCode(order.reject_code)
+    except ValueError:
+        code = ErrorCode.INVALID_ORDER
     return SMTError(
-        ErrorCode(order.reject_code), order.reject_message or "order rejected",
-        {"order_id": str(order.id)},
+        code, order.reject_message or "order rejected", {"order_id": str(order.id)},
     )
 
 
-async def _fill_now(session: AsyncSession, qs: QuoteSource, order: Order, quote: Quote) -> None:
+def _raise_if_rejected(*orders: Order) -> None:
+    """A new or replayed (M5) rejection is raised with its stored code."""
+    for order in orders:
+        if order.status == OrderStatus.rejected:
+            raise _rejection_error(order)
+
+
+async def _fill_now(
+    session: AsyncSession, qs: QuoteSource, order: Order, quote: Quote, redis=None
+) -> None:
     effects = session.info.setdefault(POST_COMMIT_KEY, [])
     mark = len(effects)
     try:
         async with session.begin_nested():
-            await execute_fill(session, qs, order.id, quote=quote)
+            await execute_fill(session, qs, order.id, quote=quote, redis=redis)
     except SMTError as e:
         del session.info.setdefault(POST_COMMIT_KEY, [])[mark:]
         await session.refresh(order)
@@ -324,7 +345,7 @@ def _view(order: Order) -> OrderView:
 
 async def _evaluate_now(
     session: AsyncSession, qs: QuoteSource, order: Order, quote: Quote,
-    bid: Decimal, ask: Decimal,
+    bid: Decimal, ask: Decimal, redis=None,
 ) -> None:
     # at most two steps: a stop_limit first triggers, then may fill as a limit
     for _ in range(2):
@@ -333,12 +354,12 @@ async def _evaluate_now(
             order.trail_ref_price = result.new_trail_ref
         if result.action == TriggerAction.fill:
             await session.flush()
-            await _fill_now(session, qs, order, quote)
+            await _fill_now(session, qs, order, quote, redis)
             return
         if result.action == TriggerAction.trigger_to_market:
             order.status = OrderStatus.triggered
             await session.flush()
-            await _fill_now(session, qs, order, quote)
+            await _fill_now(session, qs, order, quote, redis)
             return
         if result.action != TriggerAction.trigger_to_limit:
             return
@@ -351,7 +372,9 @@ async def _activate(session: AsyncSession, qs: QuoteSource, order: Order, adm: _
     After an immediate fill the daily loss limit is checked (best-effort)."""
     await _activate_order(session, qs, order, adm)
     if order.status == OrderStatus.filled:
-        await check_daily_loss_safely(session, qs, order.portfolio_id, adm.now)
+        await check_daily_loss_safely(
+            session, qs, order.portfolio_id, adm.now, redis=adm.redis
+        )
 
 
 async def _activate_order(
@@ -367,7 +390,7 @@ async def _activate_order(
         elif quote is None:
             _reject(order, ErrorCode.PROVIDER_UNAVAILABLE, "quote unavailable")
         else:
-            await _fill_now(session, qs, order, quote)
+            await _fill_now(session, qs, order, quote, adm.redis)
         await session.flush()
         return
     order.status = OrderStatus.pending
@@ -376,7 +399,7 @@ async def _activate_order(
         if order.type == OrderType.trailing_stop:
             order.trail_ref_price = bid if order.side == OrderSide.sell else ask
         if adm.market.is_open:
-            await _evaluate_now(session, qs, order, quote, bid, ask)
+            await _evaluate_now(session, qs, order, quote, bid, ask, adm.redis)
     await session.flush()
 
 
@@ -386,21 +409,22 @@ def _track_open(session: AsyncSession, orders: list[Order]) -> None:
 
 
 async def _place(
-    session: AsyncSession, qs: QuoteSource, req: PlaceOrderRequest, now: datetime | None
+    session: AsyncSession, qs: QuoteSource, req: PlaceOrderRequest, now: datetime | None,
+    redis=None,
 ) -> tuple[Order, bool]:
     """(order, created); a stored rejection is returned, not raised."""
-    adm = await _admit(session, qs, req, now)
+    adm = await _admit(session, qs, req, now, redis)
     if adm.existing is not None:
         return adm.existing, False
     order = await _persist(session, adm)
-    await _activate(session, qs, order, adm)
+    await _activate(session, adm.qs, order, adm)
     _track_open(session, [order])
     return order, True
 
 
 async def preview_order(
     session: AsyncSession, qs: QuoteSource, req: PlaceOrderRequest, *,
-    now: datetime | None = None,
+    now: datetime | None = None, redis=None,
 ) -> CheckResult:
     """The pre-trade check for `req`, without storing anything."""
     now = now or datetime.now(UTC)
@@ -411,18 +435,17 @@ async def preview_order(
             raise SMTError(ErrorCode.NOT_FOUND, "portfolio not found")
         instrument = await get_instrument(session, req.symbol)
         market = market_status(instrument.market, now)
-        return await _run_check(session, qs, req, portfolio, instrument, market)
+        return await _run_check(session, qs, req, portfolio, instrument, market, redis)
     except SMTError as e:
         return CheckResult(ok=False, code=e.code, message=e.message)
 
 
 async def place_order(
     session: AsyncSession, qs: QuoteSource, req: PlaceOrderRequest, *,
-    now: datetime | None = None,
+    now: datetime | None = None, redis=None,
 ) -> Order:
-    order, created = await _place(session, qs, req, now)
-    if created and order.status == OrderStatus.rejected:
-        raise _rejection_error(order)
+    order, _ = await _place(session, qs, req, now, redis)
+    _raise_if_rejected(order)
     return order
 
 
@@ -434,11 +457,31 @@ async def _children(session: AsyncSession, parent_id: UUID) -> list[Order]:
     return sorted(rows, key=lambda o: _CHILD_ROLES.index(o.role) if o.role in _CHILD_ROLES else 9)
 
 
+def _check_bracket_prices(
+    side: OrderSide, take_profit: Decimal | None, stop_loss: Decimal | None,
+    reference: Decimal | None,
+) -> None:
+    """take_profit > reference > stop_loss for a buy entry (reversed for a sell); a
+    missing (None) price is left out of the comparison."""
+    chain = [v for v in (take_profit, reference, stop_loss) if v is not None]
+    if side == OrderSide.sell:
+        chain.reverse()
+    if not all(hi > lo for hi, lo in pairwise(chain)):
+        raise _invalid(
+            "bracket prices must satisfy take_profit > reference > stop_loss for a buy "
+            "(reversed for a sell)",
+            take_profit=take_profit, stop_loss=stop_loss, reference=reference,
+        )
+
+
 async def place_bracket_order(
     session: AsyncSession, qs: QuoteSource, req: PlaceOrderRequest, *,
-    take_profit: Decimal, stop_loss: Decimal, now: datetime | None = None,
+    take_profit: Decimal, stop_loss: Decimal, now: datetime | None = None, redis=None,
 ) -> list[Order]:
-    """[entry, take_profit, stop_loss]; the children are `held` until the entry fills."""
+    """[entry, take_profit, stop_loss]; the children are `held` until the entry fills.
+
+    The children are reduce_only (Ruling R22). A replayed client_order_id is looked up
+    before the prices are validated against the current quote."""
     req = _validate_request(req)
     if req.type not in (OrderType.market, OrderType.limit):
         raise _invalid("a bracket entry must be a market or limit order")
@@ -449,30 +492,12 @@ async def place_bracket_order(
     instrument = await get_instrument(session, req.symbol)
     validate_price(instrument, take_profit)
     validate_price(instrument, stop_loss)
-    reference = req.limit_price
-    if reference is None:
-        quote = await _try_quote(qs, instrument.symbol)
-        if quote is not None:
-            bid, ask = await _bid_ask(session, instrument, quote)
-            reference = ask if req.side == OrderSide.buy else bid
-    if reference is not None:
-        ordered = (
-            take_profit > reference > stop_loss if req.side == OrderSide.buy
-            else take_profit < reference < stop_loss
-        )
-        if not ordered:
-            raise _invalid(
-                "bracket prices must satisfy take_profit > reference > stop_loss for a buy "
-                "(reversed for a sell)",
-                take_profit=take_profit, stop_loss=stop_loss, reference=reference,
-            )
 
-    adm = await _admit(session, qs, req, now)
+    adm = await _admit(session, qs, req, now, redis, check=False)
     if adm.existing is not None:
         entry = adm.existing
         children = await _children(session, entry.id)
-        if not children and entry.status == OrderStatus.rejected:
-            return [entry]
+        _raise_if_rejected(entry)
         prices = [(c.role, c.limit_price if c.type == OrderType.limit else c.stop_price)
                   for c in children]
         if prices != [("take_profit", take_profit), ("stop_loss", stop_loss)]:
@@ -482,9 +507,17 @@ async def place_bracket_order(
             )
         return [entry, *children]
 
+    reference = req.limit_price
+    if reference is None:
+        quote = await _try_quote(adm.qs, instrument.symbol)
+        if quote is not None:
+            bid, ask = await _bid_ask(session, instrument, quote)
+            reference = ask if req.side == OrderSide.buy else bid
+    _check_bracket_prices(req.side, take_profit, stop_loss, reference)
+    await _check_admission(session, adm)
+
     entry = await _persist(session, adm, role="entry")
-    if entry.status == OrderStatus.rejected:
-        raise _rejection_error(entry)
+    _raise_if_rejected(entry)
     group = uuid.uuid4()
     exit_side = OrderSide.sell if req.side == OrderSide.buy else OrderSide.buy
     children = [
@@ -493,7 +526,7 @@ async def place_bracket_order(
             symbol=entry.symbol, side=exit_side, type=type, tif=entry.tif, qty=entry.qty,
             limit_price=limit, stop_price=stop, filled_qty=Decimal(0),
             status=OrderStatus.held, parent_id=entry.id, oco_group_id=group, role=role,
-            expires_at=entry.expires_at, source=entry.source,
+            expires_at=entry.expires_at, source=entry.source, reduce_only=True,
         )
         for role, type, limit, stop in (
             ("take_profit", OrderType.limit, take_profit, None),
@@ -503,7 +536,7 @@ async def place_bracket_order(
     session.add_all(children)
     await session.flush()
 
-    await _activate(session, qs, entry, adm)
+    await _activate(session, adm.qs, entry, adm)
     for child in children:
         await session.refresh(child)
     if entry.status == OrderStatus.rejected:
@@ -515,7 +548,7 @@ async def place_bracket_order(
 
 async def place_oco_order(
     session: AsyncSession, qs: QuoteSource, a: PlaceOrderRequest, b: PlaceOrderRequest, *,
-    now: datetime | None = None,
+    now: datetime | None = None, redis=None,
 ) -> list[Order]:
     """Two resting orders in one OCO group: the fill of one cancels the other.
 
@@ -529,8 +562,8 @@ async def place_oco_order(
         raise _invalid("OCO legs cannot be market orders")
     if a.client_order_id is not None and a.client_order_id == b.client_order_id:
         raise _invalid("OCO legs need distinct client_order_id values")
-    adm_a = await _admit(session, qs, a, now)
-    adm_b = await _admit(session, qs, b, now)
+    adm_a = await _admit(session, qs, a, now, redis)
+    adm_b = await _admit(session, adm_a.qs, b, now, redis)
     if adm_a.instrument.symbol != adm_b.instrument.symbol:
         raise _invalid("OCO legs must be on the same symbol")
     if adm_a.existing is not None or adm_b.existing is not None:
@@ -539,6 +572,7 @@ async def place_oco_order(
             ea.oco_group_id != eb.oco_group_id
         ):
             raise _invalid("client_order_id reused with different parameters")
+        _raise_if_rejected(ea, eb)
         return [ea, eb]
 
     group = uuid.uuid4()
@@ -552,9 +586,9 @@ async def place_oco_order(
         await session.flush()
         raise _rejection_error(failed)
 
-    await _activate(session, qs, oa, adm_a)
+    await _activate(session, adm_a.qs, oa, adm_a)
     await session.refresh(ob)  # a fill of `a` cancels `b`
-    await _activate(session, qs, ob, adm_b)
+    await _activate(session, adm_b.qs, ob, adm_b)
     await session.refresh(oa)
     _track_open(session, [oa, ob])
     return [oa, ob]
@@ -627,7 +661,7 @@ async def cancel_all_orders(
     session: AsyncSession, portfolio_id: UUID, symbol: str | None = None, *,
     by: str = "agent",
 ) -> int:
-    await _lock_portfolio(session, portfolio_id)
+    await lock_portfolio(session, portfolio_id)
     query = select(Order).where(
         Order.portfolio_id == portfolio_id, Order.status.in_(OPEN_STATUSES)
     )
@@ -648,15 +682,14 @@ async def set_kill_switch_and_cancel(
     session: AsyncSession, on: bool, *, cancel_open: bool, by: str = "admin"
 ) -> int:
     """Turn the kill switch on/off; with `on` and `cancel_open`, cancel every open order
-    (portfolio by portfolio, each portfolio row locked first). Returns how many."""
+    (portfolio by portfolio in id order, each portfolio row locked first and its open
+    orders read again under the lock, so a placement that committed meanwhile is
+    caught; M2). Returns how many. Fills opening exposure are refused at execution
+    while the switch is on (I3)."""
     await set_kill_switch(session, on)
     canceled = 0
     if on and cancel_open:
-        portfolio_ids = list(await session.scalars(
-            select(Order.portfolio_id).distinct()
-            .where(Order.status.in_(OPEN_STATUSES))
-            .order_by(Order.portfolio_id)
-        ))
+        portfolio_ids = list(await session.scalars(select(Portfolio.id).order_by(Portfolio.id)))
         for portfolio_id in portfolio_ids:
             canceled += await cancel_all_orders(session, portfolio_id, by=by)
     queue_event(session, "kill_switch", {"on": bool(on), "canceled": canceled})
@@ -667,12 +700,13 @@ async def modify_order(
     session: AsyncSession, qs: QuoteSource, order_id: UUID, *,
     qty: Decimal | None = None, limit_price: Decimal | None = None,
     stop_price: Decimal | None = None, trail_pct: Decimal | None = None,
-    trail_amount: Decimal | None = None, now: datetime | None = None,
+    trail_amount: Decimal | None = None, now: datetime | None = None, redis=None,
 ) -> Order:
     """Change the parameters of a pending/queued/held order; the type cannot change.
 
     The risk checks run again on the new parameters (held bracket children only get the
-    lot/tick validation: they close the entry's position). A refused change raises and
+    lot/tick validation and the take_profit > entry limit > stop_loss ordering against
+    the entry and the sibling: they close the entry's position). A refused change raises and
     leaves the order as it was. Changing a bracket entry's qty also resizes its children.
     """
     changes = {
@@ -705,9 +739,12 @@ async def modify_order(
         for price in (req.limit_price, req.stop_price):
             if price is not None:
                 validate_price(instrument, price)
+        await _check_held_child_prices(session, order, req)
     else:
         market = market_status(instrument.market, now or datetime.now(UTC))
-        check = await _run_check(session, qs, req, portfolio, instrument, market)
+        check = await _run_check(
+            session, MemoQuoteSource.wrap(qs), req, portfolio, instrument, market, redis
+        )
         if not check.ok:
             raise SMTError(check.code, check.message, {"order_id": str(order.id)})
 
@@ -721,6 +758,28 @@ async def modify_order(
                 child.updated_at = order.updated_at
     await session.flush()
     return order
+
+
+async def _check_held_child_prices(
+    session: AsyncSession, order: Order, req: PlaceOrderRequest
+) -> None:
+    """A held bracket exit keeps take_profit > entry limit > stop_loss (buy entry)."""
+    if order.role not in _CHILD_ROLES or order.parent_id is None:
+        return
+    entry = await session.get(Order, order.parent_id)
+    prices = {
+        c.role: c.limit_price if c.role == "take_profit" else c.stop_price
+        for c in await _children(session, order.parent_id)
+        if c.id != order.id and c.status in OPEN_STATUSES
+    }
+    prices[order.role] = req.limit_price if order.role == "take_profit" else req.stop_price
+    reference = (
+        entry.limit_price if entry is not None and entry.type == OrderType.limit else None
+    )
+    entry_side = OrderSide.buy if order.side == OrderSide.sell else OrderSide.sell
+    _check_bracket_prices(
+        entry_side, prices.get("take_profit"), prices.get("stop_loss"), reference
+    )
 
 
 async def get_order(session: AsyncSession, order_id: UUID) -> Order:
@@ -760,11 +819,32 @@ async def _position_balances(
     return {asset: balance for asset, balance in await session.execute(query)}
 
 
+async def _cancel_exits(
+    session: AsyncSession, portfolio_id: UUID, symbol: str, *, by: str
+) -> list[Order]:
+    """Ruling R16: cancel the symbol's open bracket exits (take_profit/stop_loss)."""
+    exits = list(await session.scalars(
+        select(Order)
+        .where(
+            Order.portfolio_id == portfolio_id, Order.symbol == symbol,
+            Order.role.in_(_CHILD_ROLES), Order.status.in_(OPEN_STATUSES),
+        )
+        .order_by(Order.created_at, Order.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ))
+    if exits:
+        await _cancel(session, exits, by)
+    return exits
+
+
 async def _close(
     session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, symbol: str,
     held: Decimal, qty: Decimal | None, *, source: str, agent_id: str | None,
-    now: datetime | None,
+    now: datetime | None, redis=None,
 ) -> tuple[Order, bool]:
+    """A reduce_only market order against `held` (Ruling R22); unless it is rejected,
+    the symbol's open bracket exits are canceled (Ruling R16)."""
     size = abs(held)
     if qty is None:
         qty = size
@@ -775,42 +855,50 @@ async def _close(
     side = OrderSide.sell if held > 0 else OrderSide.buy
     req = PlaceOrderRequest(
         portfolio_id=portfolio_id, symbol=symbol, side=side, type=OrderType.market,
-        qty=qty, source=source, agent_id=agent_id,
+        qty=qty, source=source, agent_id=agent_id, reduce_only=True,
     )
-    return await _place(session, qs, req, now)
+    order, created = await _place(session, qs, req, now, redis)
+    if order.status != OrderStatus.rejected:
+        await _cancel_exits(session, portfolio_id, symbol, by=source)
+    return order, created
 
 
 async def close_position(
     session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, symbol: str,
     qty: Decimal | None = None, *, source: str = "agent", agent_id: str | None = None,
-    now: datetime | None = None,
+    now: datetime | None = None, redis=None,
 ) -> Order:
-    """Market order on the opposite side for |position| (or `qty` <= |position|)."""
-    await _lock_portfolio(session, portfolio_id)
+    """Reduce-only market order on the opposite side for |position| (or `qty` <=
+    |position|); the symbol's open bracket exits are canceled (Ruling R16)."""
+    await lock_portfolio(session, portfolio_id)
     symbol = (await get_instrument(session, symbol)).symbol
     held = (await _position_balances(session, portfolio_id, symbol)).get(symbol)
     if held is None:
         raise _invalid("no open position", symbol=symbol)
-    order, created = await _close(
+    order, _ = await _close(
         session, qs, portfolio_id, symbol, held, qty, source=source, agent_id=agent_id,
-        now=now,
+        now=now, redis=redis,
     )
-    if created and order.status == OrderStatus.rejected:
-        raise _rejection_error(order)
+    _raise_if_rejected(order)
     return order
 
 
 async def close_all_positions(
     session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, *,
     source: str = "agent", agent_id: str | None = None, now: datetime | None = None,
+    redis=None,
 ) -> list[Order]:
-    """One closing order per open position; rejections are returned, not raised."""
-    await _lock_portfolio(session, portfolio_id)
+    """One closing order per open position; rejections are returned, not raised.
+
+    One memo, prefetched for every held symbol before the first close (I2)."""
+    await lock_portfolio(session, portfolio_id)
+    positions = await _position_balances(session, portfolio_id)
+    qs = await _memo(session, qs, portfolio_id, list(positions))
     orders = []
-    for symbol, held in (await _position_balances(session, portfolio_id)).items():
+    for symbol, held in positions.items():
         order, _ = await _close(
             session, qs, portfolio_id, symbol, held, None, source=source,
-            agent_id=agent_id, now=now,
+            agent_id=agent_id, now=now, redis=redis,
         )
         orders.append(order)
     return orders

@@ -15,9 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.errors import SMTError
 from smtrading.corporate.snapshots import ensure_day_open
-from smtrading.engine.quotesource import QuoteSource
+from smtrading.engine.prefetch import prefetch_portfolio
+from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.events import notify
 from smtrading.ledger.models import Account, AccountKind, Journal, JournalLine, JournalType
+from smtrading.portfolios.locks import lock_portfolio
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.risk.profiles import effective_risk_profile
 from smtrading.valuation.service import value_portfolio
@@ -61,7 +63,8 @@ async def net_cash_flows_eur(
 
 
 async def check_daily_loss(
-    session: AsyncSession, qs: QuoteSource, portfolio: Portfolio, now: datetime
+    session: AsyncSession, qs: QuoteSource, portfolio: Portfolio, now: datetime, *,
+    redis=None,
 ) -> bool:
     """True if this call has just set the portfolio reduce_only for a daily loss.
 
@@ -78,8 +81,8 @@ async def check_daily_loss(
         profile.max_daily_loss_pct is None and profile.max_daily_loss_eur is None
     ):
         return False
-    day_open = await ensure_day_open(session, qs, portfolio, now)
-    valuation = await value_portfolio(session, qs, portfolio.id)
+    day_open = await ensure_day_open(session, qs, portfolio, now, redis=redis)
+    valuation = await value_portfolio(session, qs, portfolio.id, redis=redis)
     flows = await net_cash_flows_eur(session, qs, portfolio.id, day_open.ts, now)
     with localcontext() as ctx:
         ctx.prec = _PREC
@@ -113,21 +116,21 @@ async def check_daily_loss(
 
 
 async def check_daily_loss_safely(
-    session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, now: datetime
+    session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, now: datetime, *,
+    redis=None,
 ) -> bool:
     """check_daily_loss in a SAVEPOINT after a fill: best-effort, errors are logged.
 
-    Locks the portfolio row first (Ruling R11); the caller commits.
+    Locks the portfolio row first (Ruling R11); the caller commits. Market data comes
+    from a MemoQuoteSource (the caller's, already frozen after a fill: I2), prefetched
+    here only when it is not frozen yet.
     """
     try:
         async with session.begin_nested():
-            portfolio = (
-                await session.execute(
-                    select(Portfolio).where(Portfolio.id == portfolio_id).with_for_update()
-                    .execution_options(populate_existing=True)
-                )
-            ).scalar_one()
-            return await check_daily_loss(session, qs, portfolio, now)
+            portfolio = await lock_portfolio(session, portfolio_id)
+            qs = MemoQuoteSource.wrap(qs)
+            await prefetch_portfolio(session, qs, portfolio_id)
+            return await check_daily_loss(session, qs, portfolio, now, redis=redis)
     except SMTError as e:
         log.warning("daily loss check of %s skipped: %s %s", portfolio_id, e.code, e.message)
     except Exception:
@@ -136,13 +139,27 @@ async def check_daily_loss_safely(
 
 
 async def reset_daily(session: AsyncSession, now: datetime) -> int:
-    """Return to `active` the portfolios blocked for a daily loss whose block has ended."""
-    result = await session.execute(
-        update(Portfolio)
+    """Return to `active` the portfolios blocked for a daily loss whose block has ended.
+
+    The portfolio rows are locked FOR UPDATE in id order before the update (M3)."""
+    ids = list(await session.scalars(
+        select(Portfolio.id)
         .where(
             Portfolio.status == PortfolioStatus.reduce_only,
             Portfolio.reduce_only_reason == DAILY_LOSS_REASON,
             Portfolio.reduce_only_until <= now,
+        )
+        .order_by(Portfolio.id)
+        .with_for_update()
+    ))
+    if not ids:
+        return 0
+    result = await session.execute(
+        update(Portfolio)
+        .where(
+            Portfolio.id.in_(ids),
+            Portfolio.status == PortfolioStatus.reduce_only,
+            Portfolio.reduce_only_reason == DAILY_LOSS_REASON,
         )
         .values(status=PortfolioStatus.active, reduce_only_reason=None, reduce_only_until=None)
         .execution_options(synchronize_session="fetch")

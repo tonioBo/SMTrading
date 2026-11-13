@@ -3,6 +3,13 @@
 Checks run in a fixed order and stop at the first failure. Business rejections are
 returned as CheckResult(ok=False, code, message), never raised. Every risk comparison
 uses unrounded values (valuation *_raw fields, Ruling R8).
+
+- `check_quote_age=False` skips the STALE_QUOTE check of market orders (placement while
+  the market is closed: the age is checked again at execution).
+- `reduce_only` orders (Ruling R22) are clamped to the position at fill, so they never
+  increase exposure: they are checked as reducing.
+- With `redis`, the valuation may mark symbols with cached quotes (Ruling R23); only a
+  strictly reducing order is accepted on such a stale valuation.
 """
 
 from dataclasses import dataclass
@@ -97,12 +104,12 @@ async def _quote(qs: QuoteSource, symbol: str) -> Quote | None:
 async def _estimate_price(
     session: AsyncSession, qs: QuoteSource, *, portfolio: Portfolio, instrument: Instrument,
     side: OrderSide, order_type: OrderType, limit_price: Decimal | None,
-    stop_price: Decimal | None,
+    stop_price: Decimal | None, check_quote_age: bool,
 ) -> tuple[Decimal, Quote | None]:
     quote = await _quote(qs, instrument.symbol)
-    if order_type == OrderType.market:
-        if quote is None:
-            raise _Reject(ErrorCode.PROVIDER_UNAVAILABLE, "quote unavailable")
+    if order_type == OrderType.market and quote is None:
+        raise _Reject(ErrorCode.PROVIDER_UNAVAILABLE, "quote unavailable")
+    if order_type == OrderType.market and check_quote_age:
         threshold = await get_stale_threshold(session, instrument.asset_class)
         if (datetime.now(UTC) - quote.ts).total_seconds() > threshold:
             raise _Reject(ErrorCode.STALE_QUOTE, f"quote older than {threshold}s")
@@ -126,7 +133,8 @@ async def _estimate_price(
 async def _run(
     session: AsyncSession, qs: QuoteSource, *, portfolio: Portfolio, instrument: Instrument,
     side: OrderSide, qty: Decimal | None, notional: Decimal | None, order_type: OrderType,
-    limit_price: Decimal | None, stop_price: Decimal | None,
+    limit_price: Decimal | None, stop_price: Decimal | None, check_quote_age: bool,
+    reduce_only: bool, redis,
 ) -> CheckResult:
     # 1-3: switches and whitelist
     if await is_kill_switch_on(session):
@@ -141,20 +149,31 @@ async def _run(
     price, quote = await _estimate_price(
         session, qs, portfolio=portfolio, instrument=instrument, side=side,
         order_type=order_type, limit_price=limit_price, stop_price=stop_price,
+        check_quote_age=check_quote_age,
     )
     if qty is None:
         qty = notional_to_qty(notional, price, instrument.lot_size)
 
     ccy, base = instrument.currency, portfolio.base_currency
-    valuation = await value_portfolio(session, qs, portfolio.id)
+    valuation = await value_portfolio(session, qs, portfolio.id, redis=redis)
     before = next(
         (p.qty for p in valuation.positions if p.symbol == instrument.symbol), Decimal(0)
     )
     with localcontext() as ctx:
         ctx.prec = _PREC
+        if reduce_only:  # clamped to the position at fill (Ruling R22)
+            qty = min(qty, abs(before))
+            against = (before > 0) != (side == OrderSide.buy)
+            if before == 0 or not against:
+                qty = Decimal(0)
         after = before + qty if side == OrderSide.buy else before - qty
         increases = abs(after) > abs(before)
         reduces = abs(after) < abs(before) and _sign(after) in (0, _sign(before))
+    if valuation.stale_symbols and not reduces:
+        raise _Reject(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "valuation uses cached quotes for " + ", ".join(valuation.stale_symbols),
+        )
 
     # 6-7: reduce-only and short permission
     if portfolio.status == PortfolioStatus.reduce_only and not reduces:
@@ -165,8 +184,20 @@ async def _run(
         if not instrument.shortable:
             raise _Reject(ErrorCode.SHORT_NOT_ALLOWED, f"{instrument.symbol} is not shortable")
 
-    # estimates: notional, trade fee, fx fee
+    # 8a: order notional limit, before the fee and fx lookups
     to_eur = await qs.get_fx_rate(ccy, EUR)
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        order_notional = quantize_money(qty * price, ccy)
+        notional_eur = order_notional * to_eur
+    max_order = profile.max_order_notional_eur if profile is not None else None
+    if max_order is not None and notional_eur > max_order:
+        raise _Reject(
+            ErrorCode.RISK_LIMIT_EXCEEDED,
+            f"order notional exceeds {decimal_to_str(max_order)} EUR",
+        )
+
+    # estimates: trade fee, fx fee
     rule = resolve_rule(
         await load_rules(session), portfolio_id=portfolio.id,
         asset_class=instrument.asset_class, side=str(side),
@@ -175,15 +206,14 @@ async def _run(
     rule_to_eur = await qs.get_fx_rate(rule.currency, EUR)
     with localcontext() as ctx:
         ctx.prec = _PREC
-        order_notional = quantize_money(qty * price, ccy)
-        notional_eur = order_notional * to_eur
         fee = compute_trade_fee(rule, order_notional * to_rule_ccy)
         fee_eur = fee * rule_to_eur
     fx_fee_eur = Decimal(0)
     if side == OrderSide.buy and ccy != base:
+        fee_in_ccy = fee if rule.currency == ccy else Decimal(0)  # paid from cash[ccy] too
         with localcontext() as ctx:
             ctx.prec = _PREC
-            shortfall = order_notional - valuation.cash.get(ccy, Decimal(0))
+            shortfall = order_notional + fee_in_ccy - valuation.cash.get(ccy, Decimal(0))
         if shortfall > 0:
             base_to_ccy = await qs.get_fx_rate(base, ccy)
             base_to_eur = await qs.get_fx_rate(base, EUR)
@@ -198,13 +228,7 @@ async def _run(
         if increases:
             bp_after -= notional_eur
 
-    # 8: order and position limits
-    max_order = profile.max_order_notional_eur if profile is not None else None
-    if max_order is not None and notional_eur > max_order:
-        raise _Reject(
-            ErrorCode.RISK_LIMIT_EXCEEDED,
-            f"order notional exceeds {decimal_to_str(max_order)} EUR",
-        )
+    # 8b: position limit
     if increases and profile is not None and profile.max_position_pct is not None:
         mark = mark_price(quote) if quote is not None else price
         equity = valuation.equity_raw
@@ -240,12 +264,16 @@ async def pre_trade_check(
     order_type: OrderType,
     limit_price: Decimal | None,
     stop_price: Decimal | None,
+    check_quote_age: bool = True,
+    reduce_only: bool = False,
+    redis=None,
 ) -> CheckResult:
     try:
         return await _run(
             session, qs, portfolio=portfolio, instrument=instrument, side=side, qty=qty,
             notional=notional, order_type=order_type, limit_price=limit_price,
-            stop_price=stop_price,
+            stop_price=stop_price, check_quote_age=check_quote_age,
+            reduce_only=reduce_only, redis=redis,
         )
     except _Reject as r:
         return CheckResult(ok=False, code=r.code, message=r.message)

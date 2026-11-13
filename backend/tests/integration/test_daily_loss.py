@@ -265,3 +265,35 @@ async def test_deposit_does_not_hide_a_daily_loss(maker, qs):
             Notification.portfolio_id == pid, Notification.kind == "daily_loss"
         ))
         assert D(note.payload["net_cash_flows_eur"]) == D(20000)
+
+
+async def test_reset_daily_locks_rows_then_updates(db_session, seeded):
+    from smtrading.risk.daily_loss import DAILY_LOSS_REASON
+
+    ps = [await _portfolio(db_session) for _ in range(3)]
+    past = datetime(2026, 11, 10, tzinfo=UTC)
+    for p, until in zip(ps, (past, past, past + timedelta(days=5)), strict=True):
+        p.status = PortfolioStatus.reduce_only
+        p.reduce_only_reason = DAILY_LOSS_REASON
+        p.reduce_only_until = until
+    await db_session.flush()
+    assert await reset_daily(db_session, past + timedelta(hours=1)) == 2
+    for p in ps:
+        await db_session.refresh(p)
+    assert [p.status for p in ps] == [
+        PortfolioStatus.active, PortfolioStatus.active, PortfolioStatus.reduce_only,
+    ]
+    assert await reset_daily(db_session, past + timedelta(hours=1)) == 0
+
+
+async def test_take_snapshots_logs_provider_errors_without_traceback(maker, qs, caplog):
+    async with maker() as s:
+        p = await _portfolio(s)
+        await _buy(s, qs, p.id, 10)
+        await s.commit()
+    del qs._quotes["ENI.MI"]  # the valuation cannot mark the position
+    with caplog.at_level("WARNING", logger="smtrading.corporate.snapshots"):
+        await take_snapshots(maker, qs, clock=lambda: NOW)
+    [record] = [r for r in caplog.records if r.name == "smtrading.corporate.snapshots"]
+    assert record.levelname == "WARNING" and record.exc_info is None
+    assert "PROVIDER_UNAVAILABLE" in record.getMessage()

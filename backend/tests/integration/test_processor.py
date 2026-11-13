@@ -20,8 +20,10 @@ from smtrading.events import dispatch_post_commit
 from smtrading.marketdata import serialization
 from smtrading.marketdata.streaming import TRACKED_KEY
 from smtrading.marketdata.types import Quote
+from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio, withdraw
 from smtrading.risk.models import Notification
+from smtrading.risk.settings import set_kill_switch
 from smtrading.seed import run_seed
 
 D = Decimal
@@ -576,3 +578,83 @@ async def test_order_past_expiry_is_not_filled_by_tick(maker, redis, flaky_qs):
     await proc.sweep()
     assert (await _order(maker, oid)).status == OrderStatus.expired
     assert not await _fills(maker, oid)
+
+
+# -- I3: portfolio status and kill switch enforced again at fill time ------------------
+
+
+async def _set_status(maker, pid, status):
+    async with maker() as s:
+        await s.execute(update(Portfolio).where(Portfolio.id == pid).values(status=status))
+        await s.commit()
+
+
+@pytest.mark.parametrize("status, code", [
+    (PortfolioStatus.locked, ErrorCode.PORTFOLIO_LOCKED),
+    (PortfolioStatus.reduce_only, ErrorCode.REDUCE_ONLY),
+])
+async def test_resting_buy_rejected_at_fill_by_portfolio_status(maker, redis, qs, status, code):
+    pid = await _portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95.00"))
+    await _set_status(maker, pid, status)  # after placement: only the fill can catch it
+    clock = Clock(OPEN)
+
+    await _proc(maker, redis, qs, clock).on_tick("AAPL", _tick(qs, "94.90", "95.00", clock.now))
+
+    order = await _order(maker, oid)
+    assert order.status == OrderStatus.rejected and order.reject_code == code
+    assert await _fills(maker, oid) == []
+
+
+async def test_reduce_only_portfolio_still_fills_a_reducing_stop(maker, redis, qs):
+    pid = await _portfolio(maker)
+    await _place(maker, redis, qs, pid)  # long 10
+    oid = await _place(maker, redis, qs, pid, side=OrderSide.sell, type=OrderType.stop,
+                       stop_price=D("90.00"))
+    await _set_status(maker, pid, PortfolioStatus.reduce_only)
+    clock = Clock(OPEN)
+
+    await _proc(maker, redis, qs, clock).on_tick("AAPL", _tick(qs, "89.90", "90.00", clock.now))
+
+    assert (await _order(maker, oid)).status == OrderStatus.filled
+
+
+async def test_kill_switch_rejects_an_exposure_increasing_fill(maker, redis, qs):
+    pid = await _portfolio(maker)
+    await _place(maker, redis, qs, pid)  # long 10
+    buy = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95.00"))
+    sell = await _place(maker, redis, qs, pid, side=OrderSide.sell, type=OrderType.limit,
+                        limit_price=D("95.00"), qty=D(5))
+    async with maker() as s:  # switched on without canceling the resting orders
+        await set_kill_switch(s, True)
+        await s.commit()
+    clock = Clock(OPEN)
+
+    await _proc(maker, redis, qs, clock).on_tick("AAPL", _tick(qs, "95.00", "95.00", clock.now))
+
+    rejected = await _order(maker, buy)
+    assert rejected.status == OrderStatus.rejected
+    assert rejected.reject_code == ErrorCode.KILL_SWITCH_ACTIVE
+    assert (await _order(maker, sell)).status == OrderStatus.filled  # reducing: allowed
+
+
+async def test_reduce_only_order_with_nothing_to_reduce_is_canceled_by_processor(
+    maker, redis, qs
+):
+    pid = await _portfolio(maker)
+    async with maker() as s:
+        order = Order(
+            portfolio_id=pid, symbol="AAPL", side=OrderSide.sell, type=OrderType.stop,
+            qty=TEN, stop_price=D("90.00"), status=OrderStatus.pending, reduce_only=True,
+        )
+        s.add(order)
+        await s.commit()
+    clock = Clock(OPEN)
+
+    assert await _proc(maker, redis, qs, clock).on_tick(
+        "AAPL", _tick(qs, "89.90", "90.00", clock.now)
+    ) == 0
+
+    order = await _order(maker, order.id)
+    assert order.status == OrderStatus.canceled and order.reject_message == "nothing_to_reduce"
+    assert await _fills(maker, order.id) == []

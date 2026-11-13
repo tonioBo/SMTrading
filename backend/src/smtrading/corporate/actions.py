@@ -16,13 +16,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.money import quantize_money
-from smtrading.corporate.interest import account_id, debit_lines, lock_portfolio
+from smtrading.corporate.interest import account_id, debit_lines
 from smtrading.engine.quotesource import QuoteSource
 from smtrading.instruments.models import Instrument
 from smtrading.jobs.runs import job_done, run_job_once
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, JournalType
 from smtrading.ledger.service import LineSpec, get_balance, post_journal
 from smtrading.marketdata.types import CalendarEvent
+from smtrading.portfolios.locks import lock_portfolio
 from smtrading.positions.models import Position
 
 log = logging.getLogger("smtrading.corporate.actions")

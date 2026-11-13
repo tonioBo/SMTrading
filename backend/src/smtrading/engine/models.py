@@ -4,6 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -50,8 +51,19 @@ class OrderStatus(enum.StrEnum):
     expired = "expired"
 
 
+# The single source of truth for order status groups.
+# fillable: execute_fill may fill it; open: not final yet (fillable or a held bracket child)
+FILLABLE_STATUSES = frozenset(
+    {OrderStatus.new, OrderStatus.queued, OrderStatus.pending, OrderStatus.triggered}
+)
+OPEN_STATUSES = FILLABLE_STATUSES | {OrderStatus.held}
+
 # partial indexes for the processor's scans of open orders (migration 0005)
-_OPEN_WHERE = text("status IN ('new', 'held', 'queued', 'pending', 'triggered')")
+_OPEN_WHERE = text(
+    "status IN ("
+    + ", ".join(f"'{s.value}'" for s in OrderStatus if s in OPEN_STATUSES)
+    + ")"
+)
 
 
 class Order(Base):
@@ -92,6 +104,10 @@ class Order(Base):
     reject_code: Mapped[str | None] = mapped_column(String(64))
     reject_message: Mapped[str | None] = mapped_column(String(512))
     source: Mapped[str] = mapped_column(String(16), default="agent")  # agent | admin | system
+    # Ruling R22: closes and bracket exits; clamped to |position| at fill, canceled if flat
+    reduce_only: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
     broker_order_id: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

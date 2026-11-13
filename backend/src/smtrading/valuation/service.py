@@ -4,10 +4,15 @@ Quantities come from the ledger `position` balances (source of truth); `avg_pric
 the `positions` projection. Every amount is converted to EUR with qs.get_fx_rate(ccy, "EUR").
 The *_eur totals are display values rounded to cents; risk decisions must use the *_raw
 totals or PortfolioValuation.margin_level(), which compare unrounded values.
+
+Ruling R23 (I4): when the batch quote fetch fails, symbols are fetched one by one; a
+symbol still without a quote is marked with the last cached quote (marketdata cache,
+only when `redis` is given) and flagged `stale` (listed in `stale_symbols`). Only a
+symbol without any cached quote raises PROVIDER_UNAVAILABLE.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, localcontext
 from typing import Literal
@@ -21,6 +26,7 @@ from smtrading.common.money import quantize_money
 from smtrading.engine.quotesource import QuoteSource
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
+from smtrading.marketdata.cache import read_quote
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.models import Portfolio
 from smtrading.positions.models import Position
@@ -42,6 +48,7 @@ class PositionValuation:
     market_value_eur: Decimal
     unrealized_pnl: Decimal  # instrument currency
     unrealized_pnl_eur: Decimal
+    stale: bool = False  # marked with the last cached quote (Ruling R23)
 
 
 MarginLevel = Literal["ok", "warning", "maintenance"]
@@ -72,6 +79,7 @@ class PortfolioValuation:
     maint_req_raw: Decimal
     warn_req_raw: Decimal
     buying_power_raw: Decimal
+    stale_symbols: list[str] = field(default_factory=list)
 
     def margin_level(self) -> MarginLevel:
         if self.exposure_raw == 0:
@@ -129,8 +137,36 @@ async def _balances(
     return out
 
 
+async def _quotes(
+    qs: QuoteSource, symbols: list[str], redis, portfolio_id: UUID
+) -> tuple[dict[str, Quote], set[str]]:
+    """(quotes, stale symbols): batch, then one by one, then the cache (Ruling R23)."""
+    try:
+        return await qs.get_quotes(symbols), set()
+    except SMTError:
+        pass
+    quotes: dict[str, Quote] = {}
+    stale: set[str] = set()
+    for sym in symbols:
+        try:
+            quotes.update(await qs.get_quotes([sym]))
+            continue
+        except SMTError as e:
+            error = e
+        cached = await read_quote(redis, sym) if redis is not None else None
+        if cached is None:
+            raise SMTError(
+                ErrorCode.PROVIDER_UNAVAILABLE, "quote unavailable", {"symbol": sym}
+            ) from error
+        log.warning("portfolio %s: %s marked with the cached quote of %s (%s)",
+                    portfolio_id, sym, cached.ts.isoformat(), error.code)
+        quotes[sym] = cached
+        stale.add(sym)
+    return quotes, stale
+
+
 async def value_portfolio(
-    session: AsyncSession, qs: QuoteSource, portfolio_id: UUID
+    session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, *, redis=None
 ) -> PortfolioValuation:
     portfolio = await session.get(Portfolio, portfolio_id)
     if portfolio is None:
@@ -144,6 +180,7 @@ async def value_portfolio(
     currencies: dict[str, str] = {}
     avg_prices: dict[str, Decimal] = {}
     quotes: dict[str, Quote] = {}
+    stale: set[str] = set()
     if symbols:
         currencies = dict(
             (await session.execute(
@@ -157,7 +194,7 @@ async def value_portfolio(
                 .where(Position.portfolio_id == portfolio_id, Position.symbol.in_(symbols))
             )).all()
         )
-        quotes = await qs.get_quotes(symbols)
+        quotes, stale = await _quotes(qs, symbols, redis, portfolio_id)
 
     fx = _Fx(qs)
     positions: list[PositionValuation] = []
@@ -185,6 +222,7 @@ async def value_portfolio(
             symbol=sym, qty=qty, avg_price=avg, mark=mark, currency=ccy,
             market_value=mv, market_value_eur=await fx.to_eur(mv, ccy),
             unrealized_pnl=pnl, unrealized_pnl_eur=await fx.to_eur(pnl, ccy),
+            stale=sym in stale,
         ))
 
     cash = balances[AccountKind.cash]
@@ -216,4 +254,5 @@ async def value_portfolio(
         buying_power_eur=_eur(buying_power), ts=datetime.now(UTC),
         equity_raw=equity, exposure_raw=exposure, initial_req_raw=initial,
         maint_req_raw=maint, warn_req_raw=warn, buying_power_raw=buying_power,
+        stale_symbols=sorted(stale),
     )

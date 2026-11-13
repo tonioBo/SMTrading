@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from smtrading.common.errors import SMTError
 from smtrading.engine.quotesource import QuoteSource
 from smtrading.portfolios.models import Portfolio
 from smtrading.risk.models import EquitySnapshot, SnapshotKind
@@ -41,7 +42,8 @@ async def _day_open(session: AsyncSession, portfolio_id, day: date) -> EquitySna
 
 
 async def ensure_day_open(
-    session: AsyncSession, qs: QuoteSource, portfolio: Portfolio, now: datetime
+    session: AsyncSession, qs: QuoteSource, portfolio: Portfolio, now: datetime, *,
+    redis=None,
 ) -> EquitySnapshot:
     """The `day_open` snapshot of the portfolio's local date of `now`, created if missing.
 
@@ -52,7 +54,7 @@ async def ensure_day_open(
     existing = await _day_open(session, portfolio.id, day)
     if existing is not None:
         return existing
-    valuation = await value_portfolio(session, qs, portfolio.id)
+    valuation = await value_portfolio(session, qs, portfolio.id, redis=redis)
     await session.execute(
         insert(EquitySnapshot)
         .values(
@@ -70,7 +72,8 @@ async def take_snapshots(
 ) -> None:
     """A `periodic` snapshot of every portfolio (and its `day_open` if missing).
 
-    Each portfolio has its own transaction; errors are logged and skipped.
+    Each portfolio has its own transaction; errors are logged and skipped (a business
+    or provider SMTError as a warning, without traceback).
     """
     async with sessionmaker() as session:
         ids = list(await session.scalars(select(Portfolio.id).order_by(Portfolio.id)))
@@ -86,5 +89,7 @@ async def take_snapshots(
                     local_date=None, **_values(valuation),
                 ))
                 await session.commit()
+        except SMTError as e:
+            log.warning("snapshot of portfolio %s skipped: %s %s", portfolio_id, e.code, e.message)
         except Exception:
             log.exception("snapshot of portfolio %s failed", portfolio_id)

@@ -283,3 +283,101 @@ async def test_reducing_order_ok_with_negative_buying_power(db_session, seeded, 
         await _check(db_session, qs, p, "ENI.MI", OrderSide.buy, qty=D(1)),
         ErrorCode.INSUFFICIENT_BUYING_POWER,
     )
+
+
+# -- fix wave: stale valuation, reduce_only, notional limit first, fee in shortfall ---
+
+
+@pytest.fixture
+async def redis(redis_url):
+    from redis.asyncio import Redis
+
+    r = Redis.from_url(redis_url)
+    await r.flushdb()
+    yield r
+    await r.aclose()
+
+
+async def test_stale_valuation_only_allows_strictly_reducing_orders(
+    db_session, seeded, qs, redis
+):
+    from smtrading.marketdata.cache import write_quote
+
+    p = await _portfolio(db_session)
+    await _position(db_session, p, "AAPL", D(10), D(200))
+    await _position(db_session, p, "ENI.MI", D(100), D(15))
+    cached = qs._quotes.pop("AAPL")  # the provider has no AAPL quote, the cache has one
+    await write_quote(redis, cached)
+    instrument = await db_session.get(Instrument, "ENI.MI")
+
+    async def check(side, qty, **kw):
+        return await pre_trade_check(
+            db_session, qs, portfolio=p, instrument=instrument, side=side, qty=D(qty),
+            notional=None, order_type=OrderType.market, limit_price=None, stop_price=None,
+            redis=redis, **kw,
+        )
+
+    assert (await check(OrderSide.sell, 40)).ok  # strictly reducing
+    refused = await check(OrderSide.buy, 10)
+    assert not refused.ok and refused.code == ErrorCode.PROVIDER_UNAVAILABLE
+    assert "AAPL" in refused.message
+    flip = await check(OrderSide.sell, 150)  # through zero: not strictly reducing
+    assert not flip.ok and flip.code == ErrorCode.PROVIDER_UNAVAILABLE
+
+
+async def test_reduce_only_order_is_checked_as_reducing(db_session, seeded, qs):
+    p = await _portfolio(db_session, cash=0)
+    await _position(db_session, p, "ENI.MI", D(100), D(15))
+    p.status = PortfolioStatus.reduce_only
+    instrument = await db_session.get(Instrument, "ENI.MI")
+    # 500 > position: clamped to 100 at fill, so it never opens a short
+    result = await pre_trade_check(
+        db_session, qs, portfolio=p, instrument=instrument, side=OrderSide.sell, qty=D(500),
+        notional=None, order_type=OrderType.market, limit_price=None, stop_price=None,
+        reduce_only=True,
+    )
+    assert result.ok
+
+
+async def test_quote_age_check_can_be_skipped(db_session, seeded, qs):
+    p = await _portfolio(db_session)
+    qs.set_quote("AAPL", D("199.90"), D("200.00"), None, ts=datetime.now(UTC) - timedelta(days=2))
+    instrument = await db_session.get(Instrument, "AAPL")
+    kw = {
+        "portfolio": p, "instrument": instrument, "side": OrderSide.buy, "qty": D(1),
+        "notional": None, "order_type": OrderType.market, "limit_price": None,
+        "stop_price": None,
+    }
+    assert (await pre_trade_check(db_session, qs, **kw)).code == ErrorCode.STALE_QUOTE
+    assert (await pre_trade_check(db_session, qs, check_quote_age=False, **kw)).ok
+
+
+async def test_max_order_notional_is_checked_before_fee_and_fx_lookups(db_session, seeded, qs):
+    class _NoRuleFx(FakeQuoteSource):
+        async def get_fx_rate(self, base, quote):
+            if (base, quote) != ("USD", "EUR"):
+                raise AssertionError(f"fx {base}->{quote} looked up")
+            return await super().get_fx_rate(base, quote)
+
+    strict = _NoRuleFx()
+    strict._quotes, strict._fx = qs._quotes, qs._fx
+    p = await _portfolio(db_session, profile=_profile(max_order_notional_eur=D(100)))
+    result = await _check(db_session, strict, p, "AAPL", OrderSide.buy, qty=D(10))
+    assert not result.ok and result.code == ErrorCode.RISK_LIMIT_EXCEEDED
+
+
+async def test_fx_shortfall_includes_a_fee_in_the_instrument_currency(db_session, seeded, qs):
+    from smtrading.fees.models import FeeRule, FeeScope
+
+    p = await _portfolio(db_session, cash=1000)
+    db_session.add(FeeRule(
+        name="usd-fixed", scope=FeeScope.portfolio, scope_ref=str(p.id), side="both",
+        currency="USD", fixed=D(100), pct=D(0), fx_pct=D(1), priority=100, active=True,
+    ))
+    await _book(db_session, p.id, AccountKind.cash, "USD", D(2000))  # covers the notional
+    await db_session.flush()
+
+    result = await _check(db_session, qs, p, "AAPL", OrderSide.buy, qty=D(10))  # 2000 USD
+
+    # the 100 USD fee is not covered by cash[USD]: 100 USD bought with EUR -> fx fee 0.80
+    assert result.ok and result.estimated_fx_fee_eur == D("0.8")

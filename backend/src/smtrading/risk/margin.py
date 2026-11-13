@@ -12,8 +12,12 @@
 
 Nothing here commits: the caller commits, then dispatches the queued Redis effects
 (Ruling R10). The portfolio row is locked FOR UPDATE first (Ruling R11); execute_fill
-locks it again, harmlessly, before the chain lock. `redis` is accepted for interface
-parity and unused: events are queued on the session.
+locks it again, harmlessly, before the chain lock. `redis` is only read: valuations fall
+back to cached quotes (Ruling R23); events are queued on the session.
+
+Quotes (I2): a check reads market data through one MemoQuoteSource prefetched for the
+portfolio before the first liquidation fill; the fill freezes it, so the revaluations
+and the next closes of the same transaction never reach the provider.
 """
 
 import logging
@@ -29,7 +33,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from smtrading.common.errors import SMTError
 from smtrading.engine.execution import execute_fill
 from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType, TimeInForce
-from smtrading.engine.quotesource import QuoteSource
+from smtrading.engine.prefetch import prefetch_portfolio
+from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.engine.service import cancel_all_orders
 from smtrading.events import (
     POST_COMMIT_KEY,
@@ -42,7 +47,7 @@ from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, JournalType
 from smtrading.marketdata.types import Quote
-from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.locks import lock_portfolio
 from smtrading.risk.daily_loss import check_daily_loss
 from smtrading.risk.models import Notification
 from smtrading.risk.settings import get_stale_threshold
@@ -54,13 +59,10 @@ WARNING_THROTTLE = timedelta(minutes=15)
 MarginResult = Literal["ok", "warning", "liquidated"]
 
 
-async def _lock_portfolio(session: AsyncSession, portfolio_id: UUID) -> Portfolio:
-    return (
-        await session.execute(
-            select(Portfolio).where(Portfolio.id == portfolio_id).with_for_update()
-            .execution_options(populate_existing=True)
-        )
-    ).scalar_one()
+async def _memo(session: AsyncSession, qs: QuoteSource, portfolio_id: UUID) -> MemoQuoteSource:
+    memo = MemoQuoteSource.wrap(qs)
+    await prefetch_portfolio(session, memo, portfolio_id)
+    return memo
 
 
 def _margin_portfolios_subquery():
@@ -124,12 +126,15 @@ async def check_portfolio_margin(
     now: datetime | None = None,
 ) -> MarginResult:
     now = now or datetime.now(UTC)
-    await _lock_portfolio(session, portfolio_id)
-    valuation = await value_portfolio(session, qs, portfolio_id)
+    await lock_portfolio(session, portfolio_id)
+    qs = await _memo(session, qs, portfolio_id)
+    valuation = await value_portfolio(session, qs, portfolio_id, redis=redis)
     level = valuation.margin_level()
     skipped: list[str] = []
     if level == "maintenance":
-        closed, skipped, _ = await _liquidate(session, qs, portfolio_id, valuation, now)
+        closed, skipped, _ = await _liquidate(
+            session, qs, portfolio_id, valuation, now, redis=redis
+        )
         if closed:
             return "liquidated"
         level = "warning"  # nothing could be closed: at least warn
@@ -142,8 +147,8 @@ async def check_portfolio_margin(
 async def _closable_quote(
     session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, symbol: str, now: datetime
 ) -> Quote | None:
-    """The quote to close `symbol` at, or None (Ruling R19: market closed, quote missing
-    or older than the asset class stale threshold)."""
+    """The quote to close `symbol` at, or None (Ruling R19: market closed, quote missing,
+    stale-marked by the valuation, or older than the asset class stale threshold)."""
     instrument = await session.get(Instrument, symbol)
     if instrument is None or not market_status(instrument.market, now).is_open:
         log.warning("liquidation of %s/%s skipped: market closed", portfolio_id, symbol)
@@ -165,13 +170,14 @@ async def _closable_quote(
 
 async def _close_now(
     session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, symbol: str, held: Decimal,
-    quote: Quote,
+    quote: Quote, redis=None,
 ) -> Order | None:
-    """A system market order for the whole position, filled at once; None if it failed."""
+    """A reduce_only system market order for the whole position, filled at once; None
+    if it failed."""
     order = Order(
         portfolio_id=portfolio_id, symbol=symbol, type=OrderType.market,
         side=OrderSide.sell if held > 0 else OrderSide.buy, qty=abs(held),
-        tif=TimeInForce.gtc, source="system", status=OrderStatus.new,
+        tif=TimeInForce.gtc, source="system", status=OrderStatus.new, reduce_only=True,
     )
     session.add(order)
     await session.flush()
@@ -180,7 +186,8 @@ async def _close_now(
     try:
         async with session.begin_nested():
             result = await execute_fill(
-                session, qs, order.id, quote=quote, journal_type=JournalType.LIQUIDATION
+                session, qs, order.id, quote=quote, journal_type=JournalType.LIQUIDATION,
+                redis=redis,
             )
     except SMTError as e:
         del session.info.setdefault(POST_COMMIT_KEY, [])[mark:]
@@ -200,9 +207,10 @@ async def _close_now(
 
 async def _liquidate(
     session: AsyncSession, qs: QuoteSource, portfolio_id: UUID,
-    valuation: PortfolioValuation, now: datetime,
+    valuation: PortfolioValuation, now: datetime, *, redis=None,
 ) -> tuple[list[Order], list[str], PortfolioValuation]:
-    """(closed orders, skipped symbols, last valuation); the caller holds the lock."""
+    """(closed orders, skipped symbols, last valuation); the caller holds the lock and
+    passes the prefetched memo as `qs`."""
     before = _summary(valuation)
     # unrealized_pnl_eur is unrounded (Ruling R8)
     queue = sorted(valuation.positions, key=lambda p: (p.unrealized_pnl_eur, p.symbol))
@@ -211,16 +219,18 @@ async def _liquidate(
     for position in queue:
         if valuation.margin_level() != "maintenance":
             break
-        quote = await _closable_quote(session, qs, portfolio_id, position.symbol, now)
+        quote = None if position.stale else await _closable_quote(
+            session, qs, portfolio_id, position.symbol, now
+        )
         order = None if quote is None else await _close_now(
-            session, qs, portfolio_id, position.symbol, position.qty, quote
+            session, qs, portfolio_id, position.symbol, position.qty, quote, redis
         )
         if order is None:
             skipped.append(position.symbol)
             continue
         closed.append(order)
         try:
-            valuation = await value_portfolio(session, qs, portfolio_id)
+            valuation = await value_portfolio(session, qs, portfolio_id, redis=redis)
         except SMTError as e:
             log.warning("liquidation of %s stopped: revaluation failed (%s)",
                         portfolio_id, e.code)
@@ -252,11 +262,12 @@ async def liquidate(
 
     `valuation`, when given, must be taken under the portfolio lock of this transaction.
     """
-    await _lock_portfolio(session, portfolio_id)
+    await lock_portfolio(session, portfolio_id)
+    qs = await _memo(session, qs, portfolio_id)
     if valuation is None:
-        valuation = await value_portfolio(session, qs, portfolio_id)
+        valuation = await value_portfolio(session, qs, portfolio_id, redis=redis)
     closed, _, _ = await _liquidate(
-        session, qs, portfolio_id, valuation, now or datetime.now(UTC)
+        session, qs, portfolio_id, valuation, now or datetime.now(UTC), redis=redis
     )
     return closed
 
@@ -268,7 +279,9 @@ async def check_margin_and_commit(
     """check_portfolio_margin in its own transaction, then the post-commit effects."""
     async with sessionmaker() as session:
         try:
-            result = await check_portfolio_margin(session, qs, portfolio_id, now=now)
+            result = await check_portfolio_margin(
+                session, qs, portfolio_id, redis=redis, now=now
+            )
             await session.commit()
         except BaseException:
             await session.rollback()
@@ -304,8 +317,8 @@ async def margin_sweep(
                 log.exception("margin check of portfolio %s failed", portfolio_id)
         try:
             async with sessionmaker() as session:
-                portfolio = await _lock_portfolio(session, portfolio_id)
-                await check_daily_loss(session, qs, portfolio, clock())
+                portfolio = await lock_portfolio(session, portfolio_id)
+                await check_daily_loss(session, qs, portfolio, clock(), redis=redis)
                 await session.commit()
         except Exception:
             log.exception("daily loss check of portfolio %s failed", portfolio_id)

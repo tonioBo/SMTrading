@@ -288,3 +288,80 @@ async def test_margin_level_no_exposure_is_ok(db_session, qs):
     v = await value_portfolio(db_session, qs, p.id)
     assert v.exposure_raw == 0
     assert v.margin_level() == "ok"
+
+
+# ---------------------------------------------------------------- I4 / Ruling R23
+
+
+@pytest.fixture
+async def redis(redis_url):
+    from redis.asyncio import Redis
+
+    r = Redis.from_url(redis_url)
+    await r.flushdb()
+    yield r
+    await r.aclose()
+
+
+class _NoBatch(FakeQuoteSource):
+    """All-or-error source whose multi-symbol requests fail."""
+
+    async def get_quotes(self, symbols, *, max_age_s=5):
+        if len(symbols) > 1:
+            raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE, "batch down")
+        return await super().get_quotes(symbols, max_age_s=max_age_s)
+
+
+async def _two_positions(db_session, name):
+    eni = await db_session.get(Instrument, "ENI.MI")
+    if eni is None:
+        db_session.add(Instrument(
+            symbol="ENI.MI", name="Eni", asset_class=AssetClass.eu_equity, market="MTA",
+            currency="EUR", lot_size=D(1), tick_size=D("0.001"), shortable=True,
+        ))
+        await db_session.flush()
+    p = await create_portfolio(db_session, name=name, initial_cash=D(1000))
+    await _post(db_session, p.id, AccountKind.position, "AAPL", D(10))
+    await _post(db_session, p.id, AccountKind.position, "ENI.MI", D(100))
+    return p
+
+
+async def test_batch_failure_falls_back_to_single_quotes(db_session, aapl):
+    qs = _NoBatch()
+    qs.set_fx("EUR", "USD", D("1.25"))
+    qs.set_quote("AAPL", D(200), D(200), None)
+    qs.set_quote("ENI.MI", D(15), D(15), None)
+    p = await _two_positions(db_session, "V-nobatch")
+    v = await value_portfolio(db_session, qs, p.id)
+    assert v.stale_symbols == [] and not any(pos.stale for pos in v.positions)
+    assert v.equity_eur == D("4100.00")  # 1000 + 10*200/1.25 + 100*15
+
+
+async def test_missing_quote_uses_the_cache_and_is_flagged_stale(db_session, qs, aapl, redis):
+    from smtrading.marketdata.cache import write_quote
+    from smtrading.marketdata.types import Quote
+
+    qs.set_quote("ENI.MI", D(15), D(15), None)
+    p = await _two_positions(db_session, "V-stale")
+    await write_quote(redis, Quote(
+        symbol="AAPL", bid=D(190), ask=D(190), last=None,
+        ts=datetime(2026, 11, 10, 20, 0, tzinfo=UTC), provider="yahoo",
+    ))
+
+    v = await value_portfolio(db_session, qs, p.id, redis=redis)
+
+    assert v.stale_symbols == ["AAPL"]
+    marks = {pos.symbol: (pos.mark, pos.stale) for pos in v.positions}
+    assert marks == {"AAPL": (D(190), True), "ENI.MI": (D(15), False)}
+    with pytest.raises(SMTError) as e:  # without redis: no fallback
+        await value_portfolio(db_session, qs, p.id)
+    assert e.value.code == ErrorCode.PROVIDER_UNAVAILABLE
+
+
+async def test_missing_quote_without_a_cached_one_raises(db_session, qs, aapl, redis):
+    qs.set_quote("ENI.MI", D(15), D(15), None)
+    p = await _two_positions(db_session, "V-nocache")
+    with pytest.raises(SMTError) as e:
+        await value_portfolio(db_session, qs, p.id, redis=redis)
+    assert e.value.code == ErrorCode.PROVIDER_UNAVAILABLE
+    assert e.value.details == {"symbol": "AAPL"}

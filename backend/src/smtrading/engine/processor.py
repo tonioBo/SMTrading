@@ -27,6 +27,10 @@ its own transaction, at most once every `margin_check_every_s` per portfolio. Af
 fill, the daily loss limit of the portfolio is checked in a new transaction. Both are
 best-effort: errors are logged and never stop order processing.
 
+execute_fill enforces the portfolio status and the kill switch again at fill time (I3),
+so a resting order of a portfolio locked or set reduce_only after placement is rejected
+with that code; a reduce_only order with nothing left to reduce is canceled there.
+
 Errors: a business SMTError (`REJECTING_CODES`) rejects the order with its code in a new
 transaction, cancels its held bracket children (Ruling R17) and notifies the portfolio.
 Any other error (provider outage, rate limit, bugs) is rolled back and logged; the order
@@ -45,10 +49,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.execution import execute_fill
-from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType
+from smtrading.engine.models import (
+    FILLABLE_STATUSES,
+    OPEN_STATUSES,
+    Order,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+)
 from smtrading.engine.pricing import QuoteView, effective_bid_ask
 from smtrading.engine.quotesource import QuoteSource
-from smtrading.engine.service import OPEN_STATUSES, cancel_held_children
+from smtrading.engine.service import cancel_held_children
 from smtrading.engine.triggers import OrderView, TriggerAction, TriggerResult, evaluate
 from smtrading.events import (
     discard_post_commit,
@@ -61,7 +72,7 @@ from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
 from smtrading.marketdata.serialization import loads_quote
 from smtrading.marketdata.types import Quote
-from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.locks import lock_portfolio
 from smtrading.risk.daily_loss import check_daily_loss
 from smtrading.risk.margin import check_margin_and_commit, margin_holdings
 from smtrading.risk.settings import get_default_spread_bps, get_stale_threshold
@@ -77,7 +88,8 @@ REJECTING_CODES = frozenset({
     ErrorCode.KILL_SWITCH_ACTIVE, ErrorCode.PORTFOLIO_LOCKED, ErrorCode.RISK_LIMIT_EXCEEDED,
     ErrorCode.STALE_QUOTE,
 })
-_ACTIVE = (OrderStatus.queued, OrderStatus.pending, OrderStatus.triggered)
+# resting orders the processor acts on (`new` only exists inside a placement transaction)
+_ACTIVE = tuple(s for s in OrderStatus if s in FILLABLE_STATUSES - {OrderStatus.new})
 _MARKET_ONCE_TRIGGERED = (OrderType.stop, OrderType.trailing_stop)
 
 
@@ -151,9 +163,7 @@ async def _lock_order(session: AsyncSession, order_id: UUID) -> Order | None:
     portfolio_id = await session.scalar(select(Order.portfolio_id).where(Order.id == order_id))
     if portfolio_id is None:
         return None
-    await session.execute(
-        select(Portfolio.id).where(Portfolio.id == portfolio_id).with_for_update()
-    )
+    await lock_portfolio(session, portfolio_id)
     return (
         await session.execute(
             select(Order).where(Order.id == order_id).with_for_update()
@@ -384,13 +394,10 @@ class OrderProcessor:
                 order = await session.get(Order, order_id)
                 if order is None or order.status != OrderStatus.filled:
                     return
-                portfolio = (
-                    await session.execute(
-                        select(Portfolio).where(Portfolio.id == order.portfolio_id)
-                        .with_for_update()
-                    )
-                ).scalar_one()
-                await check_daily_loss(session, self._qs, portfolio, self._clock())
+                portfolio = await lock_portfolio(session, order.portfolio_id)
+                await check_daily_loss(
+                    session, self._qs, portfolio, self._clock(), redis=self._redis
+                )
                 await session.commit()
         except SMTError as e:
             log.warning("daily loss check after order %s skipped: %s", order_id, e.code)
@@ -512,8 +519,12 @@ class OrderProcessor:
         if result.action == TriggerAction.trigger_to_market:
             order.status = OrderStatus.triggered
             await session.flush()
-        filled = await execute_fill(session, self._qs, order.id, quote=quote)
+        filled = await execute_fill(
+            session, self._qs, order.id, quote=quote, redis=self._redis
+        )
         if filled is None:
+            if order.status == OrderStatus.canceled:  # reduce_only: nothing to reduce
+                await _untrack_if_idle(session, order.symbol)
             return False
         await _untrack_if_idle(session, order.symbol)
         return True
