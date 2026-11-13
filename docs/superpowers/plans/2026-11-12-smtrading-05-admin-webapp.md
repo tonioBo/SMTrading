@@ -51,7 +51,7 @@ backend/src/smtrading/admin/
   routes_auth.py, routes_portfolios.py, routes_agents.py, routes_fees.py, routes_risk.py,
   routes_connectors.py, routes_markets.py, routes_system.py, routes_dashboard.py, ws.py
   portfolio_ops.py   # reset_portfolio
-backend/migrations/versions/0006_admin.py
+backend/migrations/versions/0007_admin.py
 backend/tests/integration/test_admin_*.py
 web/
   Dockerfile, nginx.conf, package.json, vite.config.ts, tsconfig.json, tailwind.config.ts, index.html
@@ -69,7 +69,7 @@ docker-compose.yml (servizi web, backup)
 
 ### Task 1: Autenticazione admin, sessioni, CSRF, TOTP
 
-**Files:** `admin/{models,auth,errors,routes_auth}.py`, `migrations/versions/0006_admin.py`, `seed.py` (admin da `SMT_ADMIN_EMAIL` e `SMT_ADMIN_PASSWORD`, creato solo se manca), `api/main.py` (exception handler, router). Test: `tests/integration/test_admin_auth.py`.
+**Files:** `admin/{models,auth,errors,routes_auth}.py`, `migrations/versions/0007_admin.py`, `seed.py` (admin da `SMT_ADMIN_EMAIL` e `SMT_ADMIN_PASSWORD`, creato solo se manca), `api/main.py` (exception handler, router). Test: `tests/integration/test_admin_auth.py`.
 
 **Interfaces:**
 - `AdminUser`: `id, email UNIQUE, password_hash, totp_secret_encrypted bytea|None, totp_enabled bool, created_at, last_login_at`.
