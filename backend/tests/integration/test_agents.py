@@ -1,4 +1,5 @@
 import re
+import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -431,3 +432,23 @@ async def test_argon2_verify_concurrency_is_bounded(db_session, monkeypatch):
     monkeypatch.setattr(db_session, "scalar", no_agent)
     await asyncio.gather(*(attempt(t) for t in tokens))
     assert active[1] == 4
+
+
+async def test_can_notify_defaults_false_and_toggles(db_session):
+    agent, _ = await service.create_agent(db_session, "Notifier")
+    assert agent.can_notify is False
+    assert (await service.set_agent_can_notify(db_session, agent.id, True)).can_notify is True
+    with pytest.raises(SMTError) as exc:
+        await service.set_agent_can_notify(db_session, uuid.uuid4(), True)
+    assert exc.value.code == ErrorCode.NOT_FOUND
+
+
+async def test_decision_kind_check_constraint(db_session):
+    from sqlalchemy.exc import IntegrityError
+
+    from smtrading.activity.models import Decision
+
+    agent, _ = await service.create_agent(db_session, "Decider")
+    db_session.add(Decision(agent_id=agent.id, kind="foo", summary="x"))
+    with pytest.raises(IntegrityError):
+        await db_session.flush()

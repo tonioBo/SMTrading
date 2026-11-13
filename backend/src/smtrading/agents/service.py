@@ -218,6 +218,15 @@ async def set_agent_active(session: AsyncSession, agent_id: uuid.UUID, active: b
     return agent
 
 
+async def set_agent_can_notify(
+    session: AsyncSession, agent_id: uuid.UUID, can_notify: bool
+) -> Agent:
+    agent = await _get_agent(session, agent_id)
+    agent.can_notify = can_notify
+    await session.flush()
+    return agent
+
+
 def _touch(agent: Agent) -> None:
     now = datetime.now(UTC)
     if agent.last_seen_at is None or now - agent.last_seen_at >= _LAST_SEEN_EVERY:
