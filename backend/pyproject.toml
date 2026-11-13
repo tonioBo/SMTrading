@@ -16,6 +16,7 @@ dependencies = [
     "websockets>=17.4",
     "yfinance>=1.8.0",
     "exchange-calendars>=4.13.2",
+    "argon2-cffi>=25.1.0",
 ]
 
 [dependency-groups]

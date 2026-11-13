@@ -6,6 +6,8 @@ from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from smtrading.agents.models import Agent
+from smtrading.agents.service import assign_portfolio, create_agent
 from smtrading.common.db import get_sessionmaker
 from smtrading.connectors.service import seed_connectors
 from smtrading.fees.models import FeeRule, FeeScope, FeeSide
@@ -23,6 +25,7 @@ SEED_LOCK_KEY = 7300002
 
 DEFAULT_FEE_RULE_NAME = "Default globale"
 DEMO_PORTFOLIO_NAME = "Demo"
+DEMO_AGENT_NAME = "paperclip-demo"
 
 _INTEREST_RATES = [
     (InterestKind.loan, "EUR", 5),
@@ -109,7 +112,21 @@ async def run_seed(session: AsyncSession) -> None:
         )
     await seed_connectors(session)
     await _seed_risk(session)
+    await _seed_demo_agent(session)
     await session.flush()
+
+
+async def _seed_demo_agent(session: AsyncSession) -> None:
+    """Create the demo agent (trade on Demo) if missing; its token is printed exactly once."""
+    if await session.scalar(select(Agent.id).where(Agent.name == DEMO_AGENT_NAME)) is not None:
+        return
+    agent, token = await create_agent(session, DEMO_AGENT_NAME)
+    demo_id = await session.scalar(select(Portfolio.id).where(Portfolio.name == DEMO_PORTFOLIO_NAME))
+    await assign_portfolio(session, agent.id, demo_id, "trade")
+    print(
+        f"SMTrading: token agente {DEMO_AGENT_NAME} = {token} "
+        "(salvalo: non verrà più mostrato)"
+    )
 
 
 async def _seed_risk(session: AsyncSession) -> None:

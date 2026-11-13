@@ -1,3 +1,4 @@
+import re
 from decimal import Decimal
 
 from sqlalchemy import select, text
@@ -98,3 +99,25 @@ async def test_seed_keeps_admin_edits_and_existing_profile_assignment(db_session
     await db_session.refresh(demo)
     assert demo.risk_profile_id == other.id
     assert (await db_session.get(AppSetting, "stale_quote_s")).value == {"us_equity": 5}
+
+
+async def test_seed_creates_agent_once(db_session, capsys):
+    from smtrading.agents.models import Agent, AgentPortfolio
+
+    await run_seed(db_session)
+    out = capsys.readouterr().out
+    m = re.search(
+        r"^SMTrading: token agente paperclip-demo = (smt_\S+) \(salvalo: non verrà più mostrato\)$",
+        out,
+        re.MULTILINE,
+    )
+    assert m
+    agent = (await db_session.execute(select(Agent).where(Agent.name == "paperclip-demo"))).scalar_one()
+    assert m.group(1) not in agent.token_hash
+    demo = await db_session.scalar(select(Portfolio.id).where(Portfolio.name == "Demo"))
+    link = await db_session.get(AgentPortfolio, (agent.id, demo))
+    assert link is not None and link.permission == "trade"
+
+    await run_seed(db_session)
+    assert "token agente" not in capsys.readouterr().out
+    assert len((await db_session.execute(select(Agent))).scalars().all()) == 1

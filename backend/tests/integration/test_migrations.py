@@ -38,7 +38,7 @@ async def test_migration_matches_models(migrated_db):
 
     from smtrading.common.db import Base, make_engine
 
-    for mod in ("ledger", "instruments", "portfolios", "fees", "connectors", "engine", "positions", "risk"):
+    for mod in ("agents", "ledger", "instruments", "portfolios", "fees", "connectors", "engine", "positions", "risk"):
         importlib.import_module(f"smtrading.{mod}.models")
 
     engine = make_engine(migrated_db)
