@@ -1,5 +1,7 @@
 """Broker routing (engine.service), BrokerSync and reconciliation with a fake adapter."""
 
+import asyncio
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -7,16 +9,21 @@ from typing import ClassVar
 
 import pytest
 from redis.asyncio import Redis
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from smtrading.admin.portfolio_ops import reset_portfolio
 from smtrading.brokers import registry
+from smtrading.brokers import sync as sync_module
 from smtrading.brokers.base import BrokerAdapter, BrokerOrder
 from smtrading.brokers.models import Reconciliation
 from smtrading.brokers.service import create_link, link_portfolio, update_link
 from smtrading.brokers.sync import BrokerSync, reconcile, reconcile_all
 from smtrading.common.db import make_engine
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.engine import execution as execution_module
+from smtrading.engine.execution import execute_fill
 from smtrading.engine.models import (
     BrokerState,
     Fill,
@@ -39,6 +46,7 @@ from smtrading.instruments.models import AssetClass
 from smtrading.ledger.models import Journal, JournalType
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
+from smtrading.risk.margin import check_portfolio_margin
 from smtrading.risk.models import Notification
 from smtrading.risk.settings import set_kill_switch
 from smtrading.seed import run_seed
@@ -60,8 +68,14 @@ class Broker:
         self.positions: dict[str, Decimal] = {}
         self.reject_next: str | None = None
         self.fail_next = 0
-        self.found: BrokerOrder | None = None
         self.cancel_fills: Decimal | None = None  # filled qty reported at cancel
+        self.by_ref: dict[str, str] = {}  # client reference -> broker id
+        self.fail_after_send = 0  # placed, then the response is lost
+        self.cancel_raises = False
+        self.unsupported = False  # supports() false after prepare()
+        self.candidates: list[str] = []  # non-idempotent find_order matches
+        self.ignore_exclude = False
+        self.finds = 0
 
     def set(self, broker_id: str, status: str, filled, avg) -> None:
         self.orders[broker_id] = BrokerOrder(
@@ -80,6 +94,12 @@ class FakeBrokerAdapter(BrokerAdapter):
     )  # no trailing stop
     supported_asset_classes: ClassVar[frozenset[AssetClass]] = frozenset(AssetClass)
 
+    def routable(self, order, instrument) -> bool:
+        return BrokerAdapter.supports(self, order, instrument) and order.notional is None
+
+    def supports(self, order, instrument) -> bool:
+        return self.routable(order, instrument) and not BROKER.unsupported
+
     async def place_order(self, order, instrument) -> BrokerOrder:
         if BROKER.fail_next:
             BROKER.fail_next -= 1
@@ -89,13 +109,19 @@ class FakeBrokerAdapter(BrokerAdapter):
             return BrokerOrder("", "rejected", D(0), None, msg)
         bid = f"b{len(BROKER.placed) + 1}"
         BROKER.placed.append((bid, self.client_ref(order), order.qty))
+        BROKER.by_ref[self.client_ref(order)] = bid
         BROKER.set(bid, "accepted", 0, None)
+        if BROKER.fail_after_send:
+            BROKER.fail_after_send -= 1
+            raise RuntimeError("fake: ReadTimeout")
         return BROKER.orders[bid]
 
     async def get_order(self, broker_order_id: str) -> BrokerOrder:
         return BROKER.orders[broker_order_id]
 
     async def cancel_order(self, broker_order_id: str) -> None:
+        if BROKER.cancel_raises:
+            raise RuntimeError("fake: HTTP 400: not cancelable")
         BROKER.canceled.append(broker_order_id)
         o = BROKER.orders[broker_order_id]
         if o.status in ("accepted", "partially_filled"):
@@ -108,14 +134,21 @@ class FakeBrokerAdapter(BrokerAdapter):
     async def get_positions(self) -> dict[str, Decimal]:
         return dict(BROKER.positions)
 
-    async def find_order(self, order, instrument, since):
-        return BROKER.found
+    async def find_order(self, order, instrument, since, exclude=frozenset()):
+        BROKER.finds += 1  # by client reference, like Alpaca
+        bid = BROKER.by_ref.get(self.client_ref(order))
+        return None if bid is None or bid in exclude else BROKER.orders[bid]
 
 
 @registry.register
 class FakeT212Adapter(FakeBrokerAdapter):
     kind: ClassVar[str] = "fake_t212_test"
     idempotent_place: ClassVar[bool] = False
+
+    async def find_order(self, order, instrument, since, exclude=frozenset()):
+        BROKER.finds += 1  # by ticker/side/qty/time: any equal order matches
+        hits = [b for b in BROKER.candidates if BROKER.ignore_exclude or b not in exclude]
+        return BROKER.orders[hits[0]] if len(hits) == 1 else None
 
 
 @pytest.fixture(autouse=True)
@@ -315,9 +348,10 @@ async def test_kill_switch_and_lock_checked_again_before_sending(maker, redis, q
     assert BROKER.placed == []
 
 
-async def test_trailing_stop_on_broker_without_trailing_is_simulated(maker, redis, qs):
-    pid, _ = await _linked_portfolio(maker)
-    # a long position first (routed market buy, filled at the broker)
+async def test_trailing_trigger_is_simulated_then_sent_to_the_broker(maker, redis, qs):
+    """Ruling R10 (a): the trailing trigger stays simulated; on trigger the order becomes
+    a reduce-only market order sent to the broker, never filled locally."""
+    pid, link_id = await _linked_portfolio(maker)
     buy = await _place(maker, redis, qs, pid)
     sync = _sync(maker, redis, qs)
     await sync.tick()
@@ -330,18 +364,25 @@ async def test_trailing_stop_on_broker_without_trailing_is_simulated(maker, redi
         trail_pct=D(5),
     )
     o = await _order(maker, oid)
-    assert o.broker_link_id is None and not o.broker_replicated
-    assert o.status == OrderStatus.pending and o.trail_ref_price is not None
+    assert o.broker_link_id is None and o.status == OrderStatus.pending
+    assert o.trail_ref_price is not None
     await sync.tick()
-    assert len(BROKER.placed) == 1  # not sent
+    assert len(BROKER.placed) == 1  # not sent before the trigger
 
-    # the simulator executes it
     qs.set_quote("AAPL", D("90"), D("90.10"), None, ts=OPEN)
     proc = OrderProcessor(maker, redis, qs, clock=Clock(OPEN))
-    assert await proc.on_tick("AAPL", qs._quotes["AAPL"]) == 1
+    await proc.on_tick("AAPL", qs._quotes["AAPL"])
+    o = await _order(maker, oid)
+    assert (o.type, o.reduce_only, o.status) == (OrderType.market, True, OrderStatus.pending)
+    assert o.broker_link_id == link_id and o.broker_status == BrokerState.TO_SEND
+    assert await _fills(maker, oid) == []
+    await sync.tick()
+    assert BROKER.placed[-1] == ("b2", str(oid), TEN)
+    BROKER.set("b2", "filled", 10, "90")
+    await sync.tick()
     o = await _order(maker, oid)
     assert o.status == OrderStatus.filled
-    assert [f.source for f in await _fills(maker, oid)] == ["sim"]
+    assert [f.source for f in await _fills(maker, oid)] == ["broker"]
 
 
 async def test_processor_skips_broker_managed_orders(maker, redis, qs):
@@ -435,9 +476,39 @@ async def test_idempotent_send_failure_is_retried(maker, redis, qs):
     BROKER.fail_next = 1
     sync = _sync(maker, redis, qs)
     await sync.tick()
-    assert (await _order(maker, oid)).broker_status == BrokerState.TO_SEND
+    o = await _order(maker, oid)
+    assert o.broker_status == BrokerState.TO_SEND and o.broker_sent_at is not None
+    await sync.tick()  # looked up first: definitively not at the broker
+    o = await _order(maker, oid)
+    assert BROKER.finds == 1 and BROKER.placed == [] and o.broker_sent_at is None
     await sync.tick()
     assert (await _order(maker, oid)).broker_order_id == "b1"
+
+
+async def test_idempotent_lost_response_is_adopted_not_resent(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid)
+    BROKER.fail_after_send = 1
+    sync = _sync(maker, redis, qs)
+    await sync.tick()
+    await sync.tick()
+    o = await _order(maker, oid)
+    assert o.broker_order_id == "b1" and len(BROKER.placed) == 1
+
+
+async def test_cancel_after_a_failed_send_waits_for_the_broker(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"))
+    BROKER.fail_after_send = 1
+    sync = _sync(maker, redis, qs)
+    await sync.tick()
+    async with maker() as s:
+        o = await cancel_order(s, oid, by="agent")
+        await s.commit()
+    assert o.status == OrderStatus.pending and o.broker_status == BrokerState.CANCEL_REQUESTED
+    await sync.tick()  # found by client reference, adopted, canceled at the broker
+    assert BROKER.canceled == ["b1"]
+    assert (await _order(maker, oid)).status == OrderStatus.canceled
 
 
 async def test_non_idempotent_failure_is_never_resent(maker, redis, qs):
@@ -456,13 +527,13 @@ async def test_non_idempotent_failure_is_never_resent(maker, redis, qs):
     assert BROKER.placed == []  # never resent
 
     BROKER.set("t9", "filled", 10, "100")
-    BROKER.found = BROKER.orders["t9"]
+    BROKER.candidates = ["t9"]
     await sync.tick()
     o = await _order(maker, oid)
     assert o.broker_order_id == "t9" and o.status == OrderStatus.filled
 
     oid2 = await _place(maker, redis, qs, pid)
-    BROKER.fail_next, BROKER.found = 1, None
+    BROKER.fail_next, BROKER.candidates = 1, ["t9"]  # t9 already belongs to oid
     await sync.tick()
     await sync.tick()
     assert (await _order(maker, oid2)).status == OrderStatus.pending
@@ -491,18 +562,29 @@ async def test_bracket_exits_follow_the_entry_to_the_broker(maker, redis, qs):
     tp, sl = await _order(maker, tp.id), await _order(maker, sl.id)
     assert {tp.broker_order_id, sl.broker_order_id} == {"b2", "b3"}
     BROKER.set(tp.broker_order_id, "filled", 10, "110")
-    await sync.tick()  # take profit filled: stop loss cancel requested
-    assert (await _order(maker, sl.id)).broker_status == BrokerState.CANCEL_REQUESTED
-    await sync.tick()
-    assert sl.broker_order_id in BROKER.canceled
+    await sync.tick()  # take profit filled: the stop loss is canceled in the same pass
+    assert BROKER.canceled == [sl.broker_order_id]
     assert (await _order(maker, sl.id)).status == OrderStatus.canceled
 
 
-async def test_disabled_link_releases_unsent_orders_to_the_simulator(maker, redis, qs):
+async def test_disabled_link_rejects_unsent_orders(maker, redis, qs):
+    """Ruling R10 (c): nothing falls back to the simulator on a linked portfolio."""
     pid, link_id = await _linked_portfolio(maker)
     oid = await _place(maker, redis, qs, pid)
     async with maker() as s:
         await update_link(s, link_id, enabled=False)
+        await s.commit()
+    await _sync(maker, redis, qs).tick()
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.rejected and BROKER.placed == []
+    assert len(await _notes(maker, pid, "order.rejected")) == 1
+
+
+async def test_unlinked_portfolio_releases_unsent_orders_to_the_simulator(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid)
+    async with maker() as s:
+        await link_portfolio(s, pid, None)  # explicit admin unlink, nothing in flight
         await s.commit()
     await _sync(maker, redis, qs).tick()
     o = await _order(maker, oid)
@@ -511,6 +593,36 @@ async def test_disabled_link_releases_unsent_orders_to_the_simulator(maker, redi
     qs.set_quote("AAPL", D("99.90"), D("100.00"), None, ts=OPEN)
     await proc.sweep()
     assert (await _order(maker, oid)).status == OrderStatus.filled
+
+
+async def test_unlink_refused_with_orders_in_flight(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"))
+    await _sync(maker, redis, qs).tick()
+    async with maker() as s:
+        with pytest.raises(SMTError) as e:
+            await link_portfolio(s, pid, None)
+    assert e.value.code == ErrorCode.INVALID_ORDER
+
+
+async def test_unsupported_order_is_refused_at_placement(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    with pytest.raises(SMTError) as e:
+        await _place(maker, redis, qs, pid, qty=None, notional=D(500))
+    assert e.value.code == ErrorCode.INVALID_ORDER
+    assert e.value.message == "Ordine non supportato dal broker collegato"
+    assert BROKER.placed == []
+
+
+async def test_unsupported_after_prepare_is_rejected(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid)
+    BROKER.unsupported = True
+    await _sync(maker, redis, qs).tick()
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.rejected and o.reject_code == ErrorCode.INVALID_ORDER
+    assert len(await _notes(maker, pid, "order.rejected")) == 1
+    assert o.broker_link_id is not None and BROKER.placed == []
 
 
 async def test_reconciliation_detects_a_difference(maker, redis, qs):
@@ -523,9 +635,7 @@ async def test_reconciliation_detects_a_difference(maker, redis, qs):
     assert (await _order(maker, oid)).status == OrderStatus.filled
 
     BROKER.positions = {"AAPL": D(10)}
-    async with maker() as s:
-        rows = await reconcile(s, link_id, None)
-        await s.commit()
+    rows = await reconcile(maker, link_id, None)
     assert [r.ok for r in rows] == [True]
 
     BROKER.positions = {"AAPL": D(7), "MSFT": D(1)}
@@ -539,3 +649,364 @@ async def test_reconciliation_detects_a_difference(maker, redis, qs):
         {"symbol": "AAPL", "ours": "10", "broker": "7"},
         {"symbol": "MSFT", "ours": "0", "broker": "1"},
     ]
+
+
+# -- review fixes ----------------------------------------------------------------------
+
+
+async def _set(maker, oid, **values) -> None:
+    async with maker() as s:
+        o = await s.get(Order, oid)
+        for k, v in values.items():
+            setattr(o, k, v)
+        await s.commit()
+
+
+async def test_find_order_never_reuses_a_linked_broker_order(maker, redis, qs):
+    """C1: two identical orders; the second times out and must not be matched to the
+    first one's broker order."""
+    pid, _ = await _linked_portfolio(maker, kind="fake_t212_test")
+    first = await _place(maker, redis, qs, pid)
+    clock = Clock(OPEN)
+    sync = BrokerSync(maker, redis, qs, None, clock=clock)
+    await sync.tick()
+    assert (await _order(maker, first)).broker_order_id == "b1"
+    second = await _place(maker, redis, qs, pid)
+    BROKER.fail_next = 1
+    await sync.tick()
+    BROKER.candidates = ["b1"]  # the only equal broker order is the first one's
+    await sync.tick()
+    assert (await _order(maker, second)).broker_order_id is None
+    clock.now = OPEN + timedelta(minutes=6)
+    await sync.tick()
+    assert (await _order(maker, second)).status == OrderStatus.rejected
+
+
+async def test_matched_order_is_checked_again_under_the_lock(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker, kind="fake_t212_test")
+    first = await _place(maker, redis, qs, pid)
+    sync = _sync(maker, redis, qs)
+    await sync.tick()
+    second = await _place(maker, redis, qs, pid)
+    BROKER.fail_next = 1
+    await sync.tick()
+    BROKER.candidates, BROKER.ignore_exclude = ["b1"], True  # an adapter that ignores it
+    await sync.tick()
+    assert (await _order(maker, second)).broker_order_id is None
+    assert (await _order(maker, first)).broker_order_id == "b1"
+    assert await _trade_journals(maker, second) == []
+
+
+async def test_broker_order_id_is_unique_per_link(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    a = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"))
+    b = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"))
+    await _set(maker, a, broker_order_id="X")
+    with pytest.raises(IntegrityError):
+        await _set(maker, b, broker_order_id="X")
+
+
+async def _leftover_sending(maker, redis, qs, pid, *, at_broker: bool, **kw):
+    """An order claimed by a worker that crashed mid-send."""
+    oid = await _place(maker, redis, qs, pid, **kw)
+    await _set(maker, oid, broker_status=BrokerState.SENDING, broker_sent_at=OPEN)
+    if at_broker:
+        BROKER.set("b7", "accepted", 0, None)
+        BROKER.by_ref[str(oid)] = "b7"
+    return oid
+
+
+async def test_leftover_sending_on_a_disabled_link_is_adopted_then_canceled(maker, redis, qs):
+    pid, link_id = await _linked_portfolio(maker)
+    oid = await _leftover_sending(maker, redis, qs, pid, at_broker=True)
+    async with maker() as s:
+        await update_link(s, link_id, enabled=False)
+        await s.commit()
+    await _sync(maker, redis, qs).tick(recover=True)
+    o = await _order(maker, oid)
+    assert o.broker_order_id == "b7" and BROKER.canceled == ["b7"]
+    assert o.status == OrderStatus.canceled and BROKER.placed == []
+
+
+async def test_leftover_sending_with_kill_switch_is_adopted_then_canceled(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _leftover_sending(maker, redis, qs, pid, at_broker=True)
+    async with maker() as s:
+        await set_kill_switch(s, True)
+        await s.commit()
+    await _sync(maker, redis, qs).tick(recover=True)
+    o = await _order(maker, oid)
+    assert o.broker_order_id == "b7" and BROKER.canceled == ["b7"]
+    assert o.status == OrderStatus.canceled
+
+
+async def test_leftover_sending_expires_only_after_a_definitive_not_found(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _leftover_sending(maker, redis, qs, pid, at_broker=False)
+    await _set(maker, oid, expires_at=OPEN - timedelta(minutes=1))
+    proc = OrderProcessor(maker, redis, qs, clock=Clock(OPEN))
+    await proc.sweep()  # the processor never expires an order that may be at the broker
+    assert (await _order(maker, oid)).status == OrderStatus.pending
+    sync = _sync(maker, redis, qs)
+    await sync.tick(recover=True)
+    await sync.tick()
+    o = await _order(maker, oid)
+    assert BROKER.finds == 1 and o.status == OrderStatus.expired and BROKER.placed == []
+
+
+async def test_leftover_sending_found_but_expired_is_canceled_at_the_broker(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _leftover_sending(maker, redis, qs, pid, at_broker=True)
+    await _set(maker, oid, expires_at=OPEN - timedelta(minutes=1))
+    await _sync(maker, redis, qs).tick(recover=True)
+    assert BROKER.canceled == ["b7"]
+    assert (await _order(maker, oid)).status == OrderStatus.canceled
+
+
+async def test_sending_is_reclaimed_only_at_startup_recovery(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _leftover_sending(maker, redis, qs, pid, at_broker=True)
+    await _sync(maker, redis, qs).tick()
+    assert BROKER.finds == 0 and (await _order(maker, oid)).broker_order_id is None
+
+
+async def test_only_one_broker_sync_runs(maker, redis, qs, fresh_db):
+    pid, _ = await _linked_portfolio(maker)
+    await _place(maker, redis, qs, pid)
+    engine = make_engine(fresh_db)
+    async with engine.connect() as conn:
+        await conn.execute(
+            text("select pg_advisory_lock(:k)"), {"k": sync_module.ADVISORY_LOCK_KEY}
+        )
+        await conn.commit()
+        sync = BrokerSync(maker, redis, qs, None, clock=Clock(OPEN), interval_s=0.05)
+        task = asyncio.create_task(sync.run())
+        await asyncio.sleep(0.5)
+        assert BROKER.placed == []  # another writer holds the lock
+        await conn.execute(
+            text("select pg_advisory_unlock(:k)"), {"k": sync_module.ADVISORY_LOCK_KEY}
+        )
+        await conn.commit()
+        for _ in range(50):
+            if BROKER.placed:
+                break
+            await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    await engine.dispose()
+    assert len(BROKER.placed) == 1
+
+
+async def test_broker_sync_retakes_a_lost_lock(maker, redis, qs, fresh_db):
+    """I5: when the connection holding the advisory lock dies, the passes stop until
+    the lock is taken again on a new connection."""
+    pid, _ = await _linked_portfolio(maker)
+    sync = BrokerSync(maker, redis, qs, None, clock=Clock(OPEN), interval_s=0.05)
+    task = asyncio.create_task(sync.run())
+    engine = make_engine(fresh_db)
+    try:
+        await _place(maker, redis, qs, pid)
+        for _ in range(50):
+            if BROKER.placed:
+                break
+            await asyncio.sleep(0.1)
+        assert len(BROKER.placed) == 1
+        async with engine.connect() as conn:  # kill the lock holder's connection
+            killed = await conn.scalar(text(
+                "select count(pg_terminate_backend(pid)) from pg_locks"
+                " where locktype = 'advisory' and granted"
+            ))
+            await conn.commit()
+        assert killed == 1
+        await _place(maker, redis, qs, pid)
+        for _ in range(100):
+            if len(BROKER.placed) == 2:
+                break
+            await asyncio.sleep(0.1)
+        assert len(BROKER.placed) == 2
+        async with engine.connect() as conn:  # held again, by a new connection
+            assert await conn.scalar(text(
+                "select count(*) from pg_locks where locktype = 'advisory' and granted"
+            )) == 1
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await engine.dispose()
+
+
+async def test_no_quote_calls_after_a_journal(maker, redis, monkeypatch):
+    """I1: a broker fill transaction never reaches the quote source while BrokerSync
+    holds a portfolio lock (quotes and FX are prefetched before it), nor after its
+    first journal (the chain lock is held from then until commit)."""
+    state = {"journaled": False, "locked": False}
+
+    class Counting(FakeQuoteSource):
+        def __init__(self):
+            super().__init__()
+            self.calls, self.late = [], []
+
+        def _rec(self, call):
+            self.calls.append(call)
+            if state["journaled"] or state["locked"]:
+                self.late.append(call)
+
+        async def get_quotes(self, symbols, *, max_age_s=5):
+            self._rec(("quotes", tuple(symbols)))
+            return await super().get_quotes(symbols, max_age_s=max_age_s)
+
+        async def get_fx_rate(self, base, quote):
+            self._rec(("fx", base, quote))
+            return await super().get_fx_rate(base, quote)
+
+    real_post, real_commit = execution_module.post_journal, AsyncSession.commit
+
+    async def post_journal(*a, **kw):
+        state["journaled"] = True
+        return await real_post(*a, **kw)
+
+    async def commit(self):
+        await real_commit(self)
+        state["journaled"] = state["locked"] = False
+
+    real_lock = sync_module.lock_portfolio
+
+    async def lock_portfolio(*a, **kw):
+        state["locked"] = True
+        return await real_lock(*a, **kw)
+
+    monkeypatch.setattr(execution_module, "post_journal", post_journal)
+    monkeypatch.setattr(AsyncSession, "commit", commit)
+    monkeypatch.setattr(sync_module, "lock_portfolio", lock_portfolio)
+    q = Counting()
+    q.set_fx("EUR", "USD", D("1.25"))
+    q.set_quote("AAPL", D("99.90"), D("100.00"), D("99.95"))
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, q, pid)
+    sync = _sync(maker, redis, q)
+    await sync.tick()
+    BROKER.set("b1", "filled", 10, "100")
+    q.calls.clear()
+    await sync.tick()
+    assert (await _order(maker, oid)).status == OrderStatus.filled
+    assert ("quotes", ("AAPL",)) in q.calls  # the daily loss check ran
+    assert q.late == []
+
+
+async def test_cancel_error_does_not_hide_fills(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"))
+    sync = _sync(maker, redis, qs)
+    await sync.tick()
+    async with maker() as s:
+        await cancel_order(s, oid, by="agent")
+        await s.commit()
+    BROKER.set("b1", "filled", 10, "95")  # filled before the cancel arrived
+    BROKER.cancel_raises = True
+    await sync.tick()
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.filled and len(await _trade_journals(maker, oid)) == 1
+
+
+async def test_reset_waits_for_broker_cancels(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"))
+    await _sync(maker, redis, qs).tick()
+    async with maker() as s:
+        with pytest.raises(SMTError) as e:
+            await reset_portfolio(s, qs, pid, D(1000), reason="test", author_id=None)
+    assert e.value.code == ErrorCode.INVALID_ORDER
+    assert e.value.message == "Attendi la conferma degli annullamenti dal broker"
+    assert (await _order(maker, oid)).status == OrderStatus.pending
+
+
+async def test_margin_liquidation_is_routed_to_the_broker(maker, redis):
+    """Ruling R10 (b): reduce-only market orders sent to the broker, filled there in a
+    LIQUIDATION journal; the portfolio stays locked meanwhile."""
+    q = FakeQuoteSource()
+    q.set_fx("EUR", "USD", D("1.25"))
+    q.set_quote("ENI.MI", D("14.995"), D("15.005"), None, ts=OPEN)
+    async with maker() as s:
+        p = await create_portfolio(
+            s, name=f"M-{uuid.uuid4().hex[:8]}", initial_cash=D(100000), leverage=D(2),
+        )
+        o = Order(portfolio_id=p.id, symbol="ENI.MI", side=OrderSide.buy,
+                  type=OrderType.market, qty=D(13000), status=OrderStatus.new)
+        s.add(o)
+        await s.flush()
+        await execute_fill(s, q, o.id, quote=(await q.get_quotes(["ENI.MI"]))["ENI.MI"])
+        link = await create_link(s, f"L-{uuid.uuid4().hex[:8]}", "fake_test", {})
+        await link_portfolio(s, p.id, link.id)
+        await s.commit()
+        pid = p.id
+    q.set_quote("ENI.MI", D("8.995"), D("9.005"), None, ts=OPEN)
+    async with maker() as s:
+        assert await check_portfolio_margin(s, q, pid, now=OPEN) == "liquidated"
+        await s.commit()
+    async with maker() as s:
+        liq = (await s.scalars(select(Order).where(
+            Order.portfolio_id == pid, Order.role == "liquidation"
+        ))).one()
+        assert (liq.reduce_only, liq.type, liq.qty) == (True, OrderType.market, D(13000))
+        assert liq.broker_status == BrokerState.TO_SEND and liq.status == OrderStatus.pending
+        assert (await s.get(Portfolio, pid)).status == PortfolioStatus.locked
+    async with maker() as s:  # no second liquidation while one is open
+        await check_portfolio_margin(s, q, pid, now=OPEN)
+        await s.commit()
+        assert len(list(await s.scalars(
+            select(Order).where(Order.portfolio_id == pid, Order.role == "liquidation")
+        ))) == 1
+    sync = _sync(maker, redis, q)
+    await sync.tick()  # sent although the portfolio is locked
+    BROKER.set("b1", "filled", 13000, "8.995")
+    await sync.tick()
+    async with maker() as s:
+        liq = await s.get(Order, liq.id)
+        assert liq.status == OrderStatus.filled
+        types = list(await s.scalars(select(Journal.type).where(Journal.order_id == liq.id)))
+        assert types == [JournalType.LIQUIDATION]
+        assert (await s.get(Portfolio, pid)).status == PortfolioStatus.active
+
+
+async def test_cancel_requested_never_sent_is_canceled_locally(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"))
+    await _set(maker, oid, broker_status=BrokerState.CANCEL_REQUESTED)
+    await _sync(maker, redis, qs).tick()
+    assert (await _order(maker, oid)).status == OrderStatus.canceled
+    assert BROKER.finds == 0 and BROKER.placed == []
+
+
+async def test_missing_fill_price_notifies_and_keeps_waiting(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"))
+    clock = Clock(OPEN)
+    sync = BrokerSync(maker, redis, qs, None, clock=clock)
+    await sync.tick()
+    BROKER.set("b1", "canceled", 4, None)  # canceled with fills, no price given
+    await sync.tick()
+    assert await _notes(maker, pid, "broker.fill_price_missing") == []
+    clock.now = OPEN + timedelta(minutes=11)
+    await sync.tick()
+    await sync.tick()
+    assert len(await _notes(maker, pid, "broker.fill_price_missing")) == 1
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.pending and o.filled_qty == 0
+
+
+def test_delta_price_not_positive_logs_a_warning(caplog):
+    """Minor: an inconsistent broker average (delta price <= 0) is logged."""
+    order = Order(id=uuid.uuid4(), filled_qty=D(5), avg_fill_price=D(120))
+    bo = BrokerOrder(broker_order_id="b1", status="filled", filled_qty=D(10),
+                     avg_fill_price=D(50), message=None)
+    with caplog.at_level(logging.WARNING, logger="smtrading.brokers.sync"):
+        price = sync_module.delta_price(order, bo, D(5))
+    assert price == D(50)  # the broker's own average, never a negative price
+    assert any("<= 0" in r.getMessage() for r in caplog.records)
+    normal = sync_module.delta_price(
+        Order(id=uuid.uuid4(), filled_qty=D(5), avg_fill_price=D(100)),
+        BrokerOrder(broker_order_id="b1", status="filled", filled_qty=D(10),
+                    avg_fill_price=D(101), message=None), D(5),
+    )
+    assert normal == D(102)

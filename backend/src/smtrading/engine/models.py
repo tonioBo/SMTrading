@@ -86,6 +86,11 @@ class Order(Base):
         Index("ix_orders_open_expires_at", "expires_at", postgresql_where=_OPEN_WHERE),
         Index("ix_orders_open_created_at", "created_at", postgresql_where=_OPEN_WHERE),
         Index("ix_orders_broker_link_id", "broker_link_id"),
+        # one local order per broker order (C1: never adopt another order's fill)
+        Index(
+            "uq_orders_broker_link_order", "broker_link_id", "broker_order_id", unique=True,
+            postgresql_where=text("broker_order_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -126,6 +131,8 @@ class Order(Base):
     broker_last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # resubmissions after a modify (cancel + new order): the broker client reference
     broker_attempt: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    # a send of the current attempt was started: the broker may have it (C2)
+    broker_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -156,6 +163,10 @@ class Fill(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+LIQUIDATION_ROLE = "liquidation"  # Order.role of a broker-routed margin liquidation
+BROKER_LIQUIDATION_REASON = "broker_liquidation"  # Portfolio.reduce_only_reason while locked
 
 
 class BrokerState:

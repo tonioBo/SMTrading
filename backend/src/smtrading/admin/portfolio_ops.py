@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.corporate.snapshots import ensure_day_open, local_date
-from smtrading.engine.models import Order, OrderStatus
+from smtrading.engine.models import OPEN_STATUSES, Order, OrderStatus
 from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.engine.service import cancel_all_orders, close_all_positions
 from smtrading.events import queue_event
@@ -121,6 +121,16 @@ async def reset_portfolio(
     now = datetime.now(UTC)
 
     canceled = await cancel_all_orders(session, portfolio_id, by="admin")
+    still_open = await session.scalar(
+        select(Order.id).where(
+            Order.portfolio_id == portfolio_id, Order.status.in_(OPEN_STATUSES)
+        ).limit(1)
+    )
+    if still_open is not None:  # broker cancels are confirmed asynchronously (R3)
+        raise SMTError(
+            ErrorCode.INVALID_ORDER, "Attendi la conferma degli annullamenti dal broker",
+            {"order_id": str(still_open)},
+        )
     held = await _held_markets(session, portfolio_id)
     unknown = sorted(s for s, m in held.items() if m is None)
     if unknown:

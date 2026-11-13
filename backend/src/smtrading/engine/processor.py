@@ -32,8 +32,10 @@ so a resting order of a portfolio locked or set reduce_only after placement is r
 with that code; a reduce_only order with nothing left to reduce is canceled there.
 
 Broker-managed orders (broker_link_id set) are never filled or triggered here: BrokerSync
-applies the broker's fills. Only one never sent (broker_status `to_send`) can expire
-locally; the others expire at the broker.
+applies the broker's fills. Only one never sent (`to_send`, no send attempted) can expire
+locally; the others expire at the broker. Ruling R10 (a): a simulated trigger (trailing
+stop) on a broker-linked portfolio is handed to the broker as a market order instead of
+filled here.
 
 Errors: a business SMTError (`REJECTING_CODES`) rejects the order with its code in a new
 transaction, cancels its held bracket children (Ruling R17) and notifies the portfolio.
@@ -52,7 +54,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.engine.execution import execute_fill
+from smtrading.engine.execution import execute_fill, hand_to_broker
 from smtrading.engine.models import (
     FILLABLE_STATUSES,
     OPEN_STATUSES,
@@ -78,6 +80,7 @@ from smtrading.instruments.models import Instrument
 from smtrading.marketdata.serialization import loads_quote
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.locks import lock_portfolio
+from smtrading.portfolios.models import Portfolio
 from smtrading.risk.daily_loss import check_daily_loss
 from smtrading.risk.margin import check_margin_and_commit, margin_holdings
 from smtrading.risk.settings import get_default_spread_bps, get_stale_threshold
@@ -523,6 +526,11 @@ class OrderProcessor:
             order.status = OrderStatus.triggered
             order.updated_at = datetime.now(UTC)
             return True
+        link_id = (await session.get(Portfolio, order.portfolio_id)).broker_link_id
+        if link_id is not None:  # Ruling R10 (a): the broker executes it
+            hand_to_broker(order, link_id)
+            log.info("order %s triggered: sent to the broker as a market order", order.id)
+            return True
         if result.action == TriggerAction.trigger_to_market:
             order.status = OrderStatus.triggered
             await session.flush()
@@ -568,7 +576,8 @@ class OrderProcessor:
                 .where(
                     Order.status.in_(OPEN_STATUSES), Order.expires_at <= now,
                     Order.broker_link_id.is_(None)
-                    | (Order.broker_status == BrokerState.TO_SEND),
+                    | ((Order.broker_status == BrokerState.TO_SEND)
+                       & Order.broker_sent_at.is_(None)),
                 )
                 .order_by(Order.expires_at, Order.id)
             ))
@@ -585,7 +594,8 @@ class OrderProcessor:
                 order is None or order.status not in OPEN_STATUSES
                 or order.expires_at is None or order.expires_at > now
                 or (order.broker_link_id is not None
-                    and order.broker_status != BrokerState.TO_SEND)
+                    and (order.broker_status != BrokerState.TO_SEND
+                         or order.broker_sent_at is not None))
             ):
                 return
             order.status = OrderStatus.expired

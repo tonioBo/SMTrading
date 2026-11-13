@@ -9,6 +9,9 @@ from smtrading.brokers.registry import adapter_class
 from smtrading.common.config import get_settings
 from smtrading.common.crypto import decrypt_json, encrypt_json
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.engine.execution import broker_live
+from smtrading.engine.models import OPEN_STATUSES, Order, OrderType
+from smtrading.portfolios.locks import lock_portfolio
 from smtrading.portfolios.models import Portfolio
 
 
@@ -79,11 +82,33 @@ async def get_adapter(session: AsyncSession, link_id: uuid.UUID, http) -> Broker
 async def link_portfolio(
     session: AsyncSession, portfolio_id: uuid.UUID, link_id: uuid.UUID | None
 ) -> Portfolio:
-    pf = await session.get(Portfolio, portfolio_id)
-    if pf is None:
-        raise SMTError(ErrorCode.NOT_FOUND, f"portfolio {portfolio_id} not found")
+    pf = await lock_portfolio(session, portfolio_id)
     if link_id is not None:
         await _get(session, link_id)
+    if link_id == pf.broker_link_id:
+        return pf
+    open_orders = list(await session.scalars(
+        select(Order).where(Order.portfolio_id == pf.id, Order.status.in_(OPEN_STATUSES))
+    ))
+    # orders at (or maybe at) the broker must finish first; unsent ones go to the
+    # simulator on unlink (BrokerSync releases them)
+    if any(o.broker_link_id is not None and broker_live(o) for o in open_orders):
+        raise SMTError(
+            ErrorCode.INVALID_ORDER,
+            "ordini in corso sul broker: annullali e attendi la conferma prima di cambiare"
+            " il collegamento",
+            {"portfolio_id": str(pf.id)},
+        )
+    # Ruling R10: on a linked portfolio nothing fills locally; only trailing stops are
+    # simulated (and handed to the broker on trigger)
+    if link_id is not None and any(
+        o.broker_link_id is None and o.type != OrderType.trailing_stop for o in open_orders
+    ):
+        raise SMTError(
+            ErrorCode.INVALID_ORDER,
+            "annulla prima gli ordini aperti simulati del portafoglio",
+            {"portfolio_id": str(pf.id)},
+        )
     pf.broker_link_id = link_id
     await session.flush()
     return pf

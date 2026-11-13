@@ -7,6 +7,12 @@
   maintenance; the symbol's open orders (and held bracket children) are canceled.
   Ruling R19: a position whose market is closed or whose quote is missing/stale is
   skipped (listed as `skipped` in the notification) and the next one is tried.
+- broker-linked portfolios (Ruling R10 b): nothing fills locally. `liquidate` issues one
+  reduce-only market order (role `liquidation`, worst position first) routed to the
+  broker and locks the portfolio (reason `broker_liquidation`); BrokerSync sends it even
+  though the portfolio is locked, books its fills in a LIQUIDATION journal and unlocks
+  the portfolio when no liquidation order is open any more. While one is open no other
+  is issued; the next margin check issues the next one if still in maintenance.
 - `margin_sweep`: the worker's periodic check of every margin portfolio (a margin loan
   or a short position), plus the daily loss check of every portfolio holding positions.
 
@@ -32,7 +38,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.common.errors import SMTError
 from smtrading.engine.execution import execute_fill
-from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType, TimeInForce
+from smtrading.engine.models import (
+    BROKER_LIQUIDATION_REASON,
+    LIQUIDATION_ROLE,
+    OPEN_STATUSES,
+    BrokerState,
+    Order,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    TimeInForce,
+)
 from smtrading.engine.prefetch import prefetch_portfolio
 from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.engine.service import cancel_all_orders
@@ -48,6 +64,7 @@ from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, JournalType
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.locks import lock_portfolio
+from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.risk.daily_loss import check_daily_loss
 from smtrading.risk.models import Notification
 from smtrading.risk.settings import get_stale_threshold
@@ -215,12 +232,58 @@ async def _close_now(
     return result.order
 
 
+async def _liquidate_at_broker(
+    session: AsyncSession, portfolio: Portfolio, valuation: PortfolioValuation,
+) -> list[Order]:
+    """Ruling R10 (b): one reduce-only market order for the worst position, sent to the
+    broker by BrokerSync; the portfolio is locked until the liquidation is over."""
+    open_liquidation = await session.scalar(
+        select(Order.id).where(
+            Order.portfolio_id == portfolio.id, Order.role == LIQUIDATION_ROLE,
+            Order.status.in_(OPEN_STATUSES),
+        ).limit(1)
+    )
+    if open_liquidation is not None:
+        return []
+    queue = sorted(valuation.positions, key=lambda p: (p.unrealized_pnl_eur, p.symbol))
+    if not queue:
+        return []
+    position = queue[0]
+    await cancel_all_orders(session, portfolio.id, position.symbol, by="system")
+    order = Order(
+        portfolio_id=portfolio.id, symbol=position.symbol, type=OrderType.market,
+        side=OrderSide.sell if position.qty > 0 else OrderSide.buy, qty=abs(position.qty),
+        tif=TimeInForce.gtc, source="system", status=OrderStatus.pending, reduce_only=True,
+        role=LIQUIDATION_ROLE, broker_link_id=portfolio.broker_link_id,
+        broker_status=BrokerState.TO_SEND,
+    )
+    session.add(order)
+    if portfolio.status != PortfolioStatus.locked:
+        portfolio.status = PortfolioStatus.locked
+        portfolio.reduce_only_reason = BROKER_LIQUIDATION_REASON
+    await session.flush()
+    payload = {
+        "portfolio_id": portfolio.id, "before": _summary(valuation), "broker": True,
+        "orders": [{"order_id": order.id, "symbol": order.symbol, "side": order.side,
+                    "qty": order.qty, "price": None}],
+        "skipped": [],
+    }
+    await notify(session, portfolio_id=portfolio.id, kind="liquidation", payload=payload)
+    queue_event(session, "liquidation", payload)
+    log.warning("portfolio %s: liquidation of %s %s sent to the broker",
+                portfolio.id, order.symbol, order.qty)
+    return [order]
+
+
 async def _liquidate(
     session: AsyncSession, qs: QuoteSource, portfolio_id: UUID,
     valuation: PortfolioValuation, now: datetime, *, redis=None,
 ) -> tuple[list[Order], list[str], PortfolioValuation]:
     """(closed orders, skipped symbols, last valuation); the caller holds the lock and
     passes the prefetched memo as `qs`."""
+    portfolio = await session.get(Portfolio, portfolio_id)
+    if portfolio.broker_link_id is not None:
+        return await _liquidate_at_broker(session, portfolio, valuation), [], valuation
     before = _summary(valuation)
     # unrealized_pnl_eur is unrounded (Ruling R8)
     queue = sorted(valuation.positions, key=lambda p: (p.unrealized_pnl_eur, p.symbol))

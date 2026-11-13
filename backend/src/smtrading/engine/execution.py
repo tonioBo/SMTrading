@@ -62,6 +62,7 @@ from smtrading.engine.models import (
     Order,
     OrderSide,
     OrderStatus,
+    OrderType,
 )
 from smtrading.engine.prefetch import prefetch_portfolio
 from smtrading.engine.pricing import QuoteView, notional_to_qty
@@ -95,9 +96,22 @@ class FillResult:
 
 def broker_live(order: Order) -> bool:
     """The order exists (or may exist) at the broker: canceling it needs the broker."""
-    return order.broker_link_id is not None and order.broker_status not in (
-        None, BrokerState.TO_SEND,
+    return order.broker_link_id is not None and (
+        order.broker_status not in (None, BrokerState.TO_SEND)
+        or order.broker_sent_at is not None
     )
+
+
+def hand_to_broker(order: Order, link_id: UUID) -> None:
+    """Ruling R10 (a): a simulated trigger on a broker-linked portfolio (trailing stop)
+    becomes a reduce-only market order sent by BrokerSync; nothing fills locally."""
+    order.type = OrderType.market
+    order.trail_pct = order.trail_amount = None  # trail_ref_price records the trigger
+    order.reduce_only = True
+    order.status = OrderStatus.pending
+    order.broker_link_id = link_id
+    order.broker_status = BrokerState.TO_SEND
+    order.updated_at = datetime.now(UTC)
 
 
 def _no_buying_power(message: str, **details) -> SMTError:

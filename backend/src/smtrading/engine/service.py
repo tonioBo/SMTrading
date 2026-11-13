@@ -59,7 +59,7 @@ from sqlalchemy.orm import aliased
 from smtrading.brokers.models import BrokerLink
 from smtrading.brokers.service import get_adapter
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.engine.execution import broker_live, execute_fill
+from smtrading.engine.execution import broker_live, execute_fill, hand_to_broker
 from smtrading.engine.models import (
     OPEN_STATUSES,
     BrokerState,
@@ -366,6 +366,12 @@ async def _evaluate_now(
         result = evaluate(_view(order), bid, ask)
         if result.new_trail_ref is not None:
             order.trail_ref_price = result.new_trail_ref
+        if result.action in (TriggerAction.fill, TriggerAction.trigger_to_market):
+            link_id = (await session.get(Portfolio, order.portfolio_id)).broker_link_id
+            if link_id is not None:  # Ruling R10 (a)
+                hand_to_broker(order, link_id)
+                await session.flush()
+                return
         if result.action == TriggerAction.fill:
             await session.flush()
             await _fill_now(session, qs, order, quote, redis)
@@ -391,17 +397,26 @@ async def _activate(session: AsyncSession, qs: QuoteSource, order: Order, adm: _
         )
 
 
+UNSUPPORTED_BY_BROKER = "Ordine non supportato dal broker collegato"
+
+
 async def _route(session: AsyncSession, order: Order, adm: _Admission) -> bool:
-    """Hand the order to the portfolio's broker when the adapter can take it."""
+    """True when the order was handed to the portfolio's broker, or refused because the
+    broker cannot take it (Ruling R10: nothing fills locally on a linked portfolio; a
+    trailing stop the broker lacks is triggered here and then sent as a market order)."""
     link_id = adm.portfolio.broker_link_id
     if link_id is None:
         return False
     link = await session.get(BrokerLink, link_id)
     if link is None or not link.enabled:
-        return False
+        _reject(order, ErrorCode.PROVIDER_UNAVAILABLE, "broker link disabled")
+        return True
     adapter = await get_adapter(session, link_id, None)  # no network: config only
     if not adapter.routable(order, adm.instrument):
-        return False  # e.g. a trailing stop on Trading 212: simulated
+        if order.type == OrderType.trailing_stop:
+            return False  # simulated trigger, see hand_to_broker
+        _reject(order, ErrorCode.INVALID_ORDER, UNSUPPORTED_BY_BROKER)
+        return True
     order.broker_link_id = link_id
     order.broker_status = BrokerState.TO_SEND
     order.status = (
