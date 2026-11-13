@@ -1,7 +1,10 @@
 name: smtrading
 
 x-app: &app
-  build: ./backend
+  build:
+    context: ./backend
+    args:
+      SMT_BUILD_ID: ${SMT_BUILD_ID:-}
   image: smtrading-backend:local
   restart: unless-stopped
   env_file: .env
@@ -70,7 +73,10 @@ services:
   # redirects to https), plain http only on the local entry 127.0.0.1:3000.
   # API/MCP stay on 127.0.0.1.
   web:
-    build: ./web
+    build:
+      context: ./web
+      args:
+        SMT_BUILD_ID: ${SMT_BUILD_ID:-}
     image: smtrading-web:local
     restart: unless-stopped
     environment:

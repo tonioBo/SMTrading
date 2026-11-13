@@ -1,4 +1,5 @@
 import logging
+import os
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 
@@ -21,6 +22,7 @@ from smtrading.admin.routes_markets import router as markets_router
 from smtrading.admin.routes_portfolios import router as portfolios_router
 from smtrading.admin.routes_risk import router as risk_router
 from smtrading.admin.routes_system import router as system_router
+from smtrading.admin.routes_watch import router as watch_router
 from smtrading.admin.ws import router as ws_router
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
@@ -63,6 +65,35 @@ class _Resources:
             self._redis = None
 
 
+BUILD_HEADER = "X-SMT-Build"
+
+
+def build_id() -> str:
+    """Set at image build (git sha or timestamp); the web bundle embeds the same id."""
+    return os.environ.get("SMT_BUILD_ID") or "dev"
+
+
+class _BuildHeader:
+    """Pure ASGI: adds X-SMT-Build to every HTTP response (also errors and the MCP route)."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+        self.value = build_id().encode()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        async def send_with_header(message):
+            if message["type"] == "http.response.start":
+                headers = [h for h in message.get("headers", [])
+                           if h[0].lower() != b"x-smt-build"]
+                message = {**message, "headers": [*headers, (b"x-smt-build", self.value)]}
+            await send(message)
+
+        return await self.app(scope, receive, send_with_header)
+
+
 RuntimeFactory = Callable[[async_sessionmaker[AsyncSession], Redis], McpRuntime]
 
 
@@ -103,6 +134,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.router.routes.append(Route(MCP_PATH, endpoint=mcp_endpoint))
     app.router.routes.append(Route(MCP_PATH + "/", endpoint=mcp_endpoint))
     app.add_middleware(McpAuthMiddleware, get_sessionmaker=lambda: get_runtime().sessionmaker)
+    app.add_middleware(_BuildHeader)
     install_error_handlers(app)
     app.include_router(auth_router)
     app.include_router(portfolios_router)
@@ -114,6 +146,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(markets_router)
     app.include_router(system_router)
     app.include_router(dashboard_router)
+    app.include_router(watch_router)
     app.include_router(ws_router)
 
     @app.get("/health")
