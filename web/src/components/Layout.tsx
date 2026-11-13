@@ -1,5 +1,5 @@
 import { LogOut, Menu, PanelLeftClose, PanelLeftOpen } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useLogout, useMe } from "@/api/hooks/auth";
 import { KillSwitchIndicator } from "@/components/KillSwitchIndicator";
@@ -36,21 +36,49 @@ function Brand({ short = false }: { short?: boolean }) {
   );
 }
 
-/** Narrow screens: the sidebar as an overlay drawer (closes on navigation, Esc, backdrop). */
-function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Narrow screens: the sidebar as an overlay drawer (closes on navigation, Esc, backdrop).
+ * Focus moves into it on open, Tab stays inside, and returns to `returnFocus` on close.
+ */
+function MobileDrawer({ open, onClose, returnFocus }: { open: boolean; onClose: () => void; returnFocus: RefObject<HTMLElement> }) {
+  const panel = useRef<HTMLElement>(null);
   useEffect(() => {
     if (!open) return;
+    const items = () => Array.from(panel.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
+    items()[0]?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const list = items();
+      if (list.length === 0) return;
+      const first = list[0];
+      const last = list[list.length - 1];
+      const inside = panel.current?.contains(document.activeElement);
+      if (e.shiftKey && (document.activeElement === first || !inside)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !inside)) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+    const target = returnFocus.current;
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      target?.focus();
+    };
+  }, [open, onClose, returnFocus]);
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-40 md:hidden" role="dialog" aria-modal="true" aria-label="Menu">
-      <button type="button" aria-label="Chiudi menu" className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <aside className="absolute inset-y-0 left-0 flex w-64 max-w-[85vw] flex-col border-r border-border bg-bg shadow-lg">
+      <button type="button" tabIndex={-1} aria-label="Chiudi menu" className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <aside ref={panel} className="absolute inset-y-0 left-0 flex w-64 max-w-[85vw] flex-col border-r border-border bg-bg shadow-lg">
         <div className="flex h-14 items-center border-b border-border px-6">
           <Brand />
         </div>
@@ -67,6 +95,8 @@ export function Layout() {
   const location = useLocation();
   const [collapsed, toggleCollapsed] = useSidebarCollapsed();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const hamburger = useRef<HTMLButtonElement>(null);
+  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
   useEffect(() => setDrawerOpen(false), [location.pathname]); // closes on navigation
 
   if (!me.data) {
@@ -104,10 +134,11 @@ export function Layout() {
         </div>
         <Sidebar collapsed={collapsed} />
       </aside>
-      <MobileDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
+      <MobileDrawer open={drawerOpen} onClose={closeDrawer} returnFocus={hamburger} />
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 items-center justify-end gap-3 border-b border-border px-4 md:px-6">
           <Button
+            ref={hamburger}
             variant="ghost"
             size="sm"
             className="mr-auto md:hidden"

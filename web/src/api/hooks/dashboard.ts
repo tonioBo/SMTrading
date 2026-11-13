@@ -31,8 +31,11 @@ export const FEED_EVENT_LABELS: Record<string, string> = {
 
 /** at most one dashboard refetch per window while ticks or events arrive */
 export const LIVE_REFETCH_MS = 3000;
-/** fallback polling, only while the WebSocket is not connected */
+/** polling while the WebSocket is not connected */
 export const FALLBACK_POLL_MS = 30_000;
+/** polling while it is: a dead worker or a quiet market sends nothing, but the heartbeat
+ * and connector statuses must still move */
+export const CONNECTED_POLL_MS = 45_000;
 
 /** Events that change what the dashboard shows (orders, cash, portfolios, broker, risk). */
 const RELEVANT_EVENT =
@@ -45,7 +48,7 @@ export function isDashboardEvent(type: string): boolean {
 /**
  * Real-time dashboard summary: quotes of the held symbols (WS) and every relevant event
  * trigger a throttled refetch (leading + trailing, at most one per LIVE_REFETCH_MS);
- * polling every 30 s only while the WS is disconnected.
+ * polling every 45 s while the WS is connected (heartbeat, connectors), 30 s when not.
  */
 export function useDashboard() {
   const qc = useQueryClient();
@@ -66,7 +69,7 @@ export function useDashboard() {
   const query = useQuery({
     queryKey: dashboardKey,
     queryFn: () => apiFetch<Dashboard>("/api/dashboard"),
-    refetchInterval: status === "open" ? false : FALLBACK_POLL_MS,
+    refetchInterval: status === "open" ? CONNECTED_POLL_MS : FALLBACK_POLL_MS,
   });
   const held = (query.data?.held_symbols ?? []).join(",");
   useEffect(() => {

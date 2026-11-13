@@ -217,15 +217,29 @@ describe("Dashboard", () => {
     expect(fetches).toBe(before + 1);
   });
 
-  it("shows «Live» with the update time, and «In pausa» when the WS is down", async () => {
-    const { unmount } = renderApp("/");
+  it("shows «Live» while connected (even when quiet), «In pausa» only when the WS is down", async () => {
+    const { unmount, queryClient } = renderApp("/");
     const indicator = await screen.findByRole("status", { name: "Aggiornamento dashboard" });
-    await waitFor(() => expect(indicator).toHaveTextContent("Live"));
-    expect(indicator).toHaveTextContent("aggiornato alle");
+    await waitFor(() => expect(indicator).toHaveTextContent(/Live · ultimo aggiornamento \d{2}:\d{2}:\d{2}/));
+    // N1: still polled while connected (dead worker, quiet market)
+    const query = queryClient.getQueryCache().find({ queryKey: ["dashboard"], exact: true });
+    expect(query?.observers[0]?.options.refetchInterval).toBe(45_000);
+    // quiet for longer than the freshness window: still «Live», never «In pausa»
+    const realNow = Date.now;
+    Date.now = () => realNow() + 60_000;
+    try {
+      await act(() => new Promise((r) => setTimeout(r, 1100)));
+      expect(indicator).toHaveTextContent("Live · ultimo aggiornamento");
+      expect(indicator).not.toHaveTextContent("In pausa");
+    } finally {
+      Date.now = realNow;
+    }
     unmount();
     live.status = "closed";
-    renderApp("/");
+    const second = renderApp("/");
     const paused = await screen.findByRole("status", { name: "Aggiornamento dashboard" });
-    await waitFor(() => expect(paused).toHaveTextContent("In pausa"));
+    await waitFor(() => expect(paused).toHaveTextContent("In pausa · ultimo aggiornamento"));
+    const polled = second.queryClient.getQueryCache().find({ queryKey: ["dashboard"], exact: true });
+    expect(polled?.observers[0]?.options.refetchInterval).toBe(30_000);
   });
 });

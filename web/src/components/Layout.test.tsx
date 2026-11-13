@@ -164,4 +164,22 @@ describe("Layout", () => {
     renderApp("/");
     expect(await screen.findByText("Modalità dei portafogli non verificabile al momento", {}, { timeout: 4000 })).toBeInTheDocument();
   });
+
+  it("moves focus into the drawer, keeps Tab inside and returns it to the menu button", async () => {
+    const user = userEvent.setup();
+    renderApp("/");
+    const open = await screen.findByRole("button", { name: "Apri menu" });
+    await user.click(open);
+    const menu = screen.getByRole("navigation", { name: "Navigazione principale (menu)" });
+    const links = within(menu).getAllByRole("link");
+    expect(links[0]).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(links[links.length - 1]).toHaveFocus(); // wraps backwards
+    await user.tab();
+    expect(links[0]).toHaveFocus(); // wraps forwards
+    for (let i = 0; i < links.length + 2; i++) await user.tab();
+    expect(menu.contains(document.activeElement)).toBe(true);
+    await user.keyboard("{Escape}");
+    expect(open).toHaveFocus();
+  });
 });

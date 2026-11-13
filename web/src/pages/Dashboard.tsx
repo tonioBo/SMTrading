@@ -101,7 +101,8 @@ function MarginAlerts({ alerts, names }: { alerts: MarginAlert[]; names: Map<str
   );
 }
 
-/** «Live» (green) while the WS is connected and the data is < 10 s old; else «In pausa». */
+/** «Live» while the WS is connected (green dot when the data is < 10 s old), «In pausa»
+ * only when it is disconnected; always with the time of the last update. */
 export const LIVE_FRESH_MS = 10_000;
 
 function LiveIndicator({ live, updatedAt }: { live: boolean; updatedAt: number }) {
@@ -114,9 +115,9 @@ function LiveIndicator({ live, updatedAt }: { live: boolean; updatedAt: number }
   const time = updatedAt ? new Date(updatedAt).toLocaleTimeString("it-IT") : "—";
   return (
     <span role="status" aria-label="Aggiornamento dashboard" className="inline-flex items-center gap-2 text-xs text-muted">
-      <span className={cn("inline-block h-2 w-2 rounded-full", fresh ? "bg-gain" : "bg-muted")} aria-hidden />
-      <span className={fresh ? "font-medium text-gain" : ""}>{fresh ? "Live" : "In pausa"}</span>
-      <span>· aggiornato alle {time}</span>
+      <span className={cn("inline-block h-2 w-2 rounded-full", fresh ? "bg-gain" : live ? "bg-gain/50" : "bg-muted")} aria-hidden />
+      <span className={live ? "font-medium text-gain" : ""}>{live ? "Live" : "In pausa"}</span>
+      <span>{` · ultimo aggiornamento ${time}`}</span>
     </span>
   );
 }
