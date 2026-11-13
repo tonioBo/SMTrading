@@ -71,7 +71,8 @@ services:
     image: smtrading-web:local
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3000:80"  # local only (ruling R3)
+      - "127.0.0.1:3000:80"  # local access (used by e2e)
+      - "80:80"              # LAN access: http://<pc-ip>/ (user request; API/MCP stay on 127.0.0.1)
     depends_on:
       - api
     networks: [smtrading-net]
