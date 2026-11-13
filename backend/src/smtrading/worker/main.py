@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
+from smtrading.engine.processor import OrderProcessor
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.marketdata.streaming import StreamManager
 
@@ -79,6 +80,10 @@ async def run() -> None:
                                   lambda: StreamManager(router, redis, sessionmaker).run())
                     ),
                     tg.create_task(supervise("health checks", lambda: health_checks(router))),
+                    tg.create_task(
+                        supervise("order processor",
+                                  lambda: OrderProcessor(sessionmaker, redis, router).run())
+                    ),
                 ]
                 await stop.wait()
                 log.info("shutdown requested")

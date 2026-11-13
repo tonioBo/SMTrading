@@ -67,6 +67,14 @@ async def test_supervise_logs_crash_and_restarts(monkeypatch, caplog):
     assert any("crashed" in r.getMessage() for r in caplog.records)
 
 
+class _IdleProcessor:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def run(self):
+        await asyncio.sleep(3600)
+
+
 class _FakeEngine:
     disposed = False
 
@@ -98,6 +106,7 @@ async def test_sigterm_shuts_down_cleanly(monkeypatch):
     monkeypatch.setattr(worker.Redis, "from_url", staticmethod(lambda url: redis))
     monkeypatch.setattr(worker, "make_engine", lambda url: engine)
     monkeypatch.setattr(worker, "StreamManager", FakeManager)
+    monkeypatch.setattr(worker, "OrderProcessor", _IdleProcessor)
     await asyncio.wait_for(worker.run(), 2)
     assert cancelled == [True]
     assert redis.closed
@@ -153,5 +162,35 @@ async def test_run_supervises_health_checks(monkeypatch):
     monkeypatch.setattr(worker, "make_engine", lambda url: _FakeEngine())
     monkeypatch.setattr(worker, "StreamManager", FakeManager)
     monkeypatch.setattr(worker, "health_checks", fake_health)
+    monkeypatch.setattr(worker, "OrderProcessor", _IdleProcessor)
     await asyncio.wait_for(worker.run(), 2)
     assert started.is_set()
+
+
+async def test_run_supervises_order_processor(monkeypatch):
+    started = asyncio.Event()
+    seen = {}
+
+    class FakeProcessor:
+        def __init__(self, sessionmaker, redis, qs, **kwargs):
+            seen.update(sessionmaker=sessionmaker, redis=redis, qs=qs)
+
+        async def run(self):
+            started.set()
+            signal.raise_signal(signal.SIGTERM)
+            await asyncio.sleep(3600)
+
+    redis = _FlakyRedis()
+    monkeypatch.setattr(
+        worker, "get_settings",
+        lambda: SimpleNamespace(redis_url="redis://unused:6379/0", database_url="x"),
+    )
+    monkeypatch.setattr(worker.Redis, "from_url", staticmethod(lambda url: redis))
+    monkeypatch.setattr(worker, "make_engine", lambda url: _FakeEngine())
+    monkeypatch.setattr(worker, "StreamManager", _IdleProcessor)
+    monkeypatch.setattr(worker, "health_checks", lambda router: asyncio.sleep(3600))
+    monkeypatch.setattr(worker, "OrderProcessor", FakeProcessor)
+    await asyncio.wait_for(worker.run(), 2)
+    assert started.is_set()
+    assert seen["redis"] is redis
+    assert isinstance(seen["qs"], worker.MarketDataRouter)
