@@ -4,7 +4,7 @@ get_performance, get_risk_limits. Every per-portfolio tool needs `read` on it.
 `portfolio_snapshot` is shared with the portfolio:// resource (mcp/resources.py).
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from typing import Any
 from uuid import UUID
@@ -20,8 +20,9 @@ from smtrading.common.money import quantize_money
 from smtrading.corporate.snapshots import local_date
 from smtrading.ledger.models import Account, Journal, JournalLine, JournalType
 from smtrading.mcp.dto import (
-    parse_decimal,
     parse_enum,
+    parse_int,
+    parse_ts,
     parse_uuid,
     position_valuation_dto,
     valuation_dto,
@@ -57,27 +58,6 @@ def _required_uuid(v: str | None, field: str) -> UUID:
     if parsed is None:
         raise _invalid(field, f"{field} is required")
     return parsed
-
-
-def _parse_ts(v: str | None, field: str) -> datetime | None:
-    """ISO 8601; a naive timestamp is taken as UTC."""
-    if v is None:
-        return None
-    try:
-        ts = datetime.fromisoformat(str(v))
-    except ValueError:
-        raise _invalid(field, f"{field} must be an ISO 8601 timestamp") from None
-    return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
-
-
-def _parse_int(v: Any, field: str, lo: int, hi: int | None = None) -> int | None:
-    d = parse_decimal(v, field)
-    if d is None:
-        return None
-    if d != d.to_integral_value() or d < lo or (hi is not None and d > hi):
-        bound = f"between {lo} and {hi}" if hi is not None else f">= {lo}"
-        raise _invalid(field, f"{field} must be an integer {bound}")
-    return int(d)
 
 
 async def _readable_portfolio(ctx: ToolCtx, portfolio_id: str | None) -> Portfolio:
@@ -172,10 +152,10 @@ async def _transactions(
     ctx: ToolCtx, portfolio_id: str | None, from_ts: str | None, to_ts: str | None,
     type: str | list[str] | None, limit: Any, before_seq: Any,
 ) -> list[dict]:
-    start, end = _parse_ts(from_ts, "from_ts"), _parse_ts(to_ts, "to_ts")
+    start, end = parse_ts(from_ts, "from_ts"), parse_ts(to_ts, "to_ts")
     types = _parse_types(type)
-    n = _parse_int(limit, "limit", 1, MAX_TRANSACTIONS) or 100
-    before = _parse_int(before_seq, "before_seq", 1)
+    n = parse_int(limit, "limit", 1, MAX_TRANSACTIONS) or 100
+    before = parse_int(before_seq, "before_seq", 1)
     portfolio = await _readable_portfolio(ctx, portfolio_id)
 
     own_lines = (
@@ -320,8 +300,8 @@ def register(mcp: MCPServer) -> None:
         from_ts: str | None = None,
         to_ts: str | None = None,
         type: str | list[str] | None = None,
-        limit: float | str | None = 100,
-        before_seq: float | str | None = None,
+        limit: int | str | None = 100,
+        before_seq: int | str | None = None,
     ) -> CallToolResult:
         """Ledger journals touching this portfolio, newest first (seq descending):
         [{id, seq, type, created_at, reason, order_id, lines: [{asset, kind, quantity,

@@ -124,8 +124,11 @@ async def _seed_demo_agent(session: AsyncSession) -> str | None:
     """Create the demo agent (trade on Demo) if missing; its token is printed exactly once."""
     if await session.scalar(select(Agent.id).where(Agent.name == DEMO_AGENT_NAME)) is not None:
         return None
-    agent, token = await create_agent(session, DEMO_AGENT_NAME)
     demo_id = await session.scalar(select(Portfolio.id).where(Portfolio.name == DEMO_PORTFOLIO_NAME))
+    if demo_id is None:
+        log.warning("portfolio %r missing: demo agent not created", DEMO_PORTFOLIO_NAME)
+        return None
+    agent, token = await create_agent(session, DEMO_AGENT_NAME)
     await assign_portfolio(session, agent.id, demo_id, "trade")
     return token
 

@@ -115,3 +115,14 @@ async def test_seed_creates_agent_once(db_session, capsys):
 
     assert await run_seed(db_session) is None
     assert len((await db_session.execute(select(Agent))).scalars().all()) == 1
+
+
+async def test_demo_agent_skipped_without_demo_portfolio(db_session, caplog):
+    from smtrading import seed
+    from smtrading.agents.models import Agent
+
+    assert await db_session.scalar(select(Portfolio.id).where(Portfolio.name == "Demo")) is None
+    with caplog.at_level("WARNING", logger="smtrading.seed"):
+        assert await seed._seed_demo_agent(db_session) is None
+    assert "demo agent not created" in caplog.text
+    assert (await db_session.execute(select(Agent))).scalars().all() == []

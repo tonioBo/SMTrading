@@ -82,7 +82,7 @@ async def test_full_flow(mcp_server, env):
     assert not err and positions == []
 
     err, alerts = await call("get_triggered_alerts")
-    assert not err and isinstance(alerts, list)
+    assert not err and isinstance(alerts["alerts"], list)
 
 
 async def test_triggered_alerts_scope_order_and_since(mcp_server, env):
@@ -97,19 +97,57 @@ async def test_triggered_alerts_scope_order_and_since(mcp_server, env):
         await s.commit()
     await engine.dispose()
 
-    err, alerts = await env("get_triggered_alerts")
+    err, page = await env("get_triggered_alerts")
     assert not err
+    alerts = page["alerts"]
     assert [a["payload"]["n"] for a in alerts] == [2, 1]  # newest first, foreign one excluded
     assert set(alerts[0]) == {"id", "portfolio_id", "kind", "payload", "created_at"}
+    assert page["next_after_id"] == alerts[0]["id"]
 
     err, none = await env("get_triggered_alerts", {"since": alerts[0]["created_at"]})
-    assert not err and none == []
+    assert not err and none == {"alerts": [], "next_after_id": None}
     err, limited = await env("get_triggered_alerts", {"limit": 1})
-    assert not err and len(limited) == 1
+    assert not err and len(limited["alerts"]) == 1
     err, bad = await env("get_triggered_alerts", {"since": "yesterday"})
     assert err and bad["code"] == "INVALID_ORDER"
     err, bad = await env("get_triggered_alerts", {"limit": 501})
     assert err and bad["code"] == "INVALID_ORDER"
+    err, bad = await env("get_triggered_alerts", {"after_id": 10**9})
+    assert err and bad["details"]["field"] == "after_id"
+
+
+async def test_triggered_alerts_polling_cursor(mcp_server, env):
+    engine = make_engine(mcp_server.db_url)
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as s:
+            # one transaction: identical created_at, ordered by id
+            s.add_all([Notification(portfolio_id=mcp_server.demo_id, kind="alert",
+                                    payload={"n": i}) for i in range(3)])
+            await s.commit()
+        err, first = await env("get_triggered_alerts", {"limit": 1})
+        assert not err and [a["payload"]["n"] for a in first["alerts"]] == [2]
+        async with AsyncSession(engine, expire_on_commit=False) as s:
+            s.add(Notification(portfolio_id=mcp_server.demo_id, kind="alert", payload={"n": -1}))
+            await s.commit()
+
+        err, all_ = await env("get_triggered_alerts", {"since": "2000-01-01T00:00:00Z"})
+        assert not err
+        ns = [a["payload"]["n"] for a in all_["alerts"]]
+        assert ns == [0, 1, 2, -1]  # ascending with a cursor
+        ids = [a["id"] for a in all_["alerts"]]
+
+        seen, after = [], ids[0]
+        while True:
+            err, page = await env("get_triggered_alerts", {"after_id": after, "limit": 2})
+            assert not err
+            seen += [a["id"] for a in page["alerts"]]
+            if not page["alerts"]:
+                assert page["next_after_id"] == after
+                break
+            after = page["next_after_id"]
+        assert seen == ids[1:]
+    finally:
+        await engine.dispose()
 
 
 async def test_docs_list_every_registered_tool():

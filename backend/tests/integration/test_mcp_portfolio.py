@@ -93,19 +93,19 @@ async def test_get_portfolio_exact_values(mcp_server, mcp_call, book):
     assert p["portfolio_id"] == str(mcp_server.demo_id)
     assert p["base_currency"] == "EUR"
     assert D(p["cash"]["EUR"]) == D("98497.50")
-    assert p["cash_eur"] == "98497.50"
-    assert p["equity_eur"] == "100097.50"
-    assert p["exposure_eur"] == "1600.00"
-    assert p["initial_req_eur"] == "1600.00"
-    assert p["maint_req_eur"] == "800.00"
-    assert p["warn_req_eur"] == "1200.00"
-    assert p["buying_power_eur"] == "98497.50"
+    assert p["cash_eur"] == "98497.5"
+    assert p["equity_eur"] == "100097.5"
+    assert p["exposure_eur"] == "1600"
+    assert p["initial_req_eur"] == "1600"
+    assert p["maint_req_eur"] == "800"
+    assert p["warn_req_eur"] == "1200"
+    assert p["buying_power_eur"] == "98497.5"
     assert p["margin_level"] == "ok"
     assert p["stale_symbols"] == []
     assert p["status"] == "active"
     assert p["reduce_only_reason"] is None
     assert D(p["leverage"]) == D(1)
-    assert p["day_pnl_eur"] == "97.50"
+    assert p["day_pnl_eur"] == "97.5"
     assert p["day_pnl_pct"] == "0.0975"
     [pos] = p["positions"]
     assert D(pos["qty"]) == D(100) and D(pos["mark"]) == D(16)
@@ -123,8 +123,8 @@ async def test_day_pnl_excludes_cash_flows(mcp_server, mcp_call, book):
         mcp_server.url, mcp_server.token, "get_portfolio",
         {"portfolio_id": str(mcp_server.demo_id)},
     )
-    assert p["equity_eur"] == "100897.50"  # +800 net deposited
-    assert p["day_pnl_eur"] == "97.50"  # only the trading result
+    assert p["equity_eur"] == "100897.5"  # +800 net deposited
+    assert p["day_pnl_eur"] == "97.5"  # only the trading result
     assert p["day_pnl_pct"] == "0.0975"
 
 
@@ -242,9 +242,9 @@ async def test_get_performance(mcp_server, mcp_call, book):
         {"portfolio_id": str(mcp_server.demo_id)},  # default 1m
     )
     assert not is_error, perf
-    assert [p["equity_eur"] for p in perf["series"]] == ["100.00", "95.00", "110.00"]
-    assert perf["return_pct"] == "10.0000"
-    assert perf["max_drawdown_pct"] == "-5.0000"
+    assert [p["equity_eur"] for p in perf["series"]] == ["100", "95", "110"]
+    assert perf["return_pct"] == "10"
+    assert perf["max_drawdown_pct"] == "-5"
     assert perf["sharpe"] is None
     is_error, err = await mcp_call(
         mcp_server.url, mcp_server.token, "get_performance",
@@ -273,13 +273,13 @@ async def test_get_risk_limits(mcp_server, mcp_call, book):
     assert D(r["profile"]["max_daily_loss_pct"]) == D(10)
     assert r["profile"]["short_allowed"] is True
     assert r["margin"] == {
-        "equity_eur": "100147.50", "maint_req_eur": "800.00", "warn_req_eur": "1200.00",
-        "buying_power_eur": "98547.50", "margin_level": "ok",
+        "equity_eur": "100147.5", "maint_req_eur": "800", "warn_req_eur": "1200",
+        "buying_power_eur": "98547.5", "margin_level": "ok",
     }
-    assert r["distance_to_maintenance_eur"] == "99347.50"
+    assert r["distance_to_maintenance_eur"] == "99347.5"
     # loss = 100200 - 100147.50 + 50 deposited
     assert r["daily_loss"] == {
-        "day_open_equity_eur": "100200.00", "current_eur": "102.50", "limit_eur": "10020.00",
+        "day_open_equity_eur": "100200", "current_eur": "102.5", "limit_eur": "10020",
     }
     assert r["kill_switch"] is True
 

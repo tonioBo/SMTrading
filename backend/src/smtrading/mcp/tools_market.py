@@ -18,15 +18,18 @@ from smtrading.agents.models import AgentPortfolio
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.instruments.market_hours import all_market_status, market_status
 from smtrading.instruments.models import AssetClass, Instrument
+from smtrading.instruments.service import canonical_symbol
 from smtrading.marketdata.indicators_service import IndicatorSpec, compute_indicators
 from smtrading.marketdata.types import ScreenFilter, Timeframe
-from smtrading.mcp.dto import instrument_dto, parse_decimal, parse_enum
+from smtrading.mcp.dto import instrument_dto, parse_decimal, parse_enum, parse_int, parse_ts
 from smtrading.mcp.runtime import ToolCtx, run_tool
 from smtrading.positions.models import Position
 
 MAX_QUOTE_SYMBOLS = 50
 MAX_BARS = 1000
 MAX_LOOKBACK = 1000
+MAX_PERIOD = 1000
+_PERIOD_PARAMS = frozenset({"period", "fast", "slow", "signal"})
 MAX_SEARCH = 100
 MAX_LIST = 200
 DEFAULT_BAR_COUNT = 200
@@ -57,22 +60,8 @@ def _str(v: Any, field: str) -> str:
 
 
 def _int(v: Any, field: str, default: int, hi: int) -> int:
-    d = parse_decimal(v, field)
-    if d is None:
-        return default
-    if d != d.to_integral_value() or not 1 <= d <= hi:
-        raise _invalid(field, f"{field} must be an integer between 1 and {hi}")
-    return int(d)
-
-
-def _ts(v: Any, field: str) -> datetime | None:
-    if v is None:
-        return None
-    try:
-        ts = datetime.fromisoformat(str(v))
-    except ValueError:
-        raise _invalid(field, f"{field} must be an ISO 8601 timestamp") from None
-    return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
+    n = parse_int(v, field, 1, hi)
+    return default if n is None else n
 
 
 def _date(v: Any, field: str, *, required: bool = False) -> date | None:
@@ -160,7 +149,7 @@ async def _search_instruments(
 
 
 async def _get_instrument(ctx: ToolCtx, symbol: Any) -> dict:
-    sym = _str(symbol, "symbol")
+    sym = canonical_symbol(_str(symbol, "symbol"))
     instr = await ctx.session.get(Instrument, sym)
     if instr is None:
         raise SMTError(ErrorCode.SYMBOL_NOT_FOUND, f"unknown symbol {sym}", {"symbol": sym})
@@ -195,7 +184,7 @@ async def _get_bars(
     sym = _str(symbol, "symbol")
     tf = _timeframe(timeframe)
     n = _int(limit, "limit", 500, MAX_BARS)
-    start, end = _ts(from_ts, "from_ts"), _ts(to_ts, "to_ts")
+    start, end = parse_ts(from_ts, "from_ts"), parse_ts(to_ts, "to_ts")
     end = end or datetime.now(UTC)
     start = start or end - _DEFAULT_SPAN[tf]
     if start >= end:
@@ -221,6 +210,12 @@ def _specs(indicators: Any) -> list[IndicatorSpec]:
         params = item.get("params") or {}
         if not isinstance(params, dict):
             raise _invalid("indicators", "indicator params must be an object")
+        for key in _PERIOD_PARAMS & set(params):
+            v = params[key]
+            if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= MAX_PERIOD:
+                raise _invalid(
+                    "indicators.params", f"{key} must be an integer between 1 and {MAX_PERIOD}"
+                )
         specs.append(IndicatorSpec(_str(item.get("name"), "indicators.name"), params))  # type: ignore[arg-type]
     return specs
 
@@ -287,9 +282,9 @@ async def _screen(ctx: ToolCtx, a: dict[str, Any]) -> list[dict]:
 
 
 def register(mcp: MCPServer) -> None:
-    @mcp.tool()
+    @mcp.tool(structured_output=False)
     async def search_instruments(
-        query: str, asset_class: str | None = None, limit: int = 20
+        query: str, asset_class: str | None = None, limit: int | str | None = 20
     ) -> CallToolResult:
         """Search instruments by symbol or name: the local catalogue first, then market
         data providers. `tradable` is true only for active local instruments. asset_class:
@@ -298,14 +293,14 @@ def register(mcp: MCPServer) -> None:
         return await run_tool("search_instruments", params,
                               lambda ctx: _search_instruments(ctx, query, asset_class, limit))
 
-    @mcp.tool()
+    @mcp.tool(structured_output=False)
     async def get_instrument(symbol: str) -> CallToolResult:
         """Instrument master data (market, currency, lot/tick size, shortable) plus the
         current status of its market."""
         return await run_tool("get_instrument", {"symbol": symbol},
                               lambda ctx: _get_instrument(ctx, symbol))
 
-    @mcp.tool()
+    @mcp.tool(structured_output=False)
     async def get_quote(symbols: list[str]) -> CallToolResult:
         """Latest quotes for up to 50 symbols: {symbol: {bid, ask, last, ts, provider}} or
         {symbol: {"error": code}} for a symbol that failed. Prices are returned as strings
@@ -313,10 +308,10 @@ def register(mcp: MCPServer) -> None:
         return await run_tool("get_quote", {"symbols": symbols},
                               lambda ctx: _get_quote(ctx, symbols))
 
-    @mcp.tool()
+    @mcp.tool(structured_output=False)
     async def get_bars(
         symbol: str, timeframe: str, from_ts: str | None = None, to_ts: str | None = None,
-        limit: int = 500,
+        limit: int | str | None = 500,
     ) -> CallToolResult:
         """OHLCV bars, oldest first (the latest `limit`, max 1000). timeframe: 1m | 5m |
         15m | 1h | 1d | 1wk. Defaults: to_ts=now, from_ts=200 bars back (1d: 300 days).
@@ -327,48 +322,53 @@ def register(mcp: MCPServer) -> None:
             "get_bars", params,
             lambda ctx: _get_bars(ctx, symbol, timeframe, from_ts, to_ts, limit))
 
-    @mcp.tool()
+    @mcp.tool(structured_output=False)
     async def get_market_status(market: str | None = None) -> CallToolResult:
         """Open/closed status and next open/close of a market (NASDAQ, NYSE, MTA, XETRA,
         CRYPTO, FX), or of all markets when omitted."""
         return await run_tool("get_market_status", {"market": market},
                               lambda ctx: _async(_market_status, market))
 
-    @mcp.tool()
+    @mcp.tool(structured_output=False)
     async def get_indicators(
-        symbol: str, timeframe: str, indicators: list[dict], lookback: int = 100
+        symbol: str, timeframe: str, indicators: list[dict], lookback: int | str | None = 100
     ) -> CallToolResult:
         """Technical indicators over the last `lookback` bars. indicators is a list of
-        {name, params}: sma/ema/rsi/atr/bollinger take {period}, macd {fast, slow, signal},
-        vwap {}. Values are returned as strings for exact precision."""
+        {name, params}: sma/ema/rsi/atr/bollinger take {period} (bollinger also k), macd
+        {fast, slow, signal}, vwap {}; periods are integers 1-1000. Result: {symbol,
+        timeframe, ts, specs: [{key, name, params}], <key>: values}; the key is the name,
+        or name_<param values> (e.g. sma_50) when a name is asked more than once. Values
+        are returned as strings for exact precision."""
         params = {"symbol": symbol, "timeframe": timeframe, "indicators": indicators,
                   "lookback": lookback}
         return await run_tool(
             "get_indicators", params,
             lambda ctx: _get_indicators(ctx, symbol, timeframe, indicators, lookback))
 
-    @mcp.tool()
+    @mcp.tool(structured_output=False)
     async def get_fx_rate(base: str, quote: str) -> CallToolResult:
         """Units of `quote` per one unit of `base`, as a string for exact precision."""
         return await run_tool(
             "get_fx_rate", {"base": base, "quote": quote},
             lambda ctx: _fx(ctx, base, quote))
 
-    @mcp.tool()
-    async def get_news(symbols: list[str] | None = None, limit: int = 20) -> CallToolResult:
+    @mcp.tool(structured_output=False)
+    async def get_news(
+        symbols: list[str] | None = None, limit: int | str | None = 20
+    ) -> CallToolResult:
         """Latest news, newest first, for the given symbols (default: the symbols held in
         your portfolios)."""
         return await run_tool("get_news", {"symbols": symbols, "limit": limit},
                               lambda ctx: _get_news(ctx, symbols, limit))
 
-    @mcp.tool()
+    @mcp.tool(structured_output=False)
     async def get_fundamentals(symbol: str) -> CallToolResult:
         """Fundamentals: sector, market cap, P/E, EPS, dividend yield (percent), 52-week
         range. Numbers are returned as strings for exact precision."""
         return await run_tool("get_fundamentals", {"symbol": symbol},
                               lambda ctx: _fundamentals(ctx, symbol))
 
-    @mcp.tool()
+    @mcp.tool(structured_output=False)
     async def get_earnings_calendar(
         from_date: str, to_date: str, symbols: list[str] | None = None
     ) -> CallToolResult:
@@ -379,7 +379,7 @@ def register(mcp: MCPServer) -> None:
             "get_earnings_calendar", params,
             lambda ctx: _calendar(ctx, symbols, from_date, to_date, "earnings"))
 
-    @mcp.tool()
+    @mcp.tool(structured_output=False)
     async def get_dividends(
         symbol: str, from_date: str | None = None, to_date: str | None = None
     ) -> CallToolResult:
@@ -388,12 +388,12 @@ def register(mcp: MCPServer) -> None:
         return await run_tool("get_dividends", params,
                               lambda ctx: _get_dividends(ctx, symbol, from_date, to_date))
 
-    @mcp.tool()
+    @mcp.tool(structured_output=False)
     async def screen(
         asset_class: str | None = None, sector: str | None = None,
         min_market_cap: Num = None, max_market_cap: Num = None,
         min_change_pct: Num = None, max_change_pct: Num = None, min_volume: Num = None,
-        max_pe: Num = None, limit: int = 25,
+        max_pe: Num = None, limit: int | str | None = 25,
     ) -> CallToolResult:
         """Screen instruments by filters. Pass numbers as strings for exact precision."""
         params = {

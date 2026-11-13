@@ -1,6 +1,9 @@
 """Portfolio performance from the `equity_snapshots` (periodic and day_open rows).
 
-- `series`: every snapshot with ts >= now - period, oldest first, equity in cents;
+- `series`: snapshots with ts >= now - period, oldest first, equity in cents, downsampled
+  for transport: periods of 1m and longer keep only the `day_open` points (all points when
+  the period has no day_open yet); every series is then cut into at most `MAX_SERIES_POINTS`
+  equal buckets of consecutive points, keeping the last point of each bucket;
 - `return_pct` = (last / first - 1) x 100;
 - `max_drawdown_pct`: the deepest fall from a running peak, (value / peak - 1) x 100,
   so 0 or negative;
@@ -8,7 +11,8 @@
   `day_open` snapshots in the period, x sqrt(252); None with fewer than 3 day_open
   points or a zero deviation.
 
-Ratios are Decimal quantized to 4 decimals (None when there is no series). External
+The statistics are computed on every snapshot of the period (periodic and day_open), not
+on the downsampled series. Ratios are Decimal quantized to 4 decimals (None when there is no series). External
 cash flows are not neutralised: a deposit shows up as a return.
 """
 
@@ -31,6 +35,8 @@ _SPANS = {
     "1d": timedelta(days=1), "1w": timedelta(weeks=1), "1m": timedelta(days=30),
     "3m": timedelta(days=90), "1y": timedelta(days=365), "all": None,
 }
+_DAILY_SERIES_PERIODS = frozenset({"1m", "3m", "1y", "all"})
+MAX_SERIES_POINTS = 500
 _TRADING_DAYS = 252
 _PREC = 60
 _Q4 = Decimal("0.0001")
@@ -69,6 +75,14 @@ def _sharpe(day_opens: list[Decimal]) -> Decimal | None:
     return _q4(mean / variance.sqrt() * Decimal(_TRADING_DAYS).sqrt())
 
 
+def _downsample[T](points: list[T], limit: int = MAX_SERIES_POINTS) -> list[T]:
+    """At most `limit` points: the last of each run of ceil(n / limit) consecutive points."""
+    size = -(-len(points) // limit)
+    if size <= 1:
+        return points
+    return [points[min(i + size, len(points)) - 1] for i in range(0, len(points), size)]
+
+
 async def get_performance(
     session: AsyncSession, portfolio_id: UUID, period: Period, *,
     now: datetime | None = None,
@@ -88,9 +102,14 @@ async def get_performance(
         stmt = stmt.where(EquitySnapshot.ts >= (now or datetime.now(UTC)) - span)
     rows = (await session.execute(stmt)).all()
 
-    series = [{"ts": ts, "equity_eur": quantize_money(eq, "EUR")} for ts, _, eq in rows]
     if not rows:
         return {"series": [], "return_pct": None, "max_drawdown_pct": None, "sharpe": None}
+    points = rows
+    if period in _DAILY_SERIES_PERIODS:
+        points = [r for r in rows if r[1] == SnapshotKind.day_open] or rows
+    series = [
+        {"ts": ts, "equity_eur": quantize_money(eq, "EUR")} for ts, _, eq in _downsample(points)
+    ]
     values = [eq for _, _, eq in rows]
     with localcontext() as ctx:
         ctx.prec = _PREC

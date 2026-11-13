@@ -1,6 +1,7 @@
 """JSON shapes of MCP results and parsing of MCP arguments.
 
-Wire rules: Decimal -> str, datetime -> ISO 8601 UTC, date -> ISO, UUID -> str,
+Wire rules: Decimal -> plain-notation str (no exponent, trailing zeros stripped, "0" for
+zero: `common.money.decimal_to_str`), datetime -> ISO 8601 UTC, date -> ISO, UUID -> str,
 Enum -> its value. Each `*_dto` returns a fixed field set (the `*_FIELDS` tuples);
 `to_jsonable` dispatches known ORM rows / dataclasses to them and converts the rest.
 """
@@ -13,6 +14,7 @@ from enum import Enum
 from typing import Any
 
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import Fill, Order
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Journal, JournalLine
@@ -132,7 +134,9 @@ def to_jsonable(obj: Any) -> Any:
         return conv(obj)
     if isinstance(obj, Enum):
         return obj.value
-    if isinstance(obj, Decimal | uuid.UUID):
+    if isinstance(obj, Decimal):
+        return decimal_to_str(obj) if obj.is_finite() else str(obj)
+    if isinstance(obj, uuid.UUID):
         return str(obj)
     if isinstance(obj, datetime):
         return obj.astimezone(UTC).isoformat() if obj.tzinfo else obj.isoformat()
@@ -183,3 +187,25 @@ def parse_enum[E: Enum](cls: type[E], v: str | None, field: str) -> E | None:
     except ValueError:
         allowed = [m.value for m in cls]
         raise _invalid(field, f"{field} must be one of {allowed}", allowed=allowed) from None
+
+
+def parse_ts(v: str | None, field: str) -> datetime | None:
+    """ISO 8601; a naive timestamp is taken as UTC."""
+    if v is None:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(v))
+    except ValueError:
+        raise _invalid(field, f"{field} must be an ISO 8601 timestamp") from None
+    return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
+
+
+def parse_int(v: Any, field: str, lo: int, hi: int | None = None) -> int | None:
+    """None -> None; an integral number (or numeric string) within [lo, hi]."""
+    d = parse_decimal(v, field)
+    if d is None:
+        return None
+    if d != d.to_integral_value() or d < lo or (hi is not None and d > hi):
+        bound = f"between {lo} and {hi}" if hi is not None else f">= {lo}"
+        raise _invalid(field, f"{field} must be an integer {bound}")
+    return int(d)

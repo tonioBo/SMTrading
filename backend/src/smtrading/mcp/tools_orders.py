@@ -20,7 +20,14 @@ from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine import service as engine
 from smtrading.engine.models import Fill, Order, OrderSide, OrderStatus, OrderType, TimeInForce
 from smtrading.engine.service import PlaceOrderRequest
-from smtrading.mcp.dto import fill_dto, order_dto, parse_decimal, parse_enum, parse_uuid
+from smtrading.mcp.dto import (
+    fill_dto,
+    order_dto,
+    parse_decimal,
+    parse_enum,
+    parse_int,
+    parse_uuid,
+)
 from smtrading.mcp.runtime import ToolCtx, run_tool
 
 MAX_ORDERS = 500
@@ -46,15 +53,6 @@ def _str(v: Any, field: str, *, required: bool = False) -> str | None:
     if not isinstance(v, str) or not v.strip():
         raise _invalid(field, f"{field} must be a non-empty string")
     return v.strip()
-
-
-def _limit(v: Any) -> int:
-    d = parse_decimal(v, "limit")
-    if d is None:
-        return 100
-    if d != d.to_integral_value() or not 1 <= d <= MAX_ORDERS:
-        raise _invalid("limit", f"limit must be an integer between 1 and {MAX_ORDERS}")
-    return int(d)
 
 
 async def _portfolio(ctx: ToolCtx, portfolio_id: Any, needed: Literal["read", "trade"]) -> UUID:
@@ -318,7 +316,7 @@ def register(mcp: MCPServer) -> None:
 
     @mcp.tool(structured_output=False)
     async def list_orders(
-        portfolio_id: str, status: str | list[str] | None = None, limit: Num = 100,
+        portfolio_id: str, status: str | list[str] | None = None, limit: int | str | None = 100,
     ) -> CallToolResult:
         """The portfolio's orders, newest first. status: one of new, held, queued, pending,
         triggered, filled, canceled, rejected, expired, or a list of them. limit: 1..500
@@ -327,7 +325,7 @@ def register(mcp: MCPServer) -> None:
 
         async def fn(ctx: ToolCtx) -> Any:
             statuses = _parse_statuses(status)
-            n = _limit(limit)
+            n = parse_int(limit, "limit", 1, MAX_ORDERS) or 100
             pid = await _portfolio(ctx, portfolio_id, "read")
             return await engine.list_orders(ctx.session, pid, status=statuses, limit=n)
 

@@ -79,6 +79,8 @@ async def test_get_instrument(env):
     assert not err
     assert out["symbol"] == SYM and out["market_status"]["market"] == "CRYPTO"
     assert out["market_status"]["is_open"] is True
+    err, out = await env["call"]("get_instrument", {"symbol": " btc-usd "})
+    assert not err and out["symbol"] == SYM
     err, out = await env["call"]("get_instrument", {"symbol": "NOPE"})
     assert err and out["code"] == "SYMBOL_NOT_FOUND"
 
@@ -144,7 +146,21 @@ async def test_get_indicators(env):
     assert out["symbol"] == SYM and len(out["ts"]) == 5
     assert len(out["sma"]) == 5 and len(out["rsi"]) == 5
     assert D(out["sma"][-1]) == D("214.5")  # mean of closes 210..219
-    for bad in ([{"name": "nope"}], [{"name": "sma", "params": {"period": "x"}}], []):
+    assert out["specs"] == [
+        {"key": "sma", "name": "sma", "params": {"period": 10}},
+        {"key": "rsi", "name": "rsi", "params": {}},
+    ]
+    err, out = await env["call"]("get_indicators", {
+        "symbol": SYM, "timeframe": "1d", "lookback": 5,
+        "indicators": [{"name": "sma", "params": {"period": 10}},
+                       {"name": "sma", "params": {"period": 20}}],
+    })
+    assert not err
+    assert [s["key"] for s in out["specs"]] == ["sma_10", "sma_20"]
+    assert D(out["sma_10"][-1]) == D("214.5") and len(out["sma_20"]) == 5
+    for bad in ([{"name": "nope"}], [{"name": "sma", "params": {"period": "x"}}], [],
+                [{"name": "sma", "params": {"period": 10**30}}],
+                [{"name": "macd", "params": {"slow": 1001}}]):
         err, out = await env["call"](
             "get_indicators", {"symbol": SYM, "timeframe": "1d", "indicators": bad})
         assert err and out["code"] == "INVALID_ORDER", bad

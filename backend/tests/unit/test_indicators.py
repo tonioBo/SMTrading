@@ -197,7 +197,25 @@ async def test_compute_indicators_invalid_spec():
         IndicatorSpec("nope", {}),
         IndicatorSpec("sma", {"bogus": 1}),
         IndicatorSpec("sma", {"period": 0}),
+        IndicatorSpec("sma", {"period": 10**30}),  # timedelta overflow
+        IndicatorSpec("macd", {"slow": 10**12}),
     ):
         with pytest.raises(SMTError) as e:
             await compute_indicators(FakeRouter(_bars()), "AAPL", Timeframe.d1, [spec])
         assert e.value.code == ErrorCode.INVALID_ORDER
+
+
+async def test_compute_indicators_same_name_twice_gets_param_keys():
+    specs = [
+        IndicatorSpec("sma", {"period": 5}),
+        IndicatorSpec("sma", {"period": 10}),
+        IndicatorSpec("sma", {"period": 10}),
+        IndicatorSpec("rsi", {}),
+    ]
+    out = await compute_indicators(FakeRouter(_bars()), "AAPL", Timeframe.d1, specs, lookback=3)
+    assert [s["key"] for s in out["specs"]] == ["sma_5", "sma_10", "sma_10_2", "rsi"]
+    assert out["specs"][0] == {"key": "sma_5", "name": "sma", "params": {"period": 5}}
+    assert "sma" not in out
+    assert out["sma_5"] == sma(PRICES, 5)[-3:]
+    assert out["sma_10"] == out["sma_10_2"] == sma(PRICES, 10)[-3:]
+    assert len(out["rsi"]) == 3

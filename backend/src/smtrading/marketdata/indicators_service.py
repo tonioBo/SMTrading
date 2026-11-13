@@ -59,6 +59,28 @@ def _run(spec: IndicatorSpec, bars: list) -> Any:
     return fns[spec.name](**spec.params)
 
 
+def spec_key(spec: IndicatorSpec) -> str:
+    """`<name>_<param values joined by _>` (just the name without params)."""
+    return "_".join([str(spec.name), *(str(v) for v in spec.params.values())])
+
+
+def _result_keys(specs: list[IndicatorSpec]) -> list[str]:
+    """The name, or `spec_key` when the same name appears more than once (then `_2`, ...
+    for identical specs)."""
+    counts: dict[str, int] = {}
+    for spec in specs:
+        counts[spec.name] = counts.get(spec.name, 0) + 1
+    keys: list[str] = []
+    for spec in specs:
+        key = spec.name if counts[spec.name] == 1 else spec_key(spec)
+        base, n = key, 1
+        while key in keys:
+            n += 1
+            key = f"{base}_{n}"
+        keys.append(key)
+    return keys
+
+
 def _tail(result: Any, lookback: int) -> Any:
     if isinstance(result, dict):
         return {k: v[-lookback:] for k, v in result.items()}
@@ -72,6 +94,9 @@ async def compute_indicators(
     specs: list[IndicatorSpec],
     lookback: int = 200,
 ) -> dict:
+    """{symbol, timeframe, ts, specs: [{key, name, params}], <key>: values...}: one result
+    per spec under its name, or under `spec_key` when a name is requested more than once.
+    Huge or invalid parameters are INVALID_ORDER."""
     if lookback < 1:
         raise _invalid("lookback must be positive", lookback=lookback)
     for spec in specs:
@@ -80,22 +105,27 @@ async def compute_indicators(
     try:
         tf = Timeframe(timeframe)
         max_period = max((_max_period(s) for s in specs), default=0)
-    except (ValueError, TypeError) as exc:
+        n_bars = lookback + max_period * 3
+        end = datetime.now(UTC)
+        start = end - _BAR_SPAN[tf] * n_bars
+    except (ValueError, TypeError, OverflowError) as exc:
         raise _invalid("bad timeframe or parameters") from exc
-    n_bars = lookback + max_period * 3
-    end = datetime.now(UTC)
-    start = end - _BAR_SPAN[tf] * n_bars
     bars = await router.get_bars(symbol, tf, start, end)
     bars = list(bars)[-n_bars:]
 
+    keys = _result_keys(specs)
     out: dict = {
         "symbol": symbol,
         "timeframe": tf.value,
         "ts": [b.ts for b in bars][-lookback:],
+        "specs": [
+            {"key": key, "name": spec.name, "params": spec.params}
+            for key, spec in zip(keys, specs, strict=True)
+        ],
     }
-    for spec in specs:
+    for key, spec in zip(keys, specs, strict=True):
         try:
-            out[spec.name] = _tail(_run(spec, bars), lookback)
-        except (TypeError, ValueError, InvalidOperation) as exc:
+            out[key] = _tail(_run(spec, bars), lookback)
+        except (TypeError, ValueError, InvalidOperation, OverflowError) as exc:
             raise _invalid("bad indicator parameters", name=spec.name, params=spec.params) from exc
     return out

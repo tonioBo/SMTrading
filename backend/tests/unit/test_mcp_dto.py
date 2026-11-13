@@ -37,7 +37,7 @@ def test_to_jsonable_primitives_and_containers():
         }
     )
     assert out == {
-        "d": "1.50",
+        "d": "1.5",
         "u": str(uid),
         "t": "2026-01-02T12:00:00+00:00",
         "e": "r",
@@ -102,3 +102,34 @@ def test_parse_uuid_and_enum():
     assert e.value.code == ErrorCode.INVALID_ORDER
     assert e.value.details["field"] == "side"
     assert e.value.details["allowed"] == ["buy", "sell"]
+
+
+def test_decimal_wire_format_is_plain_without_trailing_zeros():
+    o = Order(
+        id=uuid.uuid4(), portfolio_id=uuid.uuid4(), symbol="BTC-USD", side=OrderSide.buy,
+        type=OrderType.limit, tif=TimeInForce.gtc, qty=Decimal("5.000000000000000000"),
+        limit_price=Decimal("1E-7"), stop_price=Decimal("1.2300E+4"),
+        filled_qty=Decimal("0E-18"), status=OrderStatus.pending, source="agent",
+        reduce_only=False,
+    )
+    d = dto.order_dto(o)
+    assert d["filled_qty"] == "0"
+    assert d["qty"] == "5"
+    assert d["limit_price"] == "0.0000001"
+    assert d["stop_price"] == "12300"
+    assert dto.to_jsonable(Decimal("-0.50")) == "-0.5"
+
+
+def test_parse_ts_and_int():
+    assert dto.parse_ts(None, "since") is None
+    assert dto.parse_ts("2026-01-01T00:00:00", "since") == datetime(2026, 1, 1, tzinfo=UTC)
+    with pytest.raises(SMTError) as e:
+        dto.parse_ts("yesterday", "since")
+    assert e.value.details == {"field": "since"}
+    assert dto.parse_int(None, "limit", 1, 10) is None
+    assert dto.parse_int("7", "limit", 1, 10) == 7
+    assert dto.parse_int(3.0, "limit", 1) == 3
+    for bad in (0, 11, 1.5, "x"):
+        with pytest.raises(SMTError) as e:
+            dto.parse_int(bad, "limit", 1, 10)
+        assert e.value.details["field"] == "limit"
