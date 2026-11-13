@@ -11,6 +11,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -49,6 +50,10 @@ class OrderStatus(enum.StrEnum):
     expired = "expired"
 
 
+# partial indexes for the processor's scans of open orders (migration 0005)
+_OPEN_WHERE = text("status IN ('new', 'held', 'queued', 'pending', 'triggered')")
+
+
 class Order(Base):
     __tablename__ = "orders"
     __table_args__ = (
@@ -58,6 +63,8 @@ class Order(Base):
         ),
         Index("ix_orders_symbol_status", "symbol", "status"),
         Index("ix_orders_portfolio_status", "portfolio_id", "status"),
+        Index("ix_orders_open_expires_at", "expires_at", postgresql_where=_OPEN_WHERE),
+        Index("ix_orders_open_created_at", "created_at", postgresql_where=_OPEN_WHERE),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

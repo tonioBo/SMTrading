@@ -496,10 +496,7 @@ async def place_bracket_order(
     for child in children:
         await session.refresh(child)
     if entry.status == OrderStatus.rejected:
-        for child in children:
-            child.status = OrderStatus.canceled
-            child.updated_at = datetime.now(UTC)
-        await session.flush()
+        await cancel_held_children(session, entry, by="system")
         raise _rejection_error(entry)
     _track_open(session, [entry, *children])
     return [entry, *children]
@@ -550,6 +547,26 @@ async def place_oco_order(
     await session.refresh(oa)
     _track_open(session, [oa, ob])
     return [oa, ob]
+
+
+async def cancel_held_children(session: AsyncSession, order: Order, *, by: str) -> list[Order]:
+    """Ruling R17: cancel the `held` bracket children of a rejected/expired entry.
+
+    Locks the children FOR UPDATE (the caller already holds the portfolio lock) and
+    queues one `order.canceled` event each.
+    """
+    children = list(
+        await session.scalars(
+            select(Order)
+            .where(Order.parent_id == order.id, Order.status == OrderStatus.held)
+            .order_by(Order.created_at, Order.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )
+    if children:
+        await _cancel(session, children, by)
+    return children
 
 
 async def _untrack_if_idle(session: AsyncSession, symbols: set[str]) -> None:

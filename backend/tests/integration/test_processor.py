@@ -10,12 +10,12 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from smtrading.common.db import make_engine
-from smtrading.common.errors import ErrorCode
+from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine import processor as processor_module
 from smtrading.engine.models import Fill, Order, OrderSide, OrderStatus, OrderType, TimeInForce
 from smtrading.engine.processor import OrderProcessor
 from smtrading.engine.quotesource import FakeQuoteSource
-from smtrading.engine.service import PlaceOrderRequest, place_order
+from smtrading.engine.service import PlaceOrderRequest, place_bracket_order, place_order
 from smtrading.events import dispatch_post_commit
 from smtrading.marketdata import serialization
 from smtrading.marketdata.streaming import TRACKED_KEY
@@ -408,3 +408,171 @@ async def test_run_consumes_ticks_from_redis(maker, redis, qs):
         assert await s.scalar(
             select(func.count()).select_from(Fill).where(Fill.order_id == oid)
         ) == 1
+
+
+class FlakyFxQuoteSource(FakeQuoteSource):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fx_down = False
+        self.quote_calls: list[list[str]] = []
+
+    async def get_fx_rate(self, base, quote):
+        if self.fx_down and base.upper() != quote.upper():
+            raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE, "fx down")
+        return await super().get_fx_rate(base, quote)
+
+    async def get_quotes(self, symbols, *, max_age_s=5):
+        self.quote_calls.append(list(symbols))
+        return await super().get_quotes(symbols, max_age_s=max_age_s)
+
+
+@pytest.fixture
+def flaky_qs():
+    q = FlakyFxQuoteSource()
+    q.set_fx("EUR", "USD", D("1.25"))
+    q.set_quote("AAPL", D("99.90"), D("100.00"), D("99.95"))
+    q.set_quote("BTC-USD", D("50000.00"), D("50010.00"), D("50005.00"))
+    return q
+
+
+async def test_rejected_bracket_entry_cancels_held_children_and_untracks(maker, redis, qs):
+    pid = await _portfolio(maker)
+    async with maker() as s:
+        entry, tp, sl = await place_bracket_order(
+            s, qs, PlaceOrderRequest(
+                portfolio_id=pid, symbol="AAPL", side=OrderSide.buy, type=OrderType.limit,
+                qty=TEN, limit_price=D("95.00"),
+            ), take_profit=D("110.00"), stop_loss=D("90.00"), now=OPEN,
+        )
+        await s.commit()
+        await dispatch_post_commit(s, redis)
+    assert (entry.status, tp.status, sl.status) == (
+        OrderStatus.pending, OrderStatus.held, OrderStatus.held
+    )
+    async with maker() as s:
+        await withdraw(s, pid, D(99900), "EUR", author_id=None)
+        await s.commit()
+    clock = Clock(OPEN)
+
+    assert await _proc(maker, redis, qs, clock).on_tick(
+        "AAPL", _tick(qs, "94.90", "95.00", clock.now)
+    ) == 0
+
+    assert (await _order(maker, entry.id)).status == OrderStatus.rejected
+    assert (await _order(maker, tp.id)).status == OrderStatus.canceled
+    assert (await _order(maker, sl.id)).status == OrderStatus.canceled
+    assert not await redis.sismember(f"{TRACKED_KEY}:orders", "AAPL")
+
+
+async def test_provider_error_leaves_order_pending_and_next_pass_fills(maker, redis, flaky_qs):
+    qs = flaky_qs
+    pid = await _portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95.00"))
+    clock = Clock(OPEN)
+    proc = _proc(maker, redis, qs, clock)
+    _tick(qs, "94.90", "95.00", clock.now)
+
+    qs.fx_down = True
+    await proc.sweep()
+    order = await _order(maker, oid)
+    assert order.status == OrderStatus.pending and order.reject_code is None
+    assert not await _fills(maker, oid)
+
+    qs.fx_down = False
+    clock.advance(1)
+    await proc.sweep()
+    assert (await _order(maker, oid)).status == OrderStatus.filled
+
+
+async def test_ticks_are_coalesced_latest_wins(maker, redis, qs, monkeypatch):
+    pid = await _portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95.00"))
+    clock = Clock(OPEN)
+    proc = _proc(maker, redis, qs, clock)
+    await proc.sweep()  # learns the active symbols
+    seen = []
+    real = proc.on_tick
+
+    async def spy(symbol, quote):
+        seen.append((symbol, quote.ask))
+        return await real(symbol, quote)
+
+    monkeypatch.setattr(proc, "on_tick", spy)
+    for i in range(10):  # crossing early, not at the end
+        proc.submit_tick("AAPL", Quote("AAPL", D(94 + i), D(94 + i) + D("0.10"), None,
+                                       clock.now, "fake"))
+    proc.submit_tick("MSFT", Quote("MSFT", D(1), D(2), None, clock.now, "fake"))  # no orders
+
+    assert await proc.drain() is None
+
+    assert seen == [("AAPL", D("103.10"))]
+    assert (await _order(maker, oid)).status == OrderStatus.pending
+
+    # a new tick inside the throttle window waits; it runs once the window has passed
+    proc.submit_tick("AAPL", Quote("AAPL", D("94.90"), D("95.00"), None, clock.now, "fake"))
+    wait = await proc.drain()
+    assert wait is not None and 0 < wait <= 0.25
+    assert len(seen) == 1
+    clock.advance(0.3)
+    assert await proc.drain() is None
+    assert seen[-1] == ("AAPL", D("95.00"))
+    assert (await _order(maker, oid)).status == OrderStatus.filled
+
+
+async def test_queued_order_without_any_quote_rejected_after_open(maker, redis, flaky_qs):
+    qs = flaky_qs
+    pid = await _portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, now=SATURDAY)
+    del qs._quotes["AAPL"]
+    clock = Clock(MONDAY_OPEN + timedelta(minutes=1))
+    proc = _proc(maker, redis, qs, clock)
+
+    await proc.sweep()
+    assert (await _order(maker, oid)).status == OrderStatus.queued
+
+    clock.now = MONDAY_OPEN + timedelta(minutes=11)
+    await proc.sweep()
+    order = await _order(maker, oid)
+    assert order.status == OrderStatus.rejected and order.reject_code == ErrorCode.STALE_QUOTE
+
+
+async def test_failing_symbol_is_not_refetched_for_60s(maker, redis, flaky_qs):
+    qs = flaky_qs
+    pid = await _portfolio(maker)
+    await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95.00"))
+    await _place(maker, redis, qs, pid, symbol="BTC-USD", type=OrderType.limit,
+                 qty=D("0.1"), limit_price=D("40000.00"))
+    del qs._quotes["AAPL"]
+    qs.quote_calls.clear()  # placement fetched quotes too
+    clock = Clock(OPEN)
+    proc = _proc(maker, redis, qs, clock)
+
+    await proc.sweep()
+    assert qs.quote_calls == [["AAPL", "BTC-USD"], ["AAPL"], ["BTC-USD"]]
+    qs.quote_calls.clear()
+    clock.advance(30)
+    await proc.sweep()
+    assert qs.quote_calls == [["BTC-USD"]]
+    qs.quote_calls.clear()
+    clock.advance(31)
+    await proc.sweep()
+    assert qs.quote_calls[0] == ["AAPL", "BTC-USD"]
+
+
+async def test_order_past_expiry_is_not_filled_by_tick(maker, redis, flaky_qs):
+    qs = flaky_qs
+    pid = await _portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, symbol="BTC-USD", type=OrderType.limit,
+                       qty=D("0.1"), limit_price=D("49000.00"), tif=TimeInForce.day)
+    expires = (await _order(maker, oid)).expires_at
+    assert expires == datetime(2026, 11, 10, 23, 0, tzinfo=UTC)  # midnight Europe/Rome
+    clock = Clock(expires + timedelta(seconds=30))
+    proc = _proc(maker, redis, qs, clock)
+
+    qs.set_quote("BTC-USD", D("48000.00"), D("48010.00"), None, ts=clock.now)
+    assert await proc.on_tick("BTC-USD", qs._quotes["BTC-USD"]) == 0
+    assert (await _order(maker, oid)).status == OrderStatus.pending
+
+    await proc.sweep()
+    assert (await _order(maker, oid)).status == OrderStatus.expired
+    assert not await _fills(maker, oid)

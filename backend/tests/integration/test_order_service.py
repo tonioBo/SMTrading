@@ -574,3 +574,25 @@ async def test_get_list_and_cancel_all(db_session, qs, p):
     await db_session.refresh(a)
     assert a.status == OrderStatus.canceled
     assert await cancel_all_orders(db_session, p.id) == 0
+
+
+async def test_bracket_entry_rejected_at_fill_cancels_children(db_session, qs, p, monkeypatch):
+    """Ruling R17."""
+
+    async def failing_fill(*args, **kwargs):
+        raise SMTError(ErrorCode.INSUFFICIENT_BUYING_POWER, "no buying power")
+
+    monkeypatch.setattr(service_module, "execute_fill", failing_fill)
+    with pytest.raises(SMTError) as err:
+        await place_bracket_order(
+            db_session, qs, _req(p), take_profit=D("220.00"), stop_loss=D("180.00"), now=OPEN,
+        )
+    assert err.value.code == ErrorCode.INSUFFICIENT_BUYING_POWER
+    orders = list(await db_session.scalars(select(Order).where(Order.portfolio_id == p.id)))
+    by_role = {o.role: o.status for o in orders}
+    assert by_role == {
+        "entry": OrderStatus.rejected, "take_profit": OrderStatus.canceled,
+        "stop_loss": OrderStatus.canceled,
+    }
+    canceled = [e for e in _effects(db_session) if e[:2] == ("event", "order.canceled")]
+    assert len(canceled) == 2
