@@ -73,11 +73,12 @@ Ogni elemento contiene `{id, ts, type, agent, portfolio, summary, data}`. Il fee
 
 ### Agenti
 - Nuovo agente SMTrading «Notifier» con permesso `read` su Paperclip e `notify`. Il token viene salvato nel file privato, come per gli altri agenti.
-- Nella guida `docs/paperclip-mcp.md` va aggiunta una sezione per il prompt del Notificatore:
-  - leggere il feed ogni N minuti;
-  - inviare le decisioni subito;
-  - inviare un riassunto giornaliero;
-  - non duplicare gli eventi che SMTrading invia già (il feed li marca `already_sent: true`).
+- Il Notificatore lavora **su richiesta**, senza polling periodico (decisione dell'utente del 2026-11-13):
+  - gli agenti che decidono registrano la decisione con `log_decision` e coinvolgono il Notifier in Paperclip, con un task o una menzione;
+  - il Notifier invia il messaggio con `send_telegram`;
+  - sono programmati solo il riassunto giornaliero (18:00 Europe/Rome) e quello settimanale (venerdì), costruiti con `get_activity_feed`;
+  - il feed marca con `already_sent: true` gli eventi che SMTrading ha già inviato.
+- Il prompt suggerito per il Notifier va in `docs/paperclip-mcp.md`.
 
 ## Lasciato al builder
 - Il formato esatto dei messaggi.
