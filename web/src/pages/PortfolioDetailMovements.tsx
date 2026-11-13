@@ -116,9 +116,9 @@ function ReverseDialog({ tx, portfolioId, onClose }: { tx: Transaction; portfoli
 
 const EMPTY_FILTERS: TransactionFilters = { type: "", from: "", to: "" };
 
-export function Movements({ portfolioId }: { portfolioId: string }) {
+export function Movements({ portfolioId, timezone }: { portfolioId: string; timezone: string }) {
   const [filters, setFilters] = useState<TransactionFilters>(EMPTY_FILTERS);
-  const query = useTransactions(portfolioId, filters);
+  const query = useTransactions(portfolioId, filters, timezone);
   const [target, setTarget] = useState<Transaction | null>(null);
   const rows = query.data?.pages.flatMap((p) => p.items);
   const set = (field: keyof TransactionFilters) => (e: { target: { value: string } }) =>
@@ -177,7 +177,7 @@ export function Movements({ portfolioId }: { portfolioId: string }) {
             <Input id="tx-to" type="date" value={filters.to} onChange={set("to")} className="w-40" />
           </div>
           <Button asChild variant="outline" className="ml-auto">
-            <a href={transactionsCsvUrl(portfolioId, filters)} download>
+            <a href={transactionsCsvUrl(portfolioId, filters, timezone)} download>
               <Download />
               Esporta CSV
             </a>

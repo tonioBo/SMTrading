@@ -23,6 +23,8 @@ router = APIRouter(prefix="/api/system", tags=["system"], dependencies=[Depends(
 BACKUP_DIR = Path("/backups")  # the `backups` volume, mounted read-only on the api
 BACKUP_SUFFIXES = (".sql.gz", ".dump")
 _CHUNK = 64 * 1024
+# one pg_dump at a time (the api runs a single event loop): a second request gets 429
+_dump_running = False
 
 
 def dump_command() -> tuple[list[str], dict[str, str]]:
@@ -82,9 +84,23 @@ class DumpResponse(Response):
     was iterated (the generator's `finally` never runs). Here the spawn, the peek at the
     first chunk and the cleanup all live in one `__call__`, whose `finally` also runs on
     cancellation. A failure before the first byte is still a clean 500; one after the
-    headers went out can only be logged."""
+    headers went out can only be logged. Only one dump runs at a time (429 otherwise)."""
 
     async def __call__(self, scope, receive, send) -> None:
+        global _dump_running
+        if _dump_running:
+            await JSONResponse(
+                {"code": "RATE_LIMITED", "message": "un backup è già in corso", "details": None},
+                status_code=429,
+            )(scope, receive, send)
+            return
+        _dump_running = True
+        try:
+            await self._dump(scope, receive, send)
+        finally:
+            _dump_running = False
+
+    async def _dump(self, scope, receive, send) -> None:
         argv, env = dump_command()
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -115,9 +131,10 @@ class DumpResponse(Response):
                 await asyncio.shield(proc.wait())
 
 
-@router.get("/backup")
+@router.post("/backup")
 async def download_backup() -> Response:
-    """Streams a fresh `pg_dump --format=custom` (see DumpResponse)."""
+    """Streams a fresh `pg_dump --format=custom` (see DumpResponse). POST: it is costly and
+    must not be triggered by a link or a prefetch."""
     return DumpResponse()
 
 

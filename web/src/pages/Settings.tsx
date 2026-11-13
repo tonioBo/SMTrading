@@ -1,17 +1,16 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { useAppSettings } from "@/api/hooks/risk";
-import { useBackups, useSaveTimezone, useVerifyIntegrity } from "@/api/hooks/system";
+import { useBackups, useDownloadBackup, useSaveTimezone, useVerifyIntegrity } from "@/api/hooks/system";
 import type { BackupFile } from "@/api/types";
 import { ChangePasswordSection } from "@/components/ChangePasswordSection";
 import { DataTable, type Column } from "@/components/DataTable";
 import { FormField, selectClass } from "@/components/FormField";
 import { PageHeader } from "@/components/PageHeader";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { errorMessage } from "@/lib/errors";
 import { formatBytes, formatDateTime } from "@/lib/format";
-import { cn } from "@/lib/utils";
 
 const FALLBACK_TIMEZONES = ["Europe/Rome", "Europe/London", "Europe/Paris", "Europe/Berlin", "America/New_York", "America/Chicago", "America/Los_Angeles", "Asia/Tokyo", "UTC"];
 
@@ -90,6 +89,7 @@ function IntegritySection() {
 
 function BackupSection() {
   const { data, isLoading, isError } = useBackups();
+  const download = useDownloadBackup();
   const columns: Column<BackupFile>[] = [
     { key: "name", header: "Nome", sortValue: (b) => b.name, cell: (b) => b.name },
     { key: "size", header: "Dimensione", align: "right", sortValue: (b) => b.size_bytes, cell: (b) => <span className="num">{formatBytes(b.size_bytes)}</span> },
@@ -101,9 +101,14 @@ function BackupSection() {
         <CardTitle>Backup</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <a href="/api/system/backup" download className={cn(buttonVariants())}>
-          Scarica backup ora
-        </a>
+        <Button type="button" onClick={() => download.mutate()} disabled={download.isPending}>
+          {download.isPending ? "Backup in corso…" : "Scarica backup ora"}
+        </Button>
+        {download.error && (
+          <p role="alert" className="text-sm text-loss">
+            {errorMessage(download.error)}
+          </p>
+        )}
         <h3 className="pt-2 text-sm font-medium">Backup automatici</h3>
         {isError && <p className="text-loss">Impossibile caricare l&apos;elenco dei backup</p>}
         <DataTable aria-label="Backup automatici" columns={columns} rows={data} rowKey={(b) => b.name} loading={isLoading} empty="Nessun backup automatico" />

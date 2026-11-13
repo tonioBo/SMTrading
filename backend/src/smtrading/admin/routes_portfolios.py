@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
 from smtrading.admin.common import Quotes, _invalid, _transaction
-from smtrading.admin.idempotency import Idempotency, idempotent
+from smtrading.admin.idempotency import RESET_IN_FLIGHT_TTL_S, Idempotency, idempotent
 from smtrading.admin.portfolio_ops import reset_portfolio
 from smtrading.admin.schemas import (
     CashMoveIn,
@@ -545,7 +545,9 @@ async def reverse(
 async def reset(
     portfolio_id: UUID, body: ResetIn, admin: CurrentAdmin, session: DbSession,
     redis: RedisClient, qs: Quotes,
-    idem: Annotated[Idempotency, Depends(idempotent("reset"))],
+    idem: Annotated[
+        Idempotency, Depends(idempotent("reset", in_flight_ttl_s=RESET_IN_FLIGHT_TTL_S))
+    ],
 ):
     async def run() -> dict:
         new_cash = parse_decimal(body.new_cash, "new_cash")

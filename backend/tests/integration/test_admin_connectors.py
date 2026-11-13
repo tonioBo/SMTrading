@@ -294,7 +294,7 @@ async def test_backup_download_streams_fake_dump(admin, monkeypatch, tmp_path):
     monkeypatch.setattr(
         routes_system, "dump_command", lambda: ([sys.executable, str(script)], {})
     )
-    r = await admin.client.get("/api/system/backup")
+    r = await admin.client.post("/api/system/backup")
     assert r.status_code == 200
     assert r.content == payload
     disp = r.headers["content-disposition"]
@@ -312,10 +312,10 @@ async def test_backup_failure_is_500(admin, monkeypatch, tmp_path):
     fail = tmp_path / "fail.py"
     fail.write_text("import sys\nsys.stderr.write('no server')\nsys.exit(1)\n")
     monkeypatch.setattr(routes_system, "dump_command", lambda: ([sys.executable, str(fail)], {}))
-    r = await admin.client.get("/api/system/backup")
+    r = await admin.client.post("/api/system/backup")
     assert r.status_code == 500 and r.json()["code"] == "INTERNAL"
     monkeypatch.setattr(routes_system, "dump_command", lambda: (["/nonexistent/pg_dump"], {}))
-    assert (await admin.client.get("/api/system/backup")).status_code == 500
+    assert (await admin.client.post("/api/system/backup")).status_code == 500
 
 
 def test_dump_command_uses_database_url(monkeypatch):
@@ -365,7 +365,7 @@ async def test_connectors_markets_system_require_admin(admin):
         ("GET", "/api/instruments"), ("POST", "/api/instruments"),
         ("PATCH", "/api/instruments/AAPL"), ("GET", "/api/quotes?symbols=AAPL"),
         ("GET", "/api/markets/status"), ("GET", "/api/system/verify-chain"),
-        ("GET", "/api/system/verify-balances"), ("GET", "/api/system/backup"),
+        ("GET", "/api/system/verify-balances"), ("POST", "/api/system/backup"),
         ("GET", "/api/system/backups"),
     ):
         r = await c.request(method, url, json={} if method != "GET" else None)
@@ -446,8 +446,35 @@ async def test_dump_runs_with_minimal_env(admin, monkeypatch, tmp_path):
     monkeypatch.setattr(
         routes_system, "dump_command", lambda: ([sys.executable, str(script)], real()[1])
     )
-    r = await admin.client.get("/api/system/backup")
+    r = await admin.client.post("/api/system/backup")
     assert r.status_code == 200
     keys = set(json.loads(r.content))
     assert "SOME_SECRET_ENV" not in keys and "SMT_MASTER_KEY" not in keys
     assert {"PATH", "PGPASSWORD"} <= keys
+
+
+async def test_backup_one_dump_at_a_time(admin, monkeypatch, tmp_path):
+    import sys
+
+    from smtrading.admin import routes_system
+
+    slow = tmp_path / "slow_dump.py"
+    slow.write_text(
+        "import sys, time\nsys.stdout.buffer.write(b'PGDMP')\nsys.stdout.flush()\n"
+        "time.sleep(1.5)\nsys.stdout.buffer.write(b'-end')\n"
+    )
+    monkeypatch.setattr(routes_system, "dump_command", lambda: ([sys.executable, str(slow)], {}))
+
+    async def second():
+        await asyncio.sleep(0.5)  # while the first dump streams
+        return await admin.client.post("/api/system/backup")
+
+    first, busy = await asyncio.gather(admin.client.post("/api/system/backup"), second())
+    assert first.status_code == 200 and first.content == b"PGDMP-end"
+    assert busy.status_code == 429
+    assert busy.json() == {
+        "code": "RATE_LIMITED", "message": "un backup è già in corso", "details": None,
+    }
+    again = await admin.client.post("/api/system/backup")  # the guard is released
+    assert again.status_code == 200
+    assert (await admin.client.get("/api/system/backup")).status_code == 405

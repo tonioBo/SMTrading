@@ -480,7 +480,7 @@ export default function PortfolioDetail() {
             <Orders portfolioId={portfolio.id} />
           </TabsContent>
           <TabsContent value="movements">
-            <Movements portfolioId={portfolio.id} />
+            <Movements portfolioId={portfolio.id} timezone={portfolio.timezone} />
           </TabsContent>
           <TabsContent value="operations">
             <Operations portfolio={portfolio} />

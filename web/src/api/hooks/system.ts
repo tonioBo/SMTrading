@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch } from "@/api/client";
+import { apiDownload, apiFetch, saveBlob } from "@/api/client";
 import { appSettingsKey } from "@/api/hooks/risk";
 import type { AppSettings, BackupFile, VerifyBalancesResult, VerifyChainResult } from "@/api/types";
 
@@ -25,5 +25,13 @@ export function useSaveTimezone() {
   return useMutation({
     mutationFn: (timezone: string) => apiFetch<AppSettings>("/api/settings/app", { method: "PUT", body: { timezone } }),
     onSuccess: (data) => qc.setQueryData(appSettingsKey, data),
+  });
+}
+
+/** POST /api/system/backup: a fresh pg_dump, saved as a file (429 while another runs). */
+export function useDownloadBackup() {
+  return useMutation({
+    mutationFn: () => apiDownload("/api/system/backup", "smtrading.dump", { method: "POST" }),
+    onSuccess: saveBlob,
   });
 }

@@ -20,6 +20,7 @@ import type {
   Valuation,
 } from "@/api/types";
 import { useLiveMessage, useLiveSocket } from "@/lib/ws";
+import { zonedDayEnd, zonedDayStart } from "@/lib/zonedDate";
 
 export const portfoliosKey = ["portfolios"] as const;
 const portfolioKey = (id: string) => ["portfolios", id] as const;
@@ -91,27 +92,27 @@ export interface TransactionFilters {
   to: string; // yyyy-mm-dd or ""
 }
 
-/** Query string of the filters (day bounds in the browser's timezone, sent as ISO UTC). */
-export function transactionQuery(filters: TransactionFilters): URLSearchParams {
+/** Query string of the filters: day bounds in the portfolio's timezone, ISO with offset. */
+export function transactionQuery(filters: TransactionFilters, timeZone: string): URLSearchParams {
   const params = new URLSearchParams();
   if (filters.type) params.set("type", filters.type);
-  if (filters.from) params.set("from", new Date(`${filters.from}T00:00:00`).toISOString());
-  if (filters.to) params.set("to", new Date(`${filters.to}T23:59:59.999`).toISOString());
+  if (filters.from) params.set("from", zonedDayStart(filters.from, timeZone));
+  if (filters.to) params.set("to", zonedDayEnd(filters.to, timeZone));
   return params;
 }
 
-export function transactionsCsvUrl(id: string, filters: TransactionFilters): string {
-  const qs = transactionQuery(filters).toString();
+export function transactionsCsvUrl(id: string, filters: TransactionFilters, timeZone: string): string {
+  const qs = transactionQuery(filters, timeZone).toString();
   return `/api/portfolios/${id}/transactions.csv${qs ? `?${qs}` : ""}`;
 }
 
 /** Ledger movements, newest first, one page per `before_seq` cursor. */
-export function useTransactions(id: string, filters: TransactionFilters) {
+export function useTransactions(id: string, filters: TransactionFilters, timeZone: string) {
   return useInfiniteQuery({
-    queryKey: [...portfolioKey(id), "transactions", filters],
+    queryKey: [...portfolioKey(id), "transactions", filters, timeZone],
     initialPageParam: null as number | null,
     queryFn: ({ pageParam }) => {
-      const params = transactionQuery(filters);
+      const params = transactionQuery(filters, timeZone);
       params.set("limit", String(TX_PAGE_SIZE));
       if (pageParam != null) params.set("before_seq", String(pageParam));
       return apiFetch<TransactionPage>(`/api/portfolios/${id}/transactions?${params.toString()}`);

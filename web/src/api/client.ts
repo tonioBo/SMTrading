@@ -77,9 +77,10 @@ async function toApiError(res: Response): Promise<ApiError> {
   return new ApiError(res.status, "HTTP_ERROR", `errore del server (HTTP ${res.status})`);
 }
 
-export async function apiFetch<T = unknown>(path: string, options: ApiFetchOptions = {}): Promise<T> {
+/** The fetch of apiFetch/apiDownload: an ok Response, else ApiError (401 → login). */
+async function apiRequest(path: string, options: ApiFetchOptions, accept: string): Promise<Response> {
   const method = options.method ?? "GET";
-  const headers: Record<string, string> = { Accept: "application/json" };
+  const headers: Record<string, string> = { Accept: accept };
   if (method !== "GET") {
     const csrf = readCookie(CSRF_COOKIE);
     if (csrf) headers[CSRF_HEADER] = csrf;
@@ -103,7 +104,38 @@ export async function apiFetch<T = unknown>(path: string, options: ApiFetchOptio
     if (res.status === 401) notifyUnauthorized();
     throw await toApiError(res);
   }
+  return res;
+}
+
+export async function apiFetch<T = unknown>(path: string, options: ApiFetchOptions = {}): Promise<T> {
+  const res = await apiRequest(path, options, "application/json");
   if (res.status === 204) return undefined as T;
   const text = await res.text();
   return (text ? JSON.parse(text) : undefined) as T;
+}
+
+export interface Download {
+  blob: Blob;
+  /** from Content-Disposition, else `fallbackName` */
+  filename: string;
+}
+
+/** A file response (e.g. POST /api/system/backup) read as a Blob. */
+export async function apiDownload(path: string, fallbackName: string, options: ApiFetchOptions = {}): Promise<Download> {
+  const res = await apiRequest(path, options, "application/octet-stream, application/json");
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const match = /filename="?([^";]+)"?/i.exec(disposition);
+  return { blob: await res.blob(), filename: match?.[1] ?? fallbackName };
+}
+
+/** Hands a Blob to the browser as a file download. */
+export function saveBlob({ blob, filename }: Download): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }

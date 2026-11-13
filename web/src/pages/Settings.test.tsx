@@ -50,13 +50,45 @@ describe("Settings", () => {
     expect(formatBytes(3 * 1024 * 1024)).toBe("3 MB");
   });
 
-  it("lists backups and links the manual download", async () => {
+  it("lists backups and downloads a fresh one with a POST", async () => {
+    const user = userEvent.setup();
+    const created = vi.fn(() => "blob:backup");
+    const revoked = vi.fn();
+    Object.assign(URL, { createObjectURL: created, revokeObjectURL: revoked });
+    const clicks: string[] = [];
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      clicks.push(this.download);
+    });
+    let csrf: string | null = null;
+    server.use(
+      http.post("*/api/system/backup", ({ request }) => {
+        csrf = request.headers.get("X-CSRF-Token");
+        return new HttpResponse("PGDMP", {
+          headers: { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="smtrading-20261113-1200.dump"' },
+        });
+      }),
+    );
+    document.cookie = "smt_csrf=tok";
     renderApp("/impostazioni");
     expect(await screen.findByText("smtrading-2026-11-12.sql.gz")).toBeInTheDocument();
     expect(screen.getByText("3 MB")).toBeInTheDocument();
-    const link = screen.getByRole("link", { name: "Scarica backup ora" });
-    expect(link).toHaveAttribute("href", "/api/system/backup");
-    expect(link).toHaveAttribute("download");
+    await user.click(screen.getByRole("button", { name: "Scarica backup ora" }));
+    await waitFor(() => expect(clicks).toEqual(["smtrading-20261113-1200.dump"]));
+    expect(csrf).toBe("tok");
+    expect(created).toHaveBeenCalledTimes(1);
+    click.mockRestore();
+  });
+
+  it("shows the server error when a backup is already running", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.post("*/api/system/backup", () =>
+        HttpResponse.json({ code: "RATE_LIMITED", message: "un backup è già in corso", details: null }, { status: 429 }),
+      ),
+    );
+    renderApp("/impostazioni");
+    await user.click(await screen.findByRole("button", { name: "Scarica backup ora" }));
+    expect(await screen.findByText("un backup è già in corso")).toBeInTheDocument();
   });
 
   it("runs both integrity checks and shows the outcome", async () => {
