@@ -26,9 +26,11 @@ INSTRUMENTS = [
 
 @pytest.fixture(autouse=True)
 def _reset_cache():
-    t212_demo._cache.update(at=0.0, items=None)
+    t212_demo._cache.update(at=0.0, items=None, failed_at=None)
+    t212_demo._reverse.clear()
     yield
-    t212_demo._cache.update(at=0.0, items=None)
+    t212_demo._cache.update(at=0.0, items=None, failed_at=None)
+    t212_demo._reverse.clear()
 
 
 def _inst(symbol="AAPL", ac=AssetClass.us_equity, cur="USD"):
@@ -247,7 +249,10 @@ async def test_positions_cancel_health(http):
     )
     d = respx.delete(f"{API}/orders/x").mock(return_value=httpx.Response(200))
     a = T212DemoAdapter(CFG, http)
-    assert await a.get_positions() == {"AAPL": Decimal("5.5"), "SAP": Decimal(2)}
+    # never a guessed symbol: an unresolved EU ticker stays raw until prepare() maps it
+    assert await a.get_positions() == {"AAPL": Decimal("5.5"), "SAPd_EQ": Decimal(2)}
+    await a.prepare([_inst("SAP.DE", AssetClass.eu_equity, "EUR")])
+    assert await a.get_positions() == {"AAPL": Decimal("5.5"), "SAP.DE": Decimal(2)}
     await a.cancel_order("x")
     await a.health_check()
     assert d.called
@@ -279,3 +284,76 @@ def test_supports_types_and_assets():
     assert not a.supports(_order(type=OrderType.trailing_stop), _inst())
     assert not a.supports(_order(), _inst("BTC-USD", AssetClass.crypto))
     assert not a.supports(_order(qty=None, notional=Decimal(5)), _inst())
+
+
+@respx.mock
+async def test_non_json_or_idless_200_bodies_raise(http):
+    _mock_instruments()
+    route = respx.post(f"{API}/orders/market")
+    a = T212DemoAdapter(CFG, http)
+    route.mock(return_value=httpx.Response(200, content=b"<html>oops</html>"))
+    with pytest.raises(RuntimeError, match="not JSON"):
+        await a.place_order(_order(), _inst())
+    route.mock(return_value=httpx.Response(200, json={"status": "NEW"}))
+    with pytest.raises(RuntimeError, match="without an id"):
+        await a.place_order(_order(), _inst())
+    respx.get(f"{API}/positions").mock(return_value=httpx.Response(200, json={"x": 1}))
+    with pytest.raises(RuntimeError):
+        await a.get_positions()
+
+
+@respx.mock
+async def test_instrument_refresh_backs_off_after_failure(http):
+    meta = respx.get(f"{API}/metadata/instruments").mock(
+        return_value=httpx.Response(503, json={})
+    )
+    a = T212DemoAdapter(CFG, http)
+    with pytest.raises(RuntimeError):
+        await a.prepare()
+    with pytest.raises(RuntimeError, match="backing off"):
+        await a.prepare()
+    assert meta.call_count == 1
+
+
+@respx.mock
+async def test_concurrent_refreshes_share_one_request(http):
+    import asyncio
+
+    meta = _mock_instruments()
+    a = T212DemoAdapter(CFG, http)
+    await asyncio.gather(*(a.prepare() for _ in range(5)))
+    assert meta.call_count == 1
+
+
+def test_routable_defers_eu_resolution_without_metadata():
+    a = T212DemoAdapter(CFG, None)
+    eu = _inst("SAP.DE", AssetClass.eu_equity, "EUR")
+    assert not a.supports(_order(symbol="SAP.DE"), eu)
+    assert a.routable(_order(symbol="SAP.DE"), eu)
+    assert not a.routable(_order(type=OrderType.trailing_stop), _inst())
+    assert not T212DemoAdapter.idempotent_place
+
+
+@respx.mock
+async def test_find_order_matches_ticker_side_qty_and_time(http):
+    from datetime import UTC, datetime
+
+    _mock_instruments()
+    since = datetime(2026, 11, 13, 10, 0, tzinfo=UTC)
+    respx.get(f"{API}/orders").mock(
+        return_value=httpx.Response(200, json=[
+            {"id": 1, "ticker": "AAPL_US_EQ", "quantity": 10, "side": "BUY",
+             "createdAt": "2026-11-13T09:00:00Z", "status": "NEW"},  # too old
+            {"id": 2, "ticker": "AAPL_US_EQ", "quantity": 7, "side": "BUY",
+             "createdAt": "2026-11-13T10:00:05Z", "status": "NEW"},  # other qty
+            {"id": 3, "ticker": "AAPL_US_EQ", "quantity": 10, "side": "BUY",
+             "createdAt": "2026-11-13T10:00:02Z", "status": "NEW", "filledQuantity": 0},
+        ])
+    )
+    respx.get(f"{API}/history/orders", params={"limit": "50"}).mock(
+        return_value=httpx.Response(200, json={"items": [], "nextPagePath": None})
+    )
+    a = T212DemoAdapter(CFG, http)
+    found = await a.find_order(_order(), _inst(), since)
+    assert found is not None and found.broker_order_id == "3"
+    assert await a.find_order(_order(side=OrderSide.sell), _inst(), since) is None
