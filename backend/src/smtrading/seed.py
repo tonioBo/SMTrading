@@ -13,6 +13,7 @@ from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.portfolios.models import Portfolio
 from smtrading.portfolios.service import create_portfolio
 from smtrading.risk.models import AppSetting, InterestKind, InterestRate, RiskProfile, SystemState
+from smtrading.risk.profiles import DEFAULT_RISK_PROFILE_NAME
 from smtrading.risk.settings import DEFAULT_SPREAD_BPS, DEFAULT_STALE_QUOTE_S
 
 log = logging.getLogger("smtrading.seed")
@@ -22,7 +23,6 @@ SEED_LOCK_KEY = 7300002
 
 DEFAULT_FEE_RULE_NAME = "Default globale"
 DEMO_PORTFOLIO_NAME = "Demo"
-DEFAULT_RISK_PROFILE_NAME = "Default"
 
 _INTEREST_RATES = [
     (InterestKind.loan, "EUR", 5),

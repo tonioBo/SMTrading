@@ -12,10 +12,15 @@ that opens/adds (open), posted together in one TRADE journal:
 - long proceeds go to cash[ccy] (repaying a margin loan in ccy); short proceeds go to
   collateral[ccy] and the position account goes negative;
 - a cover pays from collateral[ccy] first, then cash[ccy], then FX from base / a loan;
-  when no short in ccy is left, the remaining collateral is released to cash;
-- a fill that opens exposure must leave buying_power_raw >= 0; a purely reducing fill is
-  never blocked: it may borrow, and its fee is taken in ccy when fee-currency cash is
-  missing (Ruling R9).
+  when no short in ccy is left, the remaining collateral is released to cash.
+  Collateral is pooled per currency: what one short draws is not tied to its own
+  proceeds, so a cover at a loss may use collateral posted by another short in ccy;
+- a fill that opens exposure must leave buying_power_raw >= 0 (Ruling R8);
+- a purely reducing fill is never blocked:
+  - R9: when cash[fee_ccy] cannot pay the whole fee, the whole fee is converted into ccy
+    (ROUND_UP) and charged there, out of proceeds/collateral;
+  - R12: it may borrow even at leverage 1, but first converts from base and then from
+    ANY other cash currency (usual FX journal and fx fee).
 """
 
 import uuid
@@ -41,8 +46,9 @@ from smtrading.ledger.models import Account, AccountBalance, AccountKind, Journa
 from smtrading.ledger.service import LineSpec, get_balance, get_or_create_account, post_journal
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.service import get_cash_balances
 from smtrading.positions.service import upsert_position
-from smtrading.risk.models import RiskProfile
+from smtrading.risk.profiles import effective_risk_profile
 from smtrading.risk.settings import get_default_spread_bps
 from smtrading.valuation.service import value_portfolio
 
@@ -94,23 +100,24 @@ class _Accounts:
 
 @dataclass
 class _FxLeg:
-    ccy: str
+    src: str  # currency sold
+    ccy: str  # currency bought
     bought: Decimal  # b, in ccy
-    paid: Decimal  # a, in base
-    fee: Decimal  # in base
+    paid: Decimal  # a, in src
+    fee: Decimal  # in src
 
 
-def _fx_cost(rule: FeeRuleData, b: Decimal, rate: Decimal, base: str) -> tuple[Decimal, Decimal]:
+def _fx_cost(rule: FeeRuleData, b: Decimal, rate: Decimal, src: str) -> tuple[Decimal, Decimal]:
     with localcontext() as ctx:
         ctx.prec = _PREC
-        a = quantize_money(b / rate, base, rounding=ROUND_UP)
-    return a, compute_fx_fee(rule, a, base)
+        a = quantize_money(b / rate, src, rounding=ROUND_UP)
+    return a, compute_fx_fee(rule, a, src)
 
 
 def _max_affordable(
-    rule: FeeRuleData, available: Decimal, rate: Decimal, base: str, ccy: str
+    rule: FeeRuleData, available: Decimal, rate: Decimal, src: str, ccy: str
 ) -> Decimal:
-    """Largest b (in ccy) whose cost a + fx fee fits in `available` base cash."""
+    """Largest b (in ccy) whose cost a + fx fee fits in `available` src cash."""
     if available <= 0:
         return Decimal(0)
     with localcontext() as ctx:
@@ -119,7 +126,7 @@ def _max_affordable(
             available / (1 + rule.fx_pct / 100) * rate, ccy, rounding=ROUND_DOWN
         )
         step = _money_step(ccy)
-        while b > 0 and sum(_fx_cost(rule, b, rate, base)) > available:
+        while b > 0 and sum(_fx_cost(rule, b, rate, src)) > available:
             b -= step
     return max(b, Decimal(0))
 
@@ -131,52 +138,58 @@ async def _plan_funding(
     rule: FeeRuleData,
     base: str,
     may_borrow: bool,
+    other_sources: list[str],
     needs: dict[str, Decimal],
     incoming: dict[str, Decimal],
 ) -> tuple[list[_FxLeg], dict[str, Decimal]]:
-    """Cover `needs` from cash, then FX from base, then a margin loan when `may_borrow`."""
+    """Cover `needs` from cash, then FX from base, then FX from `other_sources` (in order),
+    then a margin loan when `may_borrow`. Shortfalls in non-base currencies come first."""
     legs: list[_FxLeg] = []
     borrow: dict[str, Decimal] = {}
     with localcontext() as ctx:
         ctx.prec = _PREC
-        base_avail = (
-            await accts.balance(base, AccountKind.cash)
-            + incoming.get(base, Decimal(0)) - needs.get(base, Decimal(0))
-        )
-        for ccy in sorted(c for c in needs if c != base):
-            have = await accts.balance(ccy, AccountKind.cash) + incoming.get(ccy, Decimal(0))
-            short = needs[ccy] - have
-            if short <= 0:
-                continue
-            rate = await qs.get_fx_rate(base, ccy)
-            a, fee = _fx_cost(rule, short, rate, base)
-            b = short
-            if a + fee > base_avail:
+        avail: dict[str, Decimal] = {}
+        for c in sorted({base, *needs, *incoming, *other_sources}):
+            avail[c] = (
+                await accts.balance(c, AccountKind.cash)
+                + incoming.get(c, Decimal(0)) - needs.get(c, Decimal(0))
+            )
+        targets = sorted(c for c in needs if c != base and avail[c] < 0)
+        if avail[base] < 0:
+            targets.append(base)
+        for ccy in targets:
+            short = avail[ccy].copy_negate()
+            sources = [c for c in [base, *other_sources] if c != ccy]
+            for src in sources:
+                if short <= 0 or avail[src] <= 0:
+                    continue
+                rate = await qs.get_fx_rate(src, ccy)
+                b = short
+                a, fee = _fx_cost(rule, b, rate, src)
+                if a + fee > avail[src]:
+                    if not may_borrow:
+                        break  # fail below with the full shortfall
+                    b = _max_affordable(rule, avail[src], rate, src, ccy)
+                    if b <= 0:
+                        continue
+                    a, fee = _fx_cost(rule, b, rate, src)
+                legs.append(_FxLeg(src=src, ccy=ccy, bought=b, paid=a, fee=fee))
+                avail[src] -= a + fee
+                short -= b
+            if short > 0:
                 if not may_borrow:
-                    raise _no_buying_power(
-                        "insufficient cash", currency=ccy, shortfall=short
-                    )
-                b = _max_affordable(rule, base_avail, rate, base, ccy)
-                a, fee = _fx_cost(rule, b, rate, base) if b > 0 else (Decimal(0), Decimal(0))
-                borrow[ccy] = short - b
-            if b > 0:
-                legs.append(_FxLeg(ccy=ccy, bought=b, paid=a, fee=fee))
-                base_avail -= a + fee
-        if base_avail < 0:
-            if not may_borrow:
-                raise _no_buying_power(
-                    "insufficient cash", currency=base, shortfall=base_avail.copy_negate()
-                )
-            borrow[base] = base_avail.copy_negate()
+                    raise _no_buying_power("insufficient cash", currency=ccy, shortfall=short)
+                borrow[ccy] = short
+            avail[ccy] = Decimal(0)
     return legs, borrow
 
 
-async def _fx_lines(accts: _Accounts, base: str, legs: list[_FxLeg]) -> list[LineSpec]:
+async def _fx_lines(accts: _Accounts, legs: list[_FxLeg]) -> list[LineSpec]:
     lines: list[LineSpec] = []
     for leg in legs:
         lines += [
-            LineSpec(await accts.id(base, AccountKind.cash), leg.paid.copy_negate()),
-            LineSpec(await accts.id(base, AccountKind.system_fx, system=True), leg.paid),
+            LineSpec(await accts.id(leg.src, AccountKind.cash), leg.paid.copy_negate()),
+            LineSpec(await accts.id(leg.src, AccountKind.system_fx, system=True), leg.paid),
             LineSpec(
                 await accts.id(leg.ccy, AccountKind.system_fx, system=True),
                 leg.bought.copy_negate(),
@@ -185,8 +198,10 @@ async def _fx_lines(accts: _Accounts, base: str, legs: list[_FxLeg]) -> list[Lin
         ]
         if leg.fee > 0:
             lines += [
-                LineSpec(await accts.id(base, AccountKind.cash), leg.fee.copy_negate()),
-                LineSpec(await accts.id(base, AccountKind.system_fees, system=True), leg.fee),
+                LineSpec(await accts.id(leg.src, AccountKind.cash), leg.fee.copy_negate()),
+                LineSpec(
+                    await accts.id(leg.src, AccountKind.system_fees, system=True), leg.fee
+                ),
             ]
     return lines
 
@@ -194,19 +209,56 @@ async def _fx_lines(accts: _Accounts, base: str, legs: list[_FxLeg]) -> list[Lin
 async def _check_short_allowed(
     session: AsyncSession, portfolio: Portfolio, instrument: Instrument
 ) -> None:
-    """No profile behaves like the Default profile: shorting allowed."""
-    if portfolio.risk_profile_id is not None:
-        profile = await session.get(RiskProfile, portfolio.risk_profile_id)
-        if profile is not None and not profile.short_allowed:
-            raise SMTError(
-                ErrorCode.SHORT_NOT_ALLOWED, "short selling is disabled by the profile",
-                {"symbol": instrument.symbol},
-            )
+    profile = await effective_risk_profile(session, portfolio)
+    if profile is not None and not profile.short_allowed:
+        raise SMTError(
+            ErrorCode.SHORT_NOT_ALLOWED, "short selling is disabled by the profile",
+            {"symbol": instrument.symbol},
+        )
     if not instrument.shortable:
         raise SMTError(
             ErrorCode.SHORT_NOT_ALLOWED, f"{instrument.symbol} is not shortable",
             {"symbol": instrument.symbol},
         )
+
+
+@dataclass(frozen=True)
+class _Split:
+    after: Decimal  # position after the fill
+    close_qty: Decimal  # part that reduces the current position
+    open_qty: Decimal  # part that opens or adds
+    close_notional: Decimal
+    open_notional: Decimal
+
+    @property
+    def reducing(self) -> bool:
+        return self.open_qty == 0
+
+
+def _split_fill(
+    held: Decimal, buy: bool, qty: Decimal, price: Decimal, notional: Decimal, ccy: str
+) -> _Split:
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        after = held + qty if buy else held - qty
+        close_qty = min(qty, abs(held)) if held != 0 and (held > 0) != buy else Decimal(0)
+        open_qty = qty - close_qty
+        close_notional = notional if open_qty == 0 else quantize_money(close_qty * price, ccy)
+        return _Split(after, close_qty, open_qty, close_notional, notional - close_notional)
+
+
+async def _plan_release(
+    session: AsyncSession, accts: _Accounts, portfolio_id: UUID, *, symbol: str, ccy: str,
+    split: _Split, ccy_charge: Decimal,
+) -> Decimal:
+    """Collateral[ccy] released to cash for a cover: what the cover (and its fee in ccy)
+    costs, or all of it once no short in `ccy` is left."""
+    collateral = await accts.balance(ccy, AccountKind.collateral)
+    if split.after >= 0 and not await _has_other_short(session, portfolio_id, ccy, symbol):
+        return collateral
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        return min(collateral, split.close_notional + ccy_charge)
 
 
 async def _has_other_short(
@@ -268,6 +320,12 @@ async def execute_fill(
     quote: Quote,
     journal_type: JournalType = JournalType.TRADE,
 ) -> FillResult | None:
+    """Fill `order_id` at `quote`; None if the order is no longer fillable.
+
+    Ruling R12: a purely reducing fill (close/cover) is never blocked for lack of cash. It
+    may take a margin loan even at leverage 1, but only after converting from the base
+    currency and then from any other cash currency (FX journal with the usual fx fee).
+    """
     portfolio_id = await session.scalar(select(Order.portfolio_id).where(Order.id == order_id))
     if portfolio_id is None:
         raise SMTError(ErrorCode.NOT_FOUND, "order not found", {"order_id": str(order_id)})
@@ -315,15 +373,9 @@ async def execute_fill(
     accts = _Accounts(session, portfolio.id)
     held = await accts.balance(symbol, AccountKind.position)
     buy = side == OrderSide.buy
-    with localcontext() as ctx:
-        ctx.prec = _PREC
-        after = held + qty if buy else held - qty
-        # split into the part that reduces the current position and the part that opens
-        close_qty = min(qty, abs(held)) if held != 0 and (held > 0) != buy else Decimal(0)
-        open_qty = qty - close_qty
-        close_notional = notional if open_qty == 0 else quantize_money(close_qty * price, ccy)
-        open_notional = notional - close_notional
-    reducing = open_qty == 0
+    split = _split_fill(held, buy, qty, price, notional, ccy)
+    after, close_notional, open_notional = split.after, split.close_notional, split.open_notional
+    reducing = split.reducing
     if after < 0 and not buy:
         await _check_short_allowed(session, portfolio, instrument)
 
@@ -340,17 +392,13 @@ async def execute_fill(
             charge, charge_ccy = quantize_money(fee * rate, ccy, rounding=ROUND_UP), ccy
     ccy_charge = charge if charge_ccy == ccy else Decimal(0)
 
-    # Covering pays from collateral[ccy] first. Once no short in `ccy` is left, all of the
-    # remaining collateral is released to cash, so a flat book holds no collateral.
-    release = Decimal(0)
-    if buy and held < 0:
-        collateral = await accts.balance(ccy, AccountKind.collateral)
-        if after >= 0 and not await _has_other_short(session, portfolio.id, ccy, symbol):
-            release = collateral
-        else:
-            with localcontext() as ctx:
-                ctx.prec = _PREC
-                release = min(collateral, close_notional + ccy_charge)
+    release = (
+        await _plan_release(
+            session, accts, portfolio.id, symbol=symbol, ccy=ccy, split=split,
+            ccy_charge=ccy_charge,
+        )
+        if buy and held < 0 else Decimal(0)
+    )
 
     needs: dict[str, Decimal] = defaultdict(Decimal)
     incoming: dict[str, Decimal] = defaultdict(Decimal)
@@ -362,9 +410,14 @@ async def execute_fill(
             incoming[ccy] += close_notional
         incoming[ccy] += release
         needs[charge_ccy] += charge
+    # Ruling R12: a reducing fill may also sell any other cash currency, then borrow.
+    other_sources = sorted(
+        c for c, bal in (await get_cash_balances(session, portfolio.id)).items()
+        if bal > 0 and c not in (base, ccy)
+    ) if reducing else []
     legs, borrow = await _plan_funding(
         qs, accts, rule=rule, base=base, may_borrow=portfolio.leverage > 1 or reducing,
-        needs=dict(needs), incoming=dict(incoming),
+        other_sources=other_sources, needs=dict(needs), incoming=dict(incoming),
     )
 
     fill_id = uuid.uuid4()
@@ -375,7 +428,7 @@ async def execute_fill(
     }
     if legs:
         journals.append(await post_journal(
-            session, type=JournalType.FX, lines=await _fx_lines(accts, base, legs), **post,
+            session, type=JournalType.FX, lines=await _fx_lines(accts, legs), **post,
         ))
 
     qty_delta = qty if buy else qty.copy_negate()  # into the position

@@ -17,6 +17,7 @@ from smtrading.ledger.service import get_balance, get_or_create_account
 from smtrading.portfolios.service import create_portfolio, deposit
 from smtrading.positions.models import Position
 from smtrading.risk.models import RiskProfile
+from smtrading.risk.profiles import DEFAULT_RISK_PROFILE_NAME
 from smtrading.seed import run_seed
 
 D = Decimal
@@ -78,6 +79,27 @@ async def _position(session, portfolio_id, symbol):
     return await session.scalar(
         select(Position).where(Position.portfolio_id == portfolio_id, Position.symbol == symbol)
     )
+
+
+async def test_default_profile_blocks_short_at_fill_time(db_session, seeded, qs):
+    default = await db_session.scalar(
+        select(RiskProfile).where(RiskProfile.name == DEFAULT_RISK_PROFILE_NAME)
+    )
+    default.short_allowed = False
+    await db_session.flush()
+    p = await _portfolio(db_session)
+    assert p.risk_profile_id is None
+    await _fill(db_session, qs, p, "ENI.MI", OrderSide.buy, D(10))
+    resting = Order(
+        portfolio_id=p.id, symbol="ENI.MI", side=OrderSide.sell, type=OrderType.limit,
+        qty=D(15), limit_price=D("14.000"), status=OrderStatus.pending,
+    )
+    db_session.add(resting)
+    await db_session.flush()
+    quote = (await qs.get_quotes(["ENI.MI"]))["ENI.MI"]
+    with pytest.raises(SMTError) as e:
+        await execute_fill(db_session, qs, resting.id, quote=quote)
+    assert e.value.code == ErrorCode.SHORT_NOT_ALLOWED
 
 
 async def test_short_sell_creates_collateral(db_session, seeded, qs):
@@ -292,6 +314,36 @@ async def test_reducing_cover_fee_from_collateral_when_no_fee_cash(db_session, s
     assert await _bal(db_session, p.id, "USD", AccountKind.collateral) == D("218.57")
     assert await _bal(db_session, p.id, "USD", AccountKind.cash) == D("500.00")
     assert await _bal(db_session, p.id, "EUR", AccountKind.cash) == D(0)
+
+
+async def test_cover_funded_from_other_currency_leverage_1(db_session, seeded, qs):
+    """R12: only GBP cash -> the cover's shortfall is bought with GBP, nothing borrowed."""
+    qs.set_fx("EUR", "GBP", D("0.8"))
+    qs.set_fx("GBP", "USD", D("1.5625"))
+    p = await _portfolio(db_session, cash=D("1.80"))  # pays the short's 1.80 EUR fee
+    await deposit(db_session, p.id, D(2000), "GBP", author_id=None, reason="gbp")
+    await _fill(db_session, qs, p, "AAPL", OrderSide.sell, D(5))
+    assert await _bal(db_session, p.id, "EUR", AccountKind.cash) == D(0)
+
+    qs.set_quote("AAPL", D("219.90"), D("220.00"), D("219.95"))
+    res = await _fill(db_session, qs, p, "AAPL", OrderSide.buy, D(5))
+    fx, _ = res.journals
+    # cost 1100 USD + fee 1.88 EUR -> 2.35 USD (R9); 1000 from collateral -> 102.35 short
+    # a = 102.35 / 1.5625 = 65.504 -> 65.51 GBP, fx fee 0.25% = 0.16 GBP
+    assert (res.fill.fee_amount, res.fill.fee_currency) == (D("2.35"), "USD")
+    assert await _lines(db_session, fx.id) == sorted([
+        ("cash", "GBP", True, D("-65.51")),
+        ("system_fx", "GBP", False, D("65.51")),
+        ("system_fx", "USD", False, D("-102.35")),
+        ("cash", "USD", True, D("102.35")),
+        ("cash", "GBP", True, D("-0.16")),
+        ("system_fees", "GBP", False, D("0.16")),
+    ])
+    assert await _bal(db_session, p.id, "GBP", AccountKind.cash) == D("1934.33")
+    assert await _bal(db_session, p.id, "USD", AccountKind.cash) == D(0)
+    assert await _bal(db_session, p.id, "USD", AccountKind.margin_loan) == D(0)
+    assert await _bal(db_session, p.id, "EUR", AccountKind.margin_loan) == D(0)
+    assert await _bal(db_session, p.id, "AAPL", AccountKind.position) == D(0)
 
 
 async def test_reducing_fill_never_blocked_by_margin(db_session, seeded, qs):

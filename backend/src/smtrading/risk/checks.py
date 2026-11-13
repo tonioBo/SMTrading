@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import ROUND_UP, Decimal, localcontext
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.errors import ErrorCode, SMTError
@@ -24,8 +23,8 @@ from smtrading.instruments.service import validate_price, validate_quantity
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.risk.models import RiskProfile
+from smtrading.risk.profiles import effective_risk_profile
 from smtrading.risk.settings import get_default_spread_bps, get_stale_threshold, is_kill_switch_on
-from smtrading.seed import DEFAULT_RISK_PROFILE_NAME
 from smtrading.valuation.service import mark_price, value_portfolio
 
 EUR = "EUR"
@@ -55,15 +54,6 @@ class _Reject(Exception):
 
 def _sign(x: Decimal) -> int:
     return (x > 0) - (x < 0)
-
-
-async def _risk_profile(session: AsyncSession, portfolio: Portfolio) -> RiskProfile | None:
-    """The portfolio's profile, else the seeded Default; None means no limits."""
-    if portfolio.risk_profile_id is not None:
-        return await session.get(RiskProfile, portfolio.risk_profile_id)
-    return await session.scalar(
-        select(RiskProfile).where(RiskProfile.name == DEFAULT_RISK_PROFILE_NAME)
-    )
 
 
 def _check_whitelist(profile: RiskProfile | None, instrument: Instrument) -> None:
@@ -143,7 +133,7 @@ async def _run(
         raise _Reject(ErrorCode.KILL_SWITCH_ACTIVE, "trading is halted by the kill switch")
     if portfolio.status == PortfolioStatus.locked:
         raise _Reject(ErrorCode.PORTFOLIO_LOCKED, "portfolio is locked")
-    profile = await _risk_profile(session, portfolio)
+    profile = await effective_risk_profile(session, portfolio)
     _check_whitelist(profile, instrument)
 
     # 4-5: order shape, then the price estimate
