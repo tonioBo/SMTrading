@@ -1,8 +1,14 @@
 """Corporate actions with ex-date `day`: cash dividends and splits on held positions.
 
-Each portfolio is processed in its own transaction; every (symbol, day, kind, portfolio)
-is claimed in job_runs (`corp`) so it is applied at most once, and the whole day is
-marked `corporate / {day}` once every portfolio succeeded.
+Each portfolio is processed in its own transaction (portfolio row locked first, in id
+order); every (symbol, day, kind, portfolio) is claimed in job_runs (`corp`) so it is
+applied at most once, and the whole day is marked `corporate / {day}` once every
+portfolio succeeded.
+
+Ruling R21 (I5): the calendar is read for held symbols and symbols with open orders; on
+a split every open order on the symbol is canceled, in every portfolio, and each
+portfolio is notified (`split_orders_canceled`). Orders are not rescaled. Redis effects
+of the cancels are dispatched after each commit when `redis` is given.
 """
 
 import logging
@@ -17,7 +23,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.money import quantize_money
 from smtrading.corporate.interest import account_id, debit_lines
+from smtrading.engine.models import OPEN_STATUSES, Order
 from smtrading.engine.quotesource import QuoteSource
+from smtrading.engine.service import cancel_all_orders
+from smtrading.events import discard_post_commit, dispatch_post_commit, notify
 from smtrading.instruments.models import Instrument
 from smtrading.jobs.runs import job_done, run_job_once
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, JournalType
@@ -133,12 +142,14 @@ _APPLY = {"dividend": _dividend, "split": _split}
 
 
 async def _apply_portfolio(
-    session: AsyncSession, portfolio_id: UUID, symbols: list[str],
+    session: AsyncSession, portfolio_id: UUID, held: list[str], split_orders: list[str],
     events: dict[str, list[CalendarEvent]], instruments: dict[str, _Inst], day: date,
 ) -> int:
+    """Dividends/splits on the `held` symbols; cancel the open orders on the
+    `split_orders` symbols (Ruling R21). The caller commits."""
     await lock_portfolio(session, portfolio_id)
     journals = 0
-    for symbol in symbols:
+    for symbol in held:
         for event in events.get(symbol, []):
             key = f"{symbol}:{day.isoformat()}:{event.kind}:{portfolio_id}"
             if not await run_job_once(session, EVENT_JOB, key):
@@ -151,10 +162,25 @@ async def _apply_portfolio(
                 continue
             if await _APPLY[event.kind](session, portfolio_id, instruments[symbol], qty, event):
                 journals += 1
+    for symbol in split_orders:
+        canceled = await cancel_all_orders(session, portfolio_id, symbol, by="system")
+        if canceled:
+            split = next(e for e in events[symbol] if e.kind == "split")
+            await notify(
+                session, portfolio_id=portfolio_id, kind="split_orders_canceled",
+                payload={
+                    "symbol": symbol, "date": day, "ratio": split.data.get("ratio"),
+                    "canceled": canceled,
+                },
+            )
+            log.warning("split of %s on %s: %s open orders of portfolio %s canceled",
+                        symbol, day, canceled, portfolio_id)
     return journals
 
 
-async def run_corporate_actions(session: AsyncSession, qs: QuoteSource, day: date) -> int:
+async def run_corporate_actions(
+    session: AsyncSession, qs: QuoteSource, day: date, *, redis=None
+) -> int:
     """Apply the dividends and splits with ex-date `day`; returns the journals created.
 
     Commits once per portfolio. A failing portfolio is rolled back, logged and left for
@@ -175,7 +201,16 @@ async def run_corporate_actions(session: AsyncSession, qs: QuoteSource, day: dat
     holdings: dict[UUID, list[str]] = defaultdict(list)
     for portfolio_id, symbol in rows:
         holdings[portfolio_id].append(symbol)
-    symbols = sorted({s for held in holdings.values() for s in held})
+    open_orders: dict[UUID, set[str]] = defaultdict(set)
+    for portfolio_id, symbol in (await session.execute(
+        select(Order.portfolio_id, Order.symbol).distinct()
+        .where(Order.status.in_(OPEN_STATUSES))
+    )).all():
+        open_orders[portfolio_id].add(symbol)
+    symbols = sorted(
+        {s for held in holdings.values() for s in held}
+        | {s for syms in open_orders.values() for s in syms}
+    )
 
     events: dict[str, list[CalendarEvent]] = defaultdict(list)
     instruments: dict[str, _Inst] = {}
@@ -192,21 +227,26 @@ async def run_corporate_actions(session: AsyncSession, qs: QuoteSource, day: dat
             )).all()
         }
     await session.commit()
+    splits = {s for s, evs in events.items() if any(e.kind == "split" for e in evs)}
 
     total, failed = 0, False
-    for portfolio_id, held in holdings.items():
-        affected = [s for s in held if s in events]
-        if not affected:
+    for portfolio_id in sorted(set(holdings) | set(open_orders)):
+        affected = [s for s in holdings.get(portfolio_id, []) if s in events]
+        split_orders = sorted(open_orders.get(portfolio_id, set()) & splits)
+        if not affected and not split_orders:
             continue
         try:
             total += await _apply_portfolio(
-                session, portfolio_id, affected, events, instruments, day
+                session, portfolio_id, affected, split_orders, events, instruments, day
             )
             await session.commit()
         except Exception:
             await session.rollback()
+            discard_post_commit(session)
             failed = True
             log.exception("corporate actions of portfolio %s for %s failed", portfolio_id, key)
+            continue
+        await dispatch_post_commit(session, redis)
     if not failed:
         await run_job_once(session, JOB, key)
         await session.commit()

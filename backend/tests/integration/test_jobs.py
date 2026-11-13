@@ -1,6 +1,6 @@
 import logging
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 
 import pytest
@@ -340,3 +340,136 @@ async def test_scheduler_logs_errors_and_keeps_going(sm, qs, monkeypatch, caplog
     assert any("interest" in m for m in messages)
     async with sm() as session:  # the other jobs still ran
         assert await session.get(JobRun, ("corporate", "2026-11-13")) is not None
+
+
+# --- I5 / Ruling R21: splits cancel open orders ---------------------------------------
+
+
+async def _open_order(session, portfolio_id, symbol="AAPL", side=OrderSide.sell):
+    o = Order(
+        portfolio_id=portfolio_id, symbol=symbol, side=side, type=OrderType.limit,
+        qty=D(5), limit_price=D(300), status=OrderStatus.pending,
+    )
+    session.add(o)
+    await session.flush()
+    return o.id
+
+
+async def _notification_kinds(session, portfolio_id):
+    from smtrading.risk.models import Notification
+
+    return list(await session.scalars(
+        select(Notification.kind).where(Notification.portfolio_id == portfolio_id)
+    ))
+
+
+async def test_split_cancels_open_orders_in_every_portfolio(db_session, seeded, qs):
+    holder = await _portfolio(db_session, "USD")
+    await _trade(db_session, qs, holder, OrderSide.buy, 10)
+    held_order = await _open_order(db_session, holder)
+    other = await _portfolio(db_session, "USD")  # no position, only an open order
+    other_order = await _open_order(db_session, other, side=OrderSide.buy)
+    unrelated = await _open_order(db_session, other, symbol="ENI.MI", side=OrderSide.buy)
+    qs.set_calendar([CalendarEvent("AAPL", "split", DAY, {"ratio": "4"})])
+
+    assert await run_corporate_actions(db_session, qs, DAY) == 1
+
+    assert await _balance(db_session, holder, "AAPL", AccountKind.position) == D(40)
+    statuses = {
+        oid: (await db_session.get(Order, oid, populate_existing=True)).status
+        for oid in (held_order, other_order, unrelated)
+    }
+    assert statuses == {
+        held_order: OrderStatus.canceled, other_order: OrderStatus.canceled,
+        unrelated: OrderStatus.pending,
+    }
+    assert await _notification_kinds(db_session, holder) == ["split_orders_canceled"]
+    assert await _notification_kinds(db_session, other) == ["split_orders_canceled"]
+
+
+async def test_split_of_a_symbol_only_in_open_orders(db_session, seeded, qs):
+    pid = await _portfolio(db_session, "USD")
+    oid = await _open_order(db_session, pid, side=OrderSide.buy)
+    qs.set_calendar([CalendarEvent("AAPL", "split", DAY, {"ratio": "2"})])
+    assert await run_corporate_actions(db_session, qs, DAY) == 0  # no journal
+    assert (await db_session.get(Order, oid, populate_existing=True)).status == (
+        OrderStatus.canceled
+    )
+
+
+async def test_dividend_does_not_cancel_open_orders(db_session, seeded, qs):
+    pid = await _portfolio(db_session, "USD")
+    await _trade(db_session, qs, pid, OrderSide.buy, 10)
+    oid = await _open_order(db_session, pid)
+    qs.set_calendar([CalendarEvent("AAPL", "dividend", DAY, {"amount": "0.25"})])
+    assert await run_corporate_actions(db_session, qs, DAY) == 1
+    assert (await db_session.get(Order, oid, populate_existing=True)).status == (
+        OrderStatus.pending
+    )
+
+
+# --- I6: catch-up of missed days --------------------------------------------------------
+
+
+async def test_scheduler_catches_up_missed_days_in_order(sm, qs, monkeypatch, caplog):
+    async with sm() as session:
+        for job, day in (("interest", "2026-11-06"), ("interest", "2026-11-07"),
+                         ("interest", "2026-11-08:00000000-0000-0000-0000-000000000000"),
+                         ("corporate", "2026-11-10")):
+            session.add(JobRun(job=job, key=day))
+        await session.commit()
+    ran: list[tuple[str, date]] = []
+
+    def fake(job):
+        async def run(session, qs_, day, **kw):
+            ran.append((job, day))
+            await run_job_once(session, job, day.isoformat())
+            await session.commit()
+            return 0
+        return run
+
+    monkeypatch.setattr("smtrading.jobs.scheduler.run_interest", fake("interest"))
+    monkeypatch.setattr("smtrading.jobs.scheduler.run_corporate_actions", fake("corporate"))
+
+    async def no_sweep(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr("smtrading.jobs.scheduler.margin_sweep", no_sweep)
+    clock = _Clock(datetime(2026, 11, 13, 0, 0, 10, tzinfo=UTC))  # corporate not due yet
+    scheduler = JobScheduler(sm, qs, None, clock=clock)
+    with caplog.at_level(logging.ERROR, logger="smtrading.jobs.scheduler"):
+        await scheduler.tick()
+
+    days = [date(2026, 11, d) for d in range(8, 13)]
+    assert ran == [("interest", d) for d in days] + [
+        ("corporate", date(2026, 11, 11)), ("corporate", date(2026, 11, 12)),
+    ]
+    caught = sorted(r.getMessage() for r in caplog.records if "catching up" in r.getMessage())
+    assert caught == sorted(
+        [f"interest {d.isoformat()} was missed: catching up" for d in days[:-1]]
+        + ["corporate 2026-11-11 was missed: catching up",
+           "corporate 2026-11-12 was missed: catching up"]
+    )
+    assert all(r.levelname == "ERROR" for r in caplog.records if "catching up" in r.getMessage())
+
+    ran.clear()
+    clock.now += timedelta(seconds=30)
+    await scheduler.tick()
+    assert ran == []  # everything done
+    clock.now = datetime(2026, 11, 13, 6, 0, 5, tzinfo=UTC)
+    await scheduler.tick()
+    assert ran == [("corporate", date(2026, 11, 13))]
+
+
+async def test_scheduler_does_not_catch_up_a_job_that_never_ran(sm, qs, monkeypatch):
+    ran: list[date] = []
+
+    async def run(session, qs_, day, **kw):
+        ran.append(day)
+        return 0
+
+    monkeypatch.setattr("smtrading.jobs.scheduler.run_interest", run)
+    scheduler = JobScheduler(sm, qs, None, clock=_Clock(datetime(2026, 11, 13, 1, tzinfo=UTC)))
+    await scheduler._daily("interest", time(0), datetime(2026, 11, 13, 1, tzinfo=UTC),
+                           date(2026, 11, 12), run)
+    assert ran == [date(2026, 11, 12)]
