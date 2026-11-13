@@ -13,6 +13,7 @@ from smtrading.agents.models import Agent
 from smtrading.agents.service import assign_portfolio, create_agent
 from smtrading.common.config import get_settings
 from smtrading.common.db import get_sessionmaker
+from smtrading.common.logsetup import configure_logging
 from smtrading.connectors.service import seed_connectors
 from smtrading.fees.models import FeeRule, FeeScope, FeeSide
 from smtrading.instruments.catalog import seed_catalog
@@ -270,7 +271,7 @@ async def _main() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging(logging.INFO)
     asyncio.run(_main())
 
 

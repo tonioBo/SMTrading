@@ -8,11 +8,13 @@ import httpx
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+import smtrading.models  # noqa: F401  (complete mapper registry before any session)
 from smtrading.backtest.runner import BacktestRunner
 from smtrading.brokers.sync import BrokerSync
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
 from smtrading.common.heartbeat import write_heartbeat
+from smtrading.common.logsetup import configure_logging
 from smtrading.engine.processor import OrderProcessor
 from smtrading.jobs.scheduler import JobScheduler
 from smtrading.marketdata.router import MarketDataRouter
@@ -124,5 +126,5 @@ async def run() -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    configure_logging(logging.INFO)
     asyncio.run(run())

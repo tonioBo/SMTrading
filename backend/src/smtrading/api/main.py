@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from starlette.routing import Route
 
+import smtrading.models  # noqa: F401  (complete mapper registry before any session)
 from smtrading.admin.errors import install_error_handlers
 from smtrading.admin.routes_agents import router as agents_router
 from smtrading.admin.routes_auth import router as auth_router
@@ -24,6 +25,7 @@ from smtrading.admin.ws import router as ws_router
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
 from smtrading.common.heartbeat import heartbeat_age_s
+from smtrading.common.logsetup import configure_logging
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.mcp.auth import MCP_PATH, McpAuthMiddleware
 from smtrading.mcp.runtime import McpRuntime, get_runtime, set_runtime
@@ -67,6 +69,9 @@ RuntimeFactory = Callable[[async_sessionmaker[AsyncSession], Redis], McpRuntime]
 def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     """`runtime_factory(sessionmaker, redis)` overrides the MCP runtime (tests inject a
     FakeQuoteSource); by default the MarketDataRouter is the MCP quote source."""
+    # uvicorn has configured its loggers by now: mask secrets in them, keep its handlers
+    configure_logging(add_handler=False,
+                      extra_loggers=("uvicorn", "uvicorn.error", "uvicorn.access"))
     resources = _Resources()
     mcp = build_mcp()
     mcp_endpoint = build_mcp_endpoint(mcp)

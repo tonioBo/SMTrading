@@ -39,6 +39,7 @@ from smtrading.agents.models import Agent, AgentPortfolio
 from smtrading.common.config import get_settings
 from smtrading.common.db import get_sessionmaker
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.common.logsetup import configure_logging
 from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import OrderSide, OrderType
 from smtrading.engine.quotesource import QuoteSource
@@ -264,6 +265,7 @@ async def run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_logging(add_handler=False)
     return asyncio.run(run(build_parser().parse_args(argv)))
 
 
