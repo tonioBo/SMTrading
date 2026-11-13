@@ -65,6 +65,17 @@ services:
     <<: *app
     command: ["python", "-m", "smtrading.worker.main"]
 
+  # Admin web app (nginx: SPA + proxy of /api/ and /ws to api).
+  web:
+    build: ./web
+    image: smtrading-web:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:80"  # local only (ruling R3)
+    depends_on:
+      - api
+    networks: [smtrading-net]
+
   # Daily pg_dump | gzip into the `backups` volume; keeps 14 days.
   backup:
     image: postgres:16
