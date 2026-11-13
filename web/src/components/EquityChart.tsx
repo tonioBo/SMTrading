@@ -1,7 +1,7 @@
 import { ColorType, createChart, type IChartApi, type ISeriesApi, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useRef, useState } from "react";
 import { EQUITY_PERIODS as PERIODS, useEquity } from "@/api/hooks/dashboard";
-import type { EquityPeriod } from "@/api/types";
+import type { EquityPeriod, EquityPoint } from "@/api/types";
 import { Button } from "@/components/ui/button";
 
 function cssColor(name: string, fallback: string): string {
@@ -9,10 +9,20 @@ function cssColor(name: string, fallback: string): string {
   return raw ? `rgb(${raw})` : fallback;
 }
 
-/** Aggregated equity curve. Values become numbers only here, for the chart: labels use format.ts. */
-export function EquityChart() {
+interface SeriesQuery {
+  data?: { series: EquityPoint[] };
+  isLoading: boolean;
+  isError: boolean;
+}
+
+/**
+ * Equity curve: the aggregated one by default, or the series of `useSeries` (a query hook,
+ * e.g. one portfolio's performance). Values become numbers only here, for the chart:
+ * labels use format.ts.
+ */
+export function EquityChart({ useSeries = useEquity }: { useSeries?: (period: EquityPeriod) => SeriesQuery } = {}) {
   const [period, setPeriod] = useState<EquityPeriod>("1m");
-  const { data, isLoading, isError } = useEquity(period);
+  const { data, isLoading, isError } = useSeries(period);
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const series = useRef<ISeriesApi<"Area"> | null>(null);

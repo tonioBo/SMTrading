@@ -17,6 +17,10 @@ interface Props {
   confirmLabel?: string;
   destructive?: boolean;
   pending?: boolean;
+  /** Disables the confirm button (e.g. until a typed confirmation matches). */
+  confirmDisabled?: boolean;
+  /** An error (e.g. the server message) shown above the buttons. */
+  error?: string | null;
   onConfirm: () => void;
   children?: ReactNode;
 }
@@ -29,6 +33,8 @@ export function ConfirmDialog({
   confirmLabel = "Conferma",
   destructive = false,
   pending = false,
+  confirmDisabled = false,
+  error = null,
   onConfirm,
   children,
 }: Props) {
@@ -40,11 +46,20 @@ export function ConfirmDialog({
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
         {children}
+        {error && (
+          <p role="alert" className="text-sm text-loss">
+            {error}
+          </p>
+        )}
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>
             Annulla
           </Button>
-          <Button variant={destructive ? "destructive" : "default"} onClick={onConfirm} disabled={pending}>
+          <Button
+            variant={destructive ? "destructive" : "default"}
+            onClick={onConfirm}
+            disabled={pending || confirmDisabled}
+          >
             {confirmLabel}
           </Button>
         </DialogFooter>
