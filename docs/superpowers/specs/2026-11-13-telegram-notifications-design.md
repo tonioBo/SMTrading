@@ -68,6 +68,13 @@ Ogni elemento contiene `{id, ts, type, agent, portfolio, summary, data}`. Il fee
 ### Web app — sezione «Notifiche»
 - **Configurazione:** token del bot (mascherato), ID del gruppo, interruttore attivo, pulsante «Invia messaggio di prova».
 - **Guida rapida:** come creare il bot con @BotFather e come ottenere l'ID del gruppo.
+- **Modifica comoda** (richiesta utente 2026-11-13):
+  - Il token del bot si può sostituire senza mai rivederlo. Il campo mostra solo `••••` e il nome del bot letto con `getMe`, per esempio `@Smtradingnotifiche_bot`.
+  - L'ID del gruppo è modificabile, con accanto il titolo del gruppo letto con `getChat`.
+  - Pulsante **«Rileva gruppi»**: lato server chiama `getUpdates` e mostra le chat recenti in cui il bot ha ricevuto messaggi (ID, tipo, titolo). Con un clic si sceglie il gruppo. Il testo spiega di scrivere `/start@<bot>` nel gruppo prima di premerlo.
+  - Prima di salvare un nuovo token o un nuovo ID viene verificato il collegamento (`getMe` e `getChat`). Gli errori di Telegram compaiono in italiano, senza il token.
+  - Interruttore per mettere in pausa tutti gli invii. Gli eventi restano in coda con stato `paused` e non vengono persi.
+  - Ogni modifica finisce nel log di audit amministrativo.
 - **Ultimi messaggi:** dalla outbox, con stato, errori e un pulsante «Riprova».
 - **Decisioni:** elenco filtrabile per agente, portafoglio e tipo.
 
