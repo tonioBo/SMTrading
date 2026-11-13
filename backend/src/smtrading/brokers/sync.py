@@ -96,6 +96,8 @@ log = logging.getLogger("smtrading.brokers.sync")
 SYNC_INTERVAL_S = 2.0
 MATCH_WINDOW = timedelta(minutes=5)
 FILL_PRICE_WAIT = timedelta(minutes=10)
+# a liquidation still waiting on the symbol's other broker orders after this: notify once
+LIQUIDATION_WAIT_NOTIFY = timedelta(minutes=10)
 ADVISORY_LOCK_KEY = 0x534D5442524B  # "SMTBRK"
 UNSUPPORTED = "Ordine non supportato dal broker collegato"
 _SYNCED = tuple(s for s in OrderStatus if s in OPEN_STATUSES - {OrderStatus.held})
@@ -414,7 +416,7 @@ class BrokerSync:
         if order.expires_at is not None and order.expires_at <= self._clock():
             return "expired"
         if link is None or not link.enabled or portfolio.broker_link_id != link.id:
-            return "broker link disabled or removed"
+            return "collegamento al broker disattivato o rimosso"
         refusal = await self._refusal(session, portfolio, order, clamp=False)
         return None if refusal is None else refusal.message
 
@@ -470,7 +472,7 @@ class BrokerSync:
             if link is None or not link.enabled or portfolio.broker_link_id != link.id:
                 await self._reject(
                     session, order, ErrorCode.PROVIDER_UNAVAILABLE,
-                    "broker link disabled or changed",
+                    "Collegamento al broker disattivato o cambiato",
                 )
                 await self._commit(session)
                 return
@@ -479,6 +481,7 @@ class BrokerSync:
             if order.role == LIQUIDATION_ROLE:
                 still_open, to_cancel = await self._cancel_others(session, order)
                 if still_open:
+                    await self._liquidation_waiting(session, order, still_open, now)
                     await self._commit(session)
                     if retry:
                         await self._cancel_now(to_cancel)
@@ -552,6 +555,29 @@ class BrokerSync:
             if other.broker_order_id is not None:
                 to_cancel.append(other.id)
         return still_open, to_cancel
+
+    async def _liquidation_waiting(
+        self, session: AsyncSession, order: Order, still_open: list[UUID], now: datetime
+    ) -> None:
+        """A liquidation blocked by cancels the broker keeps refusing: tell the admin once
+        (after LIQUIDATION_WAIT_NOTIFY) instead of only logging every pass."""
+        if now - order.created_at <= LIQUIDATION_WAIT_NOTIFY:
+            return
+        sent = await session.scalar(
+            select(Notification.id).where(
+                Notification.portfolio_id == order.portfolio_id,
+                Notification.kind == "broker.liquidation_waiting",
+                Notification.payload["order_id"].astext == str(order.id),
+            ).limit(1)
+        )
+        if sent is None:
+            await notify(
+                session, portfolio_id=order.portfolio_id, agent_id=order.agent_id,
+                kind="broker.liquidation_waiting",
+                payload={"order_id": order.id, "symbol": order.symbol,
+                         "waiting_on": [str(i) for i in still_open]},
+            )
+            log.error("liquidation %s waits on broker cancels of %s", order.id, still_open)
 
     async def _cancel_now(self, order_ids: list[UUID]) -> None:
         for other in order_ids:

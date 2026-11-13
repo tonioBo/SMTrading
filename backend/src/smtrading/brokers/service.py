@@ -13,6 +13,7 @@ from smtrading.engine.execution import broker_live
 from smtrading.engine.models import OPEN_STATUSES, Order, OrderType
 from smtrading.portfolios.locks import lock_live_portfolio
 from smtrading.portfolios.models import Portfolio
+from smtrading.positions.models import Position
 
 
 def _validated(kind: str, config: dict) -> dict:
@@ -107,6 +108,16 @@ async def link_portfolio(
         raise SMTError(
             ErrorCode.INVALID_ORDER,
             "annulla prima gli ordini aperti simulati del portafoglio",
+            {"portfolio_id": str(pf.id)},
+        )
+    # the broker does not hold the simulated positions: a close would be routed for qty
+    # the account does not have (a short on Alpaca paper)
+    if link_id is not None and await session.scalar(
+        select(Position.symbol).where(Position.portfolio_id == pf.id, Position.qty != 0).limit(1)
+    ) is not None:
+        raise SMTError(
+            ErrorCode.INVALID_ORDER,
+            "Chiudi prima le posizioni aperte: il broker non le conosce",
             {"portfolio_id": str(pf.id)},
         )
     pf.broker_link_id = link_id

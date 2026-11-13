@@ -2,6 +2,7 @@
 link with the in-flight guard, reconciliations and broker positions."""
 
 import asyncio
+import base64
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -12,14 +13,17 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from smtrading.admin.common import redact
 from smtrading.brokers import registry
 from smtrading.brokers.alpaca_paper import AlpacaPaperAdapter
 from smtrading.brokers.models import Reconciliation
 from smtrading.brokers.service import get_link_config
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
+from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.models import BrokerState, Order, OrderSide, OrderType
 from smtrading.engine.service import PlaceOrderRequest, place_order
+from smtrading.positions.models import Position
 
 D = Decimal
 PASSWORD = "correct-horse-battery"
@@ -352,3 +356,76 @@ async def test_portfolio_mode_follows_the_broker_link(admin, fake_alpaca):
     dash = (await c.get("/api/dashboard")).json()
     assert dash["modes"] == {"simulazione": sim_before - 1, "paper": 1, "reale": 0}
     assert {p["id"]: p["mode"] for p in dash["portfolios"]}[pf["id"]] == "paper"
+
+
+class SMTFailAlpaca(FakeAlpaca):
+    """The adapter itself raises an SMTError whose text carries the key."""
+
+    async def get_positions(self) -> dict[str, Decimal]:
+        raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE, f"alpaca_paper: bad key {SECRET}")
+
+
+async def test_broker_smterror_redacted_and_recorded(admin, monkeypatch):
+    monkeypatch.setitem(registry.ADAPTERS, "alpaca_paper", SMTFailAlpaca)
+    c = admin.client
+    link = await _link(c)
+    pf = await _portfolio(c)
+    await c.put(f"/api/portfolios/{pf['id']}/broker-link", json={"broker_link_id": link["id"]})
+    for call in (lambda: c.get(f"/api/broker-links/{link['id']}/positions"),
+                 lambda: c.post(f"/api/broker-links/{link['id']}/reconcile")):
+        r = await call()
+        assert r.status_code == 400 and r.json()["code"] == "PROVIDER_UNAVAILABLE"
+        assert SECRET not in r.text and "bad key" in r.text
+        listed = (await c.get("/api/broker-links")).json()[0]
+        assert listed["status"] == "error"
+        assert "bad key" in listed["last_error"] and SECRET not in listed["last_error"]
+        await c.post(f"/api/broker-links/{link['id']}/test")  # back to ok (health passes)
+
+
+def test_t212_basic_credential_is_redacted():
+    from smtrading.admin.routes_brokers import link_secrets
+
+    config = {"api_key": "K-12345678", "api_secret": "S-87654321"}
+    encoded = base64.b64encode(b"K-12345678:S-87654321").decode()
+    secrets = link_secrets("t212_demo", config)
+    assert encoded in secrets
+    text = redact(f"401 for Authorization: Basic {encoded}", secrets)
+    assert encoded not in text and "K-12345678" not in text
+    assert set(link_secrets("alpaca_paper", {"key_id": "A", "secret_key": "B"})) == {"A", "B"}
+
+
+async def test_broker_mutations_require_csrf(admin):
+    link = await _link(admin.client)
+    pf = await _portfolio(admin.client)
+    transport = httpx.ASGITransport(app=admin.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test",
+                                 cookies=admin.client.cookies) as no_csrf:
+        calls = [
+            no_csrf.post("/api/broker-links", json={"name": "X", "kind": "alpaca_paper",
+                                                    "config": {}}),
+            no_csrf.patch(f"/api/broker-links/{link['id']}", json={"enabled": False}),
+            no_csrf.post(f"/api/broker-links/{link['id']}/test"),
+            no_csrf.post(f"/api/broker-links/{link['id']}/reconcile"),
+            no_csrf.put(f"/api/portfolios/{pf['id']}/broker-link",
+                        json={"broker_link_id": link["id"]}),
+        ]
+        for call in calls:
+            r = await call
+            assert r.status_code == 403 and r.json()["message"] == "CSRF"
+    listed = (await admin.client.get("/api/broker-links")).json()
+    assert len(listed) == 1 and listed[0]["enabled"] is True and listed[0]["portfolios"] == []
+
+
+async def test_link_refused_with_open_positions(admin, fake_alpaca):
+    c = admin.client
+    link = await _link(c)
+    pf = await _portfolio(c)
+    async with admin.sm() as s:
+        s.add(Position(portfolio_id=uuid.UUID(pf["id"]), symbol="AAPL", qty=D(2),
+                       avg_price=D("200")))
+        await s.commit()
+    r = await c.put(f"/api/portfolios/{pf['id']}/broker-link",
+                    json={"broker_link_id": link["id"]})
+    assert r.status_code == 400 and r.json()["code"] == "INVALID_ORDER"
+    assert "Chiudi prima le posizioni aperte" in r.json()["message"]
+    assert (await c.get(f"/api/portfolios/{pf['id']}")).json()["broker_link_id"] is None

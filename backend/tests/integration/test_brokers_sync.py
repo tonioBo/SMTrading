@@ -648,7 +648,18 @@ async def test_disabled_link_rejects_unsent_orders(maker, redis, qs):
     await _sync(maker, redis, qs).tick()
     o = await _order(maker, oid)
     assert o.status == OrderStatus.rejected and BROKER.placed == []
+    assert o.reject_message == "Collegamento al broker disattivato o cambiato"
     assert len(await _notes(maker, pid, "order.rejected")) == 1
+
+
+async def test_order_on_a_disabled_link_is_rejected_in_italian(maker, redis, qs):
+    pid, link_id = await _linked_portfolio(maker)
+    async with maker() as s:
+        await update_link(s, link_id, enabled=False)
+        await s.commit()
+    with pytest.raises(SMTError) as e:
+        await _place(maker, redis, qs, pid)
+    assert e.value.message == "Collegamento al broker disattivato"
 
 
 async def test_unlinked_portfolio_releases_unsent_orders_to_the_simulator(maker, redis, qs):
@@ -1014,13 +1025,13 @@ async def test_margin_liquidation_is_routed_to_the_broker(maker, redis):
         p = await create_portfolio(
             s, name=f"M-{uuid.uuid4().hex[:8]}", initial_cash=D(100000), leverage=D(2),
         )
+        link = await create_link(s, f"L-{uuid.uuid4().hex[:8]}", "fake_test", {})
+        await link_portfolio(s, p.id, link.id)  # before the fill: no simulated positions
         o = Order(portfolio_id=p.id, symbol="ENI.MI", side=OrderSide.buy,
                   type=OrderType.market, qty=D(13000), status=OrderStatus.new)
         s.add(o)
         await s.flush()
         await execute_fill(s, q, o.id, quote=(await q.get_quotes(["ENI.MI"]))["ENI.MI"])
-        link = await create_link(s, f"L-{uuid.uuid4().hex[:8]}", "fake_test", {})
-        await link_portfolio(s, p.id, link.id)
         await s.commit()
         pid = p.id
     q.set_quote("ENI.MI", D("8.995"), D("9.005"), None, ts=OPEN)
@@ -1062,13 +1073,13 @@ async def test_broker_liquidation_cancels_the_symbol_orders_first(maker, redis):
         p = await create_portfolio(
             s, name=f"M-{uuid.uuid4().hex[:8]}", initial_cash=D(100000), leverage=D(2),
         )
+        link = await create_link(s, f"L-{uuid.uuid4().hex[:8]}", "fake_test", {})
+        await link_portfolio(s, p.id, link.id)  # before the fill: no simulated positions
         o = Order(portfolio_id=p.id, symbol="ENI.MI", side=OrderSide.buy,
                   type=OrderType.market, qty=D(13000), status=OrderStatus.new)
         s.add(o)
         await s.flush()
         await execute_fill(s, q, o.id, quote=(await q.get_quotes(["ENI.MI"]))["ENI.MI"])
-        link = await create_link(s, f"L-{uuid.uuid4().hex[:8]}", "fake_test", {})
-        await link_portfolio(s, p.id, link.id)
         await s.commit()
         pid = p.id
     async with maker() as s:
@@ -1106,6 +1117,50 @@ async def test_broker_liquidation_cancels_the_symbol_orders_first(maker, redis):
     assert (await _order(maker, limit.id)).status == OrderStatus.canceled
 
 
+async def test_liquidation_waiting_on_cancel_notifies(maker, redis):
+    """Carry (T8): a liquidation stuck behind a cancel the broker refuses notifies once."""
+    q = FakeQuoteSource()
+    q.set_fx("EUR", "USD", D("1.25"))
+    q.set_quote("ENI.MI", D("14.995"), D("15.005"), None, ts=OPEN)
+    async with maker() as s:
+        p = await create_portfolio(
+            s, name=f"M-{uuid.uuid4().hex[:8]}", initial_cash=D(100000), leverage=D(2),
+        )
+        link = await create_link(s, f"L-{uuid.uuid4().hex[:8]}", "fake_test", {})
+        await link_portfolio(s, p.id, link.id)
+        o = Order(portfolio_id=p.id, symbol="ENI.MI", side=OrderSide.buy,
+                  type=OrderType.market, qty=D(13000), status=OrderStatus.new)
+        s.add(o)
+        await s.flush()
+        await execute_fill(s, q, o.id, quote=(await q.get_quotes(["ENI.MI"]))["ENI.MI"])
+        await s.commit()
+        pid = p.id
+    async with maker() as s:
+        await place_order(s, q, PlaceOrderRequest(
+            portfolio_id=pid, symbol="ENI.MI", side=OrderSide.sell, type=OrderType.limit,
+            qty=D(100), limit_price=D("20"),
+        ), now=OPEN)
+        await s.commit()
+    sync = _sync(maker, redis, q)
+    await sync.tick()
+    q.set_quote("ENI.MI", D("8.995"), D("9.005"), None, ts=OPEN)
+    async with maker() as s:
+        assert await check_portfolio_margin(s, q, pid, now=OPEN) == "liquidated"
+        await s.commit()
+    BROKER.cancel_raises = True
+    await sync.tick()  # just created: no notification yet
+    assert await _notes(maker, pid, "broker.liquidation_waiting") == []
+    async with maker() as s:
+        await s.execute(text("update orders set created_at = :t where role = 'liquidation'"
+                             " and portfolio_id = :p"),
+                        {"t": OPEN - timedelta(hours=1), "p": pid})
+        await s.commit()
+    await sync.tick()
+    await sync.tick()
+    notes = await _notes(maker, pid, "broker.liquidation_waiting")
+    assert len(notes) == 1 and notes[0].payload["symbol"] == "ENI.MI"
+
+
 async def test_broker_liquidation_is_clamped_after_the_symbol_orders_fill(maker, redis):
     """Re-review: a stop-loss filled at the broker before its cancel -> the liquidation
     is sent only for what is left after that fill is applied; no short is opened."""
@@ -1116,13 +1171,13 @@ async def test_broker_liquidation_is_clamped_after_the_symbol_orders_fill(maker,
         p = await create_portfolio(
             s, name=f"M-{uuid.uuid4().hex[:8]}", initial_cash=D(100000), leverage=D(2),
         )
+        link = await create_link(s, f"L-{uuid.uuid4().hex[:8]}", "fake_test", {})
+        await link_portfolio(s, p.id, link.id)  # before the fill: no simulated positions
         o = Order(portfolio_id=p.id, symbol="ENI.MI", side=OrderSide.buy,
                   type=OrderType.market, qty=D(13000), status=OrderStatus.new)
         s.add(o)
         await s.flush()
         await execute_fill(s, q, o.id, quote=(await q.get_quotes(["ENI.MI"]))["ENI.MI"])
-        link = await create_link(s, f"L-{uuid.uuid4().hex[:8]}", "fake_test", {})
-        await link_portfolio(s, p.id, link.id)
         await s.commit()
         pid = p.id
     async with maker() as s:

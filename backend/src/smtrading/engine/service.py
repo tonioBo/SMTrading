@@ -420,7 +420,7 @@ async def _route(session: AsyncSession, order: Order, adm: _Admission) -> bool:
         return False
     link = await session.get(BrokerLink, link_id)
     if link is None or not link.enabled:
-        _reject(order, ErrorCode.PROVIDER_UNAVAILABLE, "broker link disabled")
+        _reject(order, ErrorCode.PROVIDER_UNAVAILABLE, "Collegamento al broker disattivato")
         return True
     adapter = await get_adapter(session, link_id, None)  # no network: config only
     if not adapter.routable(order, adm.instrument):

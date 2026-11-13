@@ -9,6 +9,7 @@ redacted of the link's secrets.
 """
 
 import asyncio
+import base64
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated, Any
@@ -137,10 +138,32 @@ async def _record(session: AsyncSession, redis, link_id: UUID, error: str | None
         link.status, link.last_error = ("ok", None) if error is None else ("error", error)
 
 
+def link_secrets(kind: str, config: dict[str, Any]) -> list[str]:
+    """The texts to mask in broker errors: every secret of the config and, for T212, the
+    Base64 Basic credential the adapter sends (longest first)."""
+    found = secret_values(config)
+    if kind == "t212_demo" and config.get("api_key"):
+        cred = f"{config.get('api_key', '')}:{config.get('api_secret', '')}"
+        found.append(base64.b64encode(cred.encode()).decode())
+    return sorted(set(found), key=len, reverse=True)
+
+
+async def _secrets(session: AsyncSession, link: BrokerLink) -> list[str]:
+    return link_secrets(link.kind, await get_link_config(session, link.id))
+
+
 def _error_text(e: Exception, secrets: list[str]) -> str:
     if isinstance(e, TimeoutError):
         return f"timeout dopo {BROKER_TIMEOUT_S:g} s"
+    if isinstance(e, SMTError):
+        return redact(e.message, secrets)[:500]
     return redact(f"{type(e).__name__}: {e}", secrets)[:500]
+
+
+def _redacted_smterror(e: SMTError, secrets: list[str]) -> SMTError:
+    return SMTError(e.code, _error_text(e, secrets),
+                    {k: redact(v, secrets) if isinstance(v, str) else v
+                     for k, v in (e.details or {}).items()} or None)
 
 
 # --- links ---------------------------------------------------------------------------
@@ -200,8 +223,7 @@ async def test_link(
     """The adapter's health check with the stored config; the outcome goes to the link."""
 
     async def run() -> dict:
-        await _link(session, link_id)
-        secrets = secret_values(await get_link_config(session, link_id))
+        secrets = await _secrets(session, await _link(session, link_id))
         error = None
         try:
             async with httpx.AsyncClient() as http:
@@ -217,19 +239,24 @@ async def test_link(
 
 
 @router.get("/broker-links/{link_id}/positions")
-async def get_broker_positions(link_id: UUID, session: DbSession) -> dict:
-    await _link(session, link_id)
-    secrets = secret_values(await get_link_config(session, link_id))
+async def get_broker_positions(link_id: UUID, session: DbSession, redis: RedisClient) -> dict:
+    """A broker failure is recorded on the link and answered redacted."""
+    secrets = await _secrets(session, await _link(session, link_id))
     try:
         async with httpx.AsyncClient() as http:
             adapter = await get_adapter(session, link_id, http)
             await session.commit()
             await asyncio.wait_for(adapter.prepare(), BROKER_TIMEOUT_S)
             positions = await asyncio.wait_for(adapter.get_positions(), BROKER_TIMEOUT_S)
-    except SMTError:
-        raise
+    except SMTError as e:
+        await session.rollback()
+        await _record(session, redis, link_id, _error_text(e, secrets))
+        raise _redacted_smterror(e, secrets) from None
     except Exception as e:  # noqa: BLE001 - the broker could not be read
-        raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE, _error_text(e, secrets)) from None
+        await session.rollback()
+        error = _error_text(e, secrets)
+        await _record(session, redis, link_id, error)
+        raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE, error) from None
     return {"positions": [
         {"symbol": s, "qty": to_jsonable(Decimal(q))} for s, q in sorted(positions.items())
     ]}
@@ -295,8 +322,7 @@ async def post_reconcile(
     A broker failure is recorded and answered with PROVIDER_UNAVAILABLE."""
 
     async def run() -> dict:
-        await _link(session, link_id)
-        secrets = secret_values(await get_link_config(session, link_id))
+        secrets = await _secrets(session, await _link(session, link_id))
         try:
             await session.commit()  # reconcile uses its own sessions (no tx across I/O)
             async with httpx.AsyncClient() as http:
@@ -312,9 +338,10 @@ async def post_reconcile(
             link = await _link(session, link_id)
             link.status, link.last_error = "ok", None
             await session.commit()
-        except SMTError:
+        except SMTError as e:
             await session.rollback()
-            raise
+            await _record(session, redis, link_id, _error_text(e, secrets))
+            raise _redacted_smterror(e, secrets) from None
         except Exception as e:  # noqa: BLE001 - recorded on the link, reported redacted
             await session.rollback()
             error = _error_text(e, secrets)
