@@ -7,7 +7,15 @@ Redis side effects (the `order.filled` event, position tracking) are only queued
 session; callers must `await session.commit()` and then
 `await events.dispatch_post_commit(session, redis)` (or `discard_post_commit` on rollback).
 
-Covered so far: buys on a flat/long position and sells that reduce a long (not past zero).
+A fill is split into the part that reduces the current position (close) and the part
+that opens/adds (open), posted together in one TRADE journal:
+- long proceeds go to cash[ccy] (repaying a margin loan in ccy); short proceeds go to
+  collateral[ccy] and the position account goes negative;
+- a cover pays from collateral[ccy] first, then cash[ccy], then FX from base / a loan;
+  when no short in ccy is left, the remaining collateral is released to cash;
+- a fill that opens exposure must leave buying_power_raw >= 0; a purely reducing fill is
+  never blocked: it may borrow, and its fee is taken in ccy when fee-currency cash is
+  missing (Ruling R9).
 """
 
 import uuid
@@ -29,11 +37,12 @@ from smtrading.events import queue_event, queue_track, queue_untrack
 from smtrading.fees.calculator import FeeRuleData, compute_fx_fee, compute_trade_fee
 from smtrading.fees.resolver import load_rules, resolve_rule
 from smtrading.instruments.models import Instrument
-from smtrading.ledger.models import AccountKind, Journal, JournalType
+from smtrading.ledger.models import Account, AccountBalance, AccountKind, Journal, JournalType
 from smtrading.ledger.service import LineSpec, get_balance, get_or_create_account, post_journal
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.models import Portfolio
 from smtrading.positions.service import upsert_position
+from smtrading.risk.models import RiskProfile
 from smtrading.risk.settings import get_default_spread_bps
 from smtrading.valuation.service import value_portfolio
 
@@ -121,11 +130,11 @@ async def _plan_funding(
     *,
     rule: FeeRuleData,
     base: str,
-    leverage: Decimal,
+    may_borrow: bool,
     needs: dict[str, Decimal],
     incoming: dict[str, Decimal],
 ) -> tuple[list[_FxLeg], dict[str, Decimal]]:
-    """Cover `needs` from cash, then FX from base, then a margin loan when leverage > 1."""
+    """Cover `needs` from cash, then FX from base, then a margin loan when `may_borrow`."""
     legs: list[_FxLeg] = []
     borrow: dict[str, Decimal] = {}
     with localcontext() as ctx:
@@ -143,7 +152,7 @@ async def _plan_funding(
             a, fee = _fx_cost(rule, short, rate, base)
             b = short
             if a + fee > base_avail:
-                if leverage <= 1:
+                if not may_borrow:
                     raise _no_buying_power(
                         "insufficient cash", currency=ccy, shortfall=short
                     )
@@ -154,7 +163,7 @@ async def _plan_funding(
                 legs.append(_FxLeg(ccy=ccy, bought=b, paid=a, fee=fee))
                 base_avail -= a + fee
         if base_avail < 0:
-            if leverage <= 1:
+            if not may_borrow:
                 raise _no_buying_power(
                     "insufficient cash", currency=base, shortfall=base_avail.copy_negate()
                 )
@@ -180,6 +189,41 @@ async def _fx_lines(accts: _Accounts, base: str, legs: list[_FxLeg]) -> list[Lin
                 LineSpec(await accts.id(base, AccountKind.system_fees, system=True), leg.fee),
             ]
     return lines
+
+
+async def _check_short_allowed(
+    session: AsyncSession, portfolio: Portfolio, instrument: Instrument
+) -> None:
+    """No profile behaves like the Default profile: shorting allowed."""
+    if portfolio.risk_profile_id is not None:
+        profile = await session.get(RiskProfile, portfolio.risk_profile_id)
+        if profile is not None and not profile.short_allowed:
+            raise SMTError(
+                ErrorCode.SHORT_NOT_ALLOWED, "short selling is disabled by the profile",
+                {"symbol": instrument.symbol},
+            )
+    if not instrument.shortable:
+        raise SMTError(
+            ErrorCode.SHORT_NOT_ALLOWED, f"{instrument.symbol} is not shortable",
+            {"symbol": instrument.symbol},
+        )
+
+
+async def _has_other_short(
+    session: AsyncSession, portfolio_id: UUID, ccy: str, symbol: str
+) -> bool:
+    """True if the portfolio is short another instrument quoted in `ccy`."""
+    found = await session.scalar(
+        select(Account.id)
+        .join(AccountBalance, AccountBalance.account_id == Account.id)
+        .join(Instrument, Instrument.symbol == Account.asset)
+        .where(
+            Account.portfolio_id == portfolio_id, Account.kind == AccountKind.position,
+            Account.asset != symbol, Instrument.currency == ccy, AccountBalance.balance < 0,
+        )
+        .limit(1)
+    )
+    return found is not None
 
 
 async def _activate_linked(session: AsyncSession, order: Order) -> None:
@@ -270,25 +314,56 @@ async def execute_fill(
 
     accts = _Accounts(session, portfolio.id)
     held = await accts.balance(symbol, AccountKind.position)
-    if side == OrderSide.buy and held < 0:
-        raise SMTError(ErrorCode.INVALID_ORDER, "not implemented: buy on a short position")
-    if side == OrderSide.sell and qty > held:
-        raise SMTError(
-            ErrorCode.SHORT_NOT_ALLOWED, "sell exceeds the long position",
-            {"symbol": symbol, "held": decimal_to_str(held), "qty": decimal_to_str(qty)},
-        )
+    buy = side == OrderSide.buy
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        after = held + qty if buy else held - qty
+        # split into the part that reduces the current position and the part that opens
+        close_qty = min(qty, abs(held)) if held != 0 and (held > 0) != buy else Decimal(0)
+        open_qty = qty - close_qty
+        close_notional = notional if open_qty == 0 else quantize_money(close_qty * price, ccy)
+        open_notional = notional - close_notional
+    reducing = open_qty == 0
+    if after < 0 and not buy:
+        await _check_short_allowed(session, portfolio, instrument)
+
+    # Ruling R9: a reducing fill is never blocked by missing fee-currency cash; the fee is
+    # converted into the instrument currency and taken out of proceeds/collateral.
+    charge, charge_ccy = fee, fee_ccy
+    if (
+        reducing and fee > 0 and fee_ccy != ccy
+        and await accts.balance(fee_ccy, AccountKind.cash) < fee
+    ):
+        rate = await qs.get_fx_rate(fee_ccy, ccy)
+        with localcontext() as ctx:
+            ctx.prec = _PREC
+            charge, charge_ccy = quantize_money(fee * rate, ccy, rounding=ROUND_UP), ccy
+    ccy_charge = charge if charge_ccy == ccy else Decimal(0)
+
+    # Covering pays from collateral[ccy] first. Once no short in `ccy` is left, all of the
+    # remaining collateral is released to cash, so a flat book holds no collateral.
+    release = Decimal(0)
+    if buy and held < 0:
+        collateral = await accts.balance(ccy, AccountKind.collateral)
+        if after >= 0 and not await _has_other_short(session, portfolio.id, ccy, symbol):
+            release = collateral
+        else:
+            with localcontext() as ctx:
+                ctx.prec = _PREC
+                release = min(collateral, close_notional + ccy_charge)
 
     needs: dict[str, Decimal] = defaultdict(Decimal)
     incoming: dict[str, Decimal] = defaultdict(Decimal)
     with localcontext() as ctx:
         ctx.prec = _PREC
-        if side == OrderSide.buy:
+        if buy:
             needs[ccy] += notional
         else:
-            incoming[ccy] += notional
-        needs[fee_ccy] += fee
+            incoming[ccy] += close_notional
+        incoming[ccy] += release
+        needs[charge_ccy] += charge
     legs, borrow = await _plan_funding(
-        qs, accts, rule=rule, base=base, leverage=portfolio.leverage,
+        qs, accts, rule=rule, base=base, may_borrow=portfolio.leverage > 1 or reducing,
         needs=dict(needs), incoming=dict(incoming),
     )
 
@@ -303,24 +378,38 @@ async def execute_fill(
             session, type=JournalType.FX, lines=await _fx_lines(accts, base, legs), **post,
         ))
 
-    buy = side == OrderSide.buy
     qty_delta = qty if buy else qty.copy_negate()  # into the position
-    cash_delta = notional.copy_negate() if buy else notional  # into cash[ccy]
     lines = [
         LineSpec(await accts.id(symbol, AccountKind.position), qty_delta, price, ccy),
         LineSpec(
             await accts.id(symbol, AccountKind.system_equity, system=True),
             qty_delta.copy_negate(),
         ),
-        LineSpec(await accts.id(ccy, AccountKind.cash), cash_delta),
-        LineSpec(
-            await accts.id(ccy, AccountKind.system_equity, system=True), cash_delta.copy_negate()
-        ),
     ]
-    if fee > 0:
+    if release > 0:
         lines += [
-            LineSpec(await accts.id(fee_ccy, AccountKind.cash), fee.copy_negate()),
-            LineSpec(await accts.id(fee_ccy, AccountKind.system_fees, system=True), fee),
+            LineSpec(await accts.id(ccy, AccountKind.collateral), release.copy_negate()),
+            LineSpec(await accts.id(ccy, AccountKind.cash), release),
+        ]
+    # buy: cash[ccy] pays the whole notional; sell: the closed long's proceeds go to cash,
+    # the short's proceeds to collateral
+    flows = (
+        [(AccountKind.cash, notional.copy_negate())] if buy
+        else [(AccountKind.cash, close_notional), (AccountKind.collateral, open_notional)]
+    )
+    for kind, amount in flows:
+        if amount != 0:
+            lines += [
+                LineSpec(await accts.id(ccy, kind), amount),
+                LineSpec(
+                    await accts.id(ccy, AccountKind.system_equity, system=True),
+                    amount.copy_negate(),
+                ),
+            ]
+    if charge > 0:
+        lines += [
+            LineSpec(await accts.id(charge_ccy, AccountKind.cash), charge.copy_negate()),
+            LineSpec(await accts.id(charge_ccy, AccountKind.system_fees, system=True), charge),
         ]
     for loan_ccy, amount in sorted(borrow.items()):
         amount = quantize_money(amount, loan_ccy, rounding=ROUND_UP)
@@ -328,23 +417,29 @@ async def execute_fill(
             LineSpec(await accts.id(loan_ccy, AccountKind.margin_loan), amount.copy_negate()),
             LineSpec(await accts.id(loan_ccy, AccountKind.cash), amount),
         ]
-    if side == OrderSide.sell:
+    if close_notional > 0 and not buy:
         debt = await accts.balance(ccy, AccountKind.margin_loan)
         with localcontext() as ctx:
             ctx.prec = _PREC
-            net = notional - fee if fee_ccy == ccy else notional
+            net = close_notional - ccy_charge
             repay = min(net, debt.copy_negate()) if debt < 0 else Decimal(0)
         if repay > 0:
             lines += [
                 LineSpec(await accts.id(ccy, AccountKind.cash), repay.copy_negate()),
                 LineSpec(await accts.id(ccy, AccountKind.margin_loan), repay),
             ]
-    trade = await post_journal(session, type=journal_type, lines=lines, **post)
+    trade = await post_journal(
+        session, type=journal_type, lines=lines,
+        allow_negative=frozenset({AccountKind.position}) if after < 0 else frozenset(),
+        **post,
+    )
     journals.append(trade)
 
     position = await upsert_position(session, portfolio.id, symbol, side, qty, price)
 
-    if buy and portfolio.leverage > 1:
+    # Exposure-increasing fills must leave buying power >= 0 (raw, Ruling R8); reducing
+    # fills are never blocked.
+    if not reducing:
         valuation = await value_portfolio(session, qs, portfolio.id)
         if valuation.buying_power_raw < 0:
             raise _no_buying_power(
@@ -354,7 +449,7 @@ async def execute_fill(
     fill = Fill(
         id=fill_id, order_id=order.id, portfolio_id=portfolio.id, symbol=symbol, side=side,
         qty=qty, price=price, quote_bid=quote.bid, quote_ask=quote.ask, quote_last=quote.last,
-        quote_ts=quote.ts, fee_amount=fee, fee_currency=fee_ccy, fee_rule_id=rule.id,
+        quote_ts=quote.ts, fee_amount=charge, fee_currency=charge_ccy, fee_rule_id=rule.id,
         journal_id=trade.id,
     )
     session.add(fill)
@@ -368,8 +463,8 @@ async def execute_fill(
     queue_event(session, "order.filled", {
         "order_id": order.id, "fill_id": fill.id, "portfolio_id": portfolio.id,
         "agent_id": order.agent_id, "symbol": symbol, "side": side, "qty": qty,
-        "price": price, "notional": notional, "currency": ccy, "fee": fee,
-        "fee_currency": fee_ccy, "position_qty": position.qty,
+        "price": price, "notional": notional, "currency": ccy, "fee": charge,
+        "fee_currency": charge_ccy, "position_qty": position.qty,
     })
     if held == 0 and position.qty != 0:
         queue_track(session, symbol, "positions")

@@ -178,15 +178,6 @@ async def test_sell_reduces_long_and_realizes(db_session, seeded, qs):
     assert pos.qty == D(6) and pos.avg_price == D("15.000") and pos.realized_pnl == D(4)
 
 
-async def test_sell_past_zero_not_allowed_yet(db_session, seeded, qs):
-    p = await _portfolio(db_session)
-    await _fill(db_session, qs, await _order(db_session, p, "ENI.MI", OrderSide.buy, qty=D(10)))
-    o = await _order(db_session, p, "ENI.MI", OrderSide.sell, qty=D(11))
-    with pytest.raises(SMTError) as e:
-        await _fill(db_session, qs, o)
-    assert e.value.code == ErrorCode.SHORT_NOT_ALLOWED
-
-
 async def test_insufficient_cash_leverage_1(db_session, seeded, qs):
     p = await _portfolio(db_session)
     o = await _order(db_session, p, "ENI.MI", OrderSide.buy, notional=D(200000))
