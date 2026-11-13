@@ -44,12 +44,15 @@ def _dec(value: object) -> Decimal | None:
 def parse_tickers(payload: dict, wanted: dict[str, str], provider: str = "revolutx") -> dict[str, Quote]:
     """wanted: response symbol ("BTC/USD") -> canonical symbol. ts = metadata.timestamp (ms)."""
     raw_ts = (payload.get("metadata") or {}).get("timestamp")
-    ts = datetime.fromtimestamp(int(raw_ts) / 1000, UTC) if raw_ts is not None else datetime.now(UTC)
+    try:  # a missing or garbage time skips the batch: never now() (STALE_QUOTE)
+        ts = datetime.fromtimestamp(int(raw_ts) / 1000, UTC)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return {}
     out: dict[str, Quote] = {}
     for entry in payload.get("data") or []:
         canonical = wanted.get(entry.get("symbol", ""))
         last = _dec(entry.get("last_price"))
-        if canonical is None or last is None:
+        if canonical is None or last is None or last <= 0:
             continue
         out[canonical] = Quote(
             symbol=canonical, bid=_dec(entry.get("bid")), ask=_dec(entry.get("ask")), last=last,

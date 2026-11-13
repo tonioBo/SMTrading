@@ -29,9 +29,13 @@ def _dec(value: object) -> Decimal | None:
     return d if d.is_finite() else None
 
 
-def _from_unix(seconds: object) -> datetime:
+def _from_unix(seconds: object) -> datetime | None:
+    """None for a missing/zero/garbage time: never now(), which would defeat STALE_QUOTE."""
     d = _dec(seconds)
-    return datetime.fromtimestamp(float(d), UTC) if d else datetime.now(UTC)
+    try:
+        return datetime.fromtimestamp(float(d), UTC) if d and d > 0 else None
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def parse_finnhub_ws(msg: dict, reverse_map: dict[str, str]) -> list[Quote]:
@@ -45,7 +49,9 @@ def parse_finnhub_ws(msg: dict, reverse_map: dict[str, str]) -> list[Quote]:
         if canonical is None or not price:  # None or 0 = missing, as in REST
             continue
         t = _dec(trade.get("t"))
-        ts = datetime.fromtimestamp(float(t) / 1000, UTC) if t else datetime.now(UTC)
+        ts = _from_unix(t / 1000) if t else None
+        if ts is None:
+            continue
         quotes.append(Quote(symbol=canonical, bid=None, ask=None, last=price, ts=ts, provider="finnhub"))
     return quotes
 
@@ -90,11 +96,12 @@ class FinnhubProvider(DataProvider):
         for canonical, ps in items:
             data = await self._get("/quote", {"symbol": ps})
             last = _dec(data.get("c"))
-            if not last:  # unknown symbol, or a market the plan does not cover: all zeros
+            ts = _from_unix(data.get("t"))
+            # all zeros: unknown symbol, or a market the plan does not cover
+            if not last or last <= 0 or ts is None:
                 continue
             out[canonical] = Quote(
-                symbol=canonical, bid=None, ask=None, last=last,
-                ts=_from_unix(data.get("t")), provider=self.name,
+                symbol=canonical, bid=None, ask=None, last=last, ts=ts, provider=self.name,
             )
         return out
 
@@ -107,6 +114,9 @@ class FinnhubProvider(DataProvider):
                 if n.get("id") is None or not n.get("headline") or not n.get("datetime"):
                     continue
                 nid = str(n["id"])
+                ts = _from_unix(n["datetime"])
+                if ts is None:
+                    continue
                 prev = items.get(nid)
                 if prev is not None:
                     if canonical not in prev.symbols:
@@ -114,7 +124,7 @@ class FinnhubProvider(DataProvider):
                     continue
                 items[nid] = NewsItem(
                     id=nid,
-                    ts=_from_unix(n["datetime"]),
+                    ts=ts,
                     headline=n["headline"],
                     summary=n.get("summary") or None,
                     url=n.get("url") or None,

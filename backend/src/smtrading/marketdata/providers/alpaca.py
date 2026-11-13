@@ -43,13 +43,14 @@ def _price(value: object) -> Decimal | None:
     return d if d else None
 
 
-def _ts(raw: object) -> datetime:
+def _ts(raw: object) -> datetime | None:
+    """None for a missing or garbage time: never now(), which would defeat STALE_QUOTE."""
     if isinstance(raw, str):
         try:  # RFC-3339 with nanoseconds: fromisoformat truncates past microseconds
             return datetime.fromisoformat(raw).astimezone(UTC)
         except ValueError:
             pass
-    return datetime.now(UTC)
+    return None
 
 
 def _is_crypto(provider_symbol: str) -> bool:
@@ -72,13 +73,16 @@ def parse_alpaca_ws(msg_list: list, reverse_map: dict[str, str] | None = None) -
                 continue
         else:
             canonical = symbol.replace("/", "-")
+        ts = _ts(msg.get("t"))
+        if ts is None:
+            continue
         quotes.append(
             Quote(
                 symbol=canonical,
                 bid=_price(msg.get("bp")),
                 ask=_price(msg.get("ap")),
                 last=None,
-                ts=_ts(msg.get("t")),
+                ts=ts,
                 provider="alpaca",
             )
         )
@@ -147,12 +151,15 @@ class AlpacaProvider(DataProvider):
             if not q and not t:
                 continue
             q, t = q or {}, t or {}
+            ts = _ts(q.get("t") or t.get("t"))
+            if ts is None:
+                continue
             out[canonical] = Quote(
                 symbol=canonical,
                 bid=_price(q.get("bp")),
                 ask=_price(q.get("ap")),
                 last=_price(t.get("p")),
-                ts=_ts(q.get("t") or t.get("t")),
+                ts=ts,
                 provider=self.name,
             )
         return out
@@ -175,6 +182,8 @@ class AlpacaProvider(DataProvider):
         while True:
             data = await self._get(path, params)
             for r in (data.get("bars") or {}).get(provider_symbol) or []:
+                if _ts(r["t"]) is None:
+                    continue
                 bars.append(
                     Bar(
                         ts=_ts(r["t"]),
@@ -199,7 +208,7 @@ class AlpacaProvider(DataProvider):
         )
         items: list[NewsItem] = []
         for n in data.get("news") or []:
-            if not n.get("headline") or not n.get("created_at") or n.get("id") is None:
+            if not n.get("headline") or _ts(n.get("created_at")) is None or n.get("id") is None:
                 continue
             items.append(
                 NewsItem(

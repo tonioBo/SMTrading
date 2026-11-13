@@ -97,7 +97,7 @@ def test_map_symbol(provider):
 
 async def test_quotes_with_bid_ask(provider):
     q = (await provider.get_quotes([("AAPL", "AAPL")]))["AAPL"]
-    assert q.last == Decimal("354.8800048828125") and isinstance(q.last, Decimal)
+    assert q.last == Decimal("354.88") and isinstance(q.last, Decimal)
     assert q.bid == Decimal("355.09") and q.ask == Decimal("361.4")
     assert q.ts == datetime.fromtimestamp(1794517201, UTC)
     assert q.provider == "yahoo"
@@ -131,7 +131,7 @@ async def test_bars_interval_mapping_and_conversion(provider):
     assert ("history", "AAPL", "60m") in provider._yf.calls
     assert bars and bars == sorted(bars, key=lambda b: b.ts)
     assert bars[0].ts == datetime(2026, 11, 11, 14, 30, tzinfo=UTC)
-    assert bars[0].close == Decimal("353.5400085449219") and bars[0].volume == Decimal("8019751.0")
+    assert bars[0].close == Decimal("353.54") and bars[0].volume == Decimal("8019751.0")
     for tf, iv in [("1m", "1m"), ("5m", "5m"), ("15m", "15m"), ("1d", "1d"), ("1wk", "1wk")]:
         await provider.get_bars("AAPL", "AAPL", Timeframe(tf), start, end)
         assert ("history", "AAPL", iv) in provider._yf.calls
@@ -353,7 +353,7 @@ async def test_no_price_without_errors_returns_empty(provider):
 
 async def test_fx_rate_from_fast_info(provider):
     rate = await provider.get_fx_rate("EUR", "USD")
-    assert rate == Decimal("1.1057054996490479") and isinstance(rate, Decimal)
+    assert rate == Decimal("1.1057055") and isinstance(rate, Decimal)
     assert ("fast_info", "EURUSD=X") in provider._yf.calls
 
 
@@ -361,3 +361,12 @@ async def test_fx_rate_without_price_raises(provider):
     provider._yf.fasts["EURUSD=X"] = {"lastPrice": None}
     with pytest.raises(RuntimeError):
         await provider.get_fx_rate("EUR", "USD")
+
+
+def test_float32_noise_is_normalised():
+    from smtrading.marketdata.providers.yahoo import _dec
+
+    assert _dec(358.5299987792969) == Decimal("358.53")
+    assert _dec(354.8800048828125) == Decimal("354.88")
+    assert _dec(104523.45) == Decimal("104523.45")  # a real double is kept as is
+    assert _dec(0.1) == Decimal("0.1")

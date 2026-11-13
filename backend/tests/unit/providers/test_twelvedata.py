@@ -222,3 +222,19 @@ async def test_stream_subscribe_rejected():
             with pytest.raises(ConnectionError, match="rejected"):
                 async for _ in provider.stream([("ZZZ", "ZZZ")]):
                     pass
+
+
+def test_parse_quote_needs_a_timestamp_and_a_positive_price():
+    """M10/M11: no now() for a missing/garbage ts; zero or negative prices are skipped."""
+    from smtrading.marketdata.providers.twelvedata import parse_quote
+
+    good = {"close": "10.5", "timestamp": 1700000000}
+    assert parse_quote("X", good).ts == datetime.fromtimestamp(1700000000, UTC)
+    assert parse_quote("X", {"close": "10.5"}) is None
+    assert parse_quote("X", {"close": "10.5", "timestamp": "garbage"}) is None
+    assert parse_quote("X", {**good, "close": "0"}) is None
+    assert parse_quote("X", {**good, "close": "-1"}) is None
+    assert parse_twelvedata_ws({"event": "price", "symbol": "AAPL", "price": 1}, {"AAPL": "AAPL"}) == []
+    assert parse_twelvedata_ws(
+        {"event": "price", "symbol": "AAPL", "price": 0, "timestamp": 1700000000}, {"AAPL": "AAPL"}
+    ) == []

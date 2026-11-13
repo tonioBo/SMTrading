@@ -248,3 +248,14 @@ async def test_stream_handshake_failure_is_connection_error():
         with pytest.raises(ConnectionError):
             async for _ in p.stream([("AAPL", "AAPL")]):
                 pass
+
+
+@respx.mock
+async def test_quote_without_timestamp_is_skipped(provider):
+    respx.get(f"{API}/quote").respond(200, json={"c": 10, "t": 0})
+    assert await provider.get_quotes([("AAPL", "AAPL")]) == {}
+
+
+def test_parse_finnhub_ws_without_timestamp_skipped():
+    msg = {"type": "trade", "data": [{"s": "AAPL", "p": 10}]}
+    assert parse_finnhub_ws(msg, {"AAPL": "AAPL"}) == []

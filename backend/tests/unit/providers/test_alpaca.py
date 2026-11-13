@@ -317,3 +317,13 @@ async def test_stream_handshake_failure_is_connection_error():
         with pytest.raises(ConnectionError):
             async for _ in p.stream([("AAPL", "AAPL")]):
                 pass
+
+
+def test_quotes_need_a_valid_timestamp(provider):
+    assert parse_alpaca_ws([{"T": "q", "S": "AAPL", "bp": 1, "ap": 2, "t": "bad"}]) == []
+    assert parse_alpaca_ws([{"T": "q", "S": "AAPL", "bp": 1, "ap": 2}]) == []
+    built = provider._build([("AAPL", "AAPL")], {"AAPL": {"bp": 1, "ap": 2}}, {"AAPL": {"p": 1.5}})
+    assert built == {}
+    built = provider._build([("AAPL", "AAPL")], {"AAPL": {"bp": 1, "ap": 2,
+                                                         "t": "2026-11-10T15:00:00Z"}}, {})
+    assert built["AAPL"].ts == datetime(2026, 11, 10, 15, 0, tzinfo=UTC)

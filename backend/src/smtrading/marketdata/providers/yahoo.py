@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import math
+import struct
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
@@ -59,12 +60,34 @@ _EU_EXCHANGES = frozenset(
 _EU_REGIONS = ("it", "de", "fr", "nl", "es", "gb", "ch")
 
 
+def _as_float32(x: float) -> float:
+    return struct.unpack("f", struct.pack("f", x))[0]
+
+
+def _float32_text(x: float) -> str:
+    """yfinance widens float32 prices (358.53 -> 358.5299987792969): a value exactly
+    representable as float32 is written with the shortest digits that round-trip to it.
+    Any other double is kept as is."""
+    try:
+        if _as_float32(x) != x:
+            return str(x)
+    except OverflowError:
+        return str(x)
+    for digits in range(1, 10):
+        text = f"{x:.{digits}g}"
+        if _as_float32(float(text)) == x:
+            return repr(float(text))
+    return str(x)
+
+
 def _dec(value: object) -> Decimal | None:
     """Decimal(str(x)); None and NaN/inf become None. Booleans are not numbers."""
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, float) and not math.isfinite(value):
         return None
+    if isinstance(value, float):
+        value = _float32_text(value)
     try:
         d = Decimal(str(value))
     except ArithmeticError:

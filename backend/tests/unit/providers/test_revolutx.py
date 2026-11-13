@@ -109,3 +109,13 @@ async def test_no_credentials_unsupported():
             await p.get_quotes([("BTC-USD", "BTC-USD")])
         with pytest.raises(ProviderUnsupported):
             await RevolutXProvider({"api_key": "k"}, http).health_check()
+
+
+def test_parse_tickers_needs_a_timestamp_and_a_positive_price():
+    data = [{"symbol": "BTC/USD", "last_price": "100"}, {"symbol": "ETH/USD", "last_price": "0"}]
+    wanted = {"BTC/USD": "BTC-USD", "ETH/USD": "ETH-USD"}
+    assert parse_tickers({"data": data}, wanted) == {}
+    assert parse_tickers({"data": data, "metadata": {"timestamp": "x"}}, wanted) == {}
+    out = parse_tickers({"data": data, "metadata": {"timestamp": 1700000000000}}, wanted)
+    assert list(out) == ["BTC-USD"]
+    assert out["BTC-USD"].ts == datetime.fromtimestamp(1700000000, UTC)

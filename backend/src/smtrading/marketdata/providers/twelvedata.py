@@ -40,11 +40,12 @@ def _dec(value: object) -> Decimal | None:
         return None
 
 
-def _from_epoch(raw: object) -> datetime:
+def _from_epoch(raw: object) -> datetime | None:
+    """None for a missing or garbage timestamp: never now(), which would defeat STALE_QUOTE."""
     try:
-        return datetime.fromtimestamp(int(raw), UTC)
+        return datetime.fromtimestamp(int(raw), UTC) if raw else None
     except (TypeError, ValueError, OverflowError, OSError):
-        return datetime.now(UTC)
+        return None
 
 
 def _raise_if_error(data: object) -> None:
@@ -56,14 +57,15 @@ def _raise_if_error(data: object) -> None:
 def parse_quote(canonical: str, entry: dict, provider: str = "twelvedata") -> Quote | None:
     """/quote entry. bid/ask are not part of the documented response; `close` is the last price."""
     last = _dec(entry.get("close"))
-    if last is None:
+    ts = _from_epoch(entry.get("last_quote_at") or entry.get("timestamp"))
+    if last is None or last <= 0 or ts is None:
         return None
     return Quote(
         symbol=canonical,
         bid=_dec(entry.get("bid")),
         ask=_dec(entry.get("ask")),
         last=last,
-        ts=_from_epoch(entry.get("last_quote_at") or entry.get("timestamp")),
+        ts=ts,
         provider=provider,
     )
 
@@ -74,7 +76,8 @@ def parse_twelvedata_ws(msg: dict, reverse_map: dict[str, str]) -> list[Quote]:
         return []
     canonical = reverse_map.get(str(msg.get("symbol", "")))
     price = _dec(msg.get("price"))
-    if canonical is None or price is None:
+    ts = _from_epoch(msg.get("timestamp"))
+    if canonical is None or price is None or price <= 0 or ts is None:
         return []
     return [
         Quote(
@@ -82,7 +85,7 @@ def parse_twelvedata_ws(msg: dict, reverse_map: dict[str, str]) -> list[Quote]:
             bid=_dec(msg.get("bid")),
             ask=_dec(msg.get("ask")),
             last=price,
-            ts=_from_epoch(msg.get("timestamp")),
+            ts=ts,
             provider="twelvedata",
         )
     ]
