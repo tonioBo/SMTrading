@@ -199,7 +199,7 @@ async def mcp_server(fresh_db, redis_url, monkeypatch):
 
     from smtrading.agents import service as agents
     from smtrading.api.main import create_app
-    from smtrading.engine.quotesource import FakeQuoteSource
+    from smtrading.engine.quotesource import FakeMarketData
     from smtrading.mcp.runtime import McpRuntime
     from smtrading.portfolios.service import create_portfolio
 
@@ -219,8 +219,8 @@ async def mcp_server(fresh_db, redis_url, monkeypatch):
         await s.commit()
     await engine.dispose()
 
-    qs = FakeQuoteSource()
-    app = create_app(runtime_factory=lambda sm, redis: McpRuntime(sm, redis, qs, None))
+    qs = FakeMarketData()  # also the router of the market-data tools
+    app = create_app(runtime_factory=lambda sm, redis: McpRuntime(sm, redis, qs, qs))
     port = _free_port()
     server = uvicorn.Server(
         uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="on")

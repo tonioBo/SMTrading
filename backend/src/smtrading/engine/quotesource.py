@@ -8,7 +8,16 @@ from decimal import Decimal, localcontext
 from typing import Protocol, runtime_checkable
 
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.marketdata.types import CalendarEvent, Quote
+from smtrading.marketdata.types import (
+    Bar,
+    CalendarEvent,
+    Fundamentals,
+    InstrumentHit,
+    NewsItem,
+    Quote,
+    ScreenFilter,
+    Timeframe,
+)
 
 
 @runtime_checkable
@@ -81,6 +90,58 @@ class FakeQuoteSource:
             e for e in self._calendar if e.symbol in wanted and start <= e.date <= end
         ]
         return sorted(events, key=lambda e: (e.date, e.symbol, e.kind))
+
+
+class FakeMarketData(FakeQuoteSource):
+    """FakeQuoteSource plus the other MarketDataRouter methods the MCP market tools use."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._bars: dict[str, list[Bar]] = {}
+        self._news: list[NewsItem] = []
+        self._fundamentals: dict[str, Fundamentals] = {}
+        self._hits: list[InstrumentHit] = []
+        self._screen: list[dict] = []
+
+    def set_bars(self, symbol: str, bars: list[Bar]) -> None:
+        self._bars[symbol] = sorted(bars, key=lambda b: b.ts)
+
+    def set_news(self, items: list[NewsItem]) -> None:
+        self._news = list(items)
+
+    def set_fundamentals(self, symbol: str, f: Fundamentals) -> None:
+        self._fundamentals[symbol] = f
+
+    def set_search(self, hits: list[InstrumentHit]) -> None:
+        self._hits = list(hits)
+
+    def set_screen(self, rows: list[dict]) -> None:
+        self._screen = list(rows)
+
+    async def get_bars(
+        self, symbol: str, timeframe: Timeframe, start: datetime, end: datetime
+    ) -> list[Bar]:
+        if symbol not in self._bars:
+            raise SMTError(ErrorCode.SYMBOL_NOT_FOUND, "no bars", {"symbol": symbol})
+        return [b for b in self._bars[symbol] if start <= b.ts < end]
+
+    async def get_news(self, symbols: list[str], limit: int = 20) -> list[NewsItem]:
+        wanted = set(symbols)
+        items = [n for n in self._news if wanted & set(n.symbols)]
+        return sorted(items, key=lambda n: n.ts, reverse=True)[:limit]
+
+    async def get_fundamentals(self, symbol: str) -> Fundamentals:
+        if symbol not in self._fundamentals:
+            raise SMTError(ErrorCode.SYMBOL_NOT_FOUND, "no fundamentals", {"symbol": symbol})
+        return self._fundamentals[symbol]
+
+    async def search(self, query: str, limit: int = 20) -> list[InstrumentHit]:
+        q = query.lower()
+        hits = [h for h in self._hits if q in h.symbol.lower() or q in h.name.lower()]
+        return hits[:limit]
+
+    async def screen(self, f: ScreenFilter) -> list[dict]:
+        return self._screen[: f.limit]
 
 
 class MemoQuoteSource:
