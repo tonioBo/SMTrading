@@ -114,6 +114,47 @@ def _parse_symbols(value: Any) -> list[str] | None:
     return out
 
 
+class ArchivedCache:
+    """The archived portfolio ids, shared by every relay of an app: read from the
+    database at most once per `ttl_s` (connections and pings); (un)archive events seen by
+    any relay update it at once."""
+
+    def __init__(self, ttl_s: float) -> None:
+        self.ttl_s = ttl_s
+        self._ids: set[str] = set()
+        self._at: float | None = None
+        self._lock = asyncio.Lock()
+
+    async def get(self, sessionmaker) -> set[str]:
+        async with self._lock:
+            now = asyncio.get_running_loop().time()
+            if self._at is None or now - self._at >= self.ttl_s:
+                async with sessionmaker() as db:
+                    self._ids = {
+                        str(pid) for pid in await db.scalars(
+                            select(Portfolio.id).where(Portfolio.status == PortfolioStatus.archived)
+                        )
+                    }
+                self._at = now
+            return set(self._ids)
+
+    def note(self, portfolio_id: str, archived: bool) -> None:
+        if archived:
+            self._ids.add(portfolio_id)
+        else:
+            self._ids.discard(portfolio_id)
+
+
+ARCHIVED_CACHE_TTL_S = 15.0
+
+
+def _archived_cache(app) -> ArchivedCache:
+    cache = getattr(app.state, "archived_cache", None)
+    if cache is None:
+        cache = app.state.archived_cache = ArchivedCache(ARCHIVED_CACHE_TTL_S)
+    return cache
+
+
 class _Relay:
     def __init__(self, websocket: WebSocket, redis: Redis) -> None:
         self.ws = websocket
@@ -127,12 +168,7 @@ class _Relay:
         self.archived: set[str] = set()  # ids of the archived portfolios (not relayed)
 
     async def load_archived(self) -> None:
-        async with self.ws.app.state.sessionmaker() as db:
-            self.archived = {
-                str(pid) for pid in await db.scalars(
-                    select(Portfolio.id).where(Portfolio.status == PortfolioStatus.archived)
-                )
-            }
+        self.archived = await _archived_cache(self.ws.app).get(self.ws.app.state.sessionmaker)
 
     def relayed(self, event: Any) -> bool:
         """False for an event of an archived portfolio; tracks (un)archive events."""
@@ -142,8 +178,10 @@ class _Relay:
         kind = event.get("type")
         if kind == ARCHIVED_EVENT and isinstance(pid, str):
             self.archived.add(pid)
+            _archived_cache(self.ws.app).note(pid, True)
         elif kind == UNARCHIVED_EVENT and isinstance(pid, str):
             self.archived.discard(pid)
+            _archived_cache(self.ws.app).note(pid, False)
         elif pid in self.archived:
             return False
         return True

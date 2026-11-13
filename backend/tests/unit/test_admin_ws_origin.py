@@ -29,3 +29,34 @@ def _ws(headers: dict) -> SimpleNamespace:
 def test_origin_ok(origin, host, ok):
     headers = {"host": host} if origin is None else {"origin": origin, "host": host}
     assert _origin_ok(_ws(headers)) is ok
+
+
+async def test_archived_cache_reads_the_database_once_per_ttl():
+    """M14 (carried): relays share one archived set; it is read at most once per TTL."""
+    from smtrading.admin.ws import ArchivedCache
+
+    reads = []
+
+    class _Db:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def scalars(self, stmt):
+            reads.append(stmt)
+            return ["p1"]
+
+    cache = ArchivedCache(ttl_s=60)
+    assert await cache.get(_Db) == {"p1"}
+    assert await cache.get(_Db) == {"p1"}
+    assert len(reads) == 1
+    cache.note("p2", True)
+    assert await cache.get(_Db) == {"p1", "p2"}
+    cache.note("p1", False)
+    assert await cache.get(_Db) == {"p2"} and len(reads) == 1
+    expired = ArchivedCache(ttl_s=0)
+    await expired.get(_Db)
+    await expired.get(_Db)
+    assert len(reads) == 3
