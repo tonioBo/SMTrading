@@ -129,3 +129,64 @@ async def test_risk_profile_description_column(db_session):
         )
     ).one()
     assert tuple(row) == ("text", "YES")
+
+
+def _alembic(url: str, *args: str) -> None:
+    """The alembic command API on `url` (env.py runs its own event loop: call in a thread)."""
+    from argparse import Namespace
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    backend = Path(__file__).resolve().parents[2]
+    cfg = Config(str(backend / "alembic.ini"), cmd_opts=Namespace(x=[f"url={url}"]))
+    cfg.set_main_option("script_location", str(backend / "migrations"))
+    getattr(command, args[0])(cfg, *args[1:])
+
+
+async def test_downgrade_to_0008_and_back(fresh_db):
+    """M16: downgrades map the values older code cannot load, then upgrade restores head."""
+    import asyncio
+
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+
+    from smtrading.common.db import Base, make_engine
+    from smtrading.seed import run_seed
+
+    importlib.import_module("smtrading.models")
+    engine = make_engine(fresh_db)
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    async with AsyncSession(engine) as s:
+        await run_seed(s)
+        await s.commit()
+        pid = await s.scalar(text("select id from portfolios where name = 'Demo'"))
+        await s.execute(text(
+            "insert into orders (id, portfolio_id, symbol, side, type, qty, status, filled_qty,"
+            " tif, reduce_only, source, created_at, updated_at) values (gen_random_uuid(), :p,"
+            " 'AAPL', 'buy', 'market', 10, 'partially_filled', 4, 'day', false, 'admin', now(),"
+            " now())"
+        ), {"p": pid})
+        await s.commit()
+    await engine.dispose()
+
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0008")
+    engine = make_engine(fresh_db)
+    async with engine.connect() as conn:
+        statuses = set((await conn.execute(text("select distinct status from orders"))).scalars())
+        assert "partially_filled" not in statuses
+        paris = await conn.scalar(text(
+            "select count(*) from instruments where market = 'EURONEXT_PARIS' and active"))
+        assert paris == 0
+    await engine.dispose()
+
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    engine = make_engine(fresh_db)
+    async with engine.connect() as conn:
+        diff = await conn.run_sync(
+            lambda c: compare_metadata(MigrationContext.configure(c), Base.metadata)
+        )
+    await engine.dispose()
+    assert diff == []

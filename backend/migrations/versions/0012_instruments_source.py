@@ -31,5 +31,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Older code has no EURONEXT_PARIS market (market_status would raise NOT_FOUND): those
+    instruments are deactivated, not deleted (orders and the ledger reference them)."""
+    op.execute("UPDATE instruments SET active = false WHERE market = 'EURONEXT_PARIS'")
     op.drop_column("instruments", "added_by")
     op.drop_column("instruments", "source")

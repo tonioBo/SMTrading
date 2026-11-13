@@ -127,6 +127,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Older code has no `partially_filled` status: such orders (broker fills only) become
+    `canceled`, keeping their fills; leaving them open would let the simulator fill the
+    full quantity again once the broker columns are gone. Lossy for the broker state."""
+    op.execute("UPDATE orders SET status = 'canceled', updated_at = now()"
+               " WHERE status = 'partially_filled'")
     op.drop_table("backtests")
     op.drop_table("alerts")
     op.drop_table("watchlist_items")

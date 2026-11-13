@@ -103,6 +103,7 @@ async def test_get_portfolio_exact_values(mcp_server, mcp_call, book):
     assert p["margin_level"] == "ok"
     assert p["stale_symbols"] == []
     assert p["status"] == "active"
+    assert p["mode"] == "simulazione"  # M4: no broker link
     assert p["reduce_only_reason"] is None
     assert D(p["leverage"]) == D(1)
     assert p["day_pnl_eur"] == "97.5"
