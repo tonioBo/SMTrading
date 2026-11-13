@@ -91,3 +91,29 @@ async def test_order_qty_xor_notional(db_session, portfolio):
             async with db_session.begin_nested():
                 await db_session.execute(text(ins.format(q=q, n=n)), {"p": portfolio.id})
     await db_session.execute(text(ins.format(q="1", n="null")), {"p": portfolio.id})
+
+
+async def test_broker_watch_backtest_tables_present(db_session):
+    got = set(
+        (
+            await db_session.execute(
+                text("select table_name from information_schema.tables where table_schema='public'")
+            )
+        ).scalars()
+    )
+    assert {
+        "broker_links", "reconciliations", "watchlists", "watchlist_items", "alerts", "backtests",
+    } <= got
+
+
+async def test_open_order_indexes_include_partially_filled(db_session):
+    defs = (
+        await db_session.execute(
+            text(
+                "select indexdef from pg_indexes where indexname in"
+                " ('ix_orders_open_expires_at', 'ix_orders_open_created_at')"
+            )
+        )
+    ).scalars().all()
+    assert len(defs) == 2
+    assert all("partially_filled" in d for d in defs)

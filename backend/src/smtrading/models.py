@@ -2,6 +2,8 @@
 
 import smtrading.admin.models
 import smtrading.agents.models
+import smtrading.backtest.models
+import smtrading.brokers.models
 import smtrading.connectors.models
 import smtrading.engine.models
 import smtrading.fees.models
@@ -9,4 +11,5 @@ import smtrading.instruments.models
 import smtrading.ledger.models
 import smtrading.portfolios.models
 import smtrading.positions.models
-import smtrading.risk.models  # noqa: F401
+import smtrading.risk.models
+import smtrading.watch.models  # noqa: F401

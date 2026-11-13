@@ -37,3 +37,4 @@ class Portfolio(Base):
     risk_profile_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("risk_profiles.id"))
     reduce_only_reason: Mapped[str | None] = mapped_column(String(64))
     reduce_only_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    broker_link_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("broker_links.id"))

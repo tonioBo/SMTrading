@@ -45,6 +45,7 @@ class OrderStatus(enum.StrEnum):
     queued = "queued"  # market closed
     pending = "pending"  # waiting for the trigger
     triggered = "triggered"  # stop fired, became market/limit
+    partially_filled = "partially_filled"  # broker fill in progress; still open
     filled = "filled"
     canceled = "canceled"
     rejected = "rejected"
@@ -54,11 +55,17 @@ class OrderStatus(enum.StrEnum):
 # The single source of truth for order status groups.
 # fillable: execute_fill may fill it; open: not final yet (fillable or a held bracket child)
 FILLABLE_STATUSES = frozenset(
-    {OrderStatus.new, OrderStatus.queued, OrderStatus.pending, OrderStatus.triggered}
+    {
+        OrderStatus.new,
+        OrderStatus.queued,
+        OrderStatus.pending,
+        OrderStatus.triggered,
+        OrderStatus.partially_filled,
+    }
 )
 OPEN_STATUSES = FILLABLE_STATUSES | {OrderStatus.held}
 
-# partial indexes for the processor's scans of open orders (migration 0005)
+# partial indexes for the processor's scans of open orders (migrations 0005, 0009)
 _OPEN_WHERE = text(
     "status IN ("
     + ", ".join(f"'{s.value}'" for s in OrderStatus if s in OPEN_STATUSES)
@@ -109,6 +116,12 @@ class Order(Base):
         Boolean, default=False, server_default=text("false")
     )
     broker_order_id: Mapped[str | None] = mapped_column(String(128))
+    broker_link_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("broker_links.id"))
+    broker_status: Mapped[str | None] = mapped_column(String(32))
+    broker_replicated: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+    broker_last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
