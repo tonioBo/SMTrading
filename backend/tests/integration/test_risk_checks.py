@@ -150,7 +150,7 @@ async def test_whitelist_match_allows(db_session, seeded, qs):
     {"qty": D("1.5")},  # ENI.MI lot is 1
     {"qty": D(0)},
     {"notional": D(-5)},
-    {"qty": D(1), "order_type": OrderType.limit, "limit_price": D("15.0005")},  # tick 0.001
+    {"qty": D(1), "order_type": OrderType.limit, "limit_price": D("15.00005")},  # tick 0.0001
     {"qty": D(1), "order_type": OrderType.limit},  # limit price missing
     {"qty": D(1), "order_type": OrderType.stop},  # stop price missing
     {"qty": D(1), "order_type": OrderType.stop_limit, "stop_price": D(15)},

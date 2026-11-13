@@ -328,6 +328,7 @@ async def test_events_and_tracking_only_after_dispatch(db_session, seeded, qs, r
     await pubsub.get_message(timeout=1)  # subscribe confirmation
     try:
         p = await _portfolio(db_session)
+        discard_post_commit(db_session)  # the portfolio's own events are not under test
         o = await _order(db_session, p, "ENI.MI", OrderSide.buy, qty=D(10))
         res = await _fill(db_session, qs, o)
         # nothing leaves the transaction before commit + dispatch

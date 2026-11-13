@@ -78,6 +78,7 @@ async def test_list_portfolios_only_assigned(mcp_server, mcp_call):
         "name": "Demo",
         "base_currency": "EUR",
         "status": "active",
+        "mode": "simulazione",
         "permission": "trade",
     }
     assert by_name["ReadOnly"]["permission"] == "read"

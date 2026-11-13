@@ -312,11 +312,6 @@ async def _persist(session: AsyncSession, adm: _Admission, **extra) -> Order:
         order.expires_at = _day_expiry(adm.instrument, adm.portfolio, adm.market, adm.now)
     session.add(order)
     await session.flush()
-    queue_event(session, "order.rejected" if order.status == OrderStatus.rejected
-                else "order.accepted", {
-                    "order_id": order.id, "portfolio_id": order.portfolio_id,
-                    "agent_id": order.agent_id, "symbol": order.symbol,
-                })
     return order
 
 
@@ -489,6 +484,12 @@ async def _place(
     order = await _persist(session, adm)
     await _activate(session, adm.qs, order, adm)
     _track_open(session, [order])
+    # with the final outcome of the placement (a failed fill rejects it after _persist)
+    queue_event(session, "order.rejected" if order.status == OrderStatus.rejected
+                else "order.accepted", {
+                    "order_id": order.id, "portfolio_id": order.portfolio_id,
+                    "agent_id": order.agent_id, "symbol": order.symbol,
+                })
     return order, True
 
 

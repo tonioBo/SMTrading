@@ -139,6 +139,9 @@ async def test_marketable_limit_fills_at_placement(db_session, qs, p):
     assert order.avg_fill_price == D("200.00")  # never worse than the limit, at the ask
 
 
+_SETUP_EVENTS = {"portfolio.created", "portfolio.cash"}  # from the fixtures
+
+
 async def test_rejection_is_persisted(db_session, qs, p):
     req = _req(p, qty=D(1000), client_order_id="big-1")  # 200k USD = 160k EUR > 100k
     with pytest.raises(SMTError) as exc:
@@ -152,7 +155,9 @@ async def test_rejection_is_persisted(db_session, qs, p):
     assert rejected.reject_code == "INSUFFICIENT_BUYING_POWER"
     assert rejected.reject_message
     assert rejected.client_order_id == "big-1"
-    assert _effects(db_session) == []
+    # only the refusal is published (no tracking, no fill events)
+    assert [(e[0], e[1]) for e in _effects(db_session) if e[1] not in _SETUP_EVENTS] == [
+        ("event", "order.rejected")]
 
 
 async def test_execution_failure_rolls_back_savepoint_and_rejects(
@@ -171,7 +176,9 @@ async def test_execution_failure_rolls_back_savepoint_and_rejects(
     assert order.status == OrderStatus.rejected and order.reject_code == "INSUFFICIENT_BUYING_POWER"
     assert await db_session.scalar(select(func.count()).select_from(Fill)) == 0
     assert await _position(db_session, p.id, "AAPL") == 0
-    assert _effects(db_session) == []  # effects queued inside the savepoint are discarded
+    # effects queued inside the savepoint are discarded: only the refusal is published
+    assert [(e[0], e[1]) for e in _effects(db_session) if e[1] not in _SETUP_EVENTS] == [
+        ("event", "order.rejected")]
 
 
 async def test_idempotent_client_order_id(db_session, qs, p):

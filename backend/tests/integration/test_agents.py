@@ -37,7 +37,7 @@ async def test_create_and_authenticate(db_session):
 
 async def test_token_not_stored_in_clear(db_session):
     agent, token = await service.create_agent(db_session, "bot")
-    secret = token.rsplit("_", 1)[1]
+    secret = token.split("_", 2)[2]  # the secret itself may contain "_"
     assert secret not in agent.token_hash
     assert token not in agent.token_hash
     assert agent.token_hash.startswith("$argon2id$")
