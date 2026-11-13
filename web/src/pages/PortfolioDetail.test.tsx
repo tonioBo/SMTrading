@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import type { QueryClient } from "@tanstack/react-query";
 import type { Order, Portfolio, Position, Transaction, Valuation } from "@/api/types";
 import { renderApp } from "@/test/render";
+import { commonHandlers } from "@/test/handlers";
 
 const ws = vi.hoisted(() => ({
   handlers: new Set<{ type: string; call: (p: unknown) => void }>(),
@@ -158,6 +159,7 @@ let orderStatuses: (string | null)[] = [];
 let unarchived = 0;
 
 const server = setupServer(
+  ...commonHandlers,
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
   http.get("*/api/portfolios/p1", () => HttpResponse.json(current)),

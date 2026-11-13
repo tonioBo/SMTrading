@@ -7,9 +7,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { killSwitchKey } from "@/api/hooks/killSwitch";
 import { KillSwitchButton } from "@/components/KillSwitchButton";
 import { createQueryClient } from "@/queryClient";
+import { commonHandlers } from "@/test/handlers";
 
 let posts: unknown[] = [];
 const server = setupServer(
+  ...commonHandlers,
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
   http.post("*/api/kill-switch", async ({ request }) => {
     const body = (await request.json()) as { on: boolean };

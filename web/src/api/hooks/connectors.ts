@@ -17,6 +17,7 @@ export function usePatchConnector() {
   return useMutation({
     mutationFn: ({ name, patch }: { name: string; patch: ConnectorPatch }) =>
       apiFetch<Connector>(`/api/connectors/${name}`, { method: "PATCH", body: patch }),
+    gcTime: 0, // the variables may hold API keys
     onSuccess: (data) =>
       qc.setQueryData<Connector[]>(connectorsKey, (old) => old?.map((c) => (c.name === data.name ? data : c))),
   });

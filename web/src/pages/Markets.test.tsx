@@ -4,6 +4,7 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { renderApp } from "@/test/render";
+import { commonHandlers } from "@/test/handlers";
 
 vi.mock("@/lib/ws", async (orig) => ({
   ...(await orig<typeof import("@/lib/ws")>()),
@@ -15,6 +16,7 @@ let tracks: unknown[] = [];
 let autoAdd: unknown[] = [];
 let instrumentQueries: string[] = [];
 const server = setupServer(
+  ...commonHandlers,
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
   http.get("*/api/marketdata/stream-status", () =>

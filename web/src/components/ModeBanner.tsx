@@ -1,11 +1,18 @@
-import { useDashboardSummary } from "@/api/hooks/dashboard";
+import { useModes } from "@/api/hooks/dashboard";
 import { cn } from "@/lib/utils";
 
 /** Global notice under the header: what kind of money the active portfolios are using. */
 export function ModeBanner() {
-  const { data } = useDashboardSummary();
-  const modes = data?.modes;
-  if (!modes) return null;
+  const { data: modes, isError } = useModes();
+  if (!modes) {
+    // fail safe: never silently hide what kind of money is in use
+    if (!isError) return null;
+    return (
+      <div role="status" aria-label="Modalità di trading" className="border-b border-border bg-card px-6 py-1.5 text-center text-xs font-medium text-muted">
+        Modalità dei portafogli non verificabile al momento
+      </div>
+    );
+  }
   const { simulazione = 0, paper = 0, reale = 0 } = modes;
   if (simulazione + paper + reale === 0) return null;
 

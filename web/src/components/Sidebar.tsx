@@ -33,23 +33,31 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/impostazioni", label: "Impostazioni", icon: Settings },
 ];
 
-export function Sidebar() {
+interface SidebarProps {
+  /** icon-only rail: the label stays as the accessible name and the tooltip (title) */
+  collapsed?: boolean;
+  label?: string;
+}
+
+export function Sidebar({ collapsed = false, label = "Navigazione principale" }: SidebarProps) {
   return (
-    <nav aria-label="Navigazione principale" className="flex flex-col gap-1 p-3">
-      {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+    <nav aria-label={label} className={cn("flex flex-col gap-1", collapsed ? "p-2" : "p-3")}>
+      {NAV_ITEMS.map(({ to, label: text, icon: Icon }) => (
         <NavLink
           key={to}
           to={to}
           end={to === "/"}
+          title={collapsed ? text : undefined}
           className={({ isActive }) =>
             cn(
-              "flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted transition-colors hover:bg-card hover:text-fg",
+              "flex items-center gap-3 rounded-md py-2 text-sm text-muted transition-colors hover:bg-card hover:text-fg",
+              collapsed ? "justify-center px-2" : "px-3",
               isActive && "bg-card font-medium text-fg",
             )
           }
         >
-          <Icon className="h-4 w-4" aria-hidden />
-          {label}
+          <Icon className="h-4 w-4 shrink-0" aria-hidden />
+          <span className={cn(collapsed && "sr-only")}>{text}</span>
         </NavLink>
       ))}
     </nav>

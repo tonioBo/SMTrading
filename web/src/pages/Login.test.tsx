@@ -5,6 +5,7 @@ import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { renderApp } from "@/test/render";
 import { safeNext } from "@/lib/nav";
+import { commonHandlers } from "@/test/handlers";
 
 vi.mock("@/lib/ws", async (orig) => ({
   ...(await orig<typeof import("@/lib/ws")>()),
@@ -13,6 +14,7 @@ vi.mock("@/lib/ws", async (orig) => ({
 
 const logins: unknown[] = [];
 const server = setupServer(
+  ...commonHandlers,
   http.post("*/api/auth/login", async ({ request }) => {
     const body = (await request.json()) as { totp?: string };
     logins.push(body);

@@ -1,5 +1,6 @@
 import { Navigate, type RouteObject } from "react-router-dom";
 import { Layout } from "@/components/Layout";
+import { RouteError } from "@/components/RouteError";
 import Agents from "@/pages/Agents";
 import Brokers from "@/pages/Brokers";
 import Connectors from "@/pages/Connectors";
@@ -14,23 +15,30 @@ import Risk from "@/pages/Risk";
 import Settings from "@/pages/Settings";
 
 export const routes: RouteObject[] = [
-  { path: "/login", element: <Login /> },
+  { path: "/login", element: <Login />, errorElement: <RouteError /> },
   {
     path: "/",
     element: <Layout />,
+    errorElement: <RouteError />,
     children: [
-      { index: true, element: <Dashboard /> },
-      { path: "portafogli", element: <Portfolios /> },
-      { path: "portafogli/:id", element: <PortfolioDetail /> },
-      { path: "agenti", element: <Agents /> },
-      { path: "commissioni", element: <Fees /> },
-      { path: "rischio", element: <Risk /> },
-      { path: "connettori", element: <Connectors /> },
-      { path: "broker", element: <Brokers /> },
-      { path: "mercati", element: <Markets /> },
-      { path: "log-mcp", element: <McpLog /> },
-      { path: "impostazioni", element: <Settings /> },
-      { path: "*", element: <Navigate to="/" replace /> },
+      {
+        // errors of a page render inside the layout (sidebar and header stay usable)
+        errorElement: <RouteError />,
+        children: [
+          { index: true, element: <Dashboard /> },
+          { path: "portafogli", element: <Portfolios /> },
+          { path: "portafogli/:id", element: <PortfolioDetail /> },
+          { path: "agenti", element: <Agents /> },
+          { path: "commissioni", element: <Fees /> },
+          { path: "rischio", element: <Risk /> },
+          { path: "connettori", element: <Connectors /> },
+          { path: "broker", element: <Brokers /> },
+          { path: "mercati", element: <Markets /> },
+          { path: "log-mcp", element: <McpLog /> },
+          { path: "impostazioni", element: <Settings /> },
+          { path: "*", element: <Navigate to="/" replace /> },
+        ],
+      },
     ],
   },
 ];

@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import type { Dashboard } from "@/api/types";
 import type { LiveEvent } from "@/lib/ws";
 import { renderApp } from "@/test/render";
+import { commonHandlers } from "@/test/handlers";
 
 const handlers = vi.hoisted(() => new Set<(e: unknown) => void>());
 vi.mock("@/lib/ws", async () => {
@@ -56,6 +57,7 @@ let posted: unknown = null;
 let equity: { ts: string; equity_eur: string }[] = [];
 let current = dashboard;
 const server = setupServer(
+  ...commonHandlers,
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: killSwitchOn })),
   http.post("*/api/kill-switch", async ({ request }) => {

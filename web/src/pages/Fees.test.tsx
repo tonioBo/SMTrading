@@ -5,6 +5,7 @@ import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { FeeRule } from "@/api/types";
 import { renderApp } from "@/test/render";
+import { commonHandlers } from "@/test/handlers";
 
 vi.mock("@/lib/ws", async (orig) => ({
   ...(await orig<typeof import("@/lib/ws")>()),
@@ -37,6 +38,7 @@ let patches: Record<string, unknown>[] = [];
 let simulated: unknown[] = [];
 let deleted: string[] = [];
 const server = setupServer(
+  ...commonHandlers,
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
   http.get("*/api/fee-rules", () => HttpResponse.json([rule])),

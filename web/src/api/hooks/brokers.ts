@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
+import { dashboardKey } from "@/api/hooks/dashboard";
 import { newKey, portfoliosKey } from "@/api/hooks/portfolios";
 import type { BrokerLink, BrokerLinkCreate, BrokerLinkPatch, BrokerTestResult, Portfolio, Reconciliation } from "@/api/types";
 
@@ -22,6 +23,7 @@ export function useCreateBrokerLink() {
   return useMutation({
     mutationFn: ({ body, key }: { body: BrokerLinkCreate; key: string }) =>
       apiFetch<BrokerLink>("/api/broker-links", { method: "POST", body, idempotencyKey: key }),
+    gcTime: 0, // the variables hold the keys: never kept in the mutation cache
     onSuccess: () => void qc.invalidateQueries({ queryKey: brokerLinksKey, exact: true }),
   });
 }
@@ -31,6 +33,7 @@ export function usePatchBrokerLink() {
   return useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: BrokerLinkPatch }) =>
       apiFetch<BrokerLink>(`/api/broker-links/${id}`, { method: "PATCH", body: patch }),
+    gcTime: 0, // the variables may hold keys
     onSuccess: (link) => qc.setQueryData<BrokerLink[]>(brokerLinksKey, (old) => replaceLink(old, link)),
   });
 }
@@ -52,6 +55,7 @@ export function useSetPortfolioBroker() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: brokerLinksKey, exact: true });
       void qc.invalidateQueries({ queryKey: portfoliosKey });
+      void qc.invalidateQueries({ queryKey: dashboardKey }); // counts and the mode banner
     },
   });
 }

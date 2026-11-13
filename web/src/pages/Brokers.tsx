@@ -56,6 +56,7 @@ function NewLinkForm({ onDone }: { onDone: () => void }) {
       {
         onSuccess: (link) => {
           toast.success(`Collegamento ${link.name} creato`);
+          create.reset(); // drop the keys held in the mutation state
           onDone();
         },
       },
@@ -135,6 +136,7 @@ function SecretsForm({ link }: { link: BrokerLink }) {
       {
         onSuccess: () => {
           setFields({});
+          patch.reset(); // drop the keys held in the mutation state
           toast.success(`Chiavi di ${link.name} aggiornate`);
         },
       },
@@ -230,6 +232,9 @@ function PortfolioLinks({ link }: { link: BrokerLink }) {
           Collega
         </Button>
       </div>
+      <p className="text-xs text-muted">
+        Si collegano solo portafogli senza posizioni aperte né ordini aperti: il broker non conosce le posizioni simulate.
+      </p>
       {setLink.error && (
         <p role="alert" className="text-sm text-loss">
           {errorMessage(setLink.error)}

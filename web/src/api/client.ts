@@ -3,6 +3,8 @@
  * Idempotency-Key, `ApiError` from the error JSON, one redirect to /login on 401.
  */
 
+import { BUILD_HEADER, noteServerBuild } from "@/lib/buildVersion";
+
 export const CSRF_COOKIE = "smt_csrf";
 export const CSRF_HEADER = "X-CSRF-Token";
 
@@ -100,6 +102,7 @@ async function apiRequest(path: string, options: ApiFetchOptions, accept: string
     throw new ApiError(0, "NETWORK_ERROR", "impossibile contattare il server");
   }
 
+  noteServerBuild(res.headers.get(BUILD_HEADER));
   if (!res.ok) {
     if (res.status === 401) notifyUnauthorized();
     throw await toApiError(res);

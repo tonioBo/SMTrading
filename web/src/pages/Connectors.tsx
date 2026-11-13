@@ -43,6 +43,7 @@ function ConnectorCard({ connector }: { connector: Connector }) {
         onSuccess: () => {
           setFields({});
           setRemoved(new Set());
+          patch.reset(); // drop the keys held in the mutation state
           toast.success(`Connettore ${connector.name} salvato`);
         },
       },

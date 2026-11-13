@@ -5,6 +5,7 @@ import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { BrokerLink, Reconciliation } from "@/api/types";
 import { renderApp } from "@/test/render";
+import { commonHandlers } from "@/test/handlers";
 
 vi.mock("@/lib/ws", async (orig) => ({
   ...(await orig<typeof import("@/lib/ws")>()),
@@ -44,6 +45,7 @@ let creates: { body: unknown; key: string | null }[] = [];
 let puts: { id: string; body: unknown }[] = [];
 let reconciles = 0;
 const server = setupServer(
+  ...commonHandlers,
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
   http.get("*/api/broker-links", () => HttpResponse.json([link()])),
@@ -119,7 +121,7 @@ describe("Brokers", () => {
 
   it("creates a Trading 212 Demo link with an Idempotency-Key", async () => {
     const user = userEvent.setup();
-    renderApp("/broker");
+    const { queryClient } = renderApp("/broker");
     await user.click(await screen.findByRole("button", { name: "Nuovo collegamento" }));
     const form = screen.getByRole("form", { name: "Nuovo collegamento broker" });
     await user.type(within(form).getByLabelText("Nome"), "T212");
@@ -130,6 +132,8 @@ describe("Brokers", () => {
     expect(creates[0].body).toEqual({ name: "T212", kind: "t212_demo", config: { api_key: "T212KEY" } });
     expect(creates[0].key).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole("form", { name: "Nuovo collegamento broker" })).not.toBeInTheDocument());
+    // M6: the typed key is not kept in the mutation cache
+    await waitFor(() => expect(JSON.stringify(queryClient.getMutationCache().getAll().map((m) => m.state.variables))).not.toContain("T212KEY"));
   });
 
   it("tests the connection and shows the failure", async () => {

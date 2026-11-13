@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { toast } from "sonner";
 import { formatBytes } from "@/lib/format";
 import { renderApp } from "@/test/render";
+import { commonHandlers } from "@/test/handlers";
 
 vi.mock("@/lib/ws", async (orig) => ({
   ...(await orig<typeof import("@/lib/ws")>()),
@@ -19,6 +20,7 @@ let meCalls = 0;
 let pwForbidden = false;
 let tzPuts: unknown[] = [];
 const server = setupServer(
+  ...commonHandlers,
   http.get("*/api/auth/me", () => {
     meCalls += 1;
     return HttpResponse.json({ email: "admin@example.com", totp_enabled: totpEnabled });

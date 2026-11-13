@@ -1,10 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { apiFetch } from "@/api/client";
-import type { Dashboard, EquityPeriod, EquitySeries } from "@/api/types";
+import type { Dashboard, EquityPeriod, EquitySeries, PortfolioMode } from "@/api/types";
 import { useLiveMessage, type LiveEvent } from "@/lib/ws";
 
 export const dashboardKey = ["dashboard"] as const;
+/** under dashboardKey: invalidating the dashboard refreshes the banner too */
+export const modesKey = ["dashboard", "modes"] as const;
+export const MODES_STALE_MS = 60_000;
 /** Period selector labels mapped to the API periods. */
 export const EQUITY_PERIODS: { label: string; value: EquityPeriod }[] = [
   { label: "1g", value: "1d" },
@@ -40,12 +43,13 @@ export function useDashboard() {
   });
 }
 
-/** The same summary without the live subscription (the global banner shares its cache). */
-export function useDashboardSummary() {
+/** Live portfolios per mode (cheap endpoint, no valuation) for the global banner. */
+export function useModes() {
   return useQuery({
-    queryKey: dashboardKey,
-    queryFn: () => apiFetch<Dashboard>("/api/dashboard"),
-    refetchInterval: 30_000,
+    queryKey: modesKey,
+    queryFn: () => apiFetch<Record<PortfolioMode, number>>("/api/dashboard/modes"),
+    staleTime: MODES_STALE_MS,
+    refetchInterval: MODES_STALE_MS,
   });
 }
 
