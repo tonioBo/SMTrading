@@ -33,6 +33,8 @@ _STATUS: dict[str, BrokerStatus] = {
     "rejected": "rejected",
 }
 _REJECT_HTTP = {403, 422}
+_AUTH_WORDS = ("forbidden", "unauthorized", "access key")
+_DUP_WORDS = ("client_order_id", "unique", "duplicate")
 
 
 def _dec(v: object) -> Decimal | None:
@@ -104,11 +106,21 @@ class AlpacaPaperAdapter(BrokerAdapter):
         return True
 
     async def _request(
-        self, method: str, path: str, *, json_body: dict | None = None
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict | None = None,
+        params: dict | None = None,
     ) -> httpx.Response:
         try:
             return await self.http.request(
-                method, self.base_url + path, headers=self._headers, json=json_body
+                method,
+                self.base_url + path,
+                headers=self._headers,
+                json=json_body,
+                params=params,
+                follow_redirects=False,
             )
         except httpx.HTTPError as e:
             raise RuntimeError(f"alpaca_paper: {type(e).__name__}") from None
@@ -129,7 +141,7 @@ class AlpacaPaperAdapter(BrokerAdapter):
             filled_qty=_dec(data.get("filled_qty")) or Decimal(0),
             avg_fill_price=_dec(data.get("filled_avg_price")),
             message=None,
-            raw=data,
+            raw=json.loads(json.dumps(data, default=str)),
         )
 
     def _payload(self, order: Order, instrument: Instrument) -> dict:
@@ -157,9 +169,22 @@ class AlpacaPaperAdapter(BrokerAdapter):
         return body
 
     async def place_order(self, order: Order, instrument: Instrument) -> BrokerOrder:
-        resp = await self._request("POST", "/v2/orders", json_body=self._payload(order, instrument))
+        body = self._payload(order, instrument)
+        resp = await self._request("POST", "/v2/orders", json_body=body)
         if resp.status_code in _REJECT_HTTP:
-            return BrokerOrder("", "rejected", Decimal(0), None, _error_message(resp), {})
+            msg = _error_message(resp)
+            low = msg.lower()
+            if resp.status_code == 403 and any(w in low for w in _AUTH_WORDS):
+                raise RuntimeError("alpaca_paper: credenziali non valide")
+            if resp.status_code == 422 and any(w in low for w in _DUP_WORDS):
+                existing = await self._request(
+                    "GET",
+                    "/v2/orders:by_client_order_id",
+                    params={"client_order_id": body["client_order_id"]},
+                )
+                if existing.status_code < 300:
+                    return self._to_broker_order(self._parse(existing))
+            return BrokerOrder("", "rejected", Decimal(0), None, msg, {})
         if resp.status_code >= 300:
             raise self._fail(resp)
         return self._to_broker_order(self._parse(resp))

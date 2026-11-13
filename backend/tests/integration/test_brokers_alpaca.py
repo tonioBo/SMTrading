@@ -6,7 +6,7 @@ import httpx
 import pytest
 import respx
 
-from smtrading.brokers.alpaca_paper import PAPER_URL, AlpacaPaperAdapter
+from smtrading.brokers.alpaca_paper import _STATUS, PAPER_URL, AlpacaPaperAdapter
 from smtrading.brokers.service import (
     create_link,
     get_adapter,
@@ -123,16 +123,7 @@ async def test_trailing_payload(http):
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [
-        ("new", "accepted"),
-        ("accepted", "accepted"),
-        ("pending_new", "accepted"),
-        ("partially_filled", "partially_filled"),
-        ("filled", "filled"),
-        ("canceled", "canceled"),
-        ("expired", "expired"),
-        ("rejected", "rejected"),
-    ],
+    list(_STATUS.items()),
 )
 @respx.mock
 async def test_status_conversion(http, raw, expected):
@@ -230,3 +221,58 @@ async def test_service_links(db_session, portfolio, http):
     assert e.value.code == ErrorCode.FORBIDDEN
     with pytest.raises(SMTError):
         await create_link(db_session, "bad2", "nope", {})
+
+
+@respx.mock
+async def test_duplicate_client_order_id_returns_existing(http):
+    o = _order()
+    respx.post(f"{PAPER_URL}/v2/orders").mock(
+        return_value=httpx.Response(422, json={"message": "client_order_id must be unique"})
+    )
+    get = respx.get(f"{PAPER_URL}/v2/orders:by_client_order_id").mock(
+        return_value=httpx.Response(200, json={"id": "existing", "status": "new"})
+    )
+    res = await AlpacaPaperAdapter(CFG, http).place_order(o, _inst())
+    assert res.status == "accepted"
+    assert res.broker_order_id == "existing"
+    assert get.calls[0].request.url.params["client_order_id"] == str(o.id)
+
+
+@respx.mock
+async def test_redirect_not_followed(http):
+    respx.post(f"{PAPER_URL}/v2/orders").mock(
+        return_value=httpx.Response(
+            307, headers={"location": "https://api.alpaca.markets/v2/orders"}
+        )
+    )
+    live = respx.post("https://api.alpaca.markets/v2/orders").mock(return_value=httpx.Response(200))
+    with pytest.raises(RuntimeError):
+        await AlpacaPaperAdapter(CFG, http).place_order(_order(), _inst())
+    assert not live.called
+
+
+@pytest.mark.parametrize(
+    ("msg", "rejected"),
+    [("forbidden.", False), ("Unauthorized access key", False), ("account is blocked", True)],
+)
+@respx.mock
+async def test_403_auth_vs_rejection(http, msg, rejected):
+    respx.post(f"{PAPER_URL}/v2/orders").mock(
+        return_value=httpx.Response(403, json={"message": msg})
+    )
+    a = AlpacaPaperAdapter(CFG, http)
+    if rejected:
+        assert (await a.place_order(_order(), _inst())).status == "rejected"
+    else:
+        with pytest.raises(RuntimeError, match="credenziali non valide"):
+            await a.place_order(_order(), _inst())
+
+
+@respx.mock
+async def test_raw_is_json_safe(http):
+    respx.get(f"{PAPER_URL}/v2/orders/x").mock(
+        return_value=httpx.Response(200, json={"id": "x", "status": "new", "limit_price": 1.5})
+    )
+    raw = (await AlpacaPaperAdapter(CFG, http).get_order("x")).raw
+    assert json.loads(json.dumps(raw)) == raw
+    assert raw["limit_price"] == "1.5"
