@@ -130,6 +130,14 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
 - `list_alerts`: gli alert dell'agente, filtrabili per stato (`active`/`triggered`).
 - `delete_alert`: elimina un alert dell'agente.
 
+### Backtest
+
+Simulazione pura di una strategia solo long su barre storiche: non tocca portafogli, ordini ne' broker.
+
+- `run_backtest`: mette in coda un backtest e risponde `{backtest_id, status: "queued"}`. Parametri: `strategy` (`sma_cross` con `fast=20`, `slow=50`; `rsi_reversion` con `period=14`, `buy_below=30`, `sell_above=70`; `breakout` con `lookback=20`, `exit_lookback=10`; `buy_and_hold`), `symbols`, `from_date`, `to_date`, `timeframe` (default `1d`), `initial_cash` (default `10000`, diviso in parti uguali tra i simboli), `params`, `portfolio_id` (opzionale, serve `read`: ne usa le commissioni, altrimenti la regola globale). I segnali si eseguono all'apertura della barra successiva con slippage. Al massimo 2 backtest in coda o in esecuzione per agente (`RATE_LIMITED`), al massimo 5 anni di barre giornaliere o 90 giorni di barre intraday (`RISK_LIMIT_EXCEEDED`).
+- `get_backtest`: stato e risultato di un backtest dell'agente (di un altro agente: `FORBIDDEN`). Il `result` contiene `metrics` (`total_return_pct`, `cagr_pct`, `max_drawdown_pct`, `sharpe`, `win_rate_pct`, `trades`, `exposure_pct`), `equity` (al massimo 1000 punti) e `trades`; un backtest fallito ha `error`.
+- `list_backtests`: i backtest dell'agente, dal piu' recente, senza curva e operazioni; filtro `status`, `limit` 1-100.
+
 ### Polling degli alert
 
 1. Prima chiamata senza `since`/`after_id`: le notifiche piu' recenti (dalla piu' recente) e

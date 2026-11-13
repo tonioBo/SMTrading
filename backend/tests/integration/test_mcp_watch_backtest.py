@@ -1,6 +1,6 @@
-"""MCP watchlist and alert tools (and, later, backtest tools) on the live fixture server."""
+"""MCP watchlist and alert tools and backtest tools on the live fixture server."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -8,9 +8,10 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.agents.service import create_agent
+from smtrading.backtest.runner import BacktestRunner
 from smtrading.common.db import make_engine
 from smtrading.marketdata.streaming import TRACKED_KEY
-from smtrading.marketdata.types import Quote
+from smtrading.marketdata.types import Bar, Quote
 from smtrading.seed import run_seed
 from smtrading.watch.evaluator import AlertEvaluator
 
@@ -142,3 +143,63 @@ async def test_alert_errors_and_foreign_agent(env):
     assert await _tracked(env["redis"], "alerts") == set()
     err, bad = await call("delete_alert", {"alert_id": alert["id"]})
     assert err and bad["code"] == "NOT_FOUND"
+
+
+BT_ARGS = {"strategy": "buy_and_hold", "symbols": [SYM], "from_date": "2024-01-01",
+           "to_date": "2024-03-01", "initial_cash": "10000"}
+
+
+async def test_backtest_flow_and_isolation(env):
+    call, server = env["call"], env["server"]
+    server.qs.set_bars(SYM, [
+        Bar(ts=datetime(2024, 1, 1, tzinfo=UTC) + timedelta(days=i), open=D(100 + i),
+            high=D(101 + i), low=D(99 + i), close=D(100 + i), volume=D(1))
+        for i in range(60)])
+    err, out = await call("run_backtest", BT_ARGS)
+    assert not err and out["status"] == "queued"
+    bid = out["backtest_id"]
+    err, bt = await call("get_backtest", {"backtest_id": bid})
+    assert not err and bt["status"] == "queued" and bt["result"] is None
+
+    engine = make_engine(server.db_url)
+    await BacktestRunner(async_sessionmaker(engine, expire_on_commit=False),
+                         server.qs).run_once()
+    await engine.dispose()
+    err, bt = await call("get_backtest", {"backtest_id": bid})
+    assert not err and bt["status"] == "completed"
+    assert set(bt["result"]["metrics"]) == {
+        "total_return_pct", "cagr_pct", "max_drawdown_pct", "sharpe", "win_rate_pct",
+        "trades", "exposure_pct"}
+    err, rows = await call("list_backtests", {"status": "completed"})
+    assert not err and [r["id"] for r in rows] == [bid]
+    assert "result" not in rows[0] and rows[0]["metrics"] == bt["result"]["metrics"]
+
+    engine = make_engine(server.db_url)
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        _, other = await create_agent(s, "other-bt")
+        await s.commit()
+    await engine.dispose()
+    err, bad = await call("get_backtest", {"backtest_id": bid}, token=other)
+    assert err and bad["code"] == "FORBIDDEN"
+    err, rows = await call("list_backtests", token=other)
+    assert not err and rows == []
+
+
+async def test_backtest_tool_errors(env):
+    call = env["call"]
+    err, bad = await call("run_backtest", {**BT_ARGS, "strategy": "magic"})
+    assert err and bad["code"] == "INVALID_ORDER"
+    err, bad = await call("run_backtest", {**BT_ARGS, "from_date": "yesterday"})
+    assert err and bad["code"] == "INVALID_ORDER" and bad["details"]["field"] == "from_date"
+    err, bad = await call("run_backtest", {**BT_ARGS, "to_date": "2031-01-01"})
+    assert err and bad["code"] == "RISK_LIMIT_EXCEEDED"
+    err, bad = await call("run_backtest", {**BT_ARGS, "portfolio_id": "5f0e7c1e-0000-4000-8000-"
+                                           "000000000000"})
+    assert err and bad["code"] == "FORBIDDEN"
+    err, bad = await call("get_backtest", {"backtest_id": "x"})
+    assert err and bad["details"]["field"] == "backtest_id"
+    for _ in range(2):
+        err, _ = await call("run_backtest", BT_ARGS)
+        assert not err
+    err, bad = await call("run_backtest", BT_ARGS)
+    assert err and bad["code"] == "RATE_LIMITED"

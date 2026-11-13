@@ -8,6 +8,8 @@ import httpx
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from smtrading.backtest.runner import BacktestRunner
+from smtrading.brokers.sync import BrokerSync
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
 from smtrading.common.heartbeat import write_heartbeat
@@ -97,8 +99,16 @@ async def run() -> None:
                                   lambda: AlertEvaluator(sessionmaker, redis, router).run())
                     ),
                     tg.create_task(
+                        supervise("backtest runner", lambda: BacktestRunner(sessionmaker, router).run())
+                    ),
+                    tg.create_task(
+                        supervise("broker sync",
+                                  lambda: BrokerSync(sessionmaker, redis, router, http).run())
+                    ),
+                    tg.create_task(
                         supervise("job scheduler",
-                                  lambda: JobScheduler(sessionmaker, router, redis).run())
+                                  lambda: JobScheduler(sessionmaker, router, redis,
+                                                       http=http).run())
                     ),
                 ]
                 await stop.wait()

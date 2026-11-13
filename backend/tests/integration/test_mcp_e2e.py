@@ -33,6 +33,8 @@ ALL_TOOLS = {
     # watchlists and price alerts
     "list_watchlists", "create_watchlist", "add_to_watchlist", "remove_from_watchlist",
     "delete_watchlist", "create_alert", "list_alerts", "delete_alert",
+    # backtests
+    "run_backtest", "get_backtest", "list_backtests",
 }
 
 

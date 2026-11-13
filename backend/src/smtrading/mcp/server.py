@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from smtrading.mcp import (
     resources,
     tools_alerts,
+    tools_backtest,
     tools_market,
     tools_orders,
     tools_portfolio,
@@ -20,7 +21,8 @@ from smtrading.mcp.runtime import reject_arguments
 
 SERVER_NAME = "SMTrading"
 _TOOL_MODULES = (
-    tools_portfolio, tools_orders, tools_market, tools_alerts, tools_watch, resources,
+    tools_portfolio, tools_orders, tools_market, tools_alerts, tools_watch, tools_backtest,
+    resources,
 )
 
 
