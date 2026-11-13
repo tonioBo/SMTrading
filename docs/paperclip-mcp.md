@@ -5,15 +5,36 @@ Ogni agente ha un token personale; i permessi sono per portafoglio (`read` o `tr
 
 ## 1. Recuperare il token
 
-Il token in chiaro viene mostrato **una sola volta**, al primo avvio, quando il servizio
-`migrate` esegue il seed (agente `paperclip-demo`, permesso `trade` sul portafoglio "Demo"):
+Il token in chiaro viene mostrato **una sola volta**, quando il servizio `migrate` esegue il
+seed e crea l'agente `paperclip-demo` (permesso `trade` sul portafoglio "Demo"):
 
 ```bash
 docker compose logs migrate | grep "token agente"
 ```
 
-Formato: `smt_<prefix>_<secret>`. Se il log non e' piu' disponibile, il token va ruotato dalla
-web app di amministrazione (piano 5): il vecchio token smette di funzionare.
+Il token compare nei log **solo al primo avvio**, quando l'agente viene creato: i seed
+successivi non lo ristampano (e i log del container possono essere stati ruotati o
+cancellati). Formato: `smt_<prefix>_<secret>`.
+
+Se il token e' andato perso, in attesa della web app di amministrazione (piano 5) si ruota
+dalla CLI: viene stampato il nuovo token (una sola volta) e il vecchio smette di funzionare.
+
+```bash
+docker compose exec api python -m smtrading.cli agent rotate paperclip-demo
+```
+
+Altri comandi agenti della CLI (output JSON; i token non sono mai salvati in chiaro):
+
+```bash
+docker compose exec api python -m smtrading.cli agent list
+docker compose exec api python -m smtrading.cli agent create NOME --portfolio Demo --permission trade
+docker compose exec api python -m smtrading.cli agent deactivate NOME
+```
+
+Dopo `rotate` o `deactivate` il vecchio token viene rifiutato subito dal processo che ha
+eseguito il comando; gli altri processi lo rifiutano al piu' entro 60 secondi (cache dei
+token). Un token sbagliato ripresentato viene rifiutato senza ricalcolare l'hash per 60
+secondi.
 
 ## 2. Collegare Paperclip alla rete
 
@@ -55,6 +76,16 @@ docker compose exec api python -m smtrading.mcp.smoke --url http://localhost:800
 Senza token (o con un token non valido) il server risponde HTTP 401 con
 `{"code":"FORBIDDEN","message":"invalid token"}`.
 
+La porta 8000 e' pubblicata solo su `127.0.0.1` dell'host (accesso locale); Paperclip
+raggiunge l'API attraverso la rete docker `smtrading-net`.
+
+Se per la verifica si e' creato un agente dedicato (es. `smoke-agent`), disattivarlo quando
+non serve piu':
+
+```bash
+docker compose exec api python -m smtrading.cli agent deactivate smoke-agent
+```
+
 ## 4. Metodi
 
 Passa i numeri come stringhe per mantenere la precisione esatta (es. `"qty": "0.1"`).
@@ -89,7 +120,29 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
 - `get_earnings_calendar`: eventi di utili in un intervallo di date.
 - `get_dividends`: eventi di dividendo di un simbolo.
 - `screen`: selezione di strumenti per filtri.
-- `get_triggered_alerts`: notifiche dei portafogli dell'agente (o indirizzate a lui), dalla piu' recente; filtro `since`, `limit` 1-500.
+- `get_triggered_alerts`: notifiche dei portafogli dell'agente (o indirizzate a lui): `{alerts, next_after_id}`; senza cursore dalla piu' recente, con `since`/`after_id` dalla piu' vecchia; `limit` 1-500.
+
+### Polling degli alert
+
+1. Prima chiamata senza `since`/`after_id`: le notifiche piu' recenti (dalla piu' recente) e
+   `next_after_id` = id della piu' recente.
+2. Chiamate successive con `after_id = next_after_id`: solo le notifiche create dopo, in
+   ordine crescente (`created_at`, `id`), e un nuovo `next_after_id` (l'ultimo id ricevuto,
+   o lo stesso cursore se non c'e' nulla di nuovo).
+3. Se una pagina contiene `limit` notifiche, richiamare subito: potrebbero essercene altre.
+
+### Indicatori
+
+`get_indicators` restituisce `specs: [{key, name, params}]` e i valori sotto `key`: il nome
+dell'indicatore, oppure `nome_<parametri>` (es. `sma_20`, `sma_50`) quando lo stesso
+indicatore e' richiesto piu' volte. I periodi sono interi tra 1 e 1000.
+
+### Formato dei numeri
+
+I Decimal sono stringhe in notazione decimale semplice, senza esponente e senza zeri finali
+(`"0"`, `"5"`, `"0.0000001"`, `"99950.5"`). `get_performance` restituisce al massimo 500
+punti: per i periodi da `1m` in su solo i punti di apertura giornaliera (`day_open`); le
+statistiche sono calcolate su tutti gli snapshot del periodo.
 
 ## 5. Errori
 
@@ -106,12 +159,14 @@ Un errore e' restituito con `isError: true` e un testo JSON
 - `STALE_QUOTE`: quotazione troppo vecchia.
 - `RISK_LIMIT_EXCEEDED`: limite di rischio superato.
 - `SHORT_NOT_ALLOWED`: vendita allo scoperto non consentita.
-- `INVALID_ORDER`: argomenti non validi (il campo e' in `details.field`).
+- `INVALID_ORDER`: argomenti non validi, compresi argomenti mancanti o del tipo sbagliato (il campo e' in `details.field`).
 - `NOT_FOUND`: risorsa inesistente.
 - `FORBIDDEN`: token non valido, portafoglio non assegnato o permesso insufficiente.
 - `RATE_LIMITED`: troppe richieste.
 - `PROVIDER_UNAVAILABLE`: dati di mercato non disponibili.
-- `INTERNAL`: errore interno.
+- `INTERNAL`: errore interno inatteso. Non fa parte dei codici della spec: il messaggio e'
+  sempre generico (`"internal error"`), il dettaglio e' solo nei log del server e la chiamata
+  e' registrata nell'audit con esito `INTERNAL`. Ripetere piu' tardi o segnalarlo.
 
 Altri codici del ledger (`INSUFFICIENT_FUNDS`, `INVALID_AMOUNT`, ...) riguardano operazioni
 non esposte agli agenti.
