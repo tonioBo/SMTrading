@@ -17,6 +17,8 @@ CODE = (
 
 
 def test_cli_import_registers_all_models() -> None:
-    out = subprocess.run([sys.executable, "-c", CODE], capture_output=True, text=True, timeout=60)
+    out = subprocess.run(
+        [sys.executable, "-c", CODE], check=False, capture_output=True, text=True, timeout=60
+    )
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "ok"
