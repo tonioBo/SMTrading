@@ -685,3 +685,17 @@ def test_router_import_registers_providers():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                          check=True)
     assert out.stdout.strip() == "binance,coingecko,frankfurter,kraken,yahoo"
+
+
+def test_describe_redacts_secrets():
+    from smtrading.marketdata.router import _describe
+
+    e = httpx.HTTPStatusError(
+        "Client error '429' for url 'https://finnhub.io/api/v1/quote?symbol=A&token=abc'",
+        request=httpx.Request("GET", "https://finnhub.io/api/v1/quote?token=abc"),
+        response=httpx.Response(429),
+    )
+    out = _describe(e)
+    assert "abc" not in out and "https://finnhub.io/api/v1/quote?<redacted>" in out
+    assert "abc" not in _describe(RuntimeError("bad token=abc&x=1 and apikey=zzz key=q"))
+    assert "zzz" not in _describe(RuntimeError("apikey=zzz")) and _describe(RuntimeError("ok")) == "RuntimeError: ok"

@@ -106,8 +106,28 @@ async def test_error_inside_batch_entry_raises(provider):
 @respx.mock
 async def test_http_error_propagates(provider):
     respx.get(f"{API}/quote").respond(503)
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(RuntimeError, match="twelvedata: HTTP 503"):
         await provider.get_quotes([("AAPL", "AAPL")])
+
+
+@respx.mock
+@pytest.mark.parametrize("status", [429, 500])
+async def test_http_errors_never_leak_key(provider, status):
+    from smtrading.marketdata.router import _describe
+
+    respx.get(f"{API}/quote").respond(status)
+    with pytest.raises(RuntimeError) as ei:
+        await provider.get_quotes([("AAPL", "AAPL")])
+    assert str(ei.value) == f"twelvedata: HTTP {status}"
+    assert "apikey" not in _describe(ei.value) and "k=" not in _describe(ei.value)
+
+
+@respx.mock
+async def test_transport_error_never_leaks_key(provider):
+    respx.get(f"{API}/quote").mock(side_effect=httpx.ConnectError("x https://a/quote?apikey=SECRET"))
+    with pytest.raises(RuntimeError) as ei:
+        await provider.get_quotes([("AAPL", "AAPL")])
+    assert "SECRET" not in str(ei.value)
 
 
 @respx.mock

@@ -5,6 +5,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
+import httpx
 import websockets
 
 from smtrading.instruments.models import AssetClass
@@ -121,8 +122,13 @@ class TwelveDataProvider(DataProvider):
         return {"symbol": ticker, "exchange": exchange} if sep else {"symbol": provider_symbol}
 
     async def _get(self, path: str, params: dict) -> dict:
-        resp = await self.http.get(f"{BASE_URL}{path}", params={**params, "apikey": self._key()})
-        resp.raise_for_status()
+        try:
+            resp = await self.http.get(f"{BASE_URL}{path}", params={**params, "apikey": self._key()})
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:  # message embeds the URL, which carries the apikey
+            raise RuntimeError(f"twelvedata: HTTP {exc.response.status_code}") from None
+        except httpx.RequestError as exc:
+            raise RuntimeError(f"twelvedata: request failed: {type(exc).__name__}") from None
         data = json.loads(resp.text, parse_float=Decimal)
         _raise_if_error(data)
         return data
@@ -212,8 +218,10 @@ class TwelveDataProvider(DataProvider):
                         raise ConnectionError(f"twelvedata subscribe rejected: {msg.get('fails')}")
                     for quote in parse_twelvedata_ws(msg, reverse):
                         yield quote
+        except ConnectionError:
+            raise
         except (TimeoutError, websockets.WebSocketException, OSError) as exc:
-            raise ConnectionError(f"twelvedata websocket: {exc}") from exc
+            raise ConnectionError(f"twelvedata websocket: {type(exc).__name__}") from None  # message may embed the URL
         finally:
             if beat:
                 beat.cancel()

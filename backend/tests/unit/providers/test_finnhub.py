@@ -144,8 +144,33 @@ async def test_invalid_key_and_health_check(provider):
     with pytest.raises(RuntimeError, match="chiave non valida"):
         await provider.get_quotes([("AAPL", "AAPL")])
     route.respond(429)
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(RuntimeError, match="finnhub: HTTP 429"):
         await provider.get_quotes([("AAPL", "AAPL")])
+
+
+@respx.mock
+@pytest.mark.parametrize("status", [429, 500])
+async def test_http_errors_never_leak_key(provider, status):
+    from smtrading.marketdata.router import _describe
+
+    respx.get(f"{API}/quote").respond(status)
+    with pytest.raises(RuntimeError) as ei:
+        await provider.get_quotes([("AAPL", "AAPL")])
+    assert str(ei.value) == f"finnhub: HTTP {status}"
+    assert "TOK" not in _describe(ei.value) and "token" not in _describe(ei.value)
+
+
+@respx.mock
+async def test_transport_error_never_leaks_key(provider):
+    respx.get(f"{API}/quote").mock(side_effect=httpx.ConnectError("boom https://x/quote?token=TOK"))
+    with pytest.raises(RuntimeError) as ei:
+        await provider.get_quotes([("AAPL", "AAPL")])
+    assert "TOK" not in str(ei.value) and "ConnectError" in str(ei.value)
+
+
+def test_parse_finnhub_ws_zero_price_skipped():
+    msg = {"type": "trade", "data": [{"s": "X", "p": 0, "t": 1}]}
+    assert parse_finnhub_ws(msg, {"X": "X"}) == []
 
 
 def test_parse_finnhub_ws_trade():

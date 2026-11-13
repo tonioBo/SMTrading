@@ -10,6 +10,7 @@ import functools
 import hashlib
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
@@ -118,8 +119,17 @@ class _Outcome:
         )
 
 
+_URL_QUERY = re.compile(r"(https?://[^\s?]+)\?\S*")
+_SECRET_PARAM = re.compile(r"(?i)\b(token|apikey|api_key|key|secret)=[^&\s'\"]+")
+
+
+def _redact(text: str) -> str:
+    """Strip query strings from URLs and secret-looking query params: errors reach MCP agents and logs."""
+    return _SECRET_PARAM.sub(r"\1=<redacted>", _URL_QUERY.sub(r"\1?<redacted>", text))
+
+
 def _describe(e: BaseException) -> str:
-    return f"{type(e).__name__}: {e}"
+    return _redact(f"{type(e).__name__}: {e}")
 
 
 def _guard(fn):

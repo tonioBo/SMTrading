@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote as urlquote
 
+import httpx
 import websockets
 
 from smtrading.instruments.models import AssetClass
@@ -41,7 +42,7 @@ def parse_finnhub_ws(msg: dict, reverse_map: dict[str, str]) -> list[Quote]:
     for trade in msg.get("data") or []:
         canonical = reverse_map.get(trade.get("s", ""))
         price = _dec(trade.get("p"))
-        if canonical is None or price is None:
+        if canonical is None or not price:  # None or 0 = missing, as in REST
             continue
         t = _dec(trade.get("t"))
         ts = datetime.fromtimestamp(float(t) / 1000, UTC) if t else datetime.now(UTC)
@@ -73,10 +74,15 @@ class FinnhubProvider(DataProvider):
         return token
 
     async def _get(self, path: str, params: dict) -> dict | list:
-        resp = await self.http.get(f"{BASE_URL}{path}", params={**params, "token": self._token()})
-        if resp.status_code in (401, 403):
-            raise RuntimeError(INVALID_KEY)
-        resp.raise_for_status()
+        try:
+            resp = await self.http.get(f"{BASE_URL}{path}", params={**params, "token": self._token()})
+            if resp.status_code in (401, 403):
+                raise RuntimeError(INVALID_KEY)
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:  # message embeds the URL, which carries the token
+            raise RuntimeError(f"finnhub: HTTP {exc.response.status_code}") from None
+        except httpx.RequestError as exc:
+            raise RuntimeError(f"finnhub: request failed: {type(exc).__name__}") from None
         return json.loads(resp.text, parse_float=Decimal)
 
     async def get_quotes(self, items: list[tuple[str, str]]) -> dict[str, Quote]:
@@ -193,8 +199,10 @@ class FinnhubProvider(DataProvider):
                         raise ConnectionError(f"finnhub stream error: {msg.get('msg')}")
                     for quote in parse_finnhub_ws(msg, reverse):
                         yield quote
+        except ConnectionError:
+            raise
         except (TimeoutError, websockets.WebSocketException, OSError) as exc:
-            raise ConnectionError(f"finnhub websocket: {exc}") from exc
+            raise ConnectionError(f"finnhub websocket: {type(exc).__name__}") from None  # message may embed the URL
         raise ConnectionError("finnhub websocket closed")
 
     async def health_check(self) -> None:
