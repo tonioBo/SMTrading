@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 
 function cssColor(name: string, fallback: string): string {
   const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  return raw ? `rgb(${raw})` : fallback;
+  return raw ? `rgb(${raw.trim().split(/\s+/).join(", ")})` : fallback; // lightweight-charts rejects the space syntax
 }
 
 interface SeriesQuery {
