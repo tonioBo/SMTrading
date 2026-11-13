@@ -244,6 +244,47 @@ async def test_reverse_empty_reason(admin):
     assert again.status_code == 400 and again.json()["code"] == "ALREADY_REVERSED"
 
 
+async def test_reverse_deposit_keeps_day_pnl(admin):
+    from datetime import UTC, datetime
+
+    from smtrading.corporate.snapshots import ensure_day_open
+    from smtrading.portfolios.models import Portfolio
+
+    c = admin.client
+    pid = (await _create(c))["id"]
+    async with admin.sm() as s:
+        await ensure_day_open(s, admin.qs, await s.get(Portfolio, uuid.UUID(pid)), datetime.now(UTC))
+        await s.commit()
+    assert (await c.get(f"/api/portfolios/{pid}")).json()["day_pnl_eur"] == "0"
+    jid = (await c.post(f"/api/portfolios/{pid}/deposit", json={"amount": "500"})).json()[
+        "journal"]["id"]
+    r = await c.post(f"/api/journals/{jid}/reverse", json={"reason": "importo errato"})
+    assert r.status_code == 200, r.text
+    detail = (await c.get(f"/api/portfolios/{pid}")).json()
+    assert detail["day_pnl_eur"] == "0" and detail["status"] == "active"
+
+
+async def test_reverse_reset_refused(admin):
+    """Ruling R13: a RESET journal is never reversed."""
+    from smtrading.ledger.models import Journal, JournalType
+
+    c = admin.client
+    pid = (await _create(c))["id"]
+    r = await c.post(f"/api/portfolios/{pid}/reset", json={
+        "new_cash": "5000", "currency": "EUR", "reason": "ripartenza",
+    })
+    assert r.status_code == 200, r.text
+    async with admin.sm() as s:
+        jid = await s.scalar(select(Journal.id).where(Journal.type == JournalType.RESET)
+                             .order_by(Journal.created_at.desc()).limit(1))
+    before = await _journal_count(admin.sm)
+    r = await c.post(f"/api/journals/{jid}/reverse", json={"reason": "ops"})
+    assert r.status_code == 400
+    assert r.json()["code"] == "INVALID_REVERSAL"
+    assert r.json()["message"] == "Il reset non si può stornare"
+    assert await _journal_count(admin.sm) == before
+
+
 async def _fill(sm, qs, pid, symbol, side, qty):
     from smtrading.engine.execution import execute_fill
     from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType

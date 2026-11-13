@@ -267,6 +267,32 @@ async def test_deposit_does_not_hide_a_daily_loss(maker, qs):
         assert D(note.payload["net_cash_flows_eur"]) == D(20000)
 
 
+async def test_reversed_deposit_is_not_a_daily_loss(maker, qs):
+    """A REVERSAL of a deposit (or withdrawal) is an external cash flow too."""
+    from smtrading.ledger.service import reverse_journal
+    from smtrading.risk.daily_loss import net_cash_flows_eur
+
+    async with maker() as s:
+        pid = (await _portfolio(s)).id
+        await s.commit()
+    await _day_open_now(maker, qs, pid)
+    async with maker() as s:
+        dep = await deposit(s, pid, D(20000), "EUR", author_id="admin")
+        wd = await withdraw(s, pid, D(5000), "EUR", author_id="admin")
+        await s.commit()
+    async with maker() as s:
+        await reverse_journal(s, dep.id, reason="errore", author_type="admin", author_id="a")
+        await reverse_journal(s, wd.id, reason="errore", author_type="admin", author_id="a")
+        await s.commit()
+    async with maker() as s:
+        p = await s.get(Portfolio, pid)
+        now = datetime.now(UTC)
+        day_open = await ensure_day_open(s, qs, p, now)
+        assert await net_cash_flows_eur(s, qs, pid, day_open.ts, now) == D(0)
+        assert await check_daily_loss(s, qs, p, now) is False
+        assert p.status == PortfolioStatus.active
+
+
 async def test_reset_daily_locks_rows_then_updates(db_session, seeded):
     from smtrading.risk.daily_loss import DAILY_LOSS_REASON
 

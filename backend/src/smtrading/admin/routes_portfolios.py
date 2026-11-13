@@ -77,6 +77,7 @@ _EXECUTION_JOURNALS = frozenset(
     {JournalType.TRADE, JournalType.LIQUIDATION, JournalType.CORPORATE_ACTION}
 )
 EXECUTION_REVERSAL_MESSAGE = "Non si può stornare un'esecuzione: usa un ordine di segno opposto"
+RESET_REVERSAL_MESSAGE = "Il reset non si può stornare"  # Ruling R13
 # spreadsheet formula prefixes (CSV injection): such text cells get a leading '
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
@@ -496,7 +497,7 @@ async def reverse(
     redis: RedisClient, idem: Annotated[Idempotency, Depends(idempotent("reverse"))],
 ):
     """A REVERSAL of the journal. Executions (TRADE, LIQUIDATION, CORPORATE_ACTION) are
-    refused (Ruling R5): an order of opposite sign corrects them."""
+    refused (Ruling R5): an order of opposite sign corrects them. RESET too (Ruling R13)."""
     reason = body.reason.strip()
 
     async def run() -> dict:
@@ -513,6 +514,11 @@ async def reverse(
             if original_type in _EXECUTION_JOURNALS:  # before any lock
                 raise SMTError(
                     ErrorCode.INVALID_REVERSAL, EXECUTION_REVERSAL_MESSAGE,
+                    {"journal_id": str(journal_id), "type": str(original_type)},
+                )
+            if original_type == JournalType.RESET:
+                raise SMTError(
+                    ErrorCode.INVALID_REVERSAL, RESET_REVERSAL_MESSAGE,
                     {"journal_id": str(journal_id), "type": str(original_type)},
                 )
             portfolio_ids = sorted(set(await session.scalars(

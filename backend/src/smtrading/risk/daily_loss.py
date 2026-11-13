@@ -10,8 +10,9 @@ from decimal import Decimal, localcontext
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from smtrading.common.errors import SMTError
 from smtrading.corporate.snapshots import ensure_day_open
@@ -41,14 +42,21 @@ async def net_cash_flows_eur(
     until: datetime,
 ) -> Decimal:
     """Deposits minus withdrawals on the portfolio's cash accounts with
-    since < journal.created_at <= until, in EUR (Ruling R20)."""
+    since < journal.created_at <= until, in EUR (Ruling R20). A REVERSAL of a deposit or
+    withdrawal is an external flow too (its lines carry the opposite sign)."""
+    flow_types = (JournalType.DEPOSIT, JournalType.WITHDRAWAL)
+    reversed_journal = aliased(Journal)
     rows = await session.execute(
         select(Account.asset, func.sum(JournalLine.quantity))
         .join(JournalLine, JournalLine.account_id == Account.id)
         .join(Journal, Journal.id == JournalLine.journal_id)
+        .outerjoin(reversed_journal, reversed_journal.id == Journal.reversed_journal_id)
         .where(
             Account.portfolio_id == portfolio_id, Account.kind == AccountKind.cash,
-            Journal.type.in_((JournalType.DEPOSIT, JournalType.WITHDRAWAL)),
+            or_(
+                Journal.type.in_(flow_types),
+                and_(Journal.type == JournalType.REVERSAL, reversed_journal.type.in_(flow_types)),
+            ),
             Journal.created_at > since, Journal.created_at <= until,
         )
         .group_by(Account.asset)
