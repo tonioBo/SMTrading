@@ -77,7 +77,84 @@ describe("Agents", () => {
     const row = (await within(table).findByText("Bot uno")).closest("tr")!;
     expect(within(row).getByText("Attivo")).toBeInTheDocument();
     expect(within(row).getByText("Mai")).toBeInTheDocument();
-    expect(within(row).getByText(/Alfa/)).toHaveTextContent("Alfa (trade)");
+    expect(within(row).getByRole("button", { name: "Trade · 1" })).toBeInTheDocument();
+    expect(within(row).queryByText("Alfa")).not.toBeInTheDocument(); // compact: names on demand
+  });
+
+  it("summarises many portfolios as chips (archived excluded) and expands a table", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("*/api/agents", () =>
+        HttpResponse.json([
+          {
+            ...agent,
+            portfolios: [
+              { portfolio_id: "p1", portfolio_name: "Alfa", permission: "trade", archived: false, mode: "simulazione" },
+              { portfolio_id: "p2", portfolio_name: "Beta", permission: "read", archived: false, mode: "paper" },
+              { portfolio_id: "p3", portfolio_name: "Gamma", permission: "read", archived: false, mode: "simulazione" },
+              { portfolio_id: "p9", portfolio_name: "Vecchio", permission: "trade", archived: true, mode: "simulazione" },
+            ],
+          },
+        ]),
+      ),
+    );
+    renderApp("/agenti");
+    const row = (await screen.findByText("Bot uno")).closest("tr")!;
+    expect(within(row).getByRole("button", { name: "Trade · 1" })).toBeInTheDocument();
+    await user.click(within(row).getByRole("button", { name: "Lettura · 2" }));
+    const table = within(row).getByRole("table", { name: "Portafogli di Bot uno" });
+    const names = within(table).getAllByRole("row").slice(1).map((r) => r.cells[0].textContent);
+    expect(names).toEqual(["Alfa", "Beta", "Gamma"]);
+    expect(within(table).getAllByText("Lettura", { selector: "td" })).toHaveLength(2);
+    await user.click(within(row).getByRole("button", { name: "Nascondi" }));
+    expect(within(row).queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("manages the agent's watchlists and alerts from the detail page", async () => {
+    const user = userEvent.setup();
+    const calls: string[] = [];
+    let symbols = ["AAPL", "MSFT"];
+    server.use(
+      http.get("*/api/agents/a1/watchlists", () =>
+        HttpResponse.json([{ id: "w1", name: "tech", symbols, created_at: "2026-11-01T10:00:00Z" }]),
+      ),
+      http.get("*/api/agents/a1/alerts", () =>
+        HttpResponse.json([
+          { id: "al1", symbol: "NVDA", condition: "price_above", value: "150", ref_price: null, status: "active", note: null, created_at: "2026-11-01T10:00:00Z", triggered_at: null, triggered_price: null },
+        ]),
+      ),
+      http.delete("*/api/agents/a1/watchlists/w1/items/:symbol", ({ params }) => {
+        calls.push(`remove ${String(params.symbol)}`);
+        symbols = symbols.filter((s) => s !== params.symbol);
+        return HttpResponse.json({ id: "w1", name: "tech", symbols, created_at: "2026-11-01T10:00:00Z" });
+      }),
+      http.delete("*/api/agents/a1/watchlists/w1", () => {
+        calls.push("delete w1");
+        return HttpResponse.json({ id: "w1", deleted: true });
+      }),
+      http.post("*/api/agents/a1/alerts/al1/cancel", () => {
+        calls.push("cancel al1");
+        return HttpResponse.json({});
+      }),
+      http.get("*/api/marketdata/stream-status", () => HttpResponse.json({})),
+    );
+    renderApp("/agenti/a1");
+    const section = await screen.findByLabelText("Watchlist e alert");
+    await user.click(await within(section).findByRole("button", { name: "Rimuovi MSFT da tech" }));
+    let dialog = await screen.findByRole("dialog", { name: "Rimuovere MSFT da tech?" });
+    await user.click(within(dialog).getByRole("button", { name: "Rimuovi" }));
+    await waitFor(() => expect(calls).toEqual(["remove MSFT"]));
+    await waitFor(() => expect(within(section).queryByRole("button", { name: "Rimuovi MSFT da tech" })).not.toBeInTheDocument());
+
+    await user.click(within(section).getByRole("button", { name: "Annulla alert NVDA" }));
+    dialog = await screen.findByRole("dialog", { name: "Annullare l'alert su NVDA?" });
+    await user.click(within(dialog).getByRole("button", { name: "Annulla alert" }));
+    await waitFor(() => expect(calls).toContain("cancel al1"));
+
+    await user.click(within(section).getByRole("button", { name: "Elimina watchlist tech" }));
+    dialog = await screen.findByRole("dialog", { name: "Eliminare la watchlist tech?" });
+    await user.click(within(dialog).getByRole("button", { name: "Elimina" }));
+    await waitFor(() => expect(calls).toContain("delete w1"));
   });
 
   it("shows the new token once and removes it everywhere on close", async () => {

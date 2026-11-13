@@ -1,6 +1,7 @@
 import { Navigate, type RouteObject } from "react-router-dom";
 import { Layout } from "@/components/Layout";
 import { RouteError } from "@/components/RouteError";
+import AgentDetail from "@/pages/AgentDetail";
 import Agents from "@/pages/Agents";
 import Brokers from "@/pages/Brokers";
 import Connectors from "@/pages/Connectors";
@@ -29,6 +30,7 @@ export const routes: RouteObject[] = [
           { path: "portafogli", element: <Portfolios /> },
           { path: "portafogli/:id", element: <PortfolioDetail /> },
           { path: "agenti", element: <Agents /> },
+          { path: "agenti/:id", element: <AgentDetail /> },
           { path: "commissioni", element: <Fees /> },
           { path: "rischio", element: <Risk /> },
           { path: "connettori", element: <Connectors /> },

@@ -1,10 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
+import { streamStatusKey } from "@/api/hooks/connectors";
 import type {
   Agent,
+  AgentAlert,
   AgentCreated,
   AgentPortfolioAssignment,
   AgentRotated,
+  AgentWatchlist,
   McpAuditEntry,
   McpAuditFilters,
 } from "@/api/types";
@@ -64,5 +67,61 @@ export function useMcpAudit(filters: McpAuditFilters) {
   return useQuery({
     queryKey: ["mcp-audit", filters],
     queryFn: () => apiFetch<McpAuditEntry[]>(`/api/mcp-audit${qs ? `?${qs}` : ""}`),
+  });
+}
+
+// --- watchlists and alerts of an agent ------------------------------------------------
+
+export const agentWatchlistsKey = (agentId: string) => ["agents", agentId, "watchlists"] as const;
+export const agentAlertsKey = (agentId: string) => ["agents", agentId, "alerts"] as const;
+
+export function useAgentWatchlists(agentId: string) {
+  return useQuery({
+    queryKey: agentWatchlistsKey(agentId),
+    queryFn: () => apiFetch<AgentWatchlist[]>(`/api/agents/${agentId}/watchlists`),
+  });
+}
+
+export function useAgentAlerts(agentId: string) {
+  return useQuery({
+    queryKey: agentAlertsKey(agentId),
+    queryFn: () => apiFetch<AgentAlert[]>(`/api/agents/${agentId}/alerts`),
+  });
+}
+
+/** After a change: the agent's lists and the Mercati tracking («Seguito da»). */
+function useWatchChanged(agentId: string) {
+  const qc = useQueryClient();
+  return () => {
+    void qc.invalidateQueries({ queryKey: agentWatchlistsKey(agentId) });
+    void qc.invalidateQueries({ queryKey: agentAlertsKey(agentId) });
+    void qc.invalidateQueries({ queryKey: streamStatusKey });
+  };
+}
+
+export function useRemoveWatchSymbol(agentId: string) {
+  const changed = useWatchChanged(agentId);
+  return useMutation({
+    mutationFn: ({ watchlistId, symbol }: { watchlistId: string; symbol: string }) =>
+      apiFetch<AgentWatchlist>(`/api/agents/${agentId}/watchlists/${watchlistId}/items/${encodeURIComponent(symbol)}`, {
+        method: "DELETE",
+      }),
+    onSettled: changed,
+  });
+}
+
+export function useDeleteWatchlist(agentId: string) {
+  const changed = useWatchChanged(agentId);
+  return useMutation({
+    mutationFn: (watchlistId: string) => apiFetch(`/api/agents/${agentId}/watchlists/${watchlistId}`, { method: "DELETE" }),
+    onSettled: changed,
+  });
+}
+
+export function useCancelAlert(agentId: string) {
+  const changed = useWatchChanged(agentId);
+  return useMutation({
+    mutationFn: (alertId: string) => apiFetch<AgentAlert>(`/api/agents/${agentId}/alerts/${alertId}/cancel`, { method: "POST" }),
+    onSettled: changed,
   });
 }

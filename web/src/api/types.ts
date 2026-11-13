@@ -297,6 +297,28 @@ export interface AgentPortfolioLink {
   portfolio_id: string;
   portfolio_name: string;
   permission: AgentPermission;
+  archived?: boolean;
+  mode?: PortfolioMode;
+}
+
+export interface AgentWatchlist {
+  id: string;
+  name: string;
+  symbols: string[];
+  created_at: string;
+}
+
+export interface AgentAlert {
+  id: string;
+  symbol: string;
+  condition: string; // price_above | price_below | change_pct_above | change_pct_below
+  value: string;
+  ref_price: string | null;
+  status: string; // active | triggered
+  note: string | null;
+  created_at: string;
+  triggered_at: string | null;
+  triggered_price: string | null;
 }
 
 export interface Agent {

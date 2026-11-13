@@ -1,9 +1,11 @@
 import { Copy, KeyRound, Plus, Power, PowerOff, Users } from "lucide-react";
 import { useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { useAgents, useCreateAgent, useRotateAgentToken, useSetAgentActive, useSetAgentPortfolios } from "@/api/hooks/agents";
 import { usePortfolios } from "@/api/hooks/portfolios";
 import type { Agent, AgentPermission } from "@/api/types";
+import { AgentPortfoliosSummary } from "@/components/AgentPortfoliosSummary";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { FormField, selectClass } from "@/components/FormField";
@@ -172,7 +174,16 @@ export default function Agents() {
   }
 
   const columns: Column<Agent>[] = [
-    { key: "name", header: "Nome", sortValue: (a) => a.name, cell: (a) => a.name },
+    {
+      key: "name",
+      header: "Nome",
+      sortValue: (a) => a.name,
+      cell: (a) => (
+        <Link to={`/agenti/${a.id}`} className="font-medium hover:underline">
+          {a.name}
+        </Link>
+      ),
+    },
     {
       key: "active",
       header: "Stato",
@@ -188,25 +199,14 @@ export default function Agents() {
     {
       key: "portfolios",
       header: "Portafogli",
-      cell: (a) =>
-        a.portfolios.length ? (
-          <ul>
-            {a.portfolios.map((p) => (
-              <li key={p.portfolio_id}>
-                {p.portfolio_name} ({p.permission})
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <span className="text-muted">Nessuno</span>
-        ),
+      cell: (a) => <AgentPortfoliosSummary agentName={a.name} portfolios={a.portfolios} />,
     },
     {
       key: "actions",
       header: "Azioni",
       align: "right",
       cell: (a) => (
-        <div className="flex justify-end gap-1">
+        <div className="flex flex-wrap justify-end gap-1">
           <Button size="sm" variant="outline" aria-label={`Portafogli ${a.name}`} onClick={() => setAssigning(a)}>
             <Users />
             Portafogli
