@@ -7,7 +7,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,7 +26,9 @@ from smtrading.common.money import decimal_to_str
 from smtrading.engine.service import set_kill_switch_and_cancel
 from smtrading.instruments.models import AssetClass
 from smtrading.mcp.dto import parse_decimal, parse_enum, to_jsonable
+from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.risk.models import AppSetting, InterestKind, InterestRate, RiskProfile
+from smtrading.risk.profiles import DEFAULT_RISK_PROFILE_NAME
 from smtrading.risk.settings import (
     DEFAULT_SPREAD_BPS,
     DEFAULT_STALE_QUOTE_S,
@@ -56,8 +58,11 @@ _PCT_FIELDS = ("max_position_pct", "max_daily_loss_pct")
 # --- risk profiles -------------------------------------------------------------------
 
 
-def _profile_dto(profile: RiskProfile) -> dict[str, Any]:
-    return {f: to_jsonable(getattr(profile, f)) for f in PROFILE_FIELDS}
+def _profile_dto(profile: RiskProfile, portfolios_count: int | None = None) -> dict[str, Any]:
+    out = {f: to_jsonable(getattr(profile, f)) for f in PROFILE_FIELDS}
+    if portfolios_count is not None:
+        out["portfolios_count"] = portfolios_count
+    return out
 
 
 def _duplicate_name(name: str) -> SMTError:
@@ -112,8 +117,21 @@ async def _validated_profile(
 
 @router.get("/risk-profiles")
 async def list_risk_profiles(session: DbSession) -> list[dict]:
-    rows = await session.scalars(select(RiskProfile).order_by(RiskProfile.name))
-    return [_profile_dto(p) for p in rows]
+    """With `portfolios_count`: the live (non-archived) portfolios using each profile; a
+    portfolio without a profile counts for Default (its effective profile)."""
+    rows = list(await session.scalars(select(RiskProfile).order_by(RiskProfile.name)))
+    counts = dict((await session.execute(
+        select(Portfolio.risk_profile_id, func.count())
+        .where(Portfolio.status != PortfolioStatus.archived)
+        .group_by(Portfolio.risk_profile_id)
+    )).all())
+    out = []
+    for p in rows:
+        n = counts.get(p.id, 0)
+        if p.name == DEFAULT_RISK_PROFILE_NAME:
+            n += counts.get(None, 0)
+        out.append(_profile_dto(p, n))
+    return out
 
 
 @router.post("/risk-profiles")

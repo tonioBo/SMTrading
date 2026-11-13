@@ -372,6 +372,62 @@ async def test_fee_simulator_uses_portfolio_rule(admin):
                          json={**sim, "portfolio_id": str(uuid.uuid4())})).status_code == 404
 
 
+async def test_fees_simulate_by_class_priority_and_portfolio_override(admin):
+    """POST /api/fees/simulate: which rule wins (portfolio > class > global, then priority)
+    and the amounts for a notional in the instrument currency."""
+    c = admin.client
+    pid = (await _portfolio(c))["id"]
+    sim = {"portfolio_id": pid, "asset_class": "us_equity", "side": "buy",
+           "notional": "1000", "currency": "EUR"}
+    r = await c.post("/api/fees/simulate", json=sim)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["rule_name"] == "Default globale"
+    assert out["fee"] == "2" and out["currency"] == "EUR"  # 1 + 0.1% x 1000
+    assert out["fx_fee"] == "0"  # same currency as the portfolio: no conversion
+
+    usd = (await c.post("/api/fees/simulate", json={**sim, "currency": "USD"})).json()
+    assert D(usd["fx_fee"]) == D("2")  # 0.25% of 800 EUR (1000 USD at 1.25)
+    assert usd["fx_currency"] == "EUR"
+
+    low = {"scope": "asset_class", "scope_ref": "us_equity", "fixed": "0", "pct": "0",
+           "fx_pct": "0"}
+    await c.post("/api/fee-rules", json={**low, "name": "Classe A", "priority": 1})
+    await c.post("/api/fee-rules", json={**low, "name": "Classe B", "priority": 5,
+                                         "fixed": "4"})
+    r = await c.post("/api/fees/simulate", json=sim)
+    assert r.json()["rule_name"] == "Classe B" and r.json()["fee"] == "4"
+    crypto = (await c.post("/api/fees/simulate", json={**sim, "asset_class": "crypto"})).json()
+    assert crypto["rule_name"] == "Default globale"
+
+    await c.post("/api/fee-rules", json={"name": "Solo questo", "scope": "portfolio",
+                                         "scope_ref": pid, "fixed": "0.5", "pct": "0"})
+    r = await c.post("/api/fees/simulate", json=sim)
+    assert r.json()["rule_name"] == "Solo questo" and r.json()["fee"] == "0.5"
+
+    for bad in ({**sim, "notional": "-1"}, {**sim, "asset_class": "bonds"},
+                {**sim, "side": "hold"}, {**sim, "currency": "euro!"}):
+        assert (await c.post("/api/fees/simulate", json=bad)).status_code == 400, bad
+    r = await c.post("/api/fees/simulate", json={**sim, "portfolio_id": str(uuid.uuid4())})
+    assert r.status_code == 404
+
+
+async def test_risk_profiles_count_active_portfolios(admin):
+    c = admin.client
+    profiles = (await c.get("/api/risk-profiles")).json()
+    default = next(p for p in profiles if p["name"] == "Default")
+    base = default["portfolios_count"]
+    pid = (await _portfolio(c))["id"]
+    await c.patch(f"/api/portfolios/{pid}", json={"risk_profile_id": default["id"]})
+    counts = {p["name"]: p["portfolios_count"] for p in
+              (await c.get("/api/risk-profiles")).json()}
+    assert counts["Default"] == base + 1 and counts["5 · Passivo ETF"] == 0
+    assert (await c.post(f"/api/portfolios/{pid}/archive")).status_code == 200
+    counts = {p["name"]: p["portfolios_count"] for p in
+              (await c.get("/api/risk-profiles")).json()}
+    assert counts["Default"] == base  # archived portfolios are not counted
+
+
 # --- risk ----------------------------------------------------------------------------
 
 

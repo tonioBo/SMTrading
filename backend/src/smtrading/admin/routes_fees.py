@@ -12,12 +12,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.admin.auth import DbSession, RedisClient, require_admin
 from smtrading.admin.common import Quotes, _invalid, _transaction
-from smtrading.admin.schemas import FeeRuleCreateIn, FeeRulePatchIn, FeeSimulateIn
+from smtrading.admin.schemas import (
+    FeeRuleCreateIn,
+    FeeRulePatchIn,
+    FeeRuleSimulateIn,
+    FeeSimulateIn,
+)
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import OrderSide, OrderType
 from smtrading.engine.service import PlaceOrderRequest, preview_order
+from smtrading.fees.calculator import compute_fx_fee, compute_trade_fee
 from smtrading.fees.models import FeeRule, FeeScope, FeeSide
+from smtrading.fees.resolver import load_rules, resolve_rule
 from smtrading.instruments.models import AssetClass
 from smtrading.mcp.dto import parse_decimal, parse_enum, to_jsonable
 from smtrading.portfolios.models import Portfolio
@@ -241,4 +248,44 @@ async def simulate_fee(body: FeeSimulateIn, session: DbSession, qs: Quotes) -> d
         "fee": to_jsonable(quote.amount),
         "fee_currency": quote.currency,
         "fx_fee_eur": to_jsonable(result.estimated_fx_fee_eur),
+    }
+
+
+@router.post("/fees/simulate")
+async def simulate_rule(body: FeeRuleSimulateIn, session: DbSession, qs: Quotes) -> dict:
+    """Which rule applies to (portfolio, asset class, side) and its fees: the trade fee on
+    `notional` (in `currency`, converted to the rule currency) and the FX fee when
+    `currency` differs from the portfolio's base currency (on the converted amount)."""
+    portfolio = await session.get(Portfolio, body.portfolio_id)
+    if portfolio is None:
+        raise SMTError(ErrorCode.NOT_FOUND, "portafoglio non trovato",
+                       {"portfolio_id": str(body.portfolio_id)})
+    asset_class = parse_enum(AssetClass, body.asset_class, "asset_class")
+    side = parse_enum(OrderSide, body.side, "side")
+    notional = parse_decimal(body.notional, "notional")
+    if notional is None or notional < 0:
+        raise _invalid("notional", "importo non valido")
+    currency = body.currency.strip().upper()
+    if not _CURRENCY.match(currency):
+        raise _invalid("currency", "valuta non valida")
+    rules = await load_rules(session)
+    rule = resolve_rule(rules, portfolio_id=portfolio.id, asset_class=asset_class,
+                        side=str(side))
+    in_rule_ccy = notional
+    if rule.currency != currency:
+        in_rule_ccy = notional * await qs.get_fx_rate(currency, rule.currency)
+    base = portfolio.base_currency
+    fx_fee = Decimal(0)
+    if currency != base:
+        in_base = notional / await qs.get_fx_rate(base, currency)
+        fx_fee = compute_fx_fee(rule, in_base, base)
+    row = await _rule(session, rule.id)
+    return {
+        "rule_id": str(rule.id),
+        "rule_name": row.name,
+        "scope": to_jsonable(rule.scope),
+        "fee": decimal_to_str(compute_trade_fee(rule, in_rule_ccy)),
+        "currency": rule.currency,
+        "fx_fee": decimal_to_str(fx_fee),
+        "fx_currency": base,
     }

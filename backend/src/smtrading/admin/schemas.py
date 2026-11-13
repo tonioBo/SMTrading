@@ -140,6 +140,17 @@ class FeeSimulateIn(BaseModel):
     notional: Num | None = None
 
 
+class FeeRuleSimulateIn(BaseModel):
+    """The rule that wins for (portfolio, asset class, side) and its fees on `notional`,
+    expressed in the instrument `currency`."""
+
+    portfolio_id: uuid.UUID
+    asset_class: str
+    side: str
+    notional: Num
+    currency: str
+
+
 class RiskProfileCreateIn(BaseModel):
     name: str
     max_order_notional_eur: Num | None = None
