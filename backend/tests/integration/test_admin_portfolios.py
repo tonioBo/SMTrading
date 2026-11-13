@@ -199,6 +199,17 @@ async def test_idempotency_key_single_journal(admin):
     assert first.json() == second.json()
     assert await _journal_count(admin.sm) == before + 1
 
+    # the same key with a different body (or another portfolio) -> 422, nothing posted
+    other = await c.post(f"/api/portfolios/{pid}/deposit", json={"amount": "11"}, headers=headers)
+    assert other.status_code == 422 and other.json()["code"] == "INVALID_ORDER"
+    assert other.json()["message"] == "Idempotency-Key riutilizzata con dati diversi"
+    pid2 = (await _create(c))["id"]
+    elsewhere = await c.post(
+        f"/api/portfolios/{pid2}/deposit", json={"amount": "10"}, headers=headers
+    )
+    assert elsewhere.status_code == 422
+    before = await _journal_count(admin.sm)
+
     # a request still in flight with the same key -> 409
     redis = Redis.from_url(admin.redis_url)
     key = "dep-" + uuid.uuid4().hex
@@ -209,12 +220,14 @@ async def test_idempotency_key_single_journal(admin):
             headers={"Idempotency-Key": key},
         )
         assert busy.status_code == 409
+        assert await redis.get(f"idem:deposit:{key}:lock") == b"1"  # not ours: kept
+        assert await redis.get(f"idem:deposit:{headers['Idempotency-Key']}:lock") is None
         stored = await redis.get(f"idem:deposit:{headers['Idempotency-Key']}")
         assert json.loads(stored)["status"] == 200
         assert 0 < await redis.ttl(f"idem:deposit:{headers['Idempotency-Key']}") <= 24 * 3600
     finally:
         await redis.aclose()
-    assert await _journal_count(admin.sm) == before + 1
+    assert await _journal_count(admin.sm) == before
 
 
 async def test_reverse_empty_reason(admin):
@@ -248,23 +261,33 @@ async def _fill(sm, qs, pid, symbol, side, qty):
         return res.journals[0].id
 
 
-async def test_reverse_short_trade(admin):
-    """P1: reversing the trade that covered a short brings the position back below zero."""
-    c = admin.client
-    pid = uuid.UUID((await _create(c))["id"])
-    await _fill(admin.sm, admin.qs, pid, "AAPL", "sell", "5")
-    admin.qs.set_quote("AAPL", D("179.90"), D("180.00"), D("179.95"))  # covered at a profit
-    cover = await _fill(admin.sm, admin.qs, pid, "AAPL", "buy", "5")
-    r = await c.post(f"/api/journals/{cover}/reverse", json={"reason": "fill errato"})
-    assert r.status_code == 200, r.text
-    from smtrading.ledger.models import AccountKind
+async def _balance(sm, pid, asset, kind) -> Decimal:
     from smtrading.ledger.service import get_balance, get_or_create_account
 
-    async with admin.sm() as s:
-        acct = await get_or_create_account(
-            s, portfolio_id=pid, asset="AAPL", kind=AccountKind.position
+    async with sm() as s:
+        acct = await get_or_create_account(s, portfolio_id=pid, asset=asset, kind=kind)
+        return await get_balance(s, acct.id)
+
+
+async def test_reverse_trade_refused(admin):
+    """Ruling R5: an execution (here the cover of a short) is never reversed."""
+    from smtrading.ledger.models import AccountKind
+
+    c = admin.client
+    pid = uuid.UUID((await _create(c))["id"])
+    opening = await _fill(admin.sm, admin.qs, pid, "AAPL", "sell", "5")
+    admin.qs.set_quote("AAPL", D("179.90"), D("180.00"), D("179.95"))  # covered at a profit
+    cover = await _fill(admin.sm, admin.qs, pid, "AAPL", "buy", "5")
+    before = await _journal_count(admin.sm)
+    for jid in (opening, cover):
+        r = await c.post(f"/api/journals/{jid}/reverse", json={"reason": "fill errato"})
+        assert r.status_code == 400
+        assert r.json()["code"] == "INVALID_REVERSAL"
+        assert r.json()["message"] == (
+            "Non si può stornare un'esecuzione: usa un ordine di segno opposto"
         )
-        assert await get_balance(s, acct.id) == D(-5)
+    assert await _journal_count(admin.sm) == before
+    assert await _balance(admin.sm, pid, "AAPL", AccountKind.position) == D(0)
 
 
 async def test_transactions_pagination(admin):
@@ -300,19 +323,22 @@ async def test_transactions_pagination(admin):
 async def test_transactions_csv(admin):
     c = admin.client
     pid = (await _create(c, initial_cash="1234.56"))["id"]
+    await c.post(f"/api/portfolios/{pid}/deposit", json={"amount": "1", "reason": "=SUM(A1)"})
     r = await c.get(f"/api/portfolios/{pid}/transactions.csv")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/csv")
     assert "attachment" in r.headers["content-disposition"]
     raw = r.content
-    assert raw.startswith("﻿".encode())
+    assert raw.startswith("\ufeff".encode())
     rows = list(csv.reader(io.StringIO(raw.decode("utf-8-sig")), delimiter=";"))
     assert rows[0] == [
         "seq", "data", "tipo", "asset", "conto", "quantità", "prezzo", "valuta",
         "motivazione", "id_ordine", "id_journal",
     ]
-    assert len(rows) == 2
-    row = dict(zip(rows[0], rows[1], strict=True))
+    assert len(rows) == 3
+    injected = dict(zip(rows[0], rows[1], strict=True))
+    assert injected["motivazione"] == "'=SUM(A1)" and injected["quantità"] == "1"
+    row = dict(zip(rows[0], rows[2], strict=True))
     assert row["tipo"] == "DEPOSIT" and row["asset"] == "EUR" and row["conto"] == "cash"
     assert row["quantità"] == "1234,56" and row["motivazione"] == "initial deposit"
 
@@ -403,3 +429,59 @@ async def test_orders_list_and_cancel(admin):
     assert perf.status_code == 200 and "series" in perf.json()
     bad = await c.get(f"/api/portfolios/{pid}/performance", params={"period": "2y"})
     assert bad.status_code == 400
+
+
+async def test_reset_short_and_leveraged(admin, monkeypatch):
+    """A short (collateral) and a leveraged long (margin_loan): every money account ends at
+    zero but the new cash."""
+    from smtrading.admin import portfolio_ops
+    from smtrading.engine import service as engine_service
+    from smtrading.instruments.market_hours import MarketStatus
+    from smtrading.ledger.models import AccountKind
+
+    def always_open(market, at):
+        return MarketStatus(market, True, None, None)
+
+    monkeypatch.setattr(portfolio_ops, "market_status", always_open)
+    monkeypatch.setattr(engine_service, "market_status", always_open)
+    c = admin.client
+    pid = uuid.UUID((await _create(c, initial_cash="100000", leverage="2"))["id"])
+    await _fill(admin.sm, admin.qs, pid, "AAPL", "sell", "5")
+    await _fill(admin.sm, admin.qs, pid, "BTC-USD", "buy", "2.5")
+    val = (await c.get(f"/api/portfolios/{pid}/valuation")).json()
+    assert any(v != "0" for v in val["collateral"].values())
+    assert any(v != "0" for v in val["margin_loan"].values())
+
+    r = await c.post(f"/api/portfolios/{pid}/reset", json={"new_cash": "777", "reason": "r"})
+    assert r.status_code == 200, r.text
+    assert len(r.json()["closing_orders"]) == 2
+    val = (await c.get(f"/api/portfolios/{pid}/valuation")).json()
+    assert val["positions"] == [] and val["equity_eur"] == "777"
+    assert {k: v for k, v in val["cash"].items() if v != "0"} == {"EUR": "777"}
+    for kind in ("collateral", "margin_loan"):
+        assert all(v == "0" for v in val[kind].values()), val
+    for asset in ("AAPL", "BTC-USD"):
+        assert await _balance(admin.sm, pid, asset, AccountKind.position) == D(0)
+
+
+async def test_reset_unknown_instrument(admin):
+    from smtrading.ledger.models import AccountKind, JournalType
+    from smtrading.ledger.service import LineSpec, get_or_create_account, post_journal
+
+    c = admin.client
+    pid = uuid.UUID((await _create(c))["id"])
+    async with admin.sm() as s:
+        pos = await get_or_create_account(s, portfolio_id=pid, asset="ZZZ", kind=AccountKind.position)
+        eq = await get_or_create_account(
+            s, portfolio_id=None, asset="ZZZ", kind=AccountKind.system_equity
+        )
+        await post_journal(
+            s, type=JournalType.CORPORATE_ACTION, author_type="system", author_id=None,
+            lines=[LineSpec(pos.id, D(1)), LineSpec(eq.id, D(-1))],
+        )
+        await s.commit()
+    before = await _journal_count(admin.sm)
+    r = await c.post(f"/api/portfolios/{pid}/reset", json={"new_cash": "1", "reason": "x"})
+    assert r.status_code == 400 and r.json()["code"] == "INVALID_ORDER"
+    assert r.json()["details"] == {"symbols": ["ZZZ"]}
+    assert await _journal_count(admin.sm) == before

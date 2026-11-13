@@ -7,10 +7,10 @@ effects are dropped. Decimals go out as plain strings (`mcp.dto.to_jsonable`).
 
 import csv
 import io
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import datetime
-from decimal import Decimal, localcontext
+from decimal import Decimal
 from typing import Annotated, Any
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -32,13 +32,12 @@ from smtrading.admin.schemas import (
     ReverseIn,
 )
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.common.money import decimal_to_str, quantize_money
-from smtrading.corporate.snapshots import local_date
+from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import OPEN_STATUSES, OrderStatus
 from smtrading.engine.quotesource import MemoQuoteSource
 from smtrading.engine.service import cancel_order, list_orders
 from smtrading.events import discard_post_commit, dispatch_post_commit
-from smtrading.ledger.models import Account, AccountKind, Journal, JournalLine, JournalType
+from smtrading.ledger.models import Account, Journal, JournalLine, JournalType
 from smtrading.ledger.service import reverse_journal
 from smtrading.mcp.dto import (
     journal_dto,
@@ -54,11 +53,12 @@ from smtrading.mcp.dto import (
 from smtrading.performance.service import get_performance
 from smtrading.portfolios.locks import lock_portfolio
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
+from smtrading.portfolios.queries import day_pnl, list_portfolio_journals
 from smtrading.portfolios.service import create_portfolio, deposit, get_cash_balances, withdraw
-from smtrading.risk.daily_loss import net_cash_flows_eur
-from smtrading.risk.models import EquitySnapshot, RiskProfile, SnapshotKind
-from smtrading.valuation.service import PortfolioValuation, value_portfolio
+from smtrading.risk.models import RiskProfile
+from smtrading.valuation.service import value_portfolio
 
+log = logging.getLogger("smtrading.admin.portfolios")
 router = APIRouter(prefix="/api", tags=["portfolios"], dependencies=[Depends(require_admin)])
 
 MIN_LEVERAGE, MAX_LEVERAGE = Decimal(1), Decimal(10)
@@ -73,11 +73,13 @@ CSV_HEADER = (
 )
 # the patchable statuses: reduce_only is only ever set by the risk engine
 _PATCH_STATUSES = (PortfolioStatus.active.value, PortfolioStatus.locked.value)
-# reversing these may bring a position back below zero (a covered short): P1 of plan 1
-_POSITION_JOURNALS = frozenset(
+# Ruling R5: executions are never reversed; an opposite order corrects them
+_EXECUTION_JOURNALS = frozenset(
     {JournalType.TRADE, JournalType.LIQUIDATION, JournalType.CORPORATE_ACTION}
 )
-_PREC = 60
+EXECUTION_REVERSAL_MESSAGE = "Non si può stornare un'esecuzione: usa un ordine di segno opposto"
+# spreadsheet formula prefixes (CSV injection): such text cells get a leading '
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 
 def _invalid(field: str, message: str) -> SMTError:
@@ -188,30 +190,6 @@ def _portfolio_dto(p: Portfolio) -> dict[str, Any]:
     return {f: to_jsonable(getattr(p, f)) for f in PORTFOLIO_FIELDS}
 
 
-async def _day_pnl(
-    session: AsyncSession, qs: MemoQuoteSource, portfolio: Portfolio, v: PortfolioValuation
-) -> tuple[Decimal | None, Decimal | None]:
-    """Equity minus today's day_open equity minus net deposits since it (EUR, %), as the
-    MCP get_portfolio; (None, None) before the day_open is taken."""
-    day_open = await session.scalar(
-        select(EquitySnapshot).where(
-            EquitySnapshot.portfolio_id == portfolio.id,
-            EquitySnapshot.kind == SnapshotKind.day_open,
-            EquitySnapshot.local_date == local_date(portfolio, v.ts),
-        )
-    )
-    if day_open is None:
-        return None, None
-    flows = await net_cash_flows_eur(session, qs, portfolio.id, day_open.ts, v.ts)
-    with localcontext() as c:
-        c.prec = _PREC
-        raw = v.equity_raw - day_open.equity_eur - flows
-        pct = None
-        if day_open.equity_eur > 0:
-            pct = (raw / day_open.equity_eur * 100).quantize(Decimal("0.0001"))
-    return quantize_money(raw, "EUR"), pct
-
-
 async def _summary(
     session: AsyncSession, qs: MemoQuoteSource, redis, portfolio: Portfolio
 ) -> dict[str, Any]:
@@ -221,7 +199,7 @@ async def _summary(
     out.update(equity_eur=None, day_pnl_eur=None, day_pnl_pct=None, valuation_error=None)
     try:
         v = await value_portfolio(session, qs, portfolio.id, redis=redis)
-        pnl, pct = await _day_pnl(session, qs, portfolio, v)
+        pnl, pct = await day_pnl(session, qs, portfolio, v)
     except SMTError as e:
         out["valuation_error"] = str(e.code)
         return out
@@ -397,57 +375,6 @@ def _parse_journal_types(value: str | None) -> list[JournalType] | None:
     return types or None  # type: ignore[return-value]
 
 
-async def _journals(
-    session: AsyncSession, portfolio_id: UUID, *, types: list[JournalType] | None,
-    start: datetime | None, end: datetime | None, before_seq: int | None, limit: int,
-) -> list[dict]:
-    """Journals touching the portfolio, newest first, with only its own lines and
-    `reversed_by` (the id of the REVERSAL of each journal, if any)."""
-    own_lines = (
-        select(JournalLine.id)
-        .join(Account, Account.id == JournalLine.account_id)
-        .where(JournalLine.journal_id == Journal.id, Account.portfolio_id == portfolio_id)
-    )
-    stmt = select(Journal).where(own_lines.exists()).order_by(Journal.seq.desc()).limit(limit)
-    if types is not None:
-        stmt = stmt.where(Journal.type.in_(types))
-    if start is not None:
-        stmt = stmt.where(Journal.created_at >= start)
-    if end is not None:
-        stmt = stmt.where(Journal.created_at <= end)
-    if before_seq is not None:
-        stmt = stmt.where(Journal.seq < before_seq)
-    journals = list(await session.scalars(stmt))
-    if not journals:
-        return []
-    ids = [j.id for j in journals]
-    lines: dict[UUID, list[dict]] = {i: [] for i in ids}
-    rows = await session.execute(
-        select(JournalLine, Account.asset, Account.kind)
-        .join(Account, Account.id == JournalLine.account_id)
-        .where(JournalLine.journal_id.in_(ids), Account.portfolio_id == portfolio_id)
-        .order_by(JournalLine.id)
-    )
-    for line, asset, kind in rows.all():
-        lines[line.journal_id].append({
-            "asset": asset, "kind": kind, "quantity": line.quantity,
-            "unit_price": line.unit_price, "price_ccy": line.price_ccy,
-        })
-    reversed_by = dict((await session.execute(
-        select(Journal.reversed_journal_id, Journal.id)
-        .where(Journal.reversed_journal_id.in_(ids))
-    )).all())
-    return [
-        {
-            "id": j.id, "seq": j.seq, "type": j.type, "created_at": j.created_at,
-            "reason": j.reason, "order_id": j.order_id, "author_type": j.author_type,
-            "author_id": j.author_id, "reversed_journal_id": j.reversed_journal_id,
-            "reversed_by": reversed_by.get(j.id), "lines": lines[j.id],
-        }
-        for j in journals
-    ]
-
-
 def _tx_filters(type_: str | None, from_: str | None, to: str | None) -> dict:
     return {
         "types": _parse_journal_types(type_),
@@ -469,8 +396,8 @@ async def transactions(
     n = parse_int(limit, "limit", 1, MAX_TX_LIMIT)
     before = parse_int(before_seq, "before_seq", 1)
     await _portfolio(session, portfolio_id)
-    items = await _journals(
-        session, portfolio_id, before_seq=before, limit=n + 1, **filters  # type: ignore[operator]
+    items = await list_portfolio_journals(
+        session, portfolio_id, before_seq=before, limit=n + 1, with_audit=True, **filters  # type: ignore[operator]
     )
     more = len(items) > n  # type: ignore[operator]
     items = items[:n]
@@ -482,6 +409,12 @@ async def transactions(
 
 def _csv_decimal(d: Decimal | None) -> str:
     return "" if d is None else decimal_to_str(d).replace(".", ",")
+
+
+def _csv_text(value: str | None) -> str:
+    """Free text for a spreadsheet: a cell that would start a formula gets a leading '."""
+    text = value or ""
+    return "'" + text if text.startswith(_FORMULA_PREFIXES) else text
 
 
 @router.get("/portfolios/{portfolio_id}/transactions.csv")
@@ -505,26 +438,35 @@ async def transactions_csv(
         return buf.getvalue()
 
     async def generate() -> AsyncIterator[bytes]:
-        yield ("﻿" + encode([CSV_HEADER])).encode()
+        yield ("\ufeff" + encode([CSV_HEADER])).encode()
+        try:
+            async for chunk in rows():
+                yield chunk
+        except Exception:
+            # the 200 status and the header are already sent: the client gets a cut file
+            log.exception("CSV export of portfolio %s failed mid-stream", portfolio_id)
+            raise
+
+    async def rows() -> AsyncIterator[bytes]:
         before: int | None = None
         async with sessionmaker() as s:  # the request session may be closed by now
             while True:
-                batch = await _journals(
+                batch = await list_portfolio_journals(
                     s, portfolio_id, before_seq=before, limit=CSV_BATCH, **filters
                 )
                 if not batch:
                     return
-                rows = [
+                lines = [
                     (
                         j["seq"], j["created_at"].astimezone(tz).strftime("%Y-%m-%d %H:%M:%S"),
-                        j["type"].value, line["asset"], line["kind"].value,
+                        j["type"].value, _csv_text(line["asset"]), line["kind"].value,
                         _csv_decimal(line["quantity"]), _csv_decimal(line["unit_price"]),
-                        line["price_ccy"] or "", j["reason"] or "",
+                        _csv_text(line["price_ccy"]), _csv_text(j["reason"]),
                         j["order_id"] or "", j["id"],
                     )
                     for j in batch for line in j["lines"]
                 ]
-                yield encode(rows).encode()
+                yield encode(lines).encode()
                 before = batch[-1]["seq"]
 
     filename = f"movimenti-{portfolio_id}.csv"
@@ -579,18 +521,25 @@ async def reverse(
     journal_id: UUID, body: ReverseIn, admin: CurrentAdmin, session: DbSession,
     redis: RedisClient, idem: Annotated[Idempotency, Depends(idempotent("reverse"))],
 ):
-    """A REVERSAL of the journal; for TRADE, LIQUIDATION and CORPORATE_ACTION positions
-    may go below zero (the reversed trade may have covered a short)."""
+    """A REVERSAL of the journal. Executions (TRADE, LIQUIDATION, CORPORATE_ACTION) are
+    refused (Ruling R5): an order of opposite sign corrects them."""
     reason = body.reason.strip()
 
     async def run() -> dict:
         if not reason:
             raise SMTError(ErrorCode.INVALID_REVERSAL, "lo storno richiede una motivazione")
         async with _transaction(session, redis):
-            original = await session.get(Journal, journal_id)
-            if original is None:
+            original_type = await session.scalar(
+                select(Journal.type).where(Journal.id == journal_id)
+            )
+            if original_type is None:
                 raise SMTError(
                     ErrorCode.NOT_FOUND, "journal not found", {"journal_id": str(journal_id)}
+                )
+            if original_type in _EXECUTION_JOURNALS:  # before any lock
+                raise SMTError(
+                    ErrorCode.INVALID_REVERSAL, EXECUTION_REVERSAL_MESSAGE,
+                    {"journal_id": str(journal_id), "type": str(original_type)},
                 )
             portfolio_ids = sorted(set(await session.scalars(
                 select(Account.portfolio_id)
@@ -599,13 +548,8 @@ async def reverse(
             )))
             for pid in portfolio_ids:  # portfolio rows before the chain lock (Ruling R11)
                 await lock_portfolio(session, pid)
-            allow = (
-                frozenset({AccountKind.position}) if original.type in _POSITION_JOURNALS
-                else frozenset()
-            )
             journal = await reverse_journal(
-                session, journal_id, reason=reason, author_type="admin",
-                author_id=admin.email, allow_negative=allow,
+                session, journal_id, reason=reason, author_type="admin", author_id=admin.email,
             )
             lines = list(await session.scalars(
                 select(JournalLine).where(JournalLine.journal_id == journal.id)

@@ -216,12 +216,8 @@ async def reverse_journal(
     reason: str,
     author_type: str,
     author_id: str | None,
-    allow_negative: frozenset[AccountKind] = frozenset(),
 ) -> Journal:
-    """Post a REVERSAL journal whose lines negate those of `journal_id`.
-
-    `allow_negative` is passed to post_journal (e.g. {position} to reverse a trade that
-    covered a short)."""
+    """Post a REVERSAL journal whose lines negate those of `journal_id`."""
     if not reason or not reason.strip():
         raise SMTError(ErrorCode.INVALID_REVERSAL, "a reversal needs a reason")
 
@@ -265,7 +261,6 @@ async def reverse_journal(
         author_id=author_id,
         reason=reason,
         reversed_journal_id=journal_id,
-        allow_negative=allow_negative,
     )
 
 

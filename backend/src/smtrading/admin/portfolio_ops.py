@@ -39,12 +39,12 @@ class ResetResult:
     deposit_journal_id: UUID | None = None
 
 
-async def _held_markets(session: AsyncSession, portfolio_id: UUID) -> dict[str, str]:
-    """symbol -> market of every non-zero position."""
+async def _held_markets(session: AsyncSession, portfolio_id: UUID) -> dict[str, str | None]:
+    """symbol -> market of every non-zero position (None: no such instrument)."""
     rows = await session.execute(
         select(Account.asset, Instrument.market)
         .join(AccountBalance, AccountBalance.account_id == Account.id)
-        .join(Instrument, Instrument.symbol == Account.asset)
+        .outerjoin(Instrument, Instrument.symbol == Account.asset)
         .where(
             Account.portfolio_id == portfolio_id, Account.kind == AccountKind.position,
             AccountBalance.balance != 0,
@@ -95,7 +95,8 @@ async def reset_portfolio(
     """Reset a portfolio:
 
     1. cancel its open orders;
-    2. with open positions on a closed market -> INVALID_ORDER (nothing is changed);
+    2. with open positions on a closed market, or on an unknown instrument ->
+       INVALID_ORDER (nothing is changed);
     3. close every position at market (source "admin"); any refusal aborts the reset;
     4. zero every cash, collateral and margin_loan balance with one RESET journal;
     5. deposit `new_cash` in `currency` (nothing when it is 0);
@@ -121,6 +122,11 @@ async def reset_portfolio(
 
     canceled = await cancel_all_orders(session, portfolio_id, by="admin")
     held = await _held_markets(session, portfolio_id)
+    unknown = sorted(s for s, m in held.items() if m is None)
+    if unknown:
+        raise SMTError(
+            ErrorCode.INVALID_ORDER, "posizioni su strumenti sconosciuti", {"symbols": unknown}
+        )
     closed = sorted(s for s, m in held.items() if not market_status(m, now).is_open)
     if closed:
         raise SMTError(ErrorCode.INVALID_ORDER, CLOSED_MARKETS_MESSAGE, {"symbols": closed})

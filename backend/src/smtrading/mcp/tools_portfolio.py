@@ -4,8 +4,7 @@ get_performance, get_risk_limits. Every per-portfolio tool needs `read` on it.
 `portfolio_snapshot` is shared with the portfolio:// resource (mcp/resources.py).
 """
 
-from datetime import datetime
-from decimal import ROUND_HALF_EVEN, Decimal, localcontext
+from decimal import Decimal, localcontext
 from typing import Any
 from uuid import UUID
 
@@ -17,8 +16,7 @@ from smtrading.agents.models import AgentPortfolio
 from smtrading.agents.service import require_permission
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import quantize_money
-from smtrading.corporate.snapshots import local_date
-from smtrading.ledger.models import Account, Journal, JournalLine, JournalType
+from smtrading.ledger.models import JournalType
 from smtrading.mcp.dto import (
     parse_enum,
     parse_int,
@@ -30,23 +28,19 @@ from smtrading.mcp.dto import (
 from smtrading.mcp.runtime import ToolCtx, run_tool
 from smtrading.performance import service as performance
 from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.queries import day_pnl, list_portfolio_journals, today_day_open
 from smtrading.risk.daily_loss import net_cash_flows_eur
-from smtrading.risk.models import EquitySnapshot, RiskProfile, SnapshotKind
+from smtrading.risk.models import RiskProfile
 from smtrading.risk.profiles import effective_risk_profile
 from smtrading.risk.settings import is_kill_switch_on
 from smtrading.valuation.service import PortfolioValuation, value_portfolio
 
 MAX_TRANSACTIONS = 500
 _PREC = 60
-_Q4 = Decimal("0.0001")
 
 
 def _eur(amount: Decimal) -> Decimal:
     return quantize_money(amount, "EUR")
-
-
-def _pct(value: Decimal) -> Decimal:
-    return value.quantize(_Q4, rounding=ROUND_HALF_EVEN)
 
 
 def _invalid(field: str, message: str) -> SMTError:
@@ -67,17 +61,6 @@ async def _readable_portfolio(ctx: ToolCtx, portfolio_id: str | None) -> Portfol
     if portfolio is None:  # unreachable while agent_portfolios has its FK
         raise SMTError(ErrorCode.NOT_FOUND, "portfolio not found", {"portfolio_id": str(pid)})
     return portfolio
-
-
-async def _day_open(ctx: ToolCtx, portfolio: Portfolio, now: datetime) -> EquitySnapshot | None:
-    """Today's (portfolio-local) day_open snapshot, if taken; never created here."""
-    return await ctx.session.scalar(
-        select(EquitySnapshot).where(
-            EquitySnapshot.portfolio_id == portfolio.id,
-            EquitySnapshot.kind == SnapshotKind.day_open,
-            EquitySnapshot.local_date == local_date(portfolio, now),
-        )
-    )
 
 
 async def _valuation(ctx: ToolCtx, portfolio: Portfolio) -> PortfolioValuation:
@@ -109,18 +92,7 @@ async def portfolio_snapshot(ctx: ToolCtx, portfolio_id: str | None) -> dict:
     without a day_open). External cash flows are not P&L, as in risk.daily_loss."""
     portfolio = await _readable_portfolio(ctx, portfolio_id)
     valuation = await _valuation(ctx, portfolio)
-    day_open = await _day_open(ctx, portfolio, valuation.ts)
-    pnl = pct = None
-    if day_open is not None:
-        flows = await net_cash_flows_eur(
-            ctx.session, ctx.qs, portfolio.id, day_open.ts, valuation.ts
-        )
-        with localcontext() as c:
-            c.prec = _PREC
-            raw = valuation.equity_raw - day_open.equity_eur - flows
-            pnl = _eur(raw)
-            if day_open.equity_eur > 0:
-                pct = _pct(raw / day_open.equity_eur * 100)
+    pnl, pct = await day_pnl(ctx.session, ctx.qs, portfolio, valuation)
     return {
         **valuation_dto(valuation),
         "status": portfolio.status,
@@ -158,42 +130,10 @@ async def _transactions(
     before = parse_int(before_seq, "before_seq", 1)
     portfolio = await _readable_portfolio(ctx, portfolio_id)
 
-    own_lines = (
-        select(JournalLine.id)
-        .join(Account, Account.id == JournalLine.account_id)
-        .where(JournalLine.journal_id == Journal.id, Account.portfolio_id == portfolio.id)
+    return await list_portfolio_journals(
+        ctx.session, portfolio.id, limit=n, types=types, start=start, end=end,
+        before_seq=before,
     )
-    stmt = select(Journal).where(own_lines.exists()).order_by(Journal.seq.desc()).limit(n)
-    if start is not None:
-        stmt = stmt.where(Journal.created_at >= start)
-    if end is not None:
-        stmt = stmt.where(Journal.created_at <= end)
-    if types is not None:
-        stmt = stmt.where(Journal.type.in_(types))
-    if before is not None:
-        stmt = stmt.where(Journal.seq < before)
-    journals = list(await ctx.session.scalars(stmt))
-
-    lines: dict[UUID, list[dict]] = {j.id: [] for j in journals}
-    if journals:
-        rows = await ctx.session.execute(
-            select(JournalLine, Account.asset, Account.kind)
-            .join(Account, Account.id == JournalLine.account_id)
-            .where(JournalLine.journal_id.in_(lines), Account.portfolio_id == portfolio.id)
-            .order_by(JournalLine.id)
-        )
-        for line, asset, kind in rows.all():
-            lines[line.journal_id].append({
-                "asset": asset, "kind": kind, "quantity": line.quantity,
-                "unit_price": line.unit_price, "price_ccy": line.price_ccy,
-            })
-    return [
-        {
-            "id": j.id, "seq": j.seq, "type": j.type, "created_at": j.created_at,
-            "reason": j.reason, "order_id": j.order_id, "lines": lines[j.id],
-        }
-        for j in journals
-    ]
 
 
 async def _performance(ctx: ToolCtx, portfolio_id: str | None, period: str) -> dict:
@@ -221,7 +161,7 @@ async def _risk_limits(ctx: ToolCtx, portfolio_id: str | None) -> dict:
     portfolio = await _readable_portfolio(ctx, portfolio_id)
     profile = await effective_risk_profile(ctx.session, portfolio)
     v = await _valuation(ctx, portfolio)
-    day_open = await _day_open(ctx, portfolio, v.ts)
+    day_open = await today_day_open(ctx.session, portfolio, v.ts)
 
     current = limit = None
     if day_open is not None:
