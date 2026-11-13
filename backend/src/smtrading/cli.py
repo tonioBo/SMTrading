@@ -1,7 +1,8 @@
 """Manual engine CLI: `python -m smtrading.cli <command> ...` (prints JSON).
 
     order place --portfolio NAME --symbol S --side buy|sell --qty Q
-                [--type market|limit --limit-price P]
+                [--type market|limit --limit-price P] [--reduce-only]
+    close --portfolio NAME --symbol S [--qty Q]   (reduce-only market order)
     orders --portfolio NAME
     positions --portfolio NAME
     valuation --portfolio NAME
@@ -10,7 +11,8 @@
 Quotes come from the real MarketDataRouter. Each command runs in one transaction that is
 committed, then its Redis effects are dispatched (Ruling R10). On SMTError the
 transaction is still committed, so a rejected order stays stored, and the error is
-printed as JSON with exit code 1.
+printed as JSON with exit code 1. Redis is also read for cached quotes when a provider
+quote is missing (Ruling R23).
 """
 
 import argparse
@@ -32,7 +34,13 @@ from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import OrderSide, OrderType
 from smtrading.engine.quotesource import QuoteSource
-from smtrading.engine.service import PlaceOrderRequest, cancel_order, list_orders, place_order
+from smtrading.engine.service import (
+    PlaceOrderRequest,
+    cancel_order,
+    close_position,
+    list_orders,
+    place_order,
+)
 from smtrading.events import dispatch_post_commit, json_safe
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.portfolios.models import Portfolio
@@ -63,6 +71,13 @@ def build_parser() -> argparse.ArgumentParser:
     place.add_argument("--qty", required=True, type=_decimal)
     place.add_argument("--type", default=OrderType.market.value, choices=_ORDER_TYPES)
     place.add_argument("--limit-price", type=_decimal)
+    place.add_argument("--reduce-only", action="store_true",
+                       help="clamp to the position at fill; canceled if nothing to reduce")
+
+    close = sub.add_parser("close", help="close a position (reduce-only market order)")
+    close.add_argument("--portfolio", required=True)
+    close.add_argument("--symbol", required=True)
+    close.add_argument("--qty", type=_decimal, help="part of the position (default: all)")
 
     for name, help in (
         ("orders", "orders, newest first"), ("positions", "open positions"),
@@ -91,15 +106,24 @@ async def _portfolio_id(session: AsyncSession, name: str) -> UUID:
     return pid
 
 
-async def execute(args: argparse.Namespace, session: AsyncSession, qs: QuoteSource) -> object:
+async def execute(
+    args: argparse.Namespace, session: AsyncSession, qs: QuoteSource, redis=None
+) -> object:
     match args.command:
         case "order":
             req = PlaceOrderRequest(
                 portfolio_id=await _portfolio_id(session, args.portfolio),
                 symbol=args.symbol, side=OrderSide(args.side), type=OrderType(args.type),
                 qty=args.qty, limit_price=args.limit_price, source=SOURCE,
+                reduce_only=args.reduce_only,
             )
-            return await _fresh_row(session, await place_order(session, qs, req))
+            return await _fresh_row(session, await place_order(session, qs, req, redis=redis))
+        case "close":
+            pid = await _portfolio_id(session, args.portfolio)
+            order = await close_position(
+                session, qs, pid, args.symbol, args.qty, source=SOURCE, redis=redis
+            )
+            return await _fresh_row(session, order)
         case "orders":
             pid = await _portfolio_id(session, args.portfolio)
             return [_row(o) for o in await list_orders(session, pid)]
@@ -108,7 +132,7 @@ async def execute(args: argparse.Namespace, session: AsyncSession, qs: QuoteSour
             return [_row(p) for p in await get_positions(session, pid)]
         case "valuation":
             pid = await _portfolio_id(session, args.portfolio)
-            return dataclasses.asdict(await value_portfolio(session, qs, pid))
+            return dataclasses.asdict(await value_portfolio(session, qs, pid, redis=redis))
         case "cancel":
             return await _fresh_row(
                 session, await cancel_order(session, args.order_id, by=SOURCE)
@@ -138,7 +162,7 @@ async def run_command(
     """(exit code, JSON output); commits even on SMTError so rejections are kept."""
     async with sessionmaker() as session:
         try:
-            result = await execute(args, session, qs)
+            result = await execute(args, session, qs, redis)
             code, out = 0, _dumps(result)
         except SMTError as e:
             code, out = 1, _dumps({"error": e.to_dict()})

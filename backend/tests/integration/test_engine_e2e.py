@@ -240,6 +240,29 @@ async def test_cli_order_positions_valuation_cancel(maker, redis, qs):
     assert (await _order(maker, uuid.UUID(limit["id"]))).status == OrderStatus.canceled
 
 
+async def test_cli_close_and_reduce_only(maker, redis, qs):
+    code, _ = await _cli(maker, qs, redis, "order", "place", "--portfolio", "Demo",
+                         "--symbol", "BTC-USD", "--side", "buy", "--qty", "0.01")
+    assert code == 0
+    code, close = await _cli(maker, qs, redis, "close", "--portfolio", "Demo",
+                             "--symbol", "BTC-USD")
+    assert code == 0
+    assert close["status"] == "filled" and close["reduce_only"] is True
+    assert close["side"] == "sell" and close["filled_qty"] == "0.01"
+
+    code, again = await _cli(maker, qs, redis, "order", "place", "--portfolio", "Demo",
+                             "--symbol", "BTC-USD", "--side", "sell", "--qty", "0.01",
+                             "--reduce-only")
+    assert code == 0
+    assert again["status"] == "canceled" and again["reject_message"] == "nothing_to_reduce"
+
+    code, out = await _cli(maker, qs, redis, "close", "--portfolio", "Demo",
+                           "--symbol", "BTC-USD")
+    assert code == 1 and out["error"]["code"] == "INVALID_ORDER"
+    code, valuation = await _cli(maker, qs, redis, "valuation", "--portfolio", "Demo")
+    assert code == 0 and valuation["positions"] == []
+
+
 async def test_cli_rejection_is_stored_and_reported(maker, redis, qs):
     code, out = await _cli(maker, qs, redis, "order", "place", "--portfolio", "Demo",
                            "--symbol", "BTC-USD", "--side", "sell", "--qty", "1")
