@@ -37,7 +37,9 @@ describe("KillSwitchButton", () => {
     await user.click(await screen.findByRole("button", { name: "Attiva kill-switch" }));
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText("Attivare il kill-switch?")).toBeInTheDocument();
-    act(() => qc.setQueryData(killSwitchKey, { on: true })); // e.g. turned on elsewhere
+    act(() => {
+      qc.setQueryData(killSwitchKey, { on: true }); // e.g. turned on elsewhere
+    });
     expect(within(dialog).getByText("Attivare il kill-switch?")).toBeInTheDocument();
     await user.click(within(dialog).getByRole("checkbox"));
     await user.click(within(dialog).getByRole("button", { name: "Attiva" }));
