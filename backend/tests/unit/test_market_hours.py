@@ -62,4 +62,12 @@ def test_naive_datetime_rejected():
 
 def test_all_market_status():
     names = {s.market for s in all_market_status(utc(2026, 11, 11, 15, 0))}
-    assert names == {"NASDAQ", "NYSE", "MTA", "XETRA", "CRYPTO", "FX"}
+    assert names == {"NASDAQ", "NYSE", "MTA", "XETRA", "EURONEXT_PARIS", "CRYPTO", "FX"}
+
+
+def test_euronext_paris_hours():
+    s = market_status("EURONEXT_PARIS", utc(2026, 11, 11, 10, 0))
+    assert s.is_open and s.next_close == utc(2026, 11, 11, 16, 30)
+    closed = market_status("EURONEXT_PARIS", utc(2026, 11, 11, 17, 0))
+    assert not closed.is_open and closed.next_open == utc(2026, 11, 12, 8, 0)
+    assert not market_status("EURONEXT_PARIS", utc(2026, 12, 25, 10, 0)).is_open

@@ -126,3 +126,28 @@ async def test_demo_agent_skipped_without_demo_portfolio(db_session, caplog):
         assert await seed._seed_demo_agent(db_session) is None
     assert "demo agent not created" in caplog.text
     assert (await db_session.execute(select(Agent))).scalars().all() == []
+
+
+async def test_seed_catalog_insert_only(db_session):
+    from smtrading.instruments.catalog import load_catalog, seed_catalog
+    from smtrading.instruments.models import Instrument, InstrumentSource
+
+    await run_seed(db_session)
+    symbols = {r.symbol for r in load_catalog()}
+    stored = set(await db_session.scalars(
+        select(Instrument.symbol).where(Instrument.symbol.in_(symbols))))
+    assert stored == symbols
+    mc = await db_session.get(Instrument, "MC.PA")
+    assert (mc.market, mc.source, mc.added_by) == ("EURONEXT_PARIS", InstrumentSource.catalog, None)
+    # an admin edit and a deactivation survive a new run; nothing new is inserted
+    mc.name, mc.tick_size, mc.active = "Edited", Decimal("0.5"), False
+    await db_session.flush()
+    assert await seed_catalog(db_session) == 0
+    await run_seed(db_session)
+    await db_session.refresh(mc)
+    assert (mc.name, mc.tick_size, mc.active) == ("Edited", Decimal("0.5"), False)
+    # the pre-catalog seed rows keep their original sizes
+    aapl = await db_session.get(Instrument, "AAPL")
+    assert aapl.tick_size == Decimal("0.01") and aapl.source == InstrumentSource.catalog
+    sui = await db_session.get(Instrument, "SUI-USD")
+    assert sui.provider_symbols["yahoo"] == "SUI20947-USD"

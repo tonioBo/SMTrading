@@ -16,6 +16,12 @@ class AssetClass(enum.StrEnum):
     forex = "forex"
 
 
+class InstrumentSource(enum.StrEnum):
+    catalog = "catalog"  # the curated catalog (seed)
+    manual = "manual"  # created by the admin
+    auto = "auto"  # added on demand for an agent (instruments.discovery)
+
+
 class Instrument(Base):
     __tablename__ = "instruments"
 
@@ -29,3 +35,7 @@ class Instrument(Base):
     shortable: Mapped[bool] = mapped_column(Boolean, default=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     provider_symbols: Mapped[dict] = mapped_column(JSONB, default=dict)
+    source: Mapped[InstrumentSource] = mapped_column(
+        str_enum(InstrumentSource), default=InstrumentSource.manual, server_default="manual"
+    )
+    added_by: Mapped[str | None] = mapped_column(String(128))

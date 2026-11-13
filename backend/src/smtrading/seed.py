@@ -14,7 +14,8 @@ from smtrading.common.config import get_settings
 from smtrading.common.db import get_sessionmaker
 from smtrading.connectors.service import seed_connectors
 from smtrading.fees.models import FeeRule, FeeScope, FeeSide
-from smtrading.instruments.models import AssetClass, Instrument
+from smtrading.instruments.catalog import seed_catalog
+from smtrading.instruments.models import AssetClass, Instrument, InstrumentSource
 from smtrading.portfolios.models import Portfolio
 from smtrading.portfolios.service import create_portfolio
 from smtrading.risk.models import AppSetting, InterestKind, InterestRate, RiskProfile, SystemState
@@ -89,12 +90,14 @@ async def run_seed(session: AsyncSession, *, admin: tuple[str, str] | None = Non
             "shortable": shortable,
             "active": True,
             "provider_symbols": {},
+            "source": InstrumentSource.catalog,
         }
         for symbol, name, market, (asset_class, currency, lot, tick, shortable) in _INSTRUMENTS
     ]
     await session.execute(
         insert(Instrument).values(rows).on_conflict_do_nothing(index_elements=["symbol"])
     )
+    await seed_catalog(session)  # the wider curated catalog, insert-only as well
 
     if await session.scalar(
         select(FeeRule.id).where(FeeRule.name == DEFAULT_FEE_RULE_NAME).limit(1)
@@ -209,7 +212,7 @@ async def _main() -> None:
             f"SMTrading: token agente {DEMO_AGENT_NAME} = {token} "
             "(salvalo: non verrà più mostrato)"
         )
-    log.info("seed complete: %d instruments, default fee rule, Demo portfolio", len(_INSTRUMENTS))
+    log.info("seed complete: instrument catalog, default fee rule, Demo portfolio")
 
 
 def main() -> None:

@@ -7,8 +7,10 @@ import pandas as pd
 
 from smtrading.common.errors import ErrorCode, SMTError
 
-CALENDARS = {"NASDAQ": "XNAS", "NYSE": "XNYS", "MTA": "XMIL", "XETRA": "XETR"}
-MARKETS = ("NASDAQ", "NYSE", "MTA", "XETRA", "CRYPTO", "FX")
+CALENDARS = {
+    "NASDAQ": "XNAS", "NYSE": "XNYS", "MTA": "XMIL", "XETRA": "XETR", "EURONEXT_PARIS": "XPAR",
+}
+MARKETS = ("NASDAQ", "NYSE", "MTA", "XETRA", "EURONEXT_PARIS", "CRYPTO", "FX")
 _FX_SWITCH_HOUR = 22  # UTC: weekly open Sunday 22:00, close Friday 22:00
 
 

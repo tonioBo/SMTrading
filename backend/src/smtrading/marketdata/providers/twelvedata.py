@@ -25,8 +25,9 @@ INTERVALS = {
     Timeframe.d1: "1day",
     Timeframe.w1: "1week",
 }
-# canonical Yahoo-style suffix -> Twelve Data exchange code
-EXCHANGES = {"MI": "MTA", "DE": "XETR"}
+# canonical Yahoo-style suffix -> Twelve Data exchange name (/exchanges: XMIL "MTA",
+# XETR "XETR", XPAR "Euronext")
+EXCHANGES = {"MI": "MTA", "DE": "XETR", "PA": "Euronext"}
 MAX_OUTPUT = 5000
 
 

@@ -43,6 +43,7 @@ def test_map_symbol(provider):
     assert provider.map_symbol("EURUSD", AssetClass.forex, None) == "EUR/USD"
     assert provider.map_symbol("ENI.MI", AssetClass.eu_equity, None) == "ENI:MTA"
     assert provider.map_symbol("SAP.DE", AssetClass.eu_equity, None) == "SAP:XETR"
+    assert provider.map_symbol("MC.PA", AssetClass.eu_equity, None) == "MC:Euronext"
     assert provider.map_symbol("AAPL", AssetClass.us_equity, None) == "AAPL"
     assert provider.map_symbol("AAPL", AssetClass.us_equity, "AAPL:NASDAQ") == "AAPL:NASDAQ"
     for sym, ac in [("EUR", AssetClass.forex), ("ENI.XX", AssetClass.eu_equity),

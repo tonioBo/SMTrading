@@ -1,0 +1,34 @@
+symbol,name,market,asset_class,currency,lot_size,tick_size,shortable,provider_symbols
+AAVE-USD,Aave,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=aave:usd
+ADA-USD,Cardano,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=cardano:usd
+ALGO-USD,Algorand,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=algorand:usd
+APT-USD,Aptos,CRYPTO,crypto,USD,0.00000001,0.00000001,false,yahoo=APT21794-USD;coingecko=aptos:usd
+ARB-USD,Arbitrum,CRYPTO,crypto,USD,0.00000001,0.00000001,false,yahoo=ARB11841-USD;coingecko=arbitrum:usd
+ATOM-USD,Cosmos,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=cosmos:usd
+AVAX-USD,Avalanche,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=avalanche-2:usd
+BCH-USD,Bitcoin Cash,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=bitcoin-cash:usd
+BNB-USD,BNB,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=binancecoin:usd
+BTC-USD,Bitcoin,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=bitcoin:usd
+DOGE-USD,Dogecoin,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=dogecoin:usd
+DOT-USD,Polkadot,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=polkadot:usd
+ETC-USD,Ethereum Classic,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=ethereum-classic:usd
+ETH-USD,Ethereum,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=ethereum:usd
+FIL-USD,Filecoin,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=filecoin:usd
+HBAR-USD,Hedera,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=hedera-hashgraph:usd
+ICP-USD,Internet Computer,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=internet-computer:usd
+INJ-USD,Injective,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=injective-protocol:usd
+LINK-USD,Chainlink,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=chainlink:usd
+LTC-USD,Litecoin,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=litecoin:usd
+NEAR-USD,NEAR Protocol,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=near:usd
+OP-USD,Optimism,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=optimism:usd
+PEPE-USD,Pepe,CRYPTO,crypto,USD,0.00000001,0.00000001,false,yahoo=PEPE24478-USD;coingecko=pepe:usd
+SHIB-USD,Shiba Inu,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=shiba-inu:usd
+SOL-USD,Solana,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=solana:usd
+SUI-USD,Sui,CRYPTO,crypto,USD,0.00000001,0.00000001,false,yahoo=SUI20947-USD;coingecko=sui:usd
+TON-USD,Toncoin,CRYPTO,crypto,USD,0.00000001,0.00000001,false,yahoo=TON11419-USD;coingecko=the-open-network:usd
+TRX-USD,TRON,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=tron:usd
+UNI-USD,Uniswap,CRYPTO,crypto,USD,0.00000001,0.00000001,false,yahoo=UNI7083-USD;coingecko=uniswap:usd
+VET-USD,VeChain,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=vechain:usd
+XLM-USD,Stellar,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=stellar:usd
+XMR-USD,Monero,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=monero:usd
+XRP-USD,XRP,CRYPTO,crypto,USD,0.00000001,0.00000001,false,coingecko=ripple:usd
