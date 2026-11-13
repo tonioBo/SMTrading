@@ -393,6 +393,8 @@ export interface Connector {
   implemented: boolean;
   /** secret leaves are masked ("••••abcd") */
   config_masked: Record<string, unknown>;
+  /** top-level config keys holding secrets (decided by the server) */
+  secret_keys: string[];
   rate_limit_per_min: number | null;
   health_status: string; // ok | error | unknown
   last_error: string | null;

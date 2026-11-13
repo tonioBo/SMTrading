@@ -13,7 +13,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
 from smtrading.admin.auth import DbSession, RedisClient, require_admin
-from smtrading.admin.routes_portfolios import _invalid, _transaction
+from smtrading.admin.common import _invalid, _transaction
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.instruments.market_hours import MARKETS, all_market_status
 from smtrading.instruments.models import AssetClass, Instrument

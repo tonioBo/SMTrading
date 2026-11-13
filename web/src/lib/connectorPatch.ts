@@ -1,7 +1,7 @@
 import type { Connector, ConnectorPatch } from "@/api/types";
 
-const SECRET_HINTS = ["key", "secret", "token", "pem", "password"];
-export const isSecret = (key: string) => SECRET_HINTS.some((h) => key.toLowerCase().includes(h));
+/** Whether a top-level config key holds a secret: the server says so (`secret_keys`). */
+export const isSecret = (connector: Connector, key: string) => connector.secret_keys.includes(key);
 export const isScalar = (v: unknown): v is string | number | null => v === null || typeof v === "string" || typeof v === "number";
 
 /** The PATCH body for what the user changed: untouched masked secrets are left out (the server keeps them). */
@@ -19,7 +19,7 @@ export function buildConnectorPatch(
   const config: Record<string, unknown> = {};
   let dirty = false;
   for (const [key, stored] of Object.entries(connector.config_masked)) {
-    if (isSecret(key) && isScalar(stored)) {
+    if (isSecret(connector, key) && isScalar(stored)) {
       if (edits.removed.has(key)) {
         config[key] = null;
         dirty = true;

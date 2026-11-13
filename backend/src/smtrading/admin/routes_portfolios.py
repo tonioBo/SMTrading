@@ -9,7 +9,6 @@ import csv
 import io
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Annotated, Any
 from uuid import UUID
@@ -22,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
+from smtrading.admin.common import Quotes, _invalid, _transaction
 from smtrading.admin.idempotency import Idempotency, idempotent
 from smtrading.admin.portfolio_ops import reset_portfolio
 from smtrading.admin.schemas import (
@@ -36,7 +36,6 @@ from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import OPEN_STATUSES, OrderStatus
 from smtrading.engine.quotesource import MemoQuoteSource
 from smtrading.engine.service import cancel_order, list_orders
-from smtrading.events import discard_post_commit, dispatch_post_commit
 from smtrading.ledger.models import Account, Journal, JournalLine, JournalType
 from smtrading.ledger.service import reverse_journal
 from smtrading.mcp.dto import (
@@ -80,31 +79,6 @@ _EXECUTION_JOURNALS = frozenset(
 EXECUTION_REVERSAL_MESSAGE = "Non si può stornare un'esecuzione: usa un ordine di segno opposto"
 # spreadsheet formula prefixes (CSV injection): such text cells get a leading '
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
-
-
-def _invalid(field: str, message: str) -> SMTError:
-    return SMTError(ErrorCode.INVALID_ORDER, message, {"field": field})
-
-
-def get_quotes(request: Request) -> MemoQuoteSource:
-    """A fresh per-request memo over the app's quote source (the MarketDataRouter)."""
-    return MemoQuoteSource(request.app.state.mcp_runtime.qs)
-
-
-Quotes = Annotated[MemoQuoteSource, Depends(get_quotes)]
-
-
-@asynccontextmanager
-async def _transaction(session: AsyncSession, redis) -> AsyncIterator[None]:
-    """Commit and dispatch the post-commit effects; roll back and drop them on error."""
-    try:
-        yield
-    except BaseException:
-        await session.rollback()
-        discard_post_commit(session)
-        raise
-    await session.commit()
-    await dispatch_post_commit(session, redis)
 
 
 async def _portfolio(session: AsyncSession, portfolio_id: UUID) -> Portfolio:

@@ -79,7 +79,7 @@ function ConnectorCard({ connector }: { connector: Connector }) {
           <>
             {keys.map((key) => {
               const stored = connector.config_masked[key];
-              const secret = isSecret(key);
+              const secret = isSecret(connector, key);
               const label = key;
               return (
                 <div key={key} className="flex items-end gap-2">

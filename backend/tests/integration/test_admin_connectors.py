@@ -118,6 +118,7 @@ async def test_connectors_masked_and_patch_keeps_masked(admin, monkeypatch):
     assert row["config_masked"] == {"api_key": "••••3456", "api_secret": "••••", "region": "eu"}
     assert row["enabled"] is True and row["rate_limit_per_min"] == 30
     assert row["implemented"] is True and row["requires_key"] is True
+    assert row["secret_keys"] == ["api_key", "api_secret"]  # the web app's secret fields
 
     # the masked value sent back keeps the stored secret; other keys change
     r = await c.patch("/api/connectors/fake", json={

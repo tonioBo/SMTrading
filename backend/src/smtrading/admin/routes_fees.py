@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.admin.auth import DbSession, RedisClient, require_admin
-from smtrading.admin.routes_portfolios import Quotes, _invalid, _transaction
+from smtrading.admin.common import Quotes, _invalid, _transaction
 from smtrading.admin.schemas import FeeRuleCreateIn, FeeRulePatchIn, FeeSimulateIn
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import decimal_to_str

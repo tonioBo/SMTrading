@@ -9,7 +9,15 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from smtrading.admin.auth import DbSession, RedisClient, require_admin
-from smtrading.admin.routes_portfolios import _invalid, _transaction
+from smtrading.admin.common import (
+    _invalid,
+    _transaction,
+    is_secret,
+    mask_config,
+    merge_config,
+    redact,
+    secret_values,
+)
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.connectors.models import Connector
 from smtrading.connectors.service import (
@@ -31,8 +39,6 @@ router = APIRouter(prefix="/api", tags=["connectors"], dependencies=[Depends(req
 
 HEALTH_TIMEOUT_S = 10.0
 MAX_RATE_LIMIT = 1_000_000
-MASK = "••••"
-_SECRET_HINTS = ("key", "secret", "token", "pem", "password")
 
 
 class ConnectorPatchIn(BaseModel):
@@ -49,84 +55,6 @@ class PriorityIn(BaseModel):
     providers: list[str]
 
 
-def _is_secret(key: str) -> bool:
-    return any(h in key.lower() for h in _SECRET_HINTS)
-
-
-def mask_value(value: Any) -> str:
-    """'••••' + the last 4 characters ('••••' alone when the value has 4 or fewer)."""
-    text = str(value)
-    return MASK + text[-4:] if len(text) > 4 else MASK
-
-
-def _mask(value: Any, key: str | None) -> Any:
-    """Masks secret leaves at any depth; a secret key passes down into its lists."""
-    if isinstance(value, dict):
-        return {k: _mask(v, k) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_mask(v, key) for v in value]
-    if key is not None and _is_secret(key) and value not in (None, ""):
-        return mask_value(value)
-    return value
-
-
-def mask_config(config: dict[str, Any]) -> dict[str, Any]:
-    return {k: _mask(v, k) for k, v in config.items()}
-
-
-def secret_values(value: Any, key: str | None = None) -> list[str]:
-    """Every secret leaf of a config, as text (longest first, for redaction)."""
-    if isinstance(value, dict):
-        found = [x for k, v in value.items() for x in secret_values(v, k)]
-    elif isinstance(value, list):
-        found = [x for v in value for x in secret_values(v, key)]
-    elif key is not None and _is_secret(key) and value not in (None, ""):
-        found = [str(value)]
-    else:
-        found = []
-    return sorted(set(found), key=len, reverse=True)
-
-
-def redact(text: str, secrets: list[str]) -> str:
-    for s in secrets:
-        text = text.replace(s, MASK)
-    return text
-
-
-def _masked_invalid(key: str) -> SMTError:
-    return _invalid("config", f"valore mascherato non valido per {key}")
-
-
-def _merge(new: Any, stored: Any, key: str | None) -> Any:
-    """`new` with masked secrets replaced by the stored value; omitted secret keys keep the
-    stored value, an explicit null removes a secret. Recurses into dicts and lists."""
-    if isinstance(new, dict):
-        old = stored if isinstance(stored, dict) else {}
-        out: dict[str, Any] = {}
-        for k, v in old.items():
-            if k not in new and _is_secret(k):
-                out[k] = v
-        for k, v in new.items():
-            if v is None and _is_secret(k):
-                continue
-            out[k] = _merge(v, old.get(k), k)
-        return out
-    if isinstance(new, list):
-        old = stored if isinstance(stored, list) else []
-        return [_merge(v, old[i] if i < len(old) else None, key) for i, v in enumerate(new)]
-    if (
-        key is not None and _is_secret(key) and isinstance(new, str) and new.startswith(MASK)
-    ):
-        if stored in (None, "") or new != mask_value(stored):
-            raise _masked_invalid(key)
-        return stored
-    return new
-
-
-def _merge_config(new: dict[str, Any], stored: dict[str, Any]) -> dict[str, Any]:
-    return _merge(new, stored, None)
-
-
 async def _connector(session: DbSession, name: str) -> Connector:
     c = await session.get(Connector, name)
     if c is None:
@@ -136,14 +64,21 @@ async def _connector(session: DbSession, name: str) -> Connector:
 
 async def _dto(session: DbSession, c: Connector) -> dict[str, Any]:
     cls = PROVIDERS.get(c.name)
+    config = mask_config(await get_connector_config(session, c.name))
+    requires_key = bool(cls and cls.requires_key)
+    # the top-level config keys the web app treats as secrets (never re-derived client-side)
+    secret_keys = sorted(
+        {k for k in config if is_secret(k)} | ({"api_key"} if requires_key else set())
+    )
     return {
         "name": c.name,
         "enabled": c.enabled,
-        "requires_key": bool(cls and cls.requires_key),
+        "requires_key": requires_key,
         "capabilities": sorted(str(x) for x in cls.capabilities) if cls else [],
         "asset_classes": sorted(str(x) for x in cls.asset_classes) if cls else [],
         "implemented": cls is not None,
-        "config_masked": mask_config(await get_connector_config(session, c.name)),
+        "config_masked": config,
+        "secret_keys": secret_keys,
         "rate_limit_per_min": c.rate_limit_per_min,
         "health_status": c.health_status,
         "last_error": c.last_error,
@@ -172,7 +107,7 @@ async def patch_connector(
     async with _transaction(session, redis):
         config = None
         if body.config is not None:
-            config = _merge_config(body.config, await get_connector_config(session, name))
+            config = merge_config(body.config, await get_connector_config(session, name))
         await update_connector(
             session, name, enabled=body.enabled, config=config, rate_limit_per_min=rate
         )

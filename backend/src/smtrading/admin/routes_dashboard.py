@@ -27,7 +27,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import distinct_on
 
 from smtrading.admin.auth import DbSession, RedisClient, require_admin
-from smtrading.admin.routes_portfolios import Quotes
+from smtrading.admin.common import Quotes
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.heartbeat import heartbeat_age_s
 from smtrading.common.money import quantize_money

@@ -19,6 +19,7 @@ const connector = (over: Record<string, unknown>) => ({
   asset_classes: ["forex"],
   implemented: true,
   config_masked: { api_key: "••••abcd", ws_url: "wss://example.test" },
+  secret_keys: ["api_key"],
   rate_limit_per_min: 60,
   health_status: "ok",
   last_error: null,
@@ -32,7 +33,7 @@ const server = setupServer(
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
   http.get("*/api/connectors", () =>
-    HttpResponse.json([connector({}), connector({ name: "revolutx", implemented: false, enabled: false, config_masked: {} })]),
+    HttpResponse.json([connector({}), connector({ name: "revolutx", implemented: false, enabled: false, config_masked: {}, secret_keys: [] })]),
   ),
   http.patch("*/api/connectors/:name", async ({ request, params }) => {
     const body = (await request.json()) as Record<string, unknown>;

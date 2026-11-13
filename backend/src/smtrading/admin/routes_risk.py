@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.admin.auth import DbSession, RedisClient, require_admin
-from smtrading.admin.routes_portfolios import _invalid, _transaction
+from smtrading.admin.common import _invalid, _transaction
 from smtrading.admin.schemas import (
     AppSettingsIn,
     InterestRateIn,
