@@ -4,11 +4,7 @@ import { EQUITY_PERIODS as PERIODS, useEquity } from "@/api/hooks/dashboard";
 import { usePerformance } from "@/api/hooks/portfolios";
 import type { EquityPeriod, EquityPoint } from "@/api/types";
 import { Button } from "@/components/ui/button";
-
-function cssColor(name: string, fallback: string): string {
-  const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  return raw ? `rgb(${raw.trim().split(/\s+/).join(", ")})` : fallback; // lightweight-charts rejects the space syntax
-}
+import { cssColor } from "@/lib/cssColor";
 
 interface SeriesQuery {
   data?: { series: EquityPoint[] };

@@ -182,8 +182,8 @@ export function useReverseJournal(portfolioId: string) {
   });
 }
 
-/** crypto.randomUUID only exists in secure contexts; plain-http LAN access needs a fallback. */
-function newKey(): string {
+/** crypto.randomUUID only exists in secure contexts; the plain-http local entry needs a fallback. */
+export function newKey(): string {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
   const b = crypto.getRandomValues(new Uint8Array(16));
   b[6] = (b[6] & 0x0f) | 0x40;
