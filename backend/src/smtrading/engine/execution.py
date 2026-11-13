@@ -26,6 +26,14 @@ that opens/adds (open), posted together in one TRADE journal:
   `nothing_to_reduce` and no journal;
 - no network I/O under the chain lock (I2): every quote/fx rate is read through a
   MemoQuoteSource, prefetched before the first post_journal and frozen from then on;
+- broker fills (`source="broker"`, Rulings R2 and R7): quantity and price come from the
+  broker (no slippage, no quote); fee, FX and funding work as usual. They record what
+  already happened at the broker, so the status/kill switch/short/buying power checks
+  are skipped and a shortfall becomes a margin loan instead of a refusal. A reduce_only
+  clamp still applies to the journal; the order's progress follows the broker;
+- partial fills (fill_qty given): the order is `partially_filled` until its filled
+  quantity reaches qty (or `final`); avg_fill_price is the weighted average; OCO
+  siblings and bracket children are only activated once it is `filled`;
 - a purely reducing fill is never blocked:
   - R9: when cash[fee_ccy] cannot pay the whole fee, the whole fee is converted into ccy
     (ROUND_UP) and charged there, out of proceeds/collateral;
@@ -38,6 +46,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import ROUND_DOWN, ROUND_UP, Decimal, localcontext
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import select
@@ -48,13 +57,15 @@ from smtrading.common.money import decimal_to_str, quantize_money
 from smtrading.engine.models import (
     FILLABLE_STATUSES,
     OPEN_STATUSES,
+    BrokerState,
     Fill,
     Order,
     OrderSide,
     OrderStatus,
 )
 from smtrading.engine.prefetch import prefetch_portfolio
-from smtrading.engine.pricing import QuoteView, fill_price, notional_to_qty
+from smtrading.engine.pricing import QuoteView, notional_to_qty
+from smtrading.engine.pricing import fill_price as fill_price_of
 from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.events import queue_event, queue_track, queue_untrack
 from smtrading.fees.calculator import FeeRuleData, compute_fx_fee, compute_trade_fee
@@ -80,6 +91,13 @@ class FillResult:
     order: Order
     fill: Fill
     journals: list[Journal]
+
+
+def broker_live(order: Order) -> bool:
+    """The order exists (or may exist) at the broker: canceling it needs the broker."""
+    return order.broker_link_id is not None and order.broker_status not in (
+        None, BrokerState.TO_SEND,
+    )
 
 
 def _no_buying_power(message: str, **details) -> SMTError:
@@ -294,7 +312,7 @@ async def _has_other_short(
     return found is not None
 
 
-async def _activate_linked(session: AsyncSession, order: Order) -> None:
+async def activate_linked(session: AsyncSession, order: Order) -> None:
     """Cancel open OCO siblings; release held bracket children as one OCO group."""
     now = datetime.now(UTC)
     if order.oco_group_id is not None:
@@ -311,8 +329,11 @@ async def _activate_linked(session: AsyncSession, order: Order) -> None:
             .execution_options(populate_existing=True)
         ))
         for sibling in siblings:
-            sibling.status = OrderStatus.canceled
             sibling.updated_at = now
+            if broker_live(sibling):  # canceled once the broker confirms (BrokerSync)
+                sibling.broker_status = BrokerState.CANCEL_REQUESTED
+                continue
+            sibling.status = OrderStatus.canceled
             queue_event(session, "order.canceled", {
                 "order_id": sibling.id, "portfolio_id": sibling.portfolio_id,
                 "agent_id": sibling.agent_id, "symbol": sibling.symbol, "by": "system",
@@ -335,6 +356,26 @@ async def _activate_linked(session: AsyncSession, order: Order) -> None:
             child.status = OrderStatus.pending
             child.oco_group_id = group
             child.updated_at = now
+            if order.broker_link_id is not None:  # the exits follow the entry to the broker
+                child.broker_link_id = order.broker_link_id
+                child.broker_status = BrokerState.TO_SEND
+
+
+def _advance(order: Order, qty: Decimal, price: Decimal, *, final: bool) -> None:
+    """Add a fill of `qty` at `price` to the order's progress (weighted average price);
+    `filled` once qty is reached or the fill is `final`, else `partially_filled`."""
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        before = order.filled_qty or Decimal(0)
+        total = before + qty
+        old_avg = order.avg_fill_price or Decimal(0)
+        order.avg_fill_price = price if before == 0 else (
+            (old_avg * before + price * qty) / total
+        ).quantize(Decimal("1e-18")).normalize()
+    order.filled_qty = total
+    done = final or (order.qty is not None and total >= order.qty)
+    order.status = OrderStatus.filled if done else OrderStatus.partially_filled
+    order.updated_at = datetime.now(UTC)
 
 
 def _cancel_nothing_to_reduce(session: AsyncSession, order: Order) -> None:
@@ -367,12 +408,21 @@ async def execute_fill(
     qs: QuoteSource,
     order_id: UUID,
     *,
-    quote: Quote,
+    quote: Quote | None = None,
     journal_type: JournalType = JournalType.TRADE,
     redis=None,
+    fill_qty: Decimal | None = None,
+    fill_price: Decimal | None = None,
+    source: Literal["sim", "broker"] = "sim",
+    final: bool = False,
 ) -> FillResult | None:
     """Fill `order_id` at `quote`; None if the order is no longer fillable (or a
-    reduce_only order had nothing to reduce and was canceled).
+    reduce_only order had nothing to reduce: canceled for a simulated fill, progress
+    recorded without a journal for a broker fill).
+
+    `fill_qty`/`fill_price` override the quantity (a partial fill when below what is
+    left) and the price (no slippage). A broker fill needs both; `final` marks the
+    broker's last fill of an order without qty (notional).
 
     Ruling R12: a purely reducing fill (close/cover) is never blocked for lack of cash. It
     may take a margin loan even at leverage 1, but only after converting from the base
@@ -382,6 +432,11 @@ async def execute_fill(
     the first journal. `redis`, when given, lets the post-fill valuation fall back to
     cached quotes (I4).
     """
+    broker = source == "broker"
+    if broker and (fill_qty is None or fill_price is None):
+        raise ValueError("a broker fill needs fill_qty and fill_price")
+    if quote is None and fill_price is None:
+        raise ValueError("a simulated fill needs a quote or fill_price")
     qs = MemoQuoteSource.wrap(qs)
     portfolio_id = await session.scalar(select(Order.portfolio_id).where(Order.id == order_id))
     if portfolio_id is None:
@@ -401,24 +456,41 @@ async def execute_fill(
         raise SMTError(ErrorCode.SYMBOL_NOT_FOUND, "instrument not found", {"symbol": order.symbol})
     ccy, base, side, symbol = instrument.currency, portfolio.base_currency, order.side, order.symbol
 
-    spread = await get_default_spread_bps(session, instrument.asset_class)
-    price = fill_price(
-        order.type, side, QuoteView(quote.bid, quote.ask, quote.last, quote.ts),
-        limit_price=order.limit_price, slippage_bps=portfolio.slippage_bps,
-        default_spread_bps=spread, tick=instrument.tick_size,
-    )
-    qty = order.qty if order.qty is not None else notional_to_qty(
-        order.notional, price, instrument.lot_size
-    )
+    if fill_price is not None:
+        price = fill_price
+    else:
+        spread = await get_default_spread_bps(session, instrument.asset_class)
+        price = fill_price_of(
+            order.type, side, QuoteView(quote.bid, quote.ask, quote.last, quote.ts),
+            limit_price=order.limit_price, slippage_bps=portfolio.slippage_bps,
+            default_spread_bps=spread, tick=instrument.tick_size,
+        )
+    if fill_qty is not None:
+        qty = fill_qty
+    elif order.qty is not None:
+        qty = order.qty - order.filled_qty
+    else:
+        qty = notional_to_qty(order.notional, price, instrument.lot_size)
+    if qty <= 0:
+        raise SMTError(ErrorCode.INVALID_ORDER, "nothing left to fill", {"order_id": str(order.id)})
+    progress = qty  # what the order's filled quantity grows by
     buy = side == OrderSide.buy
     accts = _Accounts(session, portfolio.id)
     held = await accts.balance(symbol, AccountKind.position)
     if order.reduce_only:
         if held == 0 or (held > 0) == buy:
+            if broker:  # it happened at the broker: follow it, nothing to journal
+                _advance(order, progress, price, final=final)
+                if order.status == OrderStatus.filled:
+                    await activate_linked(session, order)
+                await session.flush()
+                return None
             _cancel_nothing_to_reduce(session, order)
             await session.flush()
             return None
         qty = min(qty, abs(held))
+        if not broker:
+            progress = qty
 
     rule = resolve_rule(
         await load_rules(session), portfolio_id=portfolio.id,
@@ -434,9 +506,9 @@ async def execute_fill(
     split = _split_fill(held, buy, qty, price, notional, ccy)
     after, close_notional, open_notional = split.after, split.close_notional, split.open_notional
     reducing = split.reducing
-    if journal_type != JournalType.LIQUIDATION:
+    if journal_type != JournalType.LIQUIDATION and not broker:
         await _check_status(session, portfolio, split, symbol)
-    if after < 0 and not buy:
+    if after < 0 and not buy and not broker:
         await _check_short_allowed(session, portfolio, instrument)
 
     # Ruling R9: a reducing fill is never blocked by missing fee-currency cash; the fee is
@@ -476,11 +548,13 @@ async def execute_fill(
         if bal > 0 and c not in (base, ccy)
     ) if reducing else []
     legs, borrow = await _plan_funding(
-        qs, accts, rule=rule, base=base, may_borrow=portfolio.leverage > 1 or reducing,
+        qs, accts, rule=rule, base=base,
+        may_borrow=portfolio.leverage > 1 or reducing or broker,
         other_sources=other_sources, needs=dict(needs), incoming=dict(incoming),
     )
 
-    if not reducing:  # the post-fill valuation needs quotes and fx rates (I2)
+    check_power = not reducing and not broker
+    if check_power:  # the post-fill valuation needs quotes and fx rates (I2)
         await prefetch_portfolio(session, qs, portfolio.id, symbols=[symbol])
     qs.freeze()  # chain lock from here to commit: no more provider calls
 
@@ -555,8 +629,8 @@ async def execute_fill(
     position = await upsert_position(session, portfolio.id, symbol, side, qty, price)
 
     # Exposure-increasing fills must leave buying power >= 0 (raw, Ruling R8); reducing
-    # fills are never blocked.
-    if not reducing:
+    # fills are never blocked; broker fills already happened.
+    if check_power:
         valuation = await value_portfolio(session, qs, portfolio.id, redis=redis)
         if valuation.stale_symbols:  # retryable: the processor leaves the order resting
             raise SMTError(
@@ -571,24 +645,29 @@ async def execute_fill(
 
     fill = Fill(
         id=fill_id, order_id=order.id, portfolio_id=portfolio.id, symbol=symbol, side=side,
-        qty=qty, price=price, quote_bid=quote.bid, quote_ask=quote.ask, quote_last=quote.last,
-        quote_ts=quote.ts, fee_amount=charge, fee_currency=charge_ccy, fee_rule_id=rule.id,
+        qty=qty, price=price,
+        quote_bid=quote.bid if quote else None, quote_ask=quote.ask if quote else None,
+        quote_last=quote.last if quote else None, quote_ts=quote.ts if quote else None,
+        source=source, fee_amount=charge, fee_currency=charge_ccy, fee_rule_id=rule.id,
         journal_id=trade.id,
     )
     session.add(fill)
-    order.status = OrderStatus.filled
-    order.filled_qty = qty
-    order.avg_fill_price = price
-    order.updated_at = datetime.now(UTC)
-    await _activate_linked(session, order)
+    _advance(order, progress, price, final=final or fill_qty is None)
+    if order.status == OrderStatus.filled:
+        await activate_linked(session, order)
     await session.flush()
 
-    queue_event(session, "order.filled", {
-        "order_id": order.id, "fill_id": fill.id, "portfolio_id": portfolio.id,
-        "agent_id": order.agent_id, "symbol": symbol, "side": side, "qty": qty,
-        "price": price, "notional": notional, "currency": ccy, "fee": charge,
-        "fee_currency": charge_ccy, "position_qty": position.qty,
-    })
+    queue_event(
+        session,
+        "order.filled" if order.status == OrderStatus.filled else "order.partially_filled",
+        {
+            "order_id": order.id, "fill_id": fill.id, "portfolio_id": portfolio.id,
+            "agent_id": order.agent_id, "symbol": symbol, "side": side, "qty": qty,
+            "price": price, "notional": notional, "currency": ccy, "fee": charge,
+            "fee_currency": charge_ccy, "position_qty": position.qty,
+            "filled_qty": order.filled_qty, "source": source,
+        },
+    )
     if held == 0 and position.qty != 0:
         queue_track(session, symbol, "positions")
     elif held != 0 and position.qty == 0:

@@ -1,4 +1,6 @@
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 from typing import ClassVar, Literal
 
@@ -23,9 +25,14 @@ class BrokerAdapter:
 
     Errors: order rejections come back as BrokerOrder(status="rejected"); transport and 5xx
     failures raise RuntimeError (retryable). Error text never contains credentials.
+
+    `idempotent_place`: a place_order retried after a failure cannot create a second
+    order (Alpaca: client_order_id). When False (Trading 212, Ruling R7) a failed send
+    leaves the outcome unknown and BrokerSync looks for it with `find_order`.
     """
 
     kind: ClassVar[str]
+    idempotent_place: ClassVar[bool] = True
     supported_types: ClassVar[frozenset[OrderType]]
     supported_asset_classes: ClassVar[frozenset[AssetClass]]
 
@@ -39,8 +46,29 @@ class BrokerAdapter:
             and instrument.asset_class in self.supported_asset_classes
         )
 
+    def routable(self, order: Order, instrument: Instrument) -> bool:
+        """Placement-time routing decision, without network I/O. May be optimistic when
+        it needs data only `prepare` loads; BrokerSync checks `supports` before sending."""
+        return self.supports(order, instrument)
+
+    async def prepare(self, instruments: Iterable[Instrument] = ()) -> None:
+        """Load what `supports` and the symbol mapping need (network); no-op by default."""
+
+    @staticmethod
+    def client_ref(order: Order) -> str:
+        """The broker client reference of the order's current submission."""
+        attempt = getattr(order, "broker_attempt", 0) or 0
+        return str(order.id) if attempt == 0 else f"{order.id}-{attempt}"
+
     async def place_order(self, order: Order, instrument: Instrument) -> BrokerOrder:
         raise NotImplementedError
+
+    async def find_order(
+        self, order: Order, instrument: Instrument, since: datetime
+    ) -> BrokerOrder | None:
+        """The broker order created for `order` at or after `since`, if one can be
+        identified unambiguously (used after a non-idempotent send failed)."""
+        return None
 
     async def get_order(self, broker_order_id: str) -> BrokerOrder:
         raise NotImplementedError

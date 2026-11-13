@@ -4,7 +4,8 @@
 - corporate actions of today, at (or after) 06:00 UTC;
 - every minute: lift expired daily-loss blocks, `day_open` snapshot of every portfolio;
 - every 60s: margin sweep (margin and daily loss checks);
-- every 5 minutes: periodic equity snapshots.
+- every 5 minutes: periodic equity snapshots and, with an http client, the broker
+  reconciliation of every enabled broker link.
 
 Every job has its own transactions and commits; a failure is logged and the loop goes on.
 Daily jobs are idempotent through job_runs and retried every DAILY_RETRY_S until done.
@@ -23,6 +24,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from smtrading.brokers.sync import reconcile_all
 from smtrading.corporate.actions import run_corporate_actions
 from smtrading.corporate.interest import run_interest
 from smtrading.corporate.snapshots import ensure_day_open, take_snapshots
@@ -41,6 +43,7 @@ CORPORATE_AT = time(6)  # UTC
 DAY_OPEN_INTERVAL_S = 60
 MARGIN_SWEEP_INTERVAL_S = 60
 SNAPSHOT_INTERVAL_S = 300
+RECONCILE_INTERVAL_S = 300
 DAILY_RETRY_S = 300
 CATCH_UP_DAYS = 7
 
@@ -51,8 +54,10 @@ class JobScheduler:
     def __init__(
         self, sessionmaker: async_sessionmaker[AsyncSession], qs: QuoteSource, redis, *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC), tick_s: float = TICK_S,
+        http=None,
     ) -> None:
         self._sm = sessionmaker
+        self._http = http
         self._qs = qs
         self._redis = redis
         self._clock = clock
@@ -83,6 +88,11 @@ class JobScheduler:
             "equity snapshots", SNAPSHOT_INTERVAL_S, now,
             lambda: take_snapshots(self._sm, self._qs, clock=self._clock),
         )
+        if self._http is not None:
+            await self._every(
+                "broker reconciliation", RECONCILE_INTERVAL_S, now,
+                lambda: reconcile_all(self._sm, self._http),
+            )
 
     async def _every(
         self, name: str, interval_s: float, now: datetime, job: Callable[[], Awaitable[None]]

@@ -31,6 +31,10 @@ execute_fill enforces the portfolio status and the kill switch again at fill tim
 so a resting order of a portfolio locked or set reduce_only after placement is rejected
 with that code; a reduce_only order with nothing left to reduce is canceled there.
 
+Broker-managed orders (broker_link_id set) are never filled or triggered here: BrokerSync
+applies the broker's fills. Only one never sent (broker_status `to_send`) can expire
+locally; the others expire at the broker.
+
 Errors: a business SMTError (`REJECTING_CODES`) rejects the order with its code in a new
 transaction, cancels its held bracket children (Ruling R17) and notifies the portfolio.
 Any other error (provider outage, rate limit, bugs) is rolled back and logged; the order
@@ -52,6 +56,7 @@ from smtrading.engine.execution import execute_fill
 from smtrading.engine.models import (
     FILLABLE_STATUSES,
     OPEN_STATUSES,
+    BrokerState,
     Order,
     OrderSide,
     OrderStatus,
@@ -153,7 +158,7 @@ def _decide(order: Order, bid, ask) -> TriggerResult:
 
 def _actionable(order: Order | None, now: datetime) -> bool:
     return (
-        order is not None and order.status in _ACTIVE
+        order is not None and order.status in _ACTIVE and order.broker_link_id is None
         and (order.expires_at is None or order.expires_at > now)
     )
 
@@ -333,7 +338,7 @@ class OrderProcessor:
         stmt = (
             select(Order.id, Order.symbol, Order.status, Order.type, Instrument.market)
             .join(Instrument, Instrument.symbol == Order.symbol)
-            .where(Order.status.in_(_ACTIVE))
+            .where(Order.status.in_(_ACTIVE), Order.broker_link_id.is_(None))
             .order_by(Order.created_at, Order.id)
         )
         if symbol is not None:
@@ -345,7 +350,9 @@ class OrderProcessor:
     async def _refresh_active(self) -> None:
         async with self._sm() as session:
             self._active = set(await session.scalars(
-                select(Order.symbol).where(Order.status.in_(_ACTIVE)).distinct()
+                select(Order.symbol)
+                .where(Order.status.in_(_ACTIVE), Order.broker_link_id.is_(None))
+                .distinct()
             ))
 
     async def _refresh_margin(self) -> None:
@@ -558,7 +565,11 @@ class OrderProcessor:
         async with self._sm() as session:
             ids = list(await session.scalars(
                 select(Order.id)
-                .where(Order.status.in_(OPEN_STATUSES), Order.expires_at <= now)
+                .where(
+                    Order.status.in_(OPEN_STATUSES), Order.expires_at <= now,
+                    Order.broker_link_id.is_(None)
+                    | (Order.broker_status == BrokerState.TO_SEND),
+                )
                 .order_by(Order.expires_at, Order.id)
             ))
         for order_id in ids:
@@ -573,6 +584,8 @@ class OrderProcessor:
             if (
                 order is None or order.status not in OPEN_STATUSES
                 or order.expires_at is None or order.expires_at > now
+                or (order.broker_link_id is not None
+                    and order.broker_status != BrokerState.TO_SEND)
             ):
                 return
             order.status = OrderStatus.expired

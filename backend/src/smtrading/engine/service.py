@@ -28,6 +28,15 @@ Reduce-only (Ruling R22): closing orders and bracket exits are `reduce_only`; at
 they are clamped to the position, or canceled when there is nothing to reduce. Closing a
 position also cancels that symbol's open bracket exits in the portfolio (Ruling R16).
 
+Broker routing (Rulings R3, R7): in a portfolio linked to an enabled broker, an order the
+adapter can take (`routable`) is not executed here: after the local checks it is stored
+`pending` (`queued` for a market order on a closed market) with broker_status
+`to_send`, and BrokerSync sends it once its market is open, applying the broker's fills
+and final states. Canceling an order that is (or may be) at the broker only marks it
+`cancel_requested`; it stays open until the broker confirms, with any last fills applied.
+Modifying one marks it `replace_requested` (cancel, then send again). No network I/O
+happens here, so no lock is ever held while waiting for a broker.
+
 Market closed: market orders are `queued` (the processor executes them at the open);
 other types rest as `pending` and are only evaluated once the market is open, because a
 queued order is executed at market. While the market is closed the quote age is not
@@ -47,10 +56,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from smtrading.brokers.models import BrokerLink
+from smtrading.brokers.service import get_adapter
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.engine.execution import execute_fill
+from smtrading.engine.execution import broker_live, execute_fill
 from smtrading.engine.models import (
     OPEN_STATUSES,
+    BrokerState,
     Order,
     OrderSide,
     OrderStatus,
@@ -379,10 +391,35 @@ async def _activate(session: AsyncSession, qs: QuoteSource, order: Order, adm: _
         )
 
 
+async def _route(session: AsyncSession, order: Order, adm: _Admission) -> bool:
+    """Hand the order to the portfolio's broker when the adapter can take it."""
+    link_id = adm.portfolio.broker_link_id
+    if link_id is None:
+        return False
+    link = await session.get(BrokerLink, link_id)
+    if link is None or not link.enabled:
+        return False
+    adapter = await get_adapter(session, link_id, None)  # no network: config only
+    if not adapter.routable(order, adm.instrument):
+        return False  # e.g. a trailing stop on Trading 212: simulated
+    order.broker_link_id = link_id
+    order.broker_status = BrokerState.TO_SEND
+    order.status = (
+        OrderStatus.queued
+        if order.type == OrderType.market and not adm.market.is_open
+        else OrderStatus.pending
+    )
+    order.updated_at = datetime.now(UTC)
+    return True
+
+
 async def _activate_order(
     session: AsyncSession, qs: QuoteSource, order: Order, adm: _Admission
 ) -> None:
     if order.status != OrderStatus.new:
+        return
+    if await _route(session, order, adm):
+        await session.flush()
         return
     instrument = adm.instrument
     quote = await _try_quote(qs, instrument.symbol)
@@ -628,16 +665,25 @@ async def _untrack_if_idle(session: AsyncSession, symbols: set[str]) -> None:
 
 
 async def _cancel(session: AsyncSession, orders: list[Order], by: str) -> None:
+    """Cancel locally, or ask BrokerSync to cancel at the broker (the order stays open
+    until the broker confirms, Ruling R3)."""
     now = datetime.now(UTC)
     for o in orders:
-        o.status = OrderStatus.canceled
         o.updated_at = now
+        if broker_live(o):
+            o.broker_status = BrokerState.CANCEL_REQUESTED
+        else:
+            o.status = OrderStatus.canceled
     await session.flush()
     for o in orders:
-        queue_event(session, "order.canceled", {
-            "order_id": o.id, "portfolio_id": o.portfolio_id, "agent_id": o.agent_id,
-            "symbol": o.symbol, "by": by,
-        })
+        queue_event(
+            session,
+            "order.canceled" if o.status == OrderStatus.canceled else "order.cancel_requested",
+            {
+                "order_id": o.id, "portfolio_id": o.portfolio_id, "agent_id": o.agent_id,
+                "symbol": o.symbol, "by": by,
+            },
+        )
     await _untrack_if_idle(session, {o.symbol for o in orders})
 
 
@@ -722,6 +768,15 @@ async def modify_order(
     order = await _lock_order(session, order_id)
     if order.status not in MODIFIABLE:
         raise _invalid(f"cannot modify a {order.status} order", order_id=order.id)
+    replace = broker_live(order)
+    if replace and (
+        order.broker_status in BrokerState.PENDING_WORK or order.filled_qty > 0
+    ):
+        raise SMTError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "a broker operation on this order is in progress; retry later",
+            {"order_id": str(order.id), "broker_status": str(order.broker_status)},
+        )
     if qty is not None and order.notional is not None:
         raise _invalid("qty cannot be set on a notional order", order_id=order.id)
     if order.type == OrderType.trailing_stop and (trail_pct is not None or trail_amount is not None):
@@ -753,6 +808,8 @@ async def modify_order(
     for name in _PARAMS:
         setattr(order, name, getattr(req, name))
     order.updated_at = datetime.now(UTC)
+    if replace:  # BrokerSync cancels the broker order and sends the new parameters
+        order.broker_status = BrokerState.REPLACE_REQUESTED
     if qty is not None and order.role == "entry":
         for child in await _children(session, order.id):
             if child.status in OPEN_STATUSES:

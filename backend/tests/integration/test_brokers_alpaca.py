@@ -276,3 +276,17 @@ async def test_raw_is_json_safe(http):
     raw = (await AlpacaPaperAdapter(CFG, http).get_order("x")).raw
     assert json.loads(json.dumps(raw)) == raw
     assert raw["limit_price"] == "1.5"
+
+
+@respx.mock
+async def test_find_order_by_client_reference(http):
+    o = _order()
+    o.broker_attempt = 2
+    route = respx.get(f"{PAPER_URL}/v2/orders:by_client_order_id").mock(
+        return_value=httpx.Response(200, json={"id": "x1", "status": "new", "filled_qty": "0"})
+    )
+    found = await AlpacaPaperAdapter(CFG, http).find_order(o, _inst(), None)
+    assert found is not None and found.broker_order_id == "x1"
+    assert route.calls[0].request.url.params["client_order_id"] == f"{o.id}-2"
+    route.mock(return_value=httpx.Response(404, json={"message": "not found"}))
+    assert await AlpacaPaperAdapter(CFG, http).find_order(o, _inst(), None) is None

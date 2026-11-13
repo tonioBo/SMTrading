@@ -95,8 +95,8 @@ async def reset_portfolio(
     """Reset a portfolio:
 
     1. cancel its open orders;
-    2. with open positions on a closed market, or on an unknown instrument ->
-       INVALID_ORDER (nothing is changed);
+    2. with open positions on a closed market, or on an unknown instrument, or in a
+       portfolio linked to a broker -> INVALID_ORDER (nothing is changed);
     3. close every position at market (source "admin"); any refusal aborts the reset;
     4. zero every cash, collateral and margin_loan balance with one RESET journal;
     5. deposit `new_cash` in `currency` (nothing when it is 0);
@@ -126,6 +126,15 @@ async def reset_portfolio(
     if unknown:
         raise SMTError(
             ErrorCode.INVALID_ORDER, "posizioni su strumenti sconosciuti", {"symbols": unknown}
+        )
+    if held and portfolio.broker_link_id is not None:
+        # closes go to the broker (Ruling R3) and fill asynchronously: they cannot be
+        # part of this transaction
+        raise SMTError(
+            ErrorCode.INVALID_ORDER,
+            "portafoglio collegato a un broker: chiudi prima le posizioni (gli ordini vanno"
+            " al broker) e ripeti il reset quando sono eseguiti",
+            {"symbols": sorted(held)},
         )
     closed = sorted(s for s, m in held.items() if not market_status(m, now).is_open)
     if closed:

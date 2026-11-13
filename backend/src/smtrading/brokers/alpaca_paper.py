@@ -151,7 +151,7 @@ class AlpacaPaperAdapter(BrokerAdapter):
             "side": str(order.side),
             "type": "stop_limit" if order.type is OrderType.stop_limit else str(order.type),
             "time_in_force": "gtc" if crypto else str(order.tif),
-            "client_order_id": str(order.id),
+            "client_order_id": self.client_ref(order),
         }
         if order.qty is not None:
             body["qty"] = _num(order.qty)
@@ -185,6 +185,18 @@ class AlpacaPaperAdapter(BrokerAdapter):
                 if existing.status_code < 300:
                     return self._to_broker_order(self._parse(existing))
             return BrokerOrder("", "rejected", Decimal(0), None, msg, {})
+        if resp.status_code >= 300:
+            raise self._fail(resp)
+        return self._to_broker_order(self._parse(resp))
+
+    async def find_order(self, order: Order, instrument: Instrument, since) -> BrokerOrder | None:
+        """The order sent with this submission's client_order_id, if Alpaca has it."""
+        resp = await self._request(
+            "GET", "/v2/orders:by_client_order_id",
+            params={"client_order_id": self.client_ref(order)},
+        )
+        if resp.status_code == 404:
+            return None
         if resp.status_code >= 300:
             raise self._fail(resp)
         return self._to_broker_order(self._parse(resp))

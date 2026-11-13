@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     UniqueConstraint,
     func,
@@ -84,6 +85,7 @@ class Order(Base):
         Index("ix_orders_portfolio_status", "portfolio_id", "status"),
         Index("ix_orders_open_expires_at", "expires_at", postgresql_where=_OPEN_WHERE),
         Index("ix_orders_open_created_at", "created_at", postgresql_where=_OPEN_WHERE),
+        Index("ix_orders_broker_link_id", "broker_link_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -122,6 +124,8 @@ class Order(Base):
         Boolean, default=False, server_default=text("false")
     )
     broker_last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # resubmissions after a modify (cancel + new order): the broker client reference
+    broker_attempt: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -152,3 +156,17 @@ class Fill(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class BrokerState:
+    """`Order.broker_status` values set locally (the others are BrokerStatus values).
+
+    Only BrokerSync talks to the broker (no network I/O under the portfolio lock): the
+    engine records what it wants and the sync loop carries it out."""
+
+    TO_SEND = "to_send"  # routed, waiting for BrokerSync to send it
+    SENDING = "sending"  # claimed by BrokerSync, request in flight
+    UNKNOWN = "unknown"  # non-idempotent placement failed after sending (Ruling R7)
+    CANCEL_REQUESTED = "cancel_requested"  # still open until the broker confirms
+    REPLACE_REQUESTED = "replace_requested"  # modify: cancel, then send again
+    PENDING_WORK = frozenset({TO_SEND, SENDING, UNKNOWN, CANCEL_REQUESTED, REPLACE_REQUESTED})
