@@ -1,24 +1,31 @@
-"""The CLI works in a fresh process: every model is registered (broker_links FK)."""
+"""CLI and seed work in a fresh process: every model is registered (broker_links FK).
+
+Without `smtrading.models`, flushing a Portfolio in such a process fails with
+NoReferencedTableError (portfolios.broker_link_id -> broker_links).
+"""
 
 import subprocess
 import sys
 
-CODE = (
-    "import smtrading.cli\n"
-    "from sqlalchemy.orm import configure_mappers\n"
-    "from smtrading.common.db import Base\n"
-    "configure_mappers()\n"
-    "assert 'broker_links' in Base.metadata.tables\n"
-    "from sqlalchemy.schema import CreateTable\n"
-    "from smtrading.agents.models import Agent\n"
-    "CreateTable(Agent.__table__)\n"
-    "print('ok')\n"
-)
+import pytest
+
+CODE = """
+import {module}
+from smtrading.portfolios.models import Portfolio
+fk = next(iter(Portfolio.__table__.c.broker_link_id.foreign_keys))
+assert fk.column.table.name == "broker_links"
+print("ok")
+"""
 
 
-def test_cli_import_registers_all_models() -> None:
+@pytest.mark.parametrize("module", ["smtrading.cli", "smtrading.seed"])
+def test_entrypoints_register_all_models(module: str) -> None:
     out = subprocess.run(
-        [sys.executable, "-c", CODE], check=False, capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", CODE.format(module=module)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "ok"

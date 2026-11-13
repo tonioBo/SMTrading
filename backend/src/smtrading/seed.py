@@ -6,6 +6,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import smtrading.models  # noqa: F401  (complete mapper registry: portfolios -> broker_links FK)
 from smtrading.admin.auth import MIN_PASSWORD_LEN, hash_password, normalize_email
 from smtrading.admin.models import AdminUser
 from smtrading.agents.models import Agent
