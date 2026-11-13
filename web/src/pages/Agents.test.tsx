@@ -136,6 +136,25 @@ describe("Agents", () => {
       ]),
     );
   });
+
+  it("keeps the assignments of archived portfolios (not listed) when saving", async () => {
+    server.use(
+      http.get("*/api/agents", () =>
+        HttpResponse.json([
+          { ...agent, portfolios: [...agent.portfolios, { portfolio_id: "p9", portfolio_name: "Vecchio", permission: "read" }] },
+        ]),
+      ),
+    );
+    const user = userEvent.setup();
+    renderApp("/agenti");
+    await screen.findByText("Bot uno");
+    await user.click(screen.getByRole("button", { name: "Portafogli Bot uno" }));
+    const dialog = await screen.findByRole("dialog", { name: /Portafogli assegnati/ });
+    expect(await within(dialog).findByText(/1 assegnazione a portafogli archiviati/)).toBeInTheDocument();
+    await user.selectOptions(await within(dialog).findByLabelText("Permesso Alfa"), "none");
+    await user.click(within(dialog).getByRole("button", { name: "Salva" }));
+    await waitFor(() => expect(puts).toEqual([[{ portfolio_id: "p9", permission: "read" }]]));
+  });
 });
 
 describe("McpLog", () => {

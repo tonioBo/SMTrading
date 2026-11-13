@@ -1,9 +1,10 @@
-import { ArrowLeft } from "lucide-react";
+import { ArchiveRestore, ArrowLeft } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Link, useParams } from "react-router-dom";
 import {
   OPEN_ORDER_STATUSES,
+  useArchivePortfolio,
   useCancelOrder,
   useLiveQuotes,
   useOrders,
@@ -230,7 +231,7 @@ function BrokerCell({ order, linked }: { order: Order; linked: boolean }) {
   return linked ? <Badge variant="outline">Solo simulato</Badge> : <span className="text-muted">—</span>;
 }
 
-function Orders({ portfolioId, linked }: { portfolioId: string; linked: boolean }) {
+function Orders({ portfolioId, linked, readOnly }: { portfolioId: string; linked: boolean; readOnly: boolean }) {
   const [status, setStatus] = useState("open");
   const { data, isLoading, isError, error } = useOrders(portfolioId, status);
   const cancel = useCancelOrder(portfolioId);
@@ -265,7 +266,7 @@ function Orders({ portfolioId, linked }: { portfolioId: string; linked: boolean 
       header: <span className="sr-only">Azioni</span>,
       align: "right",
       cell: (o) =>
-        OPEN_ORDER_STATUSES.has(o.status) ? (
+        !readOnly && OPEN_ORDER_STATUSES.has(o.status) ? (
           <Button
             size="sm"
             variant="outline"
@@ -462,11 +463,65 @@ function Risk({ portfolio }: { portfolio: Portfolio }) {
   );
 }
 
+// --- archived banner -----------------------------------------------------------------
+
+function ArchivedBanner({ portfolio }: { portfolio: Portfolio }) {
+  const restore = useArchivePortfolio();
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <div
+      role="status"
+      aria-label="Portafoglio archiviato"
+      className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-card px-4 py-3 text-sm"
+    >
+      <p>
+        <strong>Portafoglio archiviato</strong>
+        {portfolio.archived_at && <> il {formatDateTime(portfolio.archived_at)}</>}
+        {portfolio.archived_by && <> da {portfolio.archived_by}</>}: sola lettura, escluso da dashboard, agenti e job.
+      </p>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => {
+          restore.reset();
+          setConfirming(true);
+        }}
+      >
+        <ArchiveRestore />
+        Ripristina
+      </Button>
+      {confirming && (
+        <ConfirmDialog
+          open
+          onOpenChange={(o) => !o && setConfirming(false)}
+          title={`Ripristinare ${portfolio.name}?`}
+          description="Il portafoglio torna visibile con lo stato che aveva prima dell'archiviazione."
+          confirmLabel="Ripristina"
+          pending={restore.isPending}
+          error={restore.error ? errorMessage(restore.error) : null}
+          onConfirm={() =>
+            restore.mutate(
+              { id: portfolio.id, archive: false },
+              {
+                onSuccess: () => {
+                  toast.success("Portafoglio ripristinato");
+                  setConfirming(false);
+                },
+              },
+            )
+          }
+        />
+      )}
+    </div>
+  );
+}
+
 // --- page ----------------------------------------------------------------------------
 
 export default function PortfolioDetail() {
   const { id = "" } = useParams();
   const { data: portfolio, isError, error } = usePortfolio(id);
+  const archived = portfolio?.status === "archived";
 
   return (
     <div>
@@ -477,6 +532,7 @@ export default function PortfolioDetail() {
         {portfolio && <PortfolioStatusBadge status={portfolio.status} />}
       </PageHeader>
       {isError && <p className="text-loss">{errorMessage(error, "Impossibile caricare il portafoglio")}</p>}
+      {portfolio && archived && <ArchivedBanner portfolio={portfolio} />}
       {!portfolio ? (
         !isError && <p className="text-sm text-muted">Caricamento…</p>
       ) : (
@@ -486,9 +542,9 @@ export default function PortfolioDetail() {
             <TabsTrigger value="positions">Posizioni</TabsTrigger>
             <TabsTrigger value="orders">Ordini</TabsTrigger>
             <TabsTrigger value="movements">Movimenti</TabsTrigger>
-            <TabsTrigger value="operations">Operazioni</TabsTrigger>
+            {!archived && <TabsTrigger value="operations">Operazioni</TabsTrigger>}
             <TabsTrigger value="risk">Rischio</TabsTrigger>
-            <TabsTrigger value="settings">Impostazioni</TabsTrigger>
+            {!archived && <TabsTrigger value="settings">Impostazioni</TabsTrigger>}
           </TabsList>
           <TabsContent value="overview">
             <Overview portfolio={portfolio} />
@@ -497,20 +553,24 @@ export default function PortfolioDetail() {
             <Positions portfolioId={portfolio.id} />
           </TabsContent>
           <TabsContent value="orders">
-            <Orders portfolioId={portfolio.id} linked={Boolean(portfolio.broker_link_id)} />
+            <Orders portfolioId={portfolio.id} linked={Boolean(portfolio.broker_link_id)} readOnly={archived} />
           </TabsContent>
           <TabsContent value="movements">
-            <Movements portfolioId={portfolio.id} timezone={portfolio.timezone} />
+            <Movements portfolioId={portfolio.id} timezone={portfolio.timezone} readOnly={archived} />
           </TabsContent>
-          <TabsContent value="operations">
-            <Operations portfolio={portfolio} />
-          </TabsContent>
+          {!archived && (
+            <TabsContent value="operations">
+              <Operations portfolio={portfolio} />
+            </TabsContent>
+          )}
           <TabsContent value="risk">
             <Risk portfolio={portfolio} />
           </TabsContent>
-          <TabsContent value="settings">
-            <PortfolioSettings portfolio={portfolio} />
-          </TabsContent>
+          {!archived && (
+            <TabsContent value="settings">
+              <PortfolioSettings portfolio={portfolio} />
+            </TabsContent>
+          )}
         </Tabs>
       )}
     </div>

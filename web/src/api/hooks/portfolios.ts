@@ -23,6 +23,8 @@ import { useLiveMessage, useLiveSocket } from "@/lib/ws";
 import { zonedDayEnd, zonedDayStart } from "@/lib/zonedDate";
 
 export const portfoliosKey = ["portfolios"] as const;
+/** the list including the archived portfolios (`?include_archived=1`) */
+const portfoliosWithArchivedKey = ["portfolios-with-archived"] as const;
 const portfolioKey = (id: string) => ["portfolios", id] as const;
 
 export const POSITIONS_REFRESH_MS = 10_000;
@@ -43,8 +45,12 @@ export function isReversible(tx: Transaction): boolean {
 /** Open (non-final) order statuses: these can be canceled. */
 export const OPEN_ORDER_STATUSES: ReadonlySet<string> = new Set(["new", "held", "queued", "pending", "triggered", "partially_filled"]);
 
-export function usePortfolios() {
-  return useQuery({ queryKey: portfoliosKey, queryFn: () => apiFetch<Portfolio[]>("/api/portfolios") });
+/** The portfolios; archived ones only with `includeArchived`. */
+export function usePortfolios({ includeArchived = false }: { includeArchived?: boolean } = {}) {
+  return useQuery({
+    queryKey: includeArchived ? portfoliosWithArchivedKey : portfoliosKey,
+    queryFn: () => apiFetch<Portfolio[]>(includeArchived ? "/api/portfolios?include_archived=1" : "/api/portfolios"),
+  });
 }
 
 export function usePortfolio(id: string) {
@@ -126,8 +132,23 @@ function useInvalidatePortfolio(id?: string) {
   return () => {
     void qc.invalidateQueries({ queryKey: id ? portfolioKey(id) : portfoliosKey });
     void qc.invalidateQueries({ queryKey: portfoliosKey, exact: true });
+    void qc.invalidateQueries({ queryKey: portfoliosWithArchivedKey });
     void qc.invalidateQueries({ queryKey: dashboardKey });
   };
+}
+
+/** Archive (`archive: true`) or restore a portfolio. */
+export function useArchivePortfolio() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, archive }: { id: string; archive: boolean }) =>
+      apiFetch<Portfolio>(`/api/portfolios/${id}/${archive ? "archive" : "unarchive"}`, { method: "POST" }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: portfoliosKey });
+      void qc.invalidateQueries({ queryKey: portfoliosWithArchivedKey });
+      void qc.invalidateQueries({ queryKey: dashboardKey });
+    },
+  });
 }
 
 export function useCreatePortfolio() {

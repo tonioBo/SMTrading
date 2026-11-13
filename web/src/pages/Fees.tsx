@@ -383,7 +383,7 @@ function Simulator() {
 
 export default function Fees() {
   const { data, isLoading, isError } = useFeeRules();
-  const portfolios = usePortfolios();
+  const portfolios = usePortfolios({ includeArchived: true }); // names of every rule's portfolio
   const deactivate = useDeactivateFeeRule();
   const [editing, setEditing] = useState<FeeRule | "new" | null>(null);
   const refName = (r: FeeRule) =>

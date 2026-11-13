@@ -1,9 +1,11 @@
-import { Plus } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { Archive, ArchiveRestore, Plus } from "lucide-react";
+import { useId, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { useCreatePortfolio, usePortfolios, useRiskProfiles } from "@/api/hooks/portfolios";
+import { toast } from "sonner";
+import { useArchivePortfolio, useCreatePortfolio, usePortfolios, useRiskProfiles } from "@/api/hooks/portfolios";
 import type { Portfolio } from "@/api/types";
 import { AmountPreview } from "@/components/AmountPreview";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { FormField, selectClass } from "@/components/FormField";
 import { Money } from "@/components/Money";
@@ -18,7 +20,7 @@ import { amountError, normalizeAmount } from "@/lib/decimal";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatDecimal } from "@/lib/format";
 
-const columns: Column<Portfolio>[] = [
+const baseColumns: Column<Portfolio>[] = [
   {
     key: "name",
     header: "Nome",
@@ -57,6 +59,39 @@ const EMPTY_FORM = {
   risk_profile_id: "",
   timezone: "Europe/Rome",
 };
+
+/** Mounted per opening: archive (or restore) `portfolio` after confirmation. */
+function ArchiveDialog({ portfolio, onClose }: { portfolio: Portfolio; onClose: () => void }) {
+  const mutation = useArchivePortfolio();
+  const archive = portfolio.status !== "archived";
+  return (
+    <ConfirmDialog
+      open
+      onOpenChange={(open) => !open && onClose()}
+      title={archive ? `Archiviare ${portfolio.name}?` : `Ripristinare ${portfolio.name}?`}
+      description={
+        archive
+          ? "Il portafoglio sparisce da elenchi, dashboard e agenti e resta in sola lettura: niente ordini né job. Registro e posizioni restano invariati. Servono zero ordini aperti e nessun broker collegato."
+          : "Il portafoglio torna visibile con lo stato che aveva prima dell'archiviazione."
+      }
+      confirmLabel={archive ? "Archivia" : "Ripristina"}
+      destructive={archive}
+      pending={mutation.isPending}
+      error={mutation.error ? errorMessage(mutation.error) : null}
+      onConfirm={() =>
+        mutation.mutate(
+          { id: portfolio.id, archive },
+          {
+            onSuccess: () => {
+              toast.success(archive ? "Portafoglio archiviato" : "Portafoglio ripristinato");
+              onClose();
+            },
+          },
+        )
+      }
+    />
+  );
+}
 
 /** Mounted per opening: the form starts empty each time. */
 function CreatePortfolioDialog({ onClose }: { onClose: () => void }) {
@@ -169,16 +204,52 @@ function CreatePortfolioDialog({ onClose }: { onClose: () => void }) {
 }
 
 export default function Portfolios() {
-  const { data, isLoading, isError } = usePortfolios();
+  const [showArchived, setShowArchived] = useState(false);
+  const { data, isLoading, isError } = usePortfolios({ includeArchived: showArchived });
   const [creating, setCreating] = useState(false);
+  const [archiving, setArchiving] = useState<Portfolio | null>(null);
+  const toggleId = useId();
+
+  const columns: Column<Portfolio>[] = [
+    ...baseColumns,
+    {
+      key: "actions",
+      header: <span className="sr-only">Azioni</span>,
+      align: "right",
+      cell: (p) =>
+        p.status === "archived" ? (
+          <Button size="sm" variant="outline" aria-label={`Ripristina ${p.name}`} onClick={() => setArchiving(p)}>
+            <ArchiveRestore />
+            Ripristina
+          </Button>
+        ) : (
+          <Button size="sm" variant="ghost" aria-label={`Archivia ${p.name}`} onClick={() => setArchiving(p)}>
+            <Archive />
+            Archivia
+          </Button>
+        ),
+    },
+  ];
 
   return (
     <div>
       <PageHeader title="Portafogli">
-        <Button onClick={() => setCreating(true)}>
-          <Plus />
-          Nuovo portafoglio
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-4">
+          <div className="flex items-center gap-2 text-sm">
+            <input
+              id={toggleId}
+              type="checkbox"
+              checked={showArchived}
+              onChange={(e) => setShowArchived(e.target.checked)}
+              className="h-4 w-4 accent-[rgb(var(--accent))]"
+            />
+            <label htmlFor={toggleId}>Mostra archiviati</label>
+          </div>
+          <Button onClick={() => setCreating(true)}>
+            <Plus />
+            Nuovo portafoglio
+          </Button>
+        </div>
       </PageHeader>
       {isError && <p className="mb-4 text-loss">Impossibile caricare i portafogli</p>}
       <Card>
@@ -194,6 +265,7 @@ export default function Portfolios() {
         </CardContent>
       </Card>
       {creating && <CreatePortfolioDialog onClose={() => setCreating(false)} />}
+      {archiving && <ArchiveDialog portfolio={archiving} onClose={() => setArchiving(null)} />}
     </div>
   );
 }

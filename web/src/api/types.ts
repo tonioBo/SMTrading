@@ -70,7 +70,7 @@ export interface EquitySeries {
   portfolios: { id: string; name: string | null; series: EquityPoint[] }[];
 }
 
-export type PortfolioStatus = "active" | "reduce_only" | "locked";
+export type PortfolioStatus = "active" | "reduce_only" | "locked" | "archived";
 
 export interface Portfolio {
   id: string;
@@ -93,6 +93,9 @@ export interface Portfolio {
   valuation_error: string | null;
   /** the broker link (paper/demo account) the portfolio's orders are routed to */
   broker_link_id?: string | null;
+  /** set while archived: hidden, read-only, skipped by every job */
+  archived_at?: string | null;
+  archived_by?: string | null;
 }
 
 export interface PortfolioCreate {

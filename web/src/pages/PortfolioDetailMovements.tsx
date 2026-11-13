@@ -116,7 +116,8 @@ function ReverseDialog({ tx, portfolioId, onClose }: { tx: Transaction; portfoli
 
 const EMPTY_FILTERS: TransactionFilters = { type: "", from: "", to: "" };
 
-export function Movements({ portfolioId, timezone }: { portfolioId: string; timezone: string }) {
+/** `readOnly` (an archived portfolio): no reversals. */
+export function Movements({ portfolioId, timezone, readOnly = false }: { portfolioId: string; timezone: string; readOnly?: boolean }) {
   const [filters, setFilters] = useState<TransactionFilters>(EMPTY_FILTERS);
   const query = useTransactions(portfolioId, filters, timezone);
   const [target, setTarget] = useState<Transaction | null>(null);
@@ -145,7 +146,7 @@ export function Movements({ portfolioId, timezone }: { portfolioId: string; time
       header: <span className="sr-only">Azioni</span>,
       align: "right",
       cell: (t) =>
-        isReversible(t) ? (
+        !readOnly && isReversible(t) ? (
           <Button size="sm" variant="outline" onClick={() => setTarget(t)}>
             Storna
           </Button>

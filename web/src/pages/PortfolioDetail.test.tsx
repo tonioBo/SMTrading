@@ -154,6 +154,7 @@ let resetRequests: unknown[] = [];
 let patches: unknown[] = [];
 let canceled: string[] = [];
 let orderStatuses: (string | null)[] = [];
+let unarchived = 0;
 
 const server = setupServer(
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
@@ -213,6 +214,11 @@ const server = setupServer(
     if (reverseError) return HttpResponse.json({ code: "INVALID_REVERSAL", message: reverseError, details: null }, { status: 400 });
     return HttpResponse.json({});
   }),
+  http.post("*/api/portfolios/p1/unarchive", () => {
+    unarchived += 1;
+    current = { ...current, status: "active", archived_at: null, archived_by: null };
+    return HttpResponse.json(current);
+  }),
   http.post("*/api/portfolios/p1/reset", async ({ request }) => {
     resetRequests.push({ key: request.headers.get("Idempotency-Key"), body: await request.json() });
     return HttpResponse.json(
@@ -237,6 +243,7 @@ afterEach(() => {
   patches = [];
   canceled = [];
   orderStatuses = [];
+  unarchived = 0;
   ws.subscribed.length = 0;
 });
 afterAll(() => server.close());
@@ -249,6 +256,30 @@ async function openTab(name: string) {
 }
 
 describe("PortfolioDetail", () => {
+  it("shows an archived portfolio read-only and restores it after confirmation", async () => {
+    current = { ...portfolio, status: "archived", archived_at: "2026-11-13T10:00:00Z", archived_by: "admin@example.com" };
+    const user = userEvent.setup();
+    renderApp("/portafogli/p1");
+    const banner = await screen.findByRole("status", { name: "Portafoglio archiviato" });
+    expect(within(banner).getByText(/sola lettura/)).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Operazioni" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Impostazioni" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Movimenti" }));
+    const table = await screen.findByRole("table", { name: "Movimenti" });
+    await within(table).findByText("versamento");
+    expect(within(table).queryByRole("button", { name: "Storna" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Ordini" }));
+    await screen.findByText("MSFT");
+    expect(screen.queryByRole("button", { name: "Annulla" })).not.toBeInTheDocument();
+
+    await user.click(within(banner).getByRole("button", { name: "Ripristina" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Ripristina" }));
+    await waitFor(() => expect(screen.queryByRole("status", { name: "Portafoglio archiviato" })).not.toBeInTheDocument());
+    expect(unarchived).toBe(1);
+    expect(screen.getByRole("tab", { name: "Operazioni" })).toBeInTheDocument();
+  });
+
   it("shows KPIs and cash per currency in the overview", async () => {
     renderApp("/portafogli/p1");
     expect(await screen.findByRole("heading", { name: "Alfa" })).toBeInTheDocument();

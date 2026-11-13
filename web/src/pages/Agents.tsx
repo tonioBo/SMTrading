@@ -96,11 +96,16 @@ function AssignmentsDialog({ agent, onClose }: { agent: Agent; onClose: () => vo
     Object.fromEntries(agent.portfolios.map((p) => [p.portfolio_id, p.permission])),
   );
 
+  // archived portfolios are not listed: their assignments are kept as they are
+  const listed = new Set((portfolios ?? []).map((p) => p.id));
+  const hidden = portfolios ? agent.portfolios.filter((p) => !listed.has(p.portfolio_id)) : [];
+
   function submit() {
     const assignments = (portfolios ?? [])
       .filter((p) => (perms[p.id] ?? "none") !== "none")
       .map((p) => ({ portfolio_id: p.id, permission: perms[p.id] as AgentPermission }));
-    save.mutate(assignments, { onSuccess: onClose });
+    const kept = hidden.map((p) => ({ portfolio_id: p.portfolio_id, permission: p.permission }));
+    save.mutate([...assignments, ...kept], { onSuccess: onClose });
   }
 
   return (
@@ -127,6 +132,12 @@ function AssignmentsDialog({ agent, onClose }: { agent: Agent; onClose: () => vo
               </select>
             </div>
           ))}
+          {hidden.length > 0 && (
+            <p className="text-sm text-muted">
+              {hidden.length === 1 ? "1 assegnazione" : `${hidden.length} assegnazioni`} a portafogli archiviati (
+              {hidden.map((p) => p.portfolio_name).join(", ")}) restano invariate.
+            </p>
+          )}
         </div>
         {save.error && (
           <p role="alert" className="text-sm text-loss">
