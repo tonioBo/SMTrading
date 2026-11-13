@@ -27,6 +27,7 @@ from smtrading.mcp.dto import (
 )
 from smtrading.mcp.runtime import ToolCtx, run_tool
 from smtrading.performance import service as performance
+from smtrading.portfolios.mode import portfolio_mode
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.queries import day_pnl, list_portfolio_journals, today_day_open
 from smtrading.risk.daily_loss import net_cash_flows_eur
@@ -83,6 +84,7 @@ async def _list_portfolios(ctx: ToolCtx) -> list[dict]:
             "name": p.name,
             "base_currency": p.base_currency,
             "status": p.status,
+            "mode": portfolio_mode(p),
             "permission": permission,
         }
         for p, permission in rows
@@ -99,6 +101,7 @@ async def portfolio_snapshot(ctx: ToolCtx, portfolio_id: str | None) -> dict:
     return {
         **valuation_dto(valuation),
         "status": portfolio.status,
+        "mode": portfolio_mode(portfolio),
         "reduce_only_reason": portfolio.reduce_only_reason,
         "leverage": portfolio.leverage,
         "day_pnl_eur": pnl,

@@ -40,6 +40,15 @@ export function useDashboard() {
   });
 }
 
+/** The same summary without the live subscription (the global banner shares its cache). */
+export function useDashboardSummary() {
+  return useQuery({
+    queryKey: dashboardKey,
+    queryFn: () => apiFetch<Dashboard>("/api/dashboard"),
+    refetchInterval: 30_000,
+  });
+}
+
 export function useEquity(period: EquityPeriod) {
   return useQuery({
     queryKey: ["dashboard", "equity", period],

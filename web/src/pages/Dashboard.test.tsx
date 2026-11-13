@@ -39,9 +39,10 @@ const dashboard: Dashboard = {
   day_pnl_eur: "-250.5",
   day_pnl_pct: "-1.99",
   portfolios: [
-    { id: "p1", name: "Alfa", status: "active", equity_eur: "10000", day_pnl_eur: "-250.5", day_pnl_pct: "-2.4", stale_symbols: [], error: null },
-    { id: "p2", name: "Beta", status: "active", equity_eur: "2345.6", day_pnl_eur: "10", day_pnl_pct: "0.4", stale_symbols: [], error: null },
+    { id: "p1", name: "Alfa", status: "active", mode: "simulazione", equity_eur: "10000", day_pnl_eur: "-250.5", day_pnl_pct: "-2.4", stale_symbols: [], error: null },
+    { id: "p2", name: "Beta", status: "active", mode: "paper", equity_eur: "2345.6", day_pnl_eur: "10", day_pnl_pct: "0.4", stale_symbols: [], error: null },
   ],
+  modes: { simulazione: 1, paper: 1, reale: 0 },
   connectors: [{ name: "binance", enabled: true, health_status: "ok", last_checked_at: null }],
   margin_alerts: [
     { id: 1, portfolio_id: "p1", kind: "margin_warning", payload: {}, created_at: "2026-11-12T10:00:00Z" },
@@ -133,5 +134,32 @@ describe("Dashboard", () => {
     expect(await screen.findByText("Kill-switch attivo")).toBeInTheDocument();
     expect(posted).toEqual({ on: true, cancel_open: true });
     expect(await screen.findByRole("button", { name: "Disattiva kill-switch" })).toBeInTheDocument();
+  });
+
+  it("shows a mode badge per portfolio, the count per mode and the banner", async () => {
+    renderApp("/");
+    const counts = await screen.findByRole("list", { name: "Portafogli per modalità" });
+    expect(within(counts).getByText(/simulazione:/)).toHaveTextContent("simulazione: 1");
+    expect(within(counts).getByText(/paper:/)).toHaveTextContent("paper: 1");
+    expect(within(counts).queryByText(/reale/)).toBeNull();
+    expect(screen.getByLabelText(/Modalità: simulazione\./)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Modalità: paper\./)).toBeInTheDocument();
+    expect(await screen.findByRole("status", { name: "Modalità di trading" })).toHaveTextContent(
+      "Simulazione e paper trading (conti demo) – nessun denaro reale",
+    );
+  });
+
+  it("says simulation only when no portfolio has a broker, and flags real money in red", async () => {
+    current = { ...dashboard, modes: { simulazione: 2, paper: 0, reale: 0 } };
+    const { unmount } = renderApp("/");
+    expect(await screen.findByRole("status", { name: "Modalità di trading" })).toHaveTextContent(
+      "Simulazione – denaro virtuale, prezzi di mercato reali",
+    );
+    unmount();
+    current = { ...dashboard, modes: { simulazione: 1, paper: 0, reale: 1 } };
+    renderApp("/");
+    const banner = await screen.findByRole("status", { name: "Modalità di trading" });
+    expect(banner).toHaveTextContent("denaro reale");
+    expect(banner.className).toContain("text-loss");
   });
 });

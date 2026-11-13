@@ -26,6 +26,7 @@ function portfolio(id: string, name: string, extra: Partial<Portfolio> = {}): Po
     warning_margin_pct: "75",
     slippage_bps: 0,
     status: "active",
+    mode: "simulazione",
     timezone: "Europe/Rome",
     risk_profile_id: null,
     reduce_only_reason: null,

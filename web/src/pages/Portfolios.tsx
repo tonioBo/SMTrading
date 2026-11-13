@@ -11,6 +11,7 @@ import { FormField, selectClass } from "@/components/FormField";
 import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
 import { Pnl } from "@/components/Pnl";
+import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
 import { PortfolioStatusBadge } from "@/components/PortfolioStatusBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -30,6 +31,7 @@ const baseColumns: Column<Portfolio>[] = [
         <Link to={`/portafogli/${p.id}`} className="text-accent hover:underline">
           {p.name}
         </Link>
+        <PortfolioModeBadge mode={p.mode} className="ml-2" />
         {p.valuation_error && <span className="ml-2 text-xs text-loss">valutazione non disponibile</span>}
       </>
     ),

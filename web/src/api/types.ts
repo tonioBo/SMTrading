@@ -19,10 +19,14 @@ export interface KillSwitchResult extends KillSwitchState {
   canceled: number;
 }
 
+/** simulazione = no broker (virtual money); paper = demo broker account; reale reserved */
+export type PortfolioMode = "simulazione" | "paper" | "reale";
+
 export interface DashboardPortfolio {
   id: string;
   name: string;
   status: string;
+  mode: PortfolioMode;
   equity_eur: string | null;
   day_pnl_eur: string | null;
   day_pnl_pct: string | null;
@@ -50,6 +54,8 @@ export interface Dashboard {
   day_pnl_eur: string;
   day_pnl_pct: string | null;
   portfolios: DashboardPortfolio[];
+  /** non-archived portfolios per mode */
+  modes: Record<PortfolioMode, number>;
   connectors: DashboardConnector[];
   margin_alerts: MarginAlert[];
   kill_switch: boolean;
@@ -81,6 +87,7 @@ export interface Portfolio {
   warning_margin_pct: string;
   slippage_bps: number;
   status: PortfolioStatus;
+  mode: PortfolioMode;
   timezone: string;
   risk_profile_id: string | null;
   reduce_only_reason: string | null;

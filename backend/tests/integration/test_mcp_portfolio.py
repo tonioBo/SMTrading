@@ -408,6 +408,7 @@ async def test_archived_portfolio_is_invisible_to_agents(mcp_server, mcp_call, b
     url, token = mcp_server.url, mcp_server.token
     is_error, listed = await mcp_call(url, token, "list_portfolios")
     assert not is_error and [p["name"] for p in listed] == ["Other"]
+    assert [p["mode"] for p in listed] == ["simulazione"]  # no broker link
     demo = {"portfolio_id": str(mcp_server.demo_id)}
     for tool, args in (
         ("get_portfolio", demo), ("get_positions", demo),

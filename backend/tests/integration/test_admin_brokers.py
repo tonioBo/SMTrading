@@ -332,3 +332,23 @@ async def test_broker_positions(admin, fake_alpaca):
     ]}
     r = await admin.client.get(f"/api/broker-links/{uuid.uuid4()}/positions")
     assert r.status_code == 404
+
+
+async def test_portfolio_mode_follows_the_broker_link(admin, fake_alpaca):
+    c = admin.client
+    link = await _link(c)
+    pf = await _portfolio(c)
+    assert (await c.get(f"/api/portfolios/{pf['id']}")).json()["mode"] == "simulazione"
+    dash = (await c.get("/api/dashboard")).json()
+    sim_before = dash["modes"]["simulazione"]
+    assert dash["modes"]["paper"] == 0 and dash["modes"]["reale"] == 0
+    assert {p["id"]: p["mode"] for p in dash["portfolios"]}[pf["id"]] == "simulazione"
+
+    r = await c.put(f"/api/portfolios/{pf['id']}/broker-link",
+                    json={"broker_link_id": link["id"]})
+    assert r.status_code == 200 and r.json()["mode"] == "paper"
+    listed = {p["id"]: p["mode"] for p in (await c.get("/api/portfolios")).json()}
+    assert listed[pf["id"]] == "paper"
+    dash = (await c.get("/api/dashboard")).json()
+    assert dash["modes"] == {"simulazione": sim_before - 1, "paper": 1, "reale": 0}
+    assert {p["id"]: p["mode"] for p in dash["portfolios"]}[pf["id"]] == "paper"

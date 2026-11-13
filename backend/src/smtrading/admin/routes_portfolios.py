@@ -60,6 +60,7 @@ from smtrading.mcp.dto import (
 )
 from smtrading.performance.service import get_performance
 from smtrading.portfolios.locks import lock_live_portfolio
+from smtrading.portfolios.mode import portfolio_mode
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.queries import day_pnl, list_portfolio_journals
 from smtrading.portfolios.service import create_portfolio, deposit, get_cash_balances, withdraw
@@ -172,7 +173,9 @@ PORTFOLIO_FIELDS = (
 
 
 def _portfolio_dto(p: Portfolio) -> dict[str, Any]:
-    return {f: to_jsonable(getattr(p, f)) for f in PORTFOLIO_FIELDS}
+    out = {f: to_jsonable(getattr(p, f)) for f in PORTFOLIO_FIELDS}
+    out["mode"] = to_jsonable(portfolio_mode(p))
+    return out
 
 
 async def _summary(

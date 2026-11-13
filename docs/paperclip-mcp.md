@@ -108,6 +108,8 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
 - `list_portfolios`: i portafogli utilizzabili dall'agente, con il permesso (`read`/`trade`).
   I portafogli archiviati dall'amministratore non compaiono e, cercati per id, danno
   `NOT_FOUND` (l'assegnazione resta e torna valida quando vengono ripristinati).
+  Il campo `mode` (anche in `get_portfolio`) indica la modalita': `simulazione` (nessun broker
+  collegato, denaro virtuale), `paper` (collegato a un conto demo) o `reale` (riservato, non ancora usato).
 - `get_portfolio`: valutazione mark-to-market (EUR): equity, esposizione, margini, potere d'acquisto, posizioni, P&L del giorno.
 - `get_positions`: posizioni aperte con prezzo medio, mark e P&L non realizzato.
 - `get_transactions`: movimenti del ledger del portafoglio, dal piu' recente, con filtri e paginazione (`before_seq`).

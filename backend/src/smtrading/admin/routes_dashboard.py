@@ -37,6 +37,7 @@ from smtrading.common.money import quantize_money
 from smtrading.connectors.models import Connector
 from smtrading.mcp.dto import to_jsonable
 from smtrading.performance.service import MAX_SERIES_POINTS, PERIODS, SPANS, downsample
+from smtrading.portfolios.mode import PortfolioMode, portfolio_mode
 from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
 from smtrading.portfolios.queries import day_pnl_detail
 from smtrading.risk.models import EquitySnapshot, Notification, SnapshotKind
@@ -67,6 +68,7 @@ async def dashboard(session: DbSession, redis: RedisClient, qs: Quotes) -> dict[
     for p in portfolios:
         item: dict[str, Any] = {
             "id": str(p.id), "name": p.name, "status": to_jsonable(p.status),
+            "mode": to_jsonable(portfolio_mode(p)),
             "equity_eur": None, "day_pnl_eur": None, "day_pnl_pct": None,
             "stale_symbols": [], "error": None,
         }
@@ -87,6 +89,10 @@ async def dashboard(session: DbSession, redis: RedisClient, qs: Quotes) -> dict[
             equity_eur=to_jsonable(v.equity_eur), day_pnl_eur=to_jsonable(pnl),
             day_pnl_pct=to_jsonable(pct), stale_symbols=list(v.stale_symbols),
         )
+
+    modes = {m.value: 0 for m in PortfolioMode}
+    for p in portfolios:
+        modes[portfolio_mode(p).value] += 1
 
     total_pct = None
     if pct_base > 0:
@@ -109,6 +115,7 @@ async def dashboard(session: DbSession, redis: RedisClient, qs: Quotes) -> dict[
         "day_pnl_eur": to_jsonable(quantize_money(total_pnl, "EUR")),
         "day_pnl_pct": to_jsonable(total_pct),
         "portfolios": items,
+        "modes": modes,
         "connectors": [
             {"name": name, "enabled": enabled, "health_status": health,
              "last_checked_at": to_jsonable(checked)}

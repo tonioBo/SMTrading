@@ -6,10 +6,12 @@ import { KillSwitchButton } from "@/components/KillSwitchButton";
 import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
 import { Pnl } from "@/components/Pnl";
+import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatDateTime, formatMoney, formatQty } from "@/lib/format";
+import { MODE_INFO } from "@/lib/portfolioMode";
 import { heartbeatState } from "@/lib/heartbeat";
 import { cn } from "@/lib/utils";
 
@@ -139,6 +141,20 @@ function LiveFeed() {
   );
 }
 
+function ModeCounts({ modes }: { modes: DashboardData["modes"] }) {
+  return (
+    <ul aria-label="Portafogli per modalità" className="mt-1 flex flex-wrap gap-x-3 text-xs font-normal text-muted">
+      {(["simulazione", "paper", "reale"] as const)
+        .filter((m) => m !== "reale" || modes[m] > 0)
+        .map((m) => (
+          <li key={m}>
+            {MODE_INFO[m].icon} {MODE_INFO[m].label.toLowerCase()}: <span className="num">{modes[m] ?? 0}</span>
+          </li>
+        ))}
+    </ul>
+  );
+}
+
 function PortfolioTable({ portfolios }: { portfolios: DashboardData["portfolios"] }) {
   return (
     <Card>
@@ -164,6 +180,7 @@ function PortfolioTable({ portfolios }: { portfolios: DashboardData["portfolios"
                     <Link to={`/portafogli/${p.id}`} className="text-accent hover:underline">
                       {p.name}
                     </Link>
+                    <PortfolioModeBadge mode={p.mode} className="ml-2" />
                     {p.error && <span className="ml-2 text-xs text-loss">valutazione non disponibile</span>}
                     {p.stale_symbols.length > 0 && <span className="ml-2 text-xs text-warn">quotazioni non aggiornate</span>}
                   </TableCell>
@@ -205,6 +222,7 @@ export default function Dashboard() {
             </Kpi>
             <Kpi title="Portafogli">
               <span className="num">{data.portfolios.length}</span>
+              <ModeCounts modes={data.modes} />
             </Kpi>
             <Kpi title="Worker">
               {(() => {

@@ -2,6 +2,7 @@ import { LogOut } from "lucide-react";
 import { Outlet, useNavigate } from "react-router-dom";
 import { useLogout, useMe } from "@/api/hooks/auth";
 import { KillSwitchIndicator } from "@/components/KillSwitchIndicator";
+import { ModeBanner } from "@/components/ModeBanner";
 import { Sidebar } from "@/components/Sidebar";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
@@ -59,6 +60,7 @@ export function Layout() {
             Esci
           </Button>
         </header>
+        <ModeBanner />
         <main className="flex-1 overflow-auto p-6">
           <Outlet />
         </main>

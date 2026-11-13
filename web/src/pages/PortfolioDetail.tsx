@@ -22,6 +22,7 @@ import { EquityChart } from "@/components/EquityChart";
 import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
 import { Pnl } from "@/components/Pnl";
+import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
 import { PortfolioStatusBadge } from "@/components/PortfolioStatusBadge";
 import { selectClass } from "@/components/FormField";
 import { Badge } from "@/components/ui/badge";
@@ -529,7 +530,12 @@ export default function PortfolioDetail() {
         <ArrowLeft className="h-4 w-4" /> Portafogli
       </Link>
       <PageHeader title={portfolio?.name ?? "Portafoglio"}>
-        {portfolio && <PortfolioStatusBadge status={portfolio.status} />}
+        {portfolio && (
+          <div className="flex items-center gap-2">
+            <PortfolioModeBadge mode={portfolio.mode} />
+            <PortfolioStatusBadge status={portfolio.status} />
+          </div>
+        )}
       </PageHeader>
       {isError && <p className="text-loss">{errorMessage(error, "Impossibile caricare il portafoglio")}</p>}
       {portfolio && archived && <ArchivedBanner portfolio={portfolio} />}

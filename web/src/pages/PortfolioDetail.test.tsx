@@ -51,6 +51,7 @@ const portfolio: Portfolio = {
   warning_margin_pct: "75",
   slippage_bps: 5,
   status: "active",
+  mode: "simulazione",
   timezone: "Europe/Rome",
   risk_profile_id: "r1",
   reduce_only_reason: null,
