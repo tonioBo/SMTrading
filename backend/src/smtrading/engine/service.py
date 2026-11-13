@@ -348,6 +348,18 @@ async def _fill_now(
         await session.flush()
 
 
+async def _hand_now(session: AsyncSession, order: Order, link_id) -> None:
+    """Triggered at placement on a linked portfolio: to the broker after the fill-time
+    checks; a failed check rejects the order, like a failed simulated fill."""
+    try:
+        async with session.begin_nested():
+            await hand_to_broker(session, order, link_id)
+    except SMTError as e:
+        await session.refresh(order)
+        _reject(order, e.code, e.message)
+    await session.flush()
+
+
 def _view(order: Order) -> OrderView:
     return OrderView(
         type=order.type, side=order.side, status=order.status,
@@ -368,9 +380,8 @@ async def _evaluate_now(
             order.trail_ref_price = result.new_trail_ref
         if result.action in (TriggerAction.fill, TriggerAction.trigger_to_market):
             link_id = (await session.get(Portfolio, order.portfolio_id)).broker_link_id
-            if link_id is not None:  # Ruling R10 (a)
-                hand_to_broker(order, link_id)
-                await session.flush()
+            if link_id is not None:  # Ruling R10 (a)/R11
+                await _hand_now(session, order, link_id)
                 return
         if result.action == TriggerAction.fill:
             await session.flush()

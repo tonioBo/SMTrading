@@ -527,8 +527,10 @@ class OrderProcessor:
             order.updated_at = datetime.now(UTC)
             return True
         link_id = (await session.get(Portfolio, order.portfolio_id)).broker_link_id
-        if link_id is not None:  # Ruling R10 (a): the broker executes it
-            hand_to_broker(order, link_id)
+        if link_id is not None:  # Ruling R10 (a)/R11: the broker executes it
+            if not await hand_to_broker(session, order, link_id):  # nothing to reduce
+                await _untrack_if_idle(session, order.symbol)
+                return False
             log.info("order %s triggered: sent to the broker as a market order", order.id)
             return True
         if result.action == TriggerAction.trigger_to_market:

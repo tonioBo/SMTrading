@@ -349,8 +349,9 @@ async def test_kill_switch_and_lock_checked_again_before_sending(maker, redis, q
 
 
 async def test_trailing_trigger_is_simulated_then_sent_to_the_broker(maker, redis, qs):
-    """Ruling R10 (a): the trailing trigger stays simulated; on trigger the order becomes
-    a reduce-only market order sent to the broker, never filled locally."""
+    """Ruling R10 (a)/R11: the trailing trigger stays simulated; on trigger the order
+    becomes a market order (its own reduce_only flag) sent to the broker, never filled
+    locally."""
     pid, link_id = await _linked_portfolio(maker)
     buy = await _place(maker, redis, qs, pid)
     sync = _sync(maker, redis, qs)
@@ -373,7 +374,7 @@ async def test_trailing_trigger_is_simulated_then_sent_to_the_broker(maker, redi
     proc = OrderProcessor(maker, redis, qs, clock=Clock(OPEN))
     await proc.on_tick("AAPL", qs._quotes["AAPL"])
     o = await _order(maker, oid)
-    assert (o.type, o.reduce_only, o.status) == (OrderType.market, True, OrderStatus.pending)
+    assert (o.type, o.reduce_only, o.status) == (OrderType.market, False, OrderStatus.pending)
     assert o.broker_link_id == link_id and o.broker_status == BrokerState.TO_SEND
     assert await _fills(maker, oid) == []
     await sync.tick()
@@ -383,6 +384,70 @@ async def test_trailing_trigger_is_simulated_then_sent_to_the_broker(maker, redi
     o = await _order(maker, oid)
     assert o.status == OrderStatus.filled
     assert [f.source for f in await _fills(maker, oid)] == ["broker"]
+
+
+async def _trigger_trailing_buy(maker, redis, qs, pid, **kw):
+    """A trailing buy (an entry on a flat portfolio) triggered by the processor."""
+    oid = await _place(
+        maker, redis, qs, pid, type=OrderType.trailing_stop, side=OrderSide.buy,
+        trail_pct=D(5), **kw,
+    )
+    assert (await _order(maker, oid)).broker_link_id is None
+    qs.set_quote("AAPL", D("110"), D("110.10"), None, ts=OPEN)
+    await OrderProcessor(maker, redis, qs, clock=Clock(OPEN)).on_tick(
+        "AAPL", qs._quotes["AAPL"]
+    )
+    return oid
+
+
+async def test_trailing_entry_is_routed_without_reduce_only(maker, redis, qs):
+    """Ruling R11: a trailing entry keeps reduce_only False and is sent in full."""
+    pid, link_id = await _linked_portfolio(maker)
+    oid = await _trigger_trailing_buy(maker, redis, qs, pid)
+    o = await _order(maker, oid)
+    assert (o.type, o.reduce_only, o.qty) == (OrderType.market, False, TEN)
+    assert o.broker_link_id == link_id and o.broker_status == BrokerState.TO_SEND
+    await _sync(maker, redis, qs).tick()
+    assert BROKER.placed == [("b1", str(oid), TEN)]
+    BROKER.set("b1", "filled", 10, "110.10")
+    await _sync(maker, redis, qs).tick()
+    assert (await _order(maker, oid)).status == OrderStatus.filled
+    assert len(await _trade_journals(maker, oid)) == 1
+
+
+async def test_trailing_entry_under_kill_switch_is_rejected_locally(maker, redis, qs):
+    """Ruling R11: the fill-time checks run before the conversion: an
+    exposure-increasing trigger with the kill switch on is rejected, nothing is sent."""
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(
+        maker, redis, qs, pid, type=OrderType.trailing_stop, side=OrderSide.buy,
+        trail_pct=D(5),
+    )
+    async with maker() as s:
+        await set_kill_switch(s, True)
+        await s.commit()
+    qs.set_quote("AAPL", D("110"), D("110.10"), None, ts=OPEN)
+    await OrderProcessor(maker, redis, qs, clock=Clock(OPEN)).on_tick(
+        "AAPL", qs._quotes["AAPL"]
+    )
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.rejected
+    assert o.reject_code == str(ErrorCode.KILL_SWITCH_ACTIVE)
+    assert o.broker_link_id is None and o.broker_status is None
+    assert await _notes(maker, pid, "order.rejected")
+    await _sync(maker, redis, qs).tick()
+    assert BROKER.placed == []
+
+
+async def test_reduce_only_trailing_with_nothing_to_reduce_is_canceled(maker, redis, qs):
+    """Ruling R11: a reduce_only trailing trigger on a flat portfolio is canceled
+    locally (nothing_to_reduce), never sent."""
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _trigger_trailing_buy(maker, redis, qs, pid, reduce_only=True)
+    o = await _order(maker, oid)
+    assert (o.status, o.reject_message) == (OrderStatus.canceled, "nothing_to_reduce")
+    await _sync(maker, redis, qs).tick()
+    assert BROKER.placed == []
 
 
 async def test_processor_skips_broker_managed_orders(maker, redis, qs):
@@ -967,6 +1032,60 @@ async def test_margin_liquidation_is_routed_to_the_broker(maker, redis):
         types = list(await s.scalars(select(Journal.type).where(Journal.order_id == liq.id)))
         assert types == [JournalType.LIQUIDATION]
         assert (await s.get(Portfolio, pid)).status == PortfolioStatus.active
+
+
+async def test_broker_liquidation_cancels_the_symbol_orders_first(maker, redis):
+    """Concern 2 (R11): the liquidation's send first cancels, in the same pass, the
+    symbol's other orders live at the broker (even when the pass reaches it first)."""
+    q = FakeQuoteSource()
+    q.set_fx("EUR", "USD", D("1.25"))
+    q.set_quote("ENI.MI", D("14.995"), D("15.005"), None, ts=OPEN)
+    async with maker() as s:
+        p = await create_portfolio(
+            s, name=f"M-{uuid.uuid4().hex[:8]}", initial_cash=D(100000), leverage=D(2),
+        )
+        o = Order(portfolio_id=p.id, symbol="ENI.MI", side=OrderSide.buy,
+                  type=OrderType.market, qty=D(13000), status=OrderStatus.new)
+        s.add(o)
+        await s.flush()
+        await execute_fill(s, q, o.id, quote=(await q.get_quotes(["ENI.MI"]))["ENI.MI"])
+        link = await create_link(s, f"L-{uuid.uuid4().hex[:8]}", "fake_test", {})
+        await link_portfolio(s, p.id, link.id)
+        await s.commit()
+        pid = p.id
+    async with maker() as s:
+        limit = await place_order(s, q, PlaceOrderRequest(
+            portfolio_id=pid, symbol="ENI.MI", side=OrderSide.sell, type=OrderType.limit,
+            qty=D(100), limit_price=D("20"),
+        ), now=OPEN)
+        await s.commit()
+    sync = _sync(maker, redis, q)
+    await sync.tick()
+    assert BROKER.placed[0][1] == str(limit.id)
+    q.set_quote("ENI.MI", D("8.995"), D("9.005"), None, ts=OPEN)
+    async with maker() as s:
+        assert await check_portfolio_margin(s, q, pid, now=OPEN) == "liquidated"
+        await s.commit()
+    async with maker() as s:  # the pass reaches the liquidation before the limit order
+        await s.execute(text("update orders set created_at = now() + interval '1 hour'"
+                             " where id = :i"), {"i": limit.id})
+        await s.commit()
+    placed_before = len(BROKER.placed)
+    real_place = FakeBrokerAdapter.place_order
+    seen = []
+
+    async def place(self, order, instrument):
+        seen.append(list(BROKER.canceled))
+        return await real_place(self, order, instrument)
+
+    FakeBrokerAdapter.place_order = place
+    try:
+        await sync.tick()
+    finally:
+        FakeBrokerAdapter.place_order = real_place
+    assert len(BROKER.placed) == placed_before + 1  # the liquidation
+    assert seen == [["b1"]]  # b1 was canceled before the liquidation was sent
+    assert (await _order(maker, limit.id)).status == OrderStatus.canceled
 
 
 async def test_cancel_requested_never_sent_is_canceled_locally(maker, redis, qs):

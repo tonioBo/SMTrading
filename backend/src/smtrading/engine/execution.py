@@ -102,16 +102,54 @@ def broker_live(order: Order) -> bool:
     )
 
 
-def hand_to_broker(order: Order, link_id: UUID) -> None:
-    """Ruling R10 (a): a simulated trigger on a broker-linked portfolio (trailing stop)
-    becomes a reduce-only market order sent by BrokerSync; nothing fills locally."""
+async def broker_send_check(
+    session: AsyncSession, portfolio: Portfolio, order: Order, *, clamp: bool = True
+) -> bool:
+    """The fill-time local checks for an order about to be sent to the broker (the same
+    the simulator applies at fill, I3): raises PORTFOLIO_LOCKED / REDUCE_ONLY /
+    KILL_SWITCH_ACTIVE; for a reduce_only order clamps qty to the position and returns
+    False when there is nothing to reduce (`clamp=False`: an order already at the broker,
+    qty left as is). The caller holds the portfolio lock."""
+    held = await session.scalar(
+        select(AccountBalance.balance)
+        .join(Account, AccountBalance.account_id == Account.id)
+        .where(Account.portfolio_id == portfolio.id, Account.asset == order.symbol,
+               Account.kind == AccountKind.position)
+    ) or Decimal(0)
+    buy = order.side == OrderSide.buy
+    closing = held != 0 and (held > 0) != buy
+    remaining = None if order.qty is None else order.qty - (order.filled_qty or Decimal(0))
+    if order.reduce_only:
+        if not closing:
+            return False
+        if clamp and remaining is not None and remaining > abs(held):
+            order.qty = (order.filled_qty or Decimal(0)) + abs(held)
+            remaining = abs(held)
+    reducing = closing and (
+        order.reduce_only if remaining is None else remaining <= abs(held)
+    )
+    await _check_status(session, portfolio, reducing, order.symbol)
+    return True
+
+
+async def hand_to_broker(session: AsyncSession, order: Order, link_id: UUID) -> bool:
+    """Ruling R10 (a) / R11: a simulated trigger on a broker-linked portfolio (trailing
+    stop) becomes a market order sent by BrokerSync, keeping its own reduce_only flag;
+    nothing fills locally. The fill-time checks run first (broker_send_check): an error
+    is raised for the caller to reject the order; False when a reduce_only order had
+    nothing to reduce (canceled here)."""
+    portfolio = await session.get(Portfolio, order.portfolio_id)
+    if not await broker_send_check(session, portfolio, order):
+        _cancel_nothing_to_reduce(session, order)
+        await session.flush()
+        return False
     order.type = OrderType.market
     order.trail_pct = order.trail_amount = None  # trail_ref_price records the trigger
-    order.reduce_only = True
     order.status = OrderStatus.pending
     order.broker_link_id = link_id
     order.broker_status = BrokerState.TO_SEND
     order.updated_at = datetime.now(UTC)
+    return True
 
 
 def _no_buying_power(message: str, **details) -> SMTError:
@@ -403,15 +441,15 @@ def _cancel_nothing_to_reduce(session: AsyncSession, order: Order) -> None:
 
 
 async def _check_status(
-    session: AsyncSession, portfolio: Portfolio, split: "_Split", symbol: str
+    session: AsyncSession, portfolio: Portfolio, reducing: bool, symbol: str
 ) -> None:
     """I3: portfolio status and kill switch, enforced again at fill time."""
     details = {"portfolio_id": str(portfolio.id), "symbol": symbol}
     if portfolio.status == PortfolioStatus.locked:
         raise SMTError(ErrorCode.PORTFOLIO_LOCKED, "portfolio is locked", details)
-    if portfolio.status == PortfolioStatus.reduce_only and not split.reducing:
+    if portfolio.status == PortfolioStatus.reduce_only and not reducing:
         raise SMTError(ErrorCode.REDUCE_ONLY, "portfolio is reduce-only", details)
-    if not split.reducing and await is_kill_switch_on(session):
+    if not reducing and await is_kill_switch_on(session):
         raise SMTError(
             ErrorCode.KILL_SWITCH_ACTIVE, "trading is halted by the kill switch", details
         )
@@ -521,7 +559,7 @@ async def execute_fill(
     after, close_notional, open_notional = split.after, split.close_notional, split.open_notional
     reducing = split.reducing
     if journal_type != JournalType.LIQUIDATION and not broker:
-        await _check_status(session, portfolio, split, symbol)
+        await _check_status(session, portfolio, split.reducing, symbol)
     if after < 0 and not buy and not broker:
         await _check_short_allowed(session, portfolio, instrument)
 

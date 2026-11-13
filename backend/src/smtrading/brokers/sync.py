@@ -57,7 +57,12 @@ from smtrading.brokers.base import BrokerAdapter, BrokerOrder
 from smtrading.brokers.models import BrokerLink, Reconciliation
 from smtrading.brokers.service import get_adapter
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.engine.execution import activate_linked, execute_fill
+from smtrading.engine.execution import (
+    NOTHING_TO_REDUCE,
+    activate_linked,
+    broker_send_check,
+    execute_fill,
+)
 from smtrading.engine.models import (
     BROKER_LIQUIDATION_REASON,
     LIQUIDATION_ROLE,
@@ -84,7 +89,6 @@ from smtrading.portfolios.locks import lock_portfolio
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.risk.daily_loss import check_daily_loss
 from smtrading.risk.models import Notification
-from smtrading.risk.settings import is_kill_switch_on
 
 log = logging.getLogger("smtrading.brokers.sync")
 
@@ -377,17 +381,18 @@ class BrokerSync:
             log.warning("portfolio %s unlocked: broker liquidation done", portfolio.id)
 
     async def _refusal(
-        self, session: AsyncSession, portfolio: Portfolio, order: Order
+        self, session: AsyncSession, portfolio: Portfolio, order: Order, *, clamp: bool
     ) -> SMTError | None:
-        """The local checks again, right before sending (a liquidation always goes)."""
+        """The fill-time local checks again, right before sending (Ruling R11; a
+        liquidation always goes). A reduce_only order is clamped to the position
+        (`clamp`); nothing to reduce is returned as an INVALID_ORDER error."""
         if order.role == LIQUIDATION_ROLE:
             return None
-        if portfolio.status == PortfolioStatus.locked:
-            return SMTError(ErrorCode.PORTFOLIO_LOCKED, "portfolio is locked")
-        if portfolio.status == PortfolioStatus.reduce_only and not order.reduce_only:
-            return SMTError(ErrorCode.REDUCE_ONLY, "portfolio is reduce-only")
-        if not order.reduce_only and await is_kill_switch_on(session):
-            return SMTError(ErrorCode.KILL_SWITCH_ACTIVE, "trading is halted by the kill switch")
+        try:
+            if not await broker_send_check(session, portfolio, order, clamp=clamp):
+                return SMTError(ErrorCode.INVALID_ORDER, NOTHING_TO_REDUCE)
+        except SMTError as e:
+            return e
         return None
 
     async def _must_stop(self, session: AsyncSession, order: Order) -> str | None:
@@ -398,7 +403,7 @@ class BrokerSync:
             return "expired"
         if link is None or not link.enabled or portfolio.broker_link_id != link.id:
             return "broker link disabled or removed"
-        refusal = await self._refusal(session, portfolio, order)
+        refusal = await self._refusal(session, portfolio, order, clamp=False)
         return None if refusal is None else refusal.message
 
     async def _mark_unknown(self, session: AsyncSession, order: Order, reason: str) -> None:
@@ -453,16 +458,33 @@ class BrokerSync:
                 return
             if not market_status(instrument.market, now).is_open:
                 return
-            refusal = await self._refusal(session, portfolio, order)
+            refusal = await self._refusal(session, portfolio, order, clamp=True)
+            if refusal is not None and refusal.message == NOTHING_TO_REDUCE:
+                self._set_final(session, order, OrderStatus.canceled)
+                order.reject_message = NOTHING_TO_REDUCE
+                await cancel_held_children(session, order, by="system")
+                await self._closed(session, order)
+                await self._commit(session)
+                return
             if refusal is not None:
                 await self._reject(session, order, refusal.code, refusal.message)
                 await self._commit(session)
                 return
             adapter = await self._adapter(session, link.id)
+            others = (
+                await self._cancel_others(session, order)
+                if order.role == LIQUIDATION_ROLE else []
+            )
             order.broker_status = BrokerState.SENDING
             order.broker_sent_at = now
             order.broker_last_sync_at = now
             await self._commit(session)  # claimed before any network I/O
+
+        for other in others:  # their cancels go first, in this same pass
+            try:
+                await self._cancel(other)
+            except Exception:
+                log.exception("broker cancel of order %s before a liquidation failed", other)
 
         try:
             await adapter.prepare([instrument])
@@ -485,6 +507,30 @@ class BrokerSync:
                 await self._update(order_id, lambda s, o: self._mark_unknown(s, o, reason))
             return
         await self._update(order_id, lambda s, o: self._placed(s, o, bo), bo)
+
+    async def _cancel_others(self, session: AsyncSession, order: Order) -> list[UUID]:
+        """A broker liquidation: request the cancel of the symbol's other open orders of
+        the portfolio at the broker; their ids (those with a broker order) to cancel
+        right away."""
+        ids = []
+        for other in await session.scalars(
+            select(Order).where(
+                Order.portfolio_id == order.portfolio_id, Order.symbol == order.symbol,
+                Order.id != order.id, Order.broker_link_id.is_not(None),
+                Order.status.in_(_SYNCED),
+            ).order_by(Order.created_at, Order.id).with_for_update()
+        ):
+            if other.broker_order_id is None and other.broker_sent_at is None:
+                if other.broker_status != BrokerState.SENDING:
+                    self._set_final(session, other, OrderStatus.canceled)
+                    await cancel_held_children(session, other, by="system")
+                continue
+            if other.broker_status != BrokerState.SENDING:
+                other.broker_status = BrokerState.CANCEL_REQUESTED
+                other.updated_at = datetime.now(UTC)
+            if other.broker_order_id is not None:
+                ids.append(other.id)
+        return ids
 
     def _release(self, order: Order) -> None:
         """Back to the simulator: only for a portfolio the admin unlinked, never sent."""
