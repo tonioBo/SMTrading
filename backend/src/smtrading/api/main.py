@@ -10,6 +10,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from starlette.routing import Route
 
+from smtrading.admin.errors import install_error_handlers
+from smtrading.admin.routes_auth import router as auth_router
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
 from smtrading.marketdata.router import MarketDataRouter
@@ -72,6 +74,8 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
                     runtime = McpRuntime(sessionmaker, resources.redis, router, router)
                 set_runtime(runtime)
                 app.state.mcp_runtime = runtime
+                app.state.sessionmaker = sessionmaker
+                app.state.redis = resources.redis
                 async with mcp.session_manager.run():
                     yield
         finally:
@@ -85,6 +89,8 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.router.routes.append(Route(MCP_PATH, endpoint=mcp_endpoint))
     app.router.routes.append(Route(MCP_PATH + "/", endpoint=mcp_endpoint))
     app.add_middleware(McpAuthMiddleware, get_sessionmaker=lambda: get_runtime().sessionmaker)
+    install_error_handlers(app)
+    app.include_router(auth_router)
 
     @app.get("/health")
     async def health(response: Response) -> dict:

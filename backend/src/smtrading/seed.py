@@ -6,8 +6,11 @@ from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from smtrading.admin.auth import hash_password, normalize_email
+from smtrading.admin.models import AdminUser
 from smtrading.agents.models import Agent
 from smtrading.agents.service import assign_portfolio, create_agent
+from smtrading.common.config import get_settings
 from smtrading.common.db import get_sessionmaker
 from smtrading.connectors.service import seed_connectors
 from smtrading.fees.models import FeeRule, FeeScope, FeeSide
@@ -65,11 +68,14 @@ _INSTRUMENTS = [
 ]
 
 
-async def run_seed(session: AsyncSession) -> str | None:
+async def run_seed(session: AsyncSession, *, admin: tuple[str, str] | None = None) -> str | None:
     """Idempotent seed. Does not commit. Existing rows (and admin edits) are left untouched.
 
-    Returns the plaintext demo-agent token when it was created by this run (print it only after
-    the caller commits), else None."""
+    `admin` = (email, password) of the web-app admin, created only if missing (the CLI
+    entry point passes SMT_ADMIN_EMAIL / SMT_ADMIN_PASSWORD).
+
+    Returns the plaintext demo-agent token when it was created by this run (print it only
+    after the caller commits), else None."""
     await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": SEED_LOCK_KEY})
     rows = [
         {
@@ -116,8 +122,19 @@ async def run_seed(session: AsyncSession) -> str | None:
     await seed_connectors(session)
     await _seed_risk(session)
     token = await _seed_demo_agent(session)
+    if admin is not None:
+        await seed_admin(session, *admin)
     await session.flush()
     return token
+
+
+async def seed_admin(session: AsyncSession, email: str, password: str) -> None:
+    """Create the admin user if no admin has this email; an existing password is kept."""
+    email = normalize_email(email)
+    if await session.scalar(select(AdminUser.id).where(AdminUser.email == email)) is not None:
+        return
+    session.add(AdminUser(email=email, password_hash=await hash_password(password)))
+    await session.flush()
 
 
 async def _seed_demo_agent(session: AsyncSession) -> str | None:
@@ -174,7 +191,8 @@ async def _seed_risk(session: AsyncSession) -> None:
 
 async def _main() -> None:
     async with get_sessionmaker()() as session:
-        token = await run_seed(session)
+        settings = get_settings()
+        token = await run_seed(session, admin=(settings.admin_email, settings.admin_password))
         await session.commit()
     if token is not None:
         print(

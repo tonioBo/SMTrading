@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from testcontainers.postgres import PostgresContainer
 from testcontainers.redis import RedisContainer
 
+import smtrading.models  # noqa: F401  (every table on Base.metadata, for single-file runs)
 from smtrading.common.config import get_settings
 from smtrading.common.db import get_sessionmaker, make_engine
 
