@@ -11,9 +11,16 @@ vi.mock("@/lib/ws", async (orig) => ({
   useLiveSocket: () => ({ socket: null, status: "open" }),
 }));
 
+let pwPosts: unknown[] = [];
+let pwForbidden = false;
 let tzPuts: unknown[] = [];
 const server = setupServer(
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
+  http.post("*/api/auth/password", async ({ request }) => {
+    pwPosts.push(await request.json());
+    if (pwForbidden) return HttpResponse.json({ code: "FORBIDDEN", message: "password attuale errata", details: null }, { status: 403 });
+    return HttpResponse.json({ ok: true });
+  }),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
   http.get("*/api/settings/app", () => HttpResponse.json({ stale_quote_s: {}, default_spread_bps: {}, timezone: "Europe/Rome" })),
   http.put("*/api/settings/app", async ({ request }) => {
@@ -31,6 +38,8 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
   server.resetHandlers();
   tzPuts = [];
+  pwPosts = [];
+  pwForbidden = false;
 });
 afterAll(() => server.close());
 
@@ -65,5 +74,45 @@ describe("Settings", () => {
     await user.selectOptions(select, "Asia/Tokyo");
     await user.click(screen.getByRole("button", { name: "Salva" }));
     await waitFor(() => expect(tzPuts).toEqual([{ timezone: "Asia/Tokyo" }]));
+  });
+
+  it("validates the new password client-side", async () => {
+    const user = userEvent.setup();
+    renderApp("/impostazioni");
+    await user.type(await screen.findByLabelText("Password attuale"), "oldpassword1");
+    await user.type(screen.getByLabelText("Nuova password"), "short");
+    expect(screen.getByText("Almeno 10 caratteri")).toBeInTheDocument();
+    await user.clear(screen.getByLabelText("Nuova password"));
+    await user.type(screen.getByLabelText("Nuova password"), "longenough123");
+    await user.type(screen.getByLabelText("Conferma nuova password"), "different");
+    expect(screen.getByText("Le password non coincidono")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Aggiorna password" }));
+    expect(pwPosts).toEqual([]);
+    await user.clear(screen.getByLabelText("Nuova password"));
+    await user.type(screen.getByLabelText("Nuova password"), "oldpassword1");
+    expect(screen.getByText("La nuova password deve essere diversa da quella attuale")).toBeInTheDocument();
+  });
+
+  it("changes the password and clears the fields", async () => {
+    const user = userEvent.setup();
+    renderApp("/impostazioni");
+    await user.type(await screen.findByLabelText("Password attuale"), "oldpassword1");
+    await user.type(screen.getByLabelText("Nuova password"), "longenough123");
+    await user.type(screen.getByLabelText("Conferma nuova password"), "longenough123");
+    await user.click(screen.getByRole("button", { name: "Aggiorna password" }));
+    await waitFor(() => expect(pwPosts).toEqual([{ current: "oldpassword1", new: "longenough123" }]));
+    await waitFor(() => expect(screen.getByLabelText("Password attuale")).toHaveValue(""));
+    expect(screen.getByLabelText("Nuova password")).toHaveValue("");
+  });
+
+  it("shows a wrong current password inline", async () => {
+    pwForbidden = true;
+    const user = userEvent.setup();
+    renderApp("/impostazioni");
+    await user.type(await screen.findByLabelText("Password attuale"), "wrongpassword");
+    await user.type(screen.getByLabelText("Nuova password"), "longenough123");
+    await user.type(screen.getByLabelText("Conferma nuova password"), "longenough123");
+    await user.click(screen.getByRole("button", { name: "Aggiorna password" }));
+    expect(await screen.findByText("Password attuale errata")).toBeInTheDocument();
   });
 });

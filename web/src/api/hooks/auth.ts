@@ -26,3 +26,13 @@ export function useLogout() {
     onSettled: () => qc.clear(),
   });
 }
+
+/** Changes the password; the server re-issues this session's cookies, so /me is refetched. */
+export function useChangePassword() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { current: string; new: string }) =>
+      apiFetch<{ ok: boolean }>("/api/auth/password", { method: "POST", body }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: meKey }),
+  });
+}

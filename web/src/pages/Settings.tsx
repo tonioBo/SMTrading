@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { useAppSettings } from "@/api/hooks/risk";
 import { useBackups, useSaveTimezone, useVerifyIntegrity } from "@/api/hooks/system";
 import type { BackupFile } from "@/api/types";
+import { ChangePasswordSection } from "@/components/ChangePasswordSection";
 import { DataTable, type Column } from "@/components/DataTable";
 import { FormField, selectClass } from "@/components/FormField";
 import { PageHeader } from "@/components/PageHeader";
@@ -125,6 +126,7 @@ export default function Settings() {
           {data && <TimezoneEditor initial={data.timezone} />}
         </CardContent>
       </Card>
+      <ChangePasswordSection />
       <IntegritySection />
       <BackupSection />
     </div>
