@@ -3,6 +3,10 @@
 Lock order: portfolio row (FOR UPDATE) -> order row (FOR UPDATE) -> chain lock (inside
 post_journal). Nothing here commits; on SMTError the caller rolls the transaction back.
 
+Redis side effects (the `order.filled` event, position tracking) are only queued on the
+session; callers must `await session.commit()` and then
+`await events.dispatch_post_commit(session, redis)` (or `discard_post_commit` on rollback).
+
 Covered so far: buys on a flat/long position and sells that reduce a long (not past zero).
 """
 
@@ -21,13 +25,12 @@ from smtrading.common.money import decimal_to_str, quantize_money
 from smtrading.engine.models import Fill, Order, OrderSide, OrderStatus
 from smtrading.engine.pricing import QuoteView, fill_price, notional_to_qty
 from smtrading.engine.quotesource import QuoteSource
-from smtrading.events import publish_event
+from smtrading.events import queue_event, queue_track, queue_untrack
 from smtrading.fees.calculator import FeeRuleData, compute_fx_fee, compute_trade_fee
 from smtrading.fees.resolver import load_rules, resolve_rule
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import AccountKind, Journal, JournalType
 from smtrading.ledger.service import LineSpec, get_balance, get_or_create_account, post_journal
-from smtrading.marketdata.streaming import track, untrack
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.models import Portfolio
 from smtrading.positions.service import upsert_position
@@ -219,7 +222,6 @@ async def execute_fill(
     order_id: UUID,
     *,
     quote: Quote,
-    redis=None,
     journal_type: JournalType = JournalType.TRADE,
 ) -> FillResult | None:
     portfolio_id = await session.scalar(select(Order.portfolio_id).where(Order.id == order_id))
@@ -344,9 +346,9 @@ async def execute_fill(
 
     if buy and portfolio.leverage > 1:
         valuation = await value_portfolio(session, qs, portfolio.id)
-        if valuation.buying_power_eur < 0:
+        if valuation.buying_power_raw < 0:
             raise _no_buying_power(
-                "buying power exceeded", buying_power_eur=valuation.buying_power_eur
+                "buying power exceeded", buying_power_raw=valuation.buying_power_raw
             )
 
     fill = Fill(
@@ -363,15 +365,14 @@ async def execute_fill(
     await _activate_linked(session, order)
     await session.flush()
 
-    if redis is not None:
-        await publish_event(redis, "order.filled", {
-            "order_id": order.id, "fill_id": fill.id, "portfolio_id": portfolio.id,
-            "agent_id": order.agent_id, "symbol": symbol, "side": side, "qty": qty,
-            "price": price, "notional": notional, "currency": ccy, "fee": fee,
-            "fee_currency": fee_ccy, "position_qty": position.qty,
-        })
-        if held == 0 and position.qty != 0:
-            await track(redis, [symbol], source="positions")
-        elif held != 0 and position.qty == 0:
-            await untrack(redis, [symbol], source="positions")
+    queue_event(session, "order.filled", {
+        "order_id": order.id, "fill_id": fill.id, "portfolio_id": portfolio.id,
+        "agent_id": order.agent_id, "symbol": symbol, "side": side, "qty": qty,
+        "price": price, "notional": notional, "currency": ccy, "fee": fee,
+        "fee_currency": fee_ccy, "position_qty": position.qty,
+    })
+    if held == 0 and position.qty != 0:
+        queue_track(session, symbol, "positions")
+    elif held != 0 and position.qty == 0:
+        queue_untrack(session, symbol, "positions")
     return FillResult(order=order, fill=fill, journals=journals)

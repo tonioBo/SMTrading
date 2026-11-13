@@ -59,7 +59,11 @@ async def _post_cash_move(
     value, ccy = _clean_amount(amount, currency)
     if value <= 0:
         raise SMTError(ErrorCode.INVALID_AMOUNT, "amount must be positive", {"amount": str(amount)})
-    if await session.get(Portfolio, portfolio_id) is None:
+    # Lock order: portfolio row first, then the chain lock inside post_journal.
+    locked = await session.scalar(
+        select(Portfolio.id).where(Portfolio.id == portfolio_id).with_for_update()
+    )
+    if locked is None:
         raise SMTError(ErrorCode.NOT_FOUND, "portfolio not found", {"portfolio_id": str(portfolio_id)})
     cash = await get_or_create_account(
         session, portfolio_id=portfolio_id, asset=ccy, kind=AccountKind.cash

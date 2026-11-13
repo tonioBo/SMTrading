@@ -12,7 +12,14 @@ from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.execution import execute_fill
 from smtrading.engine.models import Fill, Order, OrderSide, OrderStatus, OrderType
 from smtrading.engine.quotesource import FakeQuoteSource
-from smtrading.events import notify, publish_event
+from smtrading.events import (
+    POST_COMMIT_KEY,
+    discard_post_commit,
+    dispatch_post_commit,
+    notify,
+    publish_event,
+    queue_event,
+)
 from smtrading.ledger.models import Account, AccountKind, Journal, JournalLine, JournalType
 from smtrading.ledger.service import get_balance, get_or_create_account
 from smtrading.marketdata.streaming import tracked_symbols
@@ -264,6 +271,11 @@ async def test_already_filled_returns_none(db_session, seeded, qs):
         select(func.count()).select_from(Fill).where(Fill.order_id == o.id)
     )
     assert fills == 1
+    journals = await db_session.scalar(
+        select(func.count()).select_from(Journal).where(Journal.order_id == o.id)
+    )
+    assert journals == 1
+    assert await _bal(db_session, p.id, "EUR", AccountKind.cash) == D("99848.85")
     canceled = await _order(db_session, p, "ENI.MI", OrderSide.buy, qty=D(1),
                             status=OrderStatus.canceled)
     assert await _fill(db_session, qs, canceled) is None
@@ -307,39 +319,74 @@ async def test_bracket_children_activated(db_session, seeded, qs):
     assert tp.oco_group_id == sl.oco_group_id == group
 
 
-async def test_events_and_tracking(db_session, seeded, qs, redis_url):
+async def _next_event(pubsub, wait_s=1.0):
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + wait_s
+    while loop.time() < deadline:
+        msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+        if msg:
+            return json.loads(msg["data"])
+    return None
+
+
+async def test_events_and_tracking_only_after_dispatch(db_session, seeded, qs, redis_url):
     redis = aioredis.from_url(redis_url, decode_responses=True)
+    await redis.srem("md:tracked:positions", "ENI.MI")
     pubsub = redis.pubsub()
     await pubsub.subscribe("events")
     await pubsub.get_message(timeout=1)  # subscribe confirmation
     try:
         p = await _portfolio(db_session)
         o = await _order(db_session, p, "ENI.MI", OrderSide.buy, qty=D(10))
-        res = await _fill(db_session, qs, o, redis=redis)
+        res = await _fill(db_session, qs, o)
+        # nothing leaves the transaction before commit + dispatch
+        assert await _next_event(pubsub, 0.3) is None
+        assert "ENI.MI" not in await redis.smembers("md:tracked:positions")
+        assert [e[0] for e in db_session.info[POST_COMMIT_KEY]] == ["event", "track"]
+
+        # db_session is a rolled-back savepoint fixture: dispatch stands in for post-commit
+        assert await dispatch_post_commit(db_session, redis) == 2
+        assert POST_COMMIT_KEY not in db_session.info
         assert "ENI.MI" in await tracked_symbols(redis)
         assert "ENI.MI" in await redis.smembers("md:tracked:positions")
-
-        msg = None
-        for _ in range(20):
-            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5)
-            if msg:
-                break
-            await asyncio.sleep(0.05)
-        assert msg is not None
-        event = json.loads(msg["data"])
-        assert event["type"] == "order.filled"
+        event = await _next_event(pubsub)
+        assert event is not None and event["type"] == "order.filled"
         assert event["order_id"] == str(o.id) and event["fill_id"] == str(res.fill.id)
         assert D(event["price"]) == D(15) and D(event["qty"]) == D(10)
         assert "ts" in event
 
         await _fill(
-            db_session, qs, await _order(db_session, p, "ENI.MI", OrderSide.sell, qty=D(10)),
-            redis=redis,
+            db_session, qs, await _order(db_session, p, "ENI.MI", OrderSide.sell, qty=D(10))
         )
+        assert "ENI.MI" in await redis.smembers("md:tracked:positions")
+        assert await dispatch_post_commit(db_session, redis) == 2
         assert "ENI.MI" not in await redis.smembers("md:tracked:positions")
     finally:
         await pubsub.aclose()
         await redis.aclose()
+
+
+async def test_discard_post_commit_drops_effects(db_session, seeded, qs, redis_url):
+    redis = aioredis.from_url(redis_url, decode_responses=True)
+    try:
+        p = await _portfolio(db_session)
+        await _fill(db_session, qs, await _order(db_session, p, "ENI.MI", OrderSide.buy, qty=D(1)))
+        discard_post_commit(db_session)
+        assert await dispatch_post_commit(db_session, redis) == 0
+    finally:
+        await redis.aclose()
+
+
+async def test_dispatch_post_commit_logs_and_continues(db_session, caplog):
+    class Boom:
+        async def publish(self, channel, message):
+            raise RuntimeError("redis down")
+
+    queue_event(db_session, "a", {})
+    queue_event(db_session, "b", {})
+    with caplog.at_level("ERROR", logger="smtrading.events"):
+        assert await dispatch_post_commit(db_session, Boom()) == 0
+    assert caplog.text.count("post-commit effect failed") == 2
 
 
 async def test_publish_event_none_redis_is_noop():
@@ -373,3 +420,31 @@ async def test_leverage_2_fx_then_borrows_in_instrument_currency(db_session, see
     loan = await _bal(db_session, p.id, "USD", AccountKind.margin_loan)
     assert loan == (D(140000) - bought).copy_negate()
     assert ("margin_loan", "USD", True, loan) in await _lines(db_session, trade.id)
+
+
+async def test_buying_power_check_uses_raw_value(db_session, seeded, qs):
+    """Raw BP of -0.003 rounds to 0.00 for display but must still reject the fill."""
+    p = await _portfolio(db_session, leverage=2)
+    qs.set_quote("ISP.MI", D("3.000"), D("3.000"), D("3.000"))
+    await _fill(db_session, qs, await _order(db_session, p, "ISP.MI", OrderSide.buy, qty=D(1)))
+    c1 = await _bal(db_session, p.id, "EUR", AccountKind.cash)
+    # after buying q ENI at ask A (mid M, fee F) with ISP marked at L:
+    # bp = 2*(c1 - q*A - F + q*M + L) - (q*M + L) = 2*c1 - 2*q*A - 2*F + q*M + L
+    q, a, m, f = D(13330), D("15.000"), D("14.995"), D(20)
+    mark = D("-0.003") - (2 * c1 - 2 * q * a - 2 * f + q * m)
+    assert mark > 0
+    qs.set_quote("ISP.MI", None, None, mark)
+    o = await _order(db_session, p, "ENI.MI", OrderSide.buy, qty=q)
+    with pytest.raises(SMTError) as e:
+        async with db_session.begin_nested():
+            await _fill(db_session, qs, o)
+    assert e.value.code == ErrorCode.INSUFFICIENT_BUYING_POWER
+    assert D(e.value.details["buying_power_raw"]) == D("-0.003")
+    assert await db_session.scalar(
+        select(func.count()).select_from(Journal).where(Journal.order_id == o.id)
+    ) == 0
+
+    # +0.003 of headroom fills
+    qs.set_quote("ISP.MI", None, None, mark + D("0.006"))
+    discard_post_commit(db_session)
+    assert await _fill(db_session, qs, o) is not None
