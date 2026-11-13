@@ -36,6 +36,7 @@ from smtrading.risk.settings import (
 router = APIRouter(prefix="/api", tags=["risk"], dependencies=[Depends(require_admin)])
 
 MAX_NAME_LEN = 128
+MAX_DESCRIPTION_LEN = 500
 MAX_RATE_PCT = Decimal(1000)
 MAX_STALE_S, MAX_SPREAD_BPS = 86_400, 10_000
 DEFAULT_TIMEZONE = "Europe/Rome"
@@ -43,7 +44,7 @@ _CURRENCY = re.compile(r"^[A-Z0-9]{2,16}$")
 PROFILE_FIELDS = (
     "id", "name", "max_order_notional_eur", "max_position_pct", "max_daily_loss_pct",
     "max_daily_loss_eur", "allowed_symbols", "allowed_asset_classes", "allowed_markets",
-    "short_allowed",
+    "short_allowed", "description",
 )
 _LIMIT_FIELDS = (
     "max_order_notional_eur", "max_position_pct", "max_daily_loss_pct", "max_daily_loss_eur",
@@ -84,6 +85,12 @@ async def _validated_profile(
     if not name or len(name) > MAX_NAME_LEN:
         raise _invalid("name", f"il nome deve avere da 1 a {MAX_NAME_LEN} caratteri")
     out: dict[str, Any] = {"name": name, "short_allowed": bool(raw["short_allowed"])}
+    description = (raw.get("description") or "").strip()
+    if len(description) > MAX_DESCRIPTION_LEN:
+        raise _invalid(
+            "description", f"la descrizione non può superare {MAX_DESCRIPTION_LEN} caratteri"
+        )
+    out["description"] = description or None
     for f in _LIMIT_FIELDS:
         value = parse_decimal(raw[f], f)
         if value is not None and value <= 0:

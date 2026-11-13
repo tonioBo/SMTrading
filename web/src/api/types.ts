@@ -279,6 +279,7 @@ export interface RiskProfile {
   allowed_asset_classes: string[];
   allowed_markets: string[];
   short_allowed: boolean;
+  description: string | null;
 }
 
 export type AgentPermission = "read" | "trade";
@@ -385,6 +386,7 @@ export interface RiskProfileInput {
   allowed_asset_classes: string[];
   allowed_markets: string[];
   short_allowed: boolean;
+  description: string | null;
 }
 
 export type InterestKind = "loan" | "borrow";

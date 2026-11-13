@@ -53,8 +53,13 @@ async def test_seed_risk_and_settings(db_session):
     await run_seed(db_session)
     await run_seed(db_session)
     profiles = (await db_session.execute(select(RiskProfile))).scalars().all()
-    assert [p.name for p in profiles] == ["Default"]
-    p = profiles[0]
+    assert len(profiles) == 8
+    p = next(x for x in profiles if x.name == "Default")
+    assert p.description.startswith("Libero")
+    etf = next(x for x in profiles if x.name == "5 · Passivo ETF")
+    assert len(etf.allowed_symbols) == 20 and etf.max_position_pct == Decimal(30)
+    assert etf.short_allowed is False and etf.max_daily_loss_eur is None
+    assert all(x.description for x in profiles)
     assert p.max_daily_loss_pct == Decimal(10) and p.short_allowed is True
     assert p.max_order_notional_eur is None and p.allowed_symbols == []
     demo = (
@@ -151,3 +156,24 @@ async def test_seed_catalog_insert_only(db_session):
     assert aapl.tick_size == Decimal("0.01") and aapl.source == InstrumentSource.catalog
     sui = await db_session.get(Instrument, "SUI-USD")
     assert sui.provider_symbols["yahoo"] == "SUI20947-USD"
+
+
+async def test_seed_risk_never_overwrites_existing(db_session):
+    from smtrading.risk.models import RiskProfile
+
+    await run_seed(db_session)
+    prof = (
+        await db_session.execute(select(RiskProfile).where(RiskProfile.name == "1 · Conservativo"))
+    ).scalar_one()
+    prof.max_position_pct = Decimal(12)
+    prof.description = "mia"
+    default = (
+        await db_session.execute(select(RiskProfile).where(RiskProfile.name == "Default"))
+    ).scalar_one()
+    default.description = None
+    await db_session.flush()
+    await run_seed(db_session)
+    await db_session.refresh(prof)
+    await db_session.refresh(default)
+    assert prof.max_position_pct == Decimal(12) and prof.description == "mia"
+    assert default.description.startswith("Libero")

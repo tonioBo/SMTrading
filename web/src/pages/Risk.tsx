@@ -17,6 +17,7 @@ import { normalizeAmount, toInputDecimal } from "@/lib/decimal";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatQty } from "@/lib/format";
 
+const DESCRIPTION_MAX = 500;
 const ASSET_CLASSES: AssetClass[] = ["us_equity", "eu_equity", "crypto", "forex"];
 
 // --- risk profiles ---------------------------------------------------------------
@@ -28,7 +29,7 @@ const LIMITS: { field: LimitField; label: string }[] = [
   { field: "max_daily_loss_pct", label: "Perdita giornaliera massima (%)" },
   { field: "max_daily_loss_eur", label: "Perdita giornaliera massima (EUR)" },
 ];
-const PROFILE_FIELDS = ["name", "short_allowed", "allowed_symbols", "allowed_asset_classes", "allowed_markets", ...LIMITS.map((l) => l.field)];
+const PROFILE_FIELDS = ["name", "description", "short_allowed", "allowed_symbols", "allowed_asset_classes", "allowed_markets", ...LIMITS.map((l) => l.field)];
 
 function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onClose: () => void }) {
   const [name, setName] = useState(profile?.name ?? "");
@@ -42,6 +43,7 @@ function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onCl
   const [classes, setClasses] = useState(profile?.allowed_asset_classes ?? []);
   const [markets, setMarkets] = useState(profile?.allowed_markets ?? []);
   const [short, setShort] = useState(profile?.short_allowed ?? true);
+  const [description, setDescription] = useState(profile?.description ?? "");
   const [errors, setErrors] = useState<Record<string, string>>({});
   const save = useSaveRiskProfile();
 
@@ -53,6 +55,7 @@ function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onCl
     e.preventDefault();
     const errs: Record<string, string> = {};
     if (!name.trim()) errs.name = "Il nome è obbligatorio";
+    if (description.trim().length > DESCRIPTION_MAX) errs.description = `Massimo ${DESCRIPTION_MAX} caratteri`;
     const parsed = {} as Record<LimitField, string | null>;
     for (const { field } of LIMITS) {
       const raw = limits[field].trim();
@@ -68,6 +71,7 @@ function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onCl
       allowed_asset_classes: classes,
       allowed_markets: markets,
       short_allowed: short,
+      description: description.trim() || null,
     };
     save.mutate({ id: profile?.id ?? null, profile: input }, { onSuccess: onClose });
   }
@@ -83,6 +87,17 @@ function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onCl
           <div className="sm:col-span-2">
             <FormField label="Nome" error={fieldError("name")}>
               <Input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+            </FormField>
+          </div>
+          <div className="sm:col-span-2">
+            <FormField label="Quando usarlo" error={fieldError("description")} hint={`Visibile agli agenti e nella scheda del portafoglio (${description.length}/${DESCRIPTION_MAX})`}>
+              <textarea
+                rows={3}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Es. Mercati turbolenti: priorità a proteggere il capitale."
+                className="flex w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm"
+              />
             </FormField>
           </div>
           {LIMITS.map(({ field, label }) => (
@@ -148,6 +163,7 @@ function ProfilesSection() {
         </span>
       ),
     },
+    { key: "description", header: "Quando usarlo", cell: (p) => p.description ?? "—" },
     { key: "symbols", header: "Simboli", cell: (p) => list(p.allowed_symbols) },
     { key: "classes", header: "Classi", cell: (p) => list(p.allowed_asset_classes) },
     { key: "markets", header: "Mercati", cell: (p) => list(p.allowed_markets) },

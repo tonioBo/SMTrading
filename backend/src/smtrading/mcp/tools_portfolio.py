@@ -157,6 +157,7 @@ def _profile_dto(profile: RiskProfile | None) -> dict | None:
         "allowed_asset_classes": profile.allowed_asset_classes,
         "allowed_markets": profile.allowed_markets,
         "short_allowed": profile.short_allowed,
+        "description": profile.description,
     }
 
 

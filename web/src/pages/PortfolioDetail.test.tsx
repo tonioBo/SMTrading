@@ -191,6 +191,20 @@ const server = setupServer(
         allowed_asset_classes: [],
         allowed_markets: [],
         short_allowed: true,
+        description: "Uso normale con cautela.",
+      },
+      {
+        id: "r2",
+        name: "Libero",
+        max_order_notional_eur: null,
+        max_position_pct: null,
+        max_daily_loss_pct: null,
+        max_daily_loss_eur: null,
+        allowed_symbols: [],
+        allowed_asset_classes: [],
+        allowed_markets: [],
+        short_allowed: true,
+        description: "Nessun limite.",
       },
     ]),
   ),
@@ -480,6 +494,15 @@ describe("PortfolioDetail", () => {
     await user.type(screen.getByLabelText("Al"), "2026-11-13");
     await waitFor(() => expect(txRequests.at(-1)!.searchParams.get("to")).toBe("2026-11-13T23:59:59.999-05:00"));
     expect(txRequests.at(-1)!.searchParams.get("from")).toBe("2026-11-12T00:00:00-05:00");
+  });
+
+  it("shows the description of the selected risk profile, updating on change", async () => {
+    const user = await openTab("Impostazioni");
+    expect(await screen.findByTestId("risk-profile-description")).toHaveTextContent("Uso normale con cautela.");
+    await user.selectOptions(screen.getByLabelText("Profilo di rischio"), "r2");
+    expect(screen.getByTestId("risk-profile-description")).toHaveTextContent("Nessun limite.");
+    await user.selectOptions(screen.getByLabelText("Profilo di rischio"), "");
+    expect(screen.queryByTestId("risk-profile-description")).not.toBeInTheDocument();
   });
 
   it("edits the portfolio settings, sending only the changed fields", async () => {

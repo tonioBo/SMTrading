@@ -15,6 +15,7 @@ function SettingsForm({ portfolio }: { portfolio: Portfolio }) {
   const [errors, setErrors] = useState<Partial<Record<Field, string>>>({});
   const patch = usePatchPortfolio(portfolio.id);
   const profiles = useRiskProfiles();
+  const selectedProfile = profiles.data?.find((p) => p.id === form.risk_profile_id);
   const serverField = errorField(patch.error) as Field | null;
   const fieldError = (f: Field) => errors[f] ?? (patch.error && serverField === f ? errorMessage(patch.error) : null);
   const generalError = patch.error && !(serverField && FIELDS.includes(serverField)) ? errorMessage(patch.error) : null;
@@ -47,6 +48,7 @@ function SettingsForm({ portfolio }: { portfolio: Portfolio }) {
       <FormField label="Slippage (bps)" error={fieldError("slippage_bps")}>
         <Input value={form.slippage_bps} onChange={set("slippage_bps")} inputMode="numeric" />
       </FormField>
+      <div>
       <FormField label="Profilo di rischio" error={fieldError("risk_profile_id")}>
         <select className={selectClass} value={form.risk_profile_id} onChange={set("risk_profile_id")}>
           <option value="">Nessuno</option>
@@ -57,6 +59,12 @@ function SettingsForm({ portfolio }: { portfolio: Portfolio }) {
           ))}
         </select>
       </FormField>
+        {selectedProfile?.description && (
+          <p data-testid="risk-profile-description" className="mt-1.5 text-xs text-muted">
+            {selectedProfile.description}
+          </p>
+        )}
+      </div>
       <FormField label="Fuso orario" error={fieldError("timezone")}>
         <select className={selectClass} value={form.timezone} onChange={set("timezone")}>
           {timezones(portfolio.timezone).map((z) => (

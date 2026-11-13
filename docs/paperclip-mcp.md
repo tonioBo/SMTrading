@@ -112,7 +112,7 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
 - `get_positions`: posizioni aperte con prezzo medio, mark e P&L non realizzato.
 - `get_transactions`: movimenti del ledger del portafoglio, dal piu' recente, con filtri e paginazione (`before_seq`).
 - `get_performance`: serie dell'equity e statistiche (rendimento, max drawdown, sharpe) su un periodo.
-- `get_risk_limits`: stato di rischio: soglie di margine, profilo effettivo, perdita giornaliera, kill switch.
+- `get_risk_limits`: stato di rischio: soglie di margine, profilo effettivo (con `description`, il «Quando usarlo» del profilo), perdita giornaliera, kill switch.
 - `preview_order`: esegue i controlli pre-trade senza inserire l'ordine (stima di prezzo, costi, potere d'acquisto).
 - `place_order`: inserisce un ordine (market, limit, stop, stop_limit, trailing_stop); `client_order_id` rende l'invio idempotente.
 - `place_bracket_order`: ingresso piu' take profit e stop loss in un gruppo OCO.

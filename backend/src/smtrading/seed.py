@@ -163,6 +163,35 @@ async def _seed_demo_agent(session: AsyncSession) -> str | None:
     return token
 
 
+_US_EU = ["us_equity", "eu_equity"]
+_PASSIVE_ETFS = [
+    "SPY", "QQQ", "VTI", "VOO", "IWM", "DIA", "EFA", "EEM", "TLT", "IEF", "SHY", "LQD", "GLD",
+    "EUNL.DE", "SXR8.DE", "IS3N.DE", "VWCE.DE", "EXS1.DE", "SXRV.DE", "4GLD.DE",
+]
+# (name, max order EUR, max position %, max daily loss %, classes, symbols, short, "when to use")
+_RISK_PRESETS = [
+    ("0 · Difensivo", 500, 5, 1, _US_EU, [], False,
+     "Mercati turbolenti o notizie forti: priorità a proteggere il capitale."),
+    ("1 · Conservativo", 1000, 10, 2, _US_EU, [], False,
+     "Prudenza generale: solo azioni ed ETF, posizioni piccole."),
+    ("2 · Prudente", 1500, 15, 3, [*_US_EU, "crypto"], [], False,
+     "Uso normale con cautela: azioni, ETF e crypto, niente scoperto."),
+    ("3 · Moderato", 2500, 25, 5, [], [], True,
+     "Fiducia nella strategia: tutti i mercati, scoperto consentito."),
+    ("4 · Aggressivo", 5000, 40, 8, [], [], True,
+     "Fasi di forte convinzione: posizioni grandi, rischio elevato."),
+    ("5 · Passivo ETF", 2500, 30, 3, [], _PASSIVE_ETFS, False,
+     ("Investimento di lungo periodo: solo ETF ampi (azionari, obbligazionari, oro), "
+      "niente titoli singoli.")),
+    ("6 · Solo crypto", 1000, 20, 6, ["crypto"], [], False,
+     "Strategie dedicate alle criptovalute."),
+]
+_DEFAULT_RISK_DESCRIPTION = (
+    "Libero: nessun limite per ordine o posizione, stop al 10% di perdita giornaliera. "
+    "Le decisioni restano agli agenti."
+)
+
+
 async def _seed_risk(session: AsyncSession) -> None:
     """Insert-if-missing: admin edits are never overwritten."""
     await session.execute(
@@ -195,6 +224,30 @@ async def _seed_risk(session: AsyncSession) -> None:
         session.add(profile)
         await session.flush()
         profile_id = profile.id
+    existing = set(await session.scalars(select(RiskProfile.name)))
+    for name, order, pos, loss, classes, symbols, short, _ in _RISK_PRESETS:
+        if name not in existing:  # insert-only: admin edits to a preset are never overwritten
+            session.add(
+                RiskProfile(
+                    name=name,
+                    max_order_notional_eur=Decimal(order),
+                    max_position_pct=Decimal(pos),
+                    max_daily_loss_pct=Decimal(loss),
+                    allowed_symbols=list(symbols),
+                    allowed_asset_classes=list(classes),
+                    allowed_markets=[],
+                    short_allowed=short,
+                )
+            )
+    await session.flush()
+    descriptions = {name: text_ for name, *_, text_ in _RISK_PRESETS}
+    descriptions[DEFAULT_RISK_PROFILE_NAME] = _DEFAULT_RISK_DESCRIPTION
+    for name, description in descriptions.items():  # only where still empty
+        await session.execute(
+            update(RiskProfile)
+            .where(RiskProfile.name == name, RiskProfile.description.is_(None))
+            .values(description=description)
+        )
     await session.execute(
         update(Portfolio)
         .where(Portfolio.name == DEMO_PORTFOLIO_NAME, Portfolio.risk_profile_id.is_(None))

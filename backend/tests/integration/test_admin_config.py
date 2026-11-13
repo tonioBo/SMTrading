@@ -378,7 +378,9 @@ async def test_fee_simulator_uses_portfolio_rule(admin):
 async def test_risk_profiles_crud(admin):
     c = admin.client
     base = (await c.get("/api/risk-profiles")).json()
-    assert [p["name"] for p in base] == ["Default"] and base[0]["max_daily_loss_pct"] == "10"
+    default = next(p for p in base if p["name"] == "Default")
+    assert default["max_daily_loss_pct"] == "10" and default["description"].startswith("Libero")
+    assert len(base) == 8 and all(p["description"] for p in base)
 
     r = await c.post("/api/risk-profiles", json={
         "name": "Prudente", "max_order_notional_eur": "5000", "max_position_pct": 25,
@@ -390,6 +392,7 @@ async def test_risk_profiles_crud(admin):
     assert (p["max_order_notional_eur"], p["max_position_pct"]) == ("5000", "25")
     assert p["allowed_asset_classes"] == ["us_equity", "crypto"] and p["short_allowed"] is False
     assert p["max_daily_loss_eur"] is None and p["allowed_markets"] == []
+    assert p["description"] is None
 
     dup = await c.post("/api/risk-profiles", json={"name": "Prudente"})
     assert dup.status_code == 400 and dup.json()["details"]["field"] == "name"
@@ -401,6 +404,16 @@ async def test_risk_profiles_crud(admin):
     assert r.json()["max_daily_loss_eur"] == "250" and r.json()["max_order_notional_eur"] is None
     assert r.json()["max_position_pct"] == "25" and r.json()["short_allowed"] is True
     assert (await c.patch(f"/api/risk-profiles/{p['id']}", json={"name": "Default"})).status_code == 400
+    r = await c.patch(f"/api/risk-profiles/{p['id']}", json={"description": "  Quando serve  "})
+    assert r.json()["description"] == "Quando serve" and r.json()["max_position_pct"] == "25"
+    r = await c.patch(f"/api/risk-profiles/{p['id']}", json={"short_allowed": False})
+    assert r.json()["description"] == "Quando serve"
+    r = await c.patch(f"/api/risk-profiles/{p['id']}", json={"description": "   "})
+    assert r.json()["description"] is None
+    long = await c.patch(f"/api/risk-profiles/{p['id']}", json={"description": "x" * 501})
+    assert long.status_code == 400 and long.json()["details"]["field"] == "description"
+    ok = await c.post("/api/risk-profiles", json={"name": "D500", "description": "x" * 500})
+    assert ok.status_code == 200
 
     for bad in (
         {"max_position_pct": "150"}, {"max_daily_loss_pct": "0"},

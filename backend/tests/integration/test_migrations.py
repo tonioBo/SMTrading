@@ -117,3 +117,15 @@ async def test_open_order_indexes_include_partially_filled(db_session):
     ).scalars().all()
     assert len(defs) == 2
     assert all("partially_filled" in d for d in defs)
+
+
+async def test_risk_profile_description_column(db_session):
+    row = (
+        await db_session.execute(
+            text(
+                "select data_type, is_nullable from information_schema.columns"
+                " where table_name='risk_profiles' and column_name='description'"
+            )
+        )
+    ).one()
+    assert tuple(row) == ("text", "YES")

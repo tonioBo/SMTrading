@@ -13,6 +13,7 @@ from sqlalchemy import (
     Identity,
     Index,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -36,6 +37,7 @@ class RiskProfile(Base):
     allowed_asset_classes: Mapped[list[str]] = mapped_column(JSONB, default=list)
     allowed_markets: Mapped[list[str]] = mapped_column(JSONB, default=list)
     short_allowed: Mapped[bool] = mapped_column(Boolean, default=True)
+    description: Mapped[str | None] = mapped_column(Text)
 
 
 class InterestKind(enum.StrEnum):

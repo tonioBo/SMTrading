@@ -65,6 +65,18 @@ describe("Risk", () => {
     });
   });
 
+  it("edits the \"Quando usarlo\" description", async () => {
+    const user = userEvent.setup();
+    renderApp("/rischio");
+    await user.click(await screen.findByRole("button", { name: "Nuovo profilo" }));
+    const dialog = await screen.findByRole("dialog", { name: "Nuovo profilo di rischio" });
+    await user.type(within(dialog).getByLabelText("Nome"), "Calmo");
+    await user.type(within(dialog).getByLabelText("Quando usarlo"), "  Mercati calmi  ");
+    await user.click(within(dialog).getByRole("button", { name: "Salva" }));
+    await waitFor(() => expect(profilePosts).toHaveLength(1));
+    expect(profilePosts[0]).toMatchObject({ name: "Calmo", description: "Mercati calmi" });
+  });
+
   it("saves the whole interest-rate table and requires the loan fallback", async () => {
     const user = userEvent.setup();
     renderApp("/rischio");

@@ -150,6 +150,7 @@ class RiskProfileCreateIn(BaseModel):
     allowed_asset_classes: list[str] = []
     allowed_markets: list[str] = []
     short_allowed: bool = True
+    description: str | None = None
 
 
 class RiskProfilePatchIn(BaseModel):
@@ -164,6 +165,7 @@ class RiskProfilePatchIn(BaseModel):
     allowed_asset_classes: list[str] | None = None
     allowed_markets: list[str] | None = None
     short_allowed: bool | None = None
+    description: str | None = None
 
 
 class InterestRateIn(BaseModel):

@@ -272,6 +272,7 @@ async def test_get_risk_limits(mcp_server, mcp_call, book):
     assert r["profile"]["name"] == "Default"
     assert D(r["profile"]["max_daily_loss_pct"]) == D(10)
     assert r["profile"]["short_allowed"] is True
+    assert r["profile"]["description"].startswith("Libero")
     assert r["margin"] == {
         "equity_eur": "100147.5", "maint_req_eur": "800", "warn_req_eur": "1200",
         "buying_power_eur": "98547.5", "margin_level": "ok",
