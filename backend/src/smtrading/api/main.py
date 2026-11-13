@@ -14,11 +14,13 @@ from smtrading.admin.errors import install_error_handlers
 from smtrading.admin.routes_agents import router as agents_router
 from smtrading.admin.routes_auth import router as auth_router
 from smtrading.admin.routes_connectors import router as connectors_router
+from smtrading.admin.routes_dashboard import router as dashboard_router
 from smtrading.admin.routes_fees import router as fees_router
 from smtrading.admin.routes_markets import router as markets_router
 from smtrading.admin.routes_portfolios import router as portfolios_router
 from smtrading.admin.routes_risk import router as risk_router
 from smtrading.admin.routes_system import router as system_router
+from smtrading.admin.ws import router as ws_router
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
 from smtrading.marketdata.router import MarketDataRouter
@@ -105,6 +107,8 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(connectors_router)
     app.include_router(markets_router)
     app.include_router(system_router)
+    app.include_router(dashboard_router)
+    app.include_router(ws_router)
 
     @app.get("/health")
     async def health(response: Response) -> dict:
