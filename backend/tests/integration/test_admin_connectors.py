@@ -135,7 +135,7 @@ async def test_connectors_masked_and_patch_keeps_masked(admin, monkeypatch):
     listed = {x["name"]: x for x in (await c.get("/api/connectors")).json()}
     assert "abcdef" not in json.dumps(listed)
     assert listed["yahoo"]["implemented"] is True
-    assert listed["revolutx"]["implemented"] is False
+    assert listed["revolutx"]["implemented"] is True  # registered since plan 6
     assert (await c.patch("/api/connectors/nope", json={"enabled": True})).status_code == 404
     assert (await c.patch("/api/connectors/fake", json={"rate_limit_per_min": 0})).status_code == 400
 
@@ -161,7 +161,6 @@ async def test_connector_test_records_health(admin, monkeypatch):
     row = next(x for x in (await c.get("/api/connectors")).json() if x["name"] == "fake")
     assert row["health_status"] == "error" and "boom" in row["last_error"]
     assert "k-123456" not in row["last_error"]
-    assert (await c.post("/api/connectors/revolutx/test")).status_code == 400
     assert (await c.post("/api/connectors/nope/test")).status_code == 404
 
 
