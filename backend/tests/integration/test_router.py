@@ -684,7 +684,9 @@ def test_router_import_registers_providers():
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                          check=True)
-    assert out.stdout.strip() == "binance,coingecko,frankfurter,kraken,yahoo"
+    expected = {"yahoo", "kraken", "binance", "coingecko", "frankfurter", "alpaca", "finnhub",
+                "twelvedata", "revolutx"}
+    assert set(out.stdout.strip().split(",")) == expected
 
 
 def test_describe_redacts_secrets():
