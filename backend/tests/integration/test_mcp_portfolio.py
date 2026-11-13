@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import UUID
 
 import pytest
 from sqlalchemy import select
@@ -14,8 +15,9 @@ from smtrading.engine.execution import execute_fill
 from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType
 from smtrading.events import discard_post_commit
 from smtrading.fees.models import FeeRule, FeeScope, FeeSide
+from smtrading.ledger.models import Account, AccountKind, JournalLine
 from smtrading.portfolios.models import Portfolio
-from smtrading.portfolios.service import create_portfolio, deposit
+from smtrading.portfolios.service import create_portfolio, deposit, withdraw
 from smtrading.risk.models import EquitySnapshot, SnapshotKind
 from smtrading.risk.settings import set_kill_switch
 from smtrading.seed import run_seed
@@ -110,6 +112,22 @@ async def test_get_portfolio_exact_values(mcp_server, mcp_call, book):
     assert D(pos["unrealized_pnl_eur"]) == D(100)
 
 
+async def test_day_pnl_excludes_cash_flows(mcp_server, mcp_call, book):
+    await _add_day_open(mcp_server.db_url, mcp_server.demo_id, "100000")
+    async with _Db(mcp_server.db_url) as s:
+        await deposit(s, mcp_server.demo_id, D(1000), "EUR", author_id="test")
+        await withdraw(s, mcp_server.demo_id, D(200), "EUR", author_id="test")
+        await s.commit()
+        discard_post_commit(s)
+    _, p = await mcp_call(
+        mcp_server.url, mcp_server.token, "get_portfolio",
+        {"portfolio_id": str(mcp_server.demo_id)},
+    )
+    assert p["equity_eur"] == "100897.50"  # +800 net deposited
+    assert p["day_pnl_eur"] == "97.50"  # only the trading result
+    assert p["day_pnl_pct"] == "0.0975"
+
+
 async def test_get_portfolio_without_day_open(mcp_server, mcp_call, book):
     _, p = await mcp_call(
         mcp_server.url, mcp_server.token, "get_portfolio",
@@ -157,6 +175,17 @@ async def test_transactions_only_portfolio_lines(mcp_server, mcp_call, book):
     assert D(trade[("ENI.MI", "position")]["quantity"]) == D(100)
     assert D(trade[("ENI.MI", "position")]["unit_price"]) == D(15)
     assert all(k in ("cash", "position") for _, k in trade)
+    # trade + 2.50 fee: the counter-lines on system accounts are not returned
+    assert sorted((ln["asset"], ln["kind"], D(ln["quantity"])) for ln in txs[0]["lines"]) == [
+        ("ENI.MI", "position", D(100)), ("EUR", "cash", D("-1500")), ("EUR", "cash", D("-2.50")),
+    ]
+    async with _Db(mcp_server.db_url) as s:
+        kinds = set(await s.scalars(
+            select(Account.kind).join(JournalLine, JournalLine.account_id == Account.id)
+            .where(JournalLine.journal_id == UUID(txs[0]["id"]))
+        ))
+    assert {AccountKind.system_fees, AccountKind.cash, AccountKind.position} <= kinds
+    assert kinds - {AccountKind.cash, AccountKind.position}  # system lines exist in the DB
 
     # filters and cursor
     _, deposits = await mcp_call(

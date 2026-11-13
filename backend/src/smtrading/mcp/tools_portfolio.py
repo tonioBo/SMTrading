@@ -125,15 +125,19 @@ async def _list_portfolios(ctx: ToolCtx) -> list[dict]:
 
 async def portfolio_snapshot(ctx: ToolCtx, portfolio_id: str | None) -> dict:
     """get_portfolio: valuation_dto + status, reduce_only_reason, leverage and the day
-    P&L (equity - today's day_open equity, EUR and %; None without a day_open)."""
+    P&L (equity - today's day_open equity - net deposits since it, EUR and %; None
+    without a day_open). External cash flows are not P&L, as in risk.daily_loss."""
     portfolio = await _readable_portfolio(ctx, portfolio_id)
     valuation = await _valuation(ctx, portfolio)
     day_open = await _day_open(ctx, portfolio, valuation.ts)
     pnl = pct = None
     if day_open is not None:
+        flows = await net_cash_flows_eur(
+            ctx.session, ctx.qs, portfolio.id, day_open.ts, valuation.ts
+        )
         with localcontext() as c:
             c.prec = _PREC
-            raw = valuation.equity_raw - day_open.equity_eur
+            raw = valuation.equity_raw - day_open.equity_eur - flows
             pnl = _eur(raw)
             if day_open.equity_eur > 0:
                 pct = _pct(raw / day_open.equity_eur * 100)
@@ -295,7 +299,8 @@ def register(mcp: MCPServer) -> None:
         """Mark-to-market valuation of a portfolio (EUR, cents): cash, equity_eur,
         exposure_eur, margin requirements, buying_power_eur, margin_level, positions,
         stale_symbols, plus status, reduce_only_reason, leverage and the day P&L
-        (day_pnl_eur / day_pnl_pct vs today's day_open equity; null before it is taken)."""
+        (day_pnl_eur / day_pnl_pct vs today's day_open equity, net of deposits and
+        withdrawals; null before the day_open is taken)."""
         params = {"portfolio_id": portfolio_id}
         return await run_tool(
             "get_portfolio", params, lambda ctx: portfolio_snapshot(ctx, portfolio_id)
