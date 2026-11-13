@@ -104,7 +104,10 @@ describe("Portfolios", () => {
     await within(dialog).findByRole("option", { name: "Prudente" });
     const name = within(dialog).getByLabelText("Nome");
     await user.type(name, "Alfa");
-    await user.type(within(dialog).getByLabelText("Saldo iniziale"), "10.000,00");
+    await user.type(within(dialog).getByLabelText("Saldo iniziale"), "10.000");
+    expect(within(dialog).getByText("Usa la virgola per i decimali (es. 10.000,00)")).toBeInTheDocument();
+    await user.type(within(dialog).getByLabelText("Saldo iniziale"), ",00");
+    expect(within(dialog).getByText("= 10.000,00 €")).toBeInTheDocument();
     await user.selectOptions(within(dialog).getByLabelText("Profilo di rischio"), "r1");
     await user.click(within(dialog).getByRole("button", { name: "Crea" }));
     expect(await within(dialog).findByText("esiste già un portafoglio con questo nome")).toBeInTheDocument();

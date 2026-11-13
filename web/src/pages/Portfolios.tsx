@@ -3,6 +3,7 @@ import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useCreatePortfolio, usePortfolios, useRiskProfiles } from "@/api/hooks/portfolios";
 import type { Portfolio } from "@/api/types";
+import { AmountPreview } from "@/components/AmountPreview";
 import { DataTable, type Column } from "@/components/DataTable";
 import { FormField, selectClass } from "@/components/FormField";
 import { Money } from "@/components/Money";
@@ -13,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { normalizeAmount } from "@/lib/decimal";
+import { amountError, normalizeAmount } from "@/lib/decimal";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatDecimal } from "@/lib/format";
 
@@ -81,7 +82,7 @@ function CreatePortfolioDialog({ onClose }: { onClose: () => void }) {
     const errors: Record<string, string> = {};
     if (!form.name.trim()) errors.name = "Il nome è obbligatorio";
     const cash = normalizeAmount(form.initial_cash);
-    if (cash === null) errors.initial_cash = "Importo non valido";
+    if (cash === null) errors.initial_cash = amountError(form.initial_cash) ?? "Importo non valido";
     const leverage = normalizeAmount(form.leverage);
     if (leverage === null) errors.leverage = "Leva non valida";
     if (!/^\d+$/.test(form.slippage_bps.trim())) errors.slippage_bps = "Inserisci un intero (bps)";
@@ -119,7 +120,11 @@ function CreatePortfolioDialog({ onClose }: { onClose: () => void }) {
               <Input value={form.name} onChange={set("name")} autoFocus />
             </FormField>
           </div>
-          <FormField label="Saldo iniziale" error={fieldError("initial_cash")}>
+          <FormField
+            label="Saldo iniziale"
+            error={fieldError("initial_cash")}
+            hint={<AmountPreview input={form.initial_cash} currency={form.base_currency} />}
+          >
             <Input value={form.initial_cash} onChange={set("initial_cash")} inputMode="decimal" placeholder="10000,00" />
           </FormField>
           <FormField label="Valuta base" error={fieldError("base_currency")}>

@@ -198,10 +198,15 @@ function priceOf(quote: Record<string, unknown>): string | null {
   return null;
 }
 
-/** symbol → latest live price (last, else bid/ask) for `symbols`, from the WS quotes. */
-export function useLiveQuotes(symbols: string[]): Record<string, string> {
+/**
+ * symbol → latest live price (last, else bid/ask) for `symbols`, from the WS quotes.
+ * Prices received before `since` changes (e.g. the positions' dataUpdatedAt) are dropped,
+ * so the server mark of a refetch is not hidden by an older live price.
+ */
+export function useLiveQuotes(symbols: string[], since = 0): Record<string, string> {
   const { socket } = useLiveSocket();
-  const [prices, setPrices] = useState<Record<string, string>>({});
+  const [state, setState] = useState<{ since: number; prices: Record<string, string> }>({ since, prices: {} });
+  if (state.since !== since) setState({ since, prices: {} });
   const key = [...symbols].sort().join(",");
   useEffect(() => {
     if (!socket || !key) return;
@@ -209,7 +214,9 @@ export function useLiveQuotes(symbols: string[]): Record<string, string> {
   }, [socket, key]);
   useLiveMessage("quote", (quote) => {
     const price = priceOf(quote);
-    if (price && symbols.includes(quote.symbol)) setPrices((prev) => ({ ...prev, [quote.symbol]: price }));
+    if (price && symbols.includes(quote.symbol)) {
+      setState((prev) => (prev.since === since ? { since, prices: { ...prev.prices, [quote.symbol]: price } } : prev));
+    }
   });
-  return prices;
+  return state.since === since ? state.prices : {};
 }

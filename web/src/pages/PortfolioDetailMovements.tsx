@@ -97,6 +97,7 @@ function ReverseDialog({ tx, portfolioId, onClose }: { tx: Transaction; portfoli
           onChange={(e) => {
             setReason(e.target.value);
             if (e.target.value.trim()) setMissing(false);
+            if (reverse.error) reverse.reset();
           }}
           rows={3}
           aria-invalid={fieldError ? true : undefined}

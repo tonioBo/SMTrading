@@ -33,6 +33,7 @@ const rule: FeeRule = {
 };
 
 let posts: Record<string, unknown>[] = [];
+let patches: Record<string, unknown>[] = [];
 let simulated: unknown[] = [];
 let deleted: string[] = [];
 const server = setupServer(
@@ -50,6 +51,11 @@ const server = setupServer(
       );
     }
     return HttpResponse.json({ ...rule, id: "r2", ...body });
+  }),
+  http.patch("*/api/fee-rules/:id", async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    patches.push(body);
+    return HttpResponse.json({ ...rule, ...body });
   }),
   http.delete("*/api/fee-rules/r1", () => {
     deleted.push("r1");
@@ -74,6 +80,7 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
   server.resetHandlers();
   posts = [];
+  patches = [];
   simulated = [];
   deleted = [];
 });
@@ -125,6 +132,51 @@ describe("Fees", () => {
         { up_to: null, pct: "0.1" },
       ],
     });
+  });
+
+  it("saves an edited rule unchanged: API decimals round-trip through the it-IT inputs", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("*/api/fee-rules", () =>
+        HttpResponse.json([{ ...rule, pct: "1.125", tiers: [{ up_to: "10000", pct: "1.125" }, { up_to: null, pct: "0.1" }] }]),
+      ),
+    );
+    renderApp("/commissioni");
+    await user.click(await screen.findByRole("button", { name: "Modifica Globale" }));
+    const dialog = await screen.findByRole("dialog", { name: "Regola di commissione" });
+    expect(within(dialog).getByLabelText("Commissione %")).toHaveValue("1,125");
+    await user.click(within(dialog).getByRole("button", { name: "Salva" }));
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toMatchObject({
+      pct: "1.125",
+      fixed: "1",
+      min_fee: "0.5",
+      fx_pct: "0.25",
+      tiers: [
+        { up_to: "10000", pct: "1.125" },
+        { up_to: null, pct: "0.1" },
+      ],
+    });
+  });
+
+  it("refuses an ambiguous tier limit with the it-IT hint", async () => {
+    const user = userEvent.setup();
+    const dialog = await openEditor(user);
+    await user.type(within(dialog).getByLabelText("Nome"), "Nuova");
+    await user.click(within(dialog).getByRole("button", { name: "Aggiungi scaglione" }));
+    await user.click(within(dialog).getByRole("button", { name: "Aggiungi scaglione" }));
+    await user.type(within(dialog).getByLabelText("Limite scaglione 1"), "10.000");
+    await user.type(within(dialog).getByLabelText("Percentuale scaglione 1"), "0,2");
+    await user.type(within(dialog).getByLabelText("Percentuale scaglione 2"), "0,1");
+    expect(within(dialog).getAllByText("Usa la virgola per i decimali (es. 10.000,00)").length).toBeGreaterThan(0);
+    await user.click(within(dialog).getByRole("button", { name: "Salva" }));
+    expect(posts).toEqual([]);
+    await user.clear(within(dialog).getByLabelText("Limite scaglione 1"));
+    await user.type(within(dialog).getByLabelText("Limite scaglione 1"), "10.000,00");
+    expect(within(dialog).getByText("= 10.000,00 €")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Salva" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toMatchObject({ tiers: [{ up_to: "10000.00", pct: "0.2" }, { up_to: null, pct: "0.1" }] });
   });
 
   it("shows a server validation error inline", async () => {

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { QueryClient } from "@tanstack/react-query";
 import type { Order, Portfolio, Position, Transaction, Valuation } from "@/api/types";
 import { renderApp } from "@/test/render";
 
@@ -141,6 +142,8 @@ const openOrder: Order = {
 };
 
 let current: Portfolio = portfolio;
+let positionsMark = "190.5";
+let queryClient: QueryClient | null = null;
 let txRequests: URL[] = [];
 let cashRequests: { key: string | null; body: unknown }[] = [];
 let releaseDeposit: (() => void) | null = null;
@@ -162,7 +165,7 @@ const server = setupServer(
     return HttpResponse.json(current);
   }),
   http.get("*/api/portfolios/p1/valuation", () => HttpResponse.json(valuation)),
-  http.get("*/api/portfolios/p1/positions", () => HttpResponse.json(positions)),
+  http.get("*/api/portfolios/p1/positions", () => HttpResponse.json(positions.map((p) => ({ ...p, mark: positionsMark })))),
   http.get("*/api/portfolios/p1/performance", () =>
     HttpResponse.json({ series: [], return_pct: "5", max_drawdown_pct: "-2.5", sharpe: "1.234" }),
   ),
@@ -222,6 +225,8 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
   server.resetHandlers();
   current = portfolio;
+  positionsMark = "190.5";
+  queryClient = null;
   txRequests = [];
   cashRequests = [];
   releaseDeposit = null;
@@ -238,7 +243,7 @@ afterAll(() => server.close());
 
 async function openTab(name: string) {
   const user = userEvent.setup();
-  renderApp("/portafogli/p1");
+  queryClient = renderApp("/portafogli/p1").queryClient;
   await user.click(await screen.findByRole("tab", { name }));
   return user;
 }
@@ -260,6 +265,7 @@ describe("PortfolioDetail", () => {
     await user.click(screen.getByRole("button", { name: "Nuovo deposito" }));
     const dialog = screen.getByRole("dialog");
     await user.type(within(dialog).getByLabelText("Importo"), "1.500,50");
+    expect(within(dialog).getByText("= 1.500,50 €")).toBeInTheDocument();
     const confirm = within(dialog).getByRole("button", { name: "Deposita" });
     await user.click(confirm);
     await waitFor(() => expect(confirm).toBeDisabled());
@@ -307,6 +313,8 @@ describe("PortfolioDetail", () => {
     await user.click(within(dialog).getByRole("button", { name: "Storna" }));
     expect(await within(dialog).findByText("lo storno non è consentito")).toBeInTheDocument();
     expect(reverseRequests).toEqual([{ id: "j9", body: { reason: "errore di battitura" } }]);
+    await user.type(reason, "!");
+    expect(within(dialog).queryByText("lo storno non è consentito")).not.toBeInTheDocument();
   });
 
   it("loads the next page of movements with the cursor", async () => {
@@ -339,6 +347,29 @@ describe("PortfolioDetail", () => {
     expect(price).toHaveTextContent("191,25 $");
     emitQuote({ symbol: "MSFT", last: "1" });
     expect(price).toHaveTextContent("191,25 $");
+  });
+
+  it("drops the live price when the positions are refetched", async () => {
+    const user = await openTab("Posizioni");
+    const price = await screen.findByTestId("price-AAPL");
+    emitQuote({ symbol: "AAPL", last: "191.25" });
+    expect(price).toHaveTextContent("191,25 $");
+    positionsMark = "189";
+    await act(() => queryClient!.invalidateQueries({ queryKey: ["portfolios", "p1", "positions"] }));
+    await waitFor(() => expect(screen.getByTestId("price-AAPL")).toHaveTextContent("189,00 $"));
+    expect(user).toBeDefined();
+  });
+
+  it("refuses an ambiguous amount in the deposit dialog", async () => {
+    const user = await openTab("Operazioni");
+    await user.click(screen.getByRole("button", { name: "Nuovo deposito" }));
+    const dialog = screen.getByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Importo"), "10.000");
+    expect(within(dialog).getByText("Usa la virgola per i decimali (es. 10.000,00)")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Deposita" }));
+    expect(cashRequests).toEqual([]);
+    await user.type(within(dialog).getByLabelText("Importo"), ",50");
+    expect(within(dialog).getByText("= 10.000,50 €")).toBeInTheDocument();
   });
 
   it("filters orders by status and cancels an open order", async () => {

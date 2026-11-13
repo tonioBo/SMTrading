@@ -3,12 +3,13 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { useCashMove, useIdempotencyKey, useResetPortfolio } from "@/api/hooks/portfolios";
 import type { Portfolio } from "@/api/types";
+import { AmountPreview } from "@/components/AmountPreview";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FormField } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { normalizeAmount } from "@/lib/decimal";
+import { AMBIGUOUS_AMOUNT_MESSAGE, amountError, normalizeAmount } from "@/lib/decimal";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatMoney } from "@/lib/format";
 
@@ -25,10 +26,10 @@ function CashMoveDialog({ portfolio, kind, onClose }: { portfolio: Portfolio; ki
   const [amount, setAmount] = useState("");
   const [currency, setCurrency] = useState(portfolio.base_currency);
   const [reason, setReason] = useState("");
-  const [invalid, setInvalid] = useState(false);
+  const [invalid, setInvalid] = useState<string | null>(null);
   const serverField = errorField(move.error);
-  const amountError = invalid
-    ? "Inserisci un importo positivo"
+  const amountFieldError = invalid
+    ? invalid
     : move.error && serverField === "amount"
       ? errorMessage(move.error)
       : null;
@@ -45,7 +46,7 @@ function CashMoveDialog({ portfolio, kind, onClose }: { portfolio: Portfolio; ki
       onConfirm={() => {
         const value = normalizeAmount(amount);
         const ok = value !== null && /[1-9]/.test(value);
-        setInvalid(!ok);
+        setInvalid(ok ? null : amountError(amount) === AMBIGUOUS_AMOUNT_MESSAGE ? AMBIGUOUS_AMOUNT_MESSAGE : "Inserisci un importo positivo");
         if (!ok) return;
         move.mutate(
           { body: { amount: value, currency: currency.trim().toUpperCase(), reason: reason.trim() || undefined }, key },
@@ -59,8 +60,13 @@ function CashMoveDialog({ portfolio, kind, onClose }: { portfolio: Portfolio; ki
       }}
     >
       <div className="grid gap-3 sm:grid-cols-2">
-        <FormField label="Importo" error={amountError}>
-          <Input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" placeholder="1000,00" autoFocus />
+        <FormField label="Importo" error={amountFieldError} hint={<AmountPreview input={amount} currency={currency} />}>
+          <Input
+            value={amount}
+            onChange={(e) => {
+              setAmount(e.target.value);
+              setInvalid(null);
+            }} inputMode="decimal" placeholder="1000,00" autoFocus />
         </FormField>
         <FormField label="Valuta">
           <Input value={currency} onChange={(e) => setCurrency(e.target.value)} />
@@ -98,7 +104,7 @@ function ResetDialog({ portfolio, onClose }: { portfolio: Portfolio; onClose: ()
       onConfirm={() => {
         const value = normalizeAmount(cash);
         const next = {
-          cash: value === null ? "Importo non valido" : undefined,
+          cash: value === null ? (amountError(cash) ?? undefined) : undefined,
           reason: reason.trim() ? undefined : "La motivazione è obbligatoria",
         };
         setErrors(next);
@@ -117,8 +123,13 @@ function ResetDialog({ portfolio, onClose }: { portfolio: Portfolio; onClose: ()
       }}
     >
       <div className="grid gap-3 sm:grid-cols-2">
-        <FormField label="Nuovo capitale" error={errors.cash}>
-          <Input value={cash} onChange={(e) => setCash(e.target.value)} inputMode="decimal" placeholder="10000,00" autoFocus />
+        <FormField label="Nuovo capitale" error={errors.cash} hint={<AmountPreview input={cash} currency={currency} />}>
+          <Input
+            value={cash}
+            onChange={(e) => {
+              setCash(e.target.value);
+              setErrors((x) => ({ ...x, cash: undefined }));
+            }} inputMode="decimal" placeholder="10000,00" autoFocus />
         </FormField>
         <FormField label="Valuta">
           <Input value={currency} onChange={(e) => setCurrency(e.target.value)} />

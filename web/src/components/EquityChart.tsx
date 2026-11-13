@@ -1,6 +1,7 @@
 import { ColorType, createChart, type IChartApi, type ISeriesApi, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useRef, useState } from "react";
 import { EQUITY_PERIODS as PERIODS, useEquity } from "@/api/hooks/dashboard";
+import { usePerformance } from "@/api/hooks/portfolios";
 import type { EquityPeriod, EquityPoint } from "@/api/types";
 import { Button } from "@/components/ui/button";
 
@@ -15,14 +16,42 @@ interface SeriesQuery {
   isError: boolean;
 }
 
+function AggregateSeries({ period }: { period: EquityPeriod }) {
+  return <SeriesView query={useEquity(period)} />;
+}
+
+function PortfolioSeries({ portfolioId, period }: { portfolioId: string; period: EquityPeriod }) {
+  return <SeriesView query={usePerformance(portfolioId, period)} />;
+}
+
 /**
- * Equity curve: the aggregated one by default, or the series of `useSeries` (a query hook,
- * e.g. one portfolio's performance). Values become numbers only here, for the chart:
- * labels use format.ts.
+ * Equity curve: the aggregated one, or one portfolio's (`portfolioId`). Values become
+ * numbers only here, for the chart: labels use format.ts.
  */
-export function EquityChart({ useSeries = useEquity }: { useSeries?: (period: EquityPeriod) => SeriesQuery } = {}) {
+export function EquityChart({ portfolioId }: { portfolioId?: string } = {}) {
   const [period, setPeriod] = useState<EquityPeriod>("1m");
-  const { data, isLoading, isError } = useSeries(period);
+  return (
+    <div>
+      <div className="mb-3 flex gap-1" role="group" aria-label="Periodo">
+        {PERIODS.map((p) => (
+          <Button
+            key={p.value}
+            size="sm"
+            variant={p.value === period ? "secondary" : "ghost"}
+            aria-pressed={p.value === period}
+            onClick={() => setPeriod(p.value)}
+          >
+            {p.label}
+          </Button>
+        ))}
+      </div>
+      {portfolioId ? <PortfolioSeries portfolioId={portfolioId} period={period} /> : <AggregateSeries period={period} />}
+    </div>
+  );
+}
+
+function SeriesView({ query }: { query: SeriesQuery }) {
+  const { data, isLoading, isError } = query;
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const series = useRef<ISeriesApi<"Area"> | null>(null);
@@ -61,28 +90,11 @@ export function EquityChart({ useSeries = useEquity }: { useSeries?: (period: Eq
     chart.current?.timeScale().fitContent();
   }, [data, empty]);
 
-  return (
-    <div>
-      <div className="mb-3 flex gap-1" role="group" aria-label="Periodo">
-        {PERIODS.map((p) => (
-          <Button
-            key={p.value}
-            size="sm"
-            variant={p.value === period ? "secondary" : "ghost"}
-            aria-pressed={p.value === period}
-            onClick={() => setPeriod(p.value)}
-          >
-            {p.label}
-          </Button>
-        ))}
-      </div>
-      {isError ? (
-        <p className="py-16 text-center text-sm text-loss">Impossibile caricare il grafico</p>
-      ) : empty ? (
-        <p className="py-16 text-center text-sm text-muted">Nessun dato</p>
-      ) : (
-        <div ref={host} className="h-72 w-full" data-testid="equity-chart" />
-      )}
-    </div>
+  return isError ? (
+    <p className="py-16 text-center text-sm text-loss">Impossibile caricare il grafico</p>
+  ) : empty ? (
+    <p className="py-16 text-center text-sm text-muted">Nessun dato</p>
+  ) : (
+    <div ref={host} className="h-72 w-full" data-testid="equity-chart" />
   );
 }

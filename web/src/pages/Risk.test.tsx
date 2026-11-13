@@ -87,4 +87,14 @@ describe("Risk", () => {
     expect(await screen.findByText(/tasso di ripiego/)).toBeInTheDocument();
     expect(ratePuts).toHaveLength(1);
   });
+
+  it("saves API decimals unchanged after prefilling them as it-IT input", async () => {
+    const user = userEvent.setup();
+    server.use(http.get("*/api/interest-rates", () => HttpResponse.json([{ kind: "loan", key: "*", annual_pct: "1.125" }])));
+    renderApp("/rischio");
+    expect(await screen.findByLabelText("Tasso annuo % 1")).toHaveValue("1,125");
+    await user.click(screen.getByRole("button", { name: "Salva tassi" }));
+    await waitFor(() => expect(ratePuts).toEqual([[{ kind: "loan", key: "*", annual_pct: "1.125" }]]));
+    expect(await screen.findByLabelText("Tasso annuo % 1")).toHaveValue("1,125");
+  });
 });

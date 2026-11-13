@@ -14,7 +14,7 @@ import {
   useRiskProfiles,
   useValuation,
 } from "@/api/hooks/portfolios";
-import type { EquityPeriod, Order, Portfolio, Position, Valuation } from "@/api/types";
+import type { Order, Portfolio, Position, Valuation } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EquityChart } from "@/components/EquityChart";
@@ -53,7 +53,6 @@ function Pct({ value }: { value: string | null }) {
 function Overview({ portfolio }: { portfolio: Portfolio }) {
   const valuation = useValuation(portfolio.id);
   const performance = usePerformance(portfolio.id, "all");
-  const usePortfolioSeries = (period: EquityPeriod) => usePerformance(portfolio.id, period);
   const cash = Object.entries(valuation.data?.cash ?? {}).sort(([a], [b]) => a.localeCompare(b));
 
   return (
@@ -89,7 +88,7 @@ function Overview({ portfolio }: { portfolio: Portfolio }) {
           <CardTitle>Equity</CardTitle>
         </CardHeader>
         <CardContent>
-          <EquityChart useSeries={usePortfolioSeries} />
+          <EquityChart portfolioId={portfolio.id} />
         </CardContent>
       </Card>
       <Card>
@@ -120,8 +119,8 @@ function Overview({ portfolio }: { portfolio: Portfolio }) {
 // --- Posizioni -----------------------------------------------------------------------
 
 function Positions({ portfolioId }: { portfolioId: string }) {
-  const { data, isLoading, isError, error } = usePositions(portfolioId);
-  const live = useLiveQuotes(data?.map((p) => p.symbol) ?? []);
+  const { data, isLoading, isError, error, dataUpdatedAt } = usePositions(portfolioId);
+  const live = useLiveQuotes(data?.map((p) => p.symbol) ?? [], dataUpdatedAt);
 
   const columns: Column<Position>[] = [
     {

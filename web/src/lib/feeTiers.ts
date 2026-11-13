@@ -1,4 +1,4 @@
-import { normalizeAmount, subtractDecimal } from "@/lib/decimal";
+import { AMBIGUOUS_AMOUNT_MESSAGE, amountError, normalizeAmount, subtractDecimal } from "@/lib/decimal";
 import type { FeeTier } from "@/api/types";
 
 /** A tier row as typed in the editor; the last row's bound is always "oltre" (not stored). */
@@ -29,12 +29,15 @@ export function buildTiers(rows: TierRow[]): TiersResult {
   rows.forEach((row, i) => {
     const last = i === rows.length - 1;
     const pct = normalizeAmount(row.pct);
-    if (pct === null) rowErrors[i] = "Percentuale non valida";
+    if (pct === null) {
+      rowErrors[i] = amountError(row.pct) === AMBIGUOUS_AMOUNT_MESSAGE ? AMBIGUOUS_AMOUNT_MESSAGE : "Percentuale non valida";
+    }
     let up_to: string | null = null;
     if (!last) {
       up_to = normalizeAmount(row.up_to);
       if (up_to === null || !isPositive(subtractDecimal(up_to, "0"))) {
-        rowErrors[i] ??= "Il limite deve essere un numero positivo";
+        rowErrors[i] ??=
+          amountError(row.up_to) === AMBIGUOUS_AMOUNT_MESSAGE ? AMBIGUOUS_AMOUNT_MESSAGE : "Il limite deve essere un numero positivo";
         up_to = null;
       } else if (previous !== null && !isPositive(subtractDecimal(up_to, previous))) {
         rowErrors[i] ??= "I limiti devono essere crescenti";

@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { normalizeAmount } from "@/lib/decimal";
+import { normalizeAmount, toInputDecimal } from "@/lib/decimal";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatQty } from "@/lib/format";
 
@@ -33,10 +33,10 @@ const PROFILE_FIELDS = ["name", "short_allowed", "allowed_symbols", "allowed_ass
 function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onClose: () => void }) {
   const [name, setName] = useState(profile?.name ?? "");
   const [limits, setLimits] = useState<Record<LimitField, string>>(() => ({
-    max_order_notional_eur: profile?.max_order_notional_eur ?? "",
-    max_position_pct: profile?.max_position_pct ?? "",
-    max_daily_loss_pct: profile?.max_daily_loss_pct ?? "",
-    max_daily_loss_eur: profile?.max_daily_loss_eur ?? "",
+    max_order_notional_eur: toInputDecimal(profile?.max_order_notional_eur),
+    max_position_pct: toInputDecimal(profile?.max_position_pct),
+    max_daily_loss_pct: toInputDecimal(profile?.max_daily_loss_pct),
+    max_daily_loss_eur: toInputDecimal(profile?.max_daily_loss_eur),
   }));
   const [symbols, setSymbols] = useState(profile?.allowed_symbols ?? []);
   const [classes, setClasses] = useState(profile?.allowed_asset_classes ?? []);
@@ -186,8 +186,13 @@ function ProfilesSection() {
 
 const KIND_LABEL: Record<InterestKind, string> = { loan: "prestito (valuta)", borrow: "short (classe di asset)" };
 
+/** API rates with annual_pct as it-IT input text. */
+function toInputRates(rates: InterestRate[]): InterestRate[] {
+  return rates.map((r) => ({ ...r, annual_pct: toInputDecimal(r.annual_pct) }));
+}
+
 function RatesEditor({ initial }: { initial: InterestRate[] }) {
-  const [rows, setRows] = useState(initial);
+  const [rows, setRows] = useState(() => toInputRates(initial));
   const [error, setError] = useState<string | null>(null);
   const save = useSaveInterestRates();
   const patch = (i: number, p: Partial<InterestRate>) => setRows((r) => r.map((x, j) => (j === i ? { ...x, ...p } : x)));
@@ -201,7 +206,7 @@ function RatesEditor({ initial }: { initial: InterestRate[] }) {
     }
     if (!out.some((r) => r.kind === "loan" && r.key === "*")) return setError('Serve un tasso di ripiego per i prestiti (chiave "*")');
     setError(null);
-    save.mutate(out, { onSuccess: (data) => { setRows(data); toast.success("Tassi salvati"); } });
+    save.mutate(out, { onSuccess: (data) => { setRows(toInputRates(data)); toast.success("Tassi salvati"); } });
   }
 
   return (

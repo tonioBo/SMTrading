@@ -4,6 +4,7 @@ import { useDeactivateFeeRule, useFeeRules, useSaveFeeRule, useSimulateFee } fro
 import { usePortfolios } from "@/api/hooks/portfolios";
 import type { AssetClass, FeeRule, FeeRuleInput, FeeScope, FeeSide, FeeTier } from "@/api/types";
 import { DataTable, type Column } from "@/components/DataTable";
+import { AmountPreview } from "@/components/AmountPreview";
 import { FormField, selectClass } from "@/components/FormField";
 import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
@@ -11,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { normalizeAmount, subtractDecimal } from "@/lib/decimal";
+import { normalizeAmount, subtractDecimal, toInputDecimal } from "@/lib/decimal";
 import { errorField, errorMessage } from "@/lib/errors";
 import { buildTiers, type TierRow } from "@/lib/feeTiers";
 import { formatDecimal, formatMoney, formatQty } from "@/lib/format";
@@ -58,14 +59,14 @@ function initialForm(rule: FeeRule | null): FormState {
     scope_ref: rule.scope_ref ?? "",
     side: rule.side,
     currency: rule.currency,
-    fixed: rule.fixed,
-    pct: rule.pct,
-    min_fee: rule.min_fee ?? "",
-    max_fee: rule.max_fee ?? "",
-    fx_pct: rule.fx_pct,
+    fixed: toInputDecimal(rule.fixed),
+    pct: toInputDecimal(rule.pct),
+    min_fee: toInputDecimal(rule.min_fee),
+    max_fee: toInputDecimal(rule.max_fee),
+    fx_pct: toInputDecimal(rule.fx_pct),
     priority: String(rule.priority),
     active: rule.active,
-    tiers: (rule.tiers ?? []).map((t) => ({ up_to: t.up_to ?? "", pct: t.pct })),
+    tiers: (rule.tiers ?? []).map((t) => ({ up_to: toInputDecimal(t.up_to), pct: toInputDecimal(t.pct) })),
   };
 }
 
@@ -223,6 +224,11 @@ function RuleDialog({ rule, onClose }: { rule: FeeRule | null; onClose: () => vo
                       placeholder="fino a"
                       onChange={(e) => setTier(i, { up_to: e.target.value })}
                     />
+                    {!last && (
+                      <p className="mt-1 text-xs text-muted">
+                        <AmountPreview input={t.up_to} currency={form.currency} />
+                      </p>
+                    )}
                   </div>
                   <div className="flex-1">
                     <Input
@@ -232,6 +238,9 @@ function RuleDialog({ rule, onClose }: { rule: FeeRule | null; onClose: () => vo
                       placeholder="%"
                       onChange={(e) => setTier(i, { pct: e.target.value })}
                     />
+                    <p className="mt-1 text-xs text-muted">
+                      <AmountPreview input={t.pct} suffix="%" />
+                    </p>
                     {tierErrors[i] && <p className="mt-1 text-xs text-loss">{tierErrors[i]}</p>}
                   </div>
                   <Button
