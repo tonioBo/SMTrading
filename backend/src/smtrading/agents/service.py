@@ -7,6 +7,7 @@ import secrets
 import string
 import time
 import uuid
+import weakref
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -14,10 +15,11 @@ from typing import Any, Literal
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from smtrading.agents.models import Agent, AgentPortfolio, McpAuditLog
 from smtrading.common.errors import ErrorCode, SMTError
@@ -31,6 +33,7 @@ _PREFIX_ALPHABET = string.ascii_lowercase + string.digits
 _TOKEN_RE = re.compile(r"smt_([a-z0-9]{8})_([A-Za-z0-9_-]{40})")
 _LAST_SEEN_EVERY = timedelta(minutes=1)
 _PERMISSIONS = ("read", "trade")
+_MAX_CONCURRENT_VERIFY = 4
 
 _hasher = PasswordHasher()  # argon2id defaults
 _DUMMY_HASH = _hasher.hash("smt-dummy-secret")
@@ -81,7 +84,84 @@ class TokenCache:
         self._entries.clear()
 
 
+class RejectedTokenCache:
+    """Bounded set of recently rejected tokens (key sha256(token)), each kept `ttl` seconds,
+    so a client retrying a bad token does not cost an argon2 verify every time."""
+
+    def __init__(
+        self, ttl: float = 60.0, max_entries: int = 10_000,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self._ttl = ttl
+        self._max = max_entries
+        self._clock = clock
+        self._entries: dict[str, float] = {}  # key -> expires_at, in insertion order
+
+    def __contains__(self, token: str) -> bool:
+        key = TokenCache._key(token)
+        expires_at = self._entries.get(key)
+        if expires_at is None:
+            return False
+        if self._clock() >= expires_at:
+            del self._entries[key]
+            return False
+        return True
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def add(self, token: str) -> None:
+        key = TokenCache._key(token)
+        self._entries.pop(key, None)
+        if len(self._entries) >= self._max:
+            now = self._clock()
+            for k in [k for k, exp in self._entries.items() if exp <= now]:
+                del self._entries[k]
+            while len(self._entries) >= self._max:  # still full: drop the oldest
+                del self._entries[next(iter(self._entries))]
+        self._entries[key] = self._clock() + self._ttl
+
+    def clear(self) -> None:
+        self._entries.clear()
+
+
 token_cache = TokenCache()
+rejected_tokens = RejectedTokenCache()
+# one semaphore per event loop (tests and the API server run several loops)
+_verify_slots: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _verify_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    sem = _verify_slots.get(loop)
+    if sem is None:
+        sem = _verify_slots[loop] = asyncio.Semaphore(_MAX_CONCURRENT_VERIFY)
+    return sem
+
+_INVALIDATE_KEY = "smt_invalidate_agents"
+
+
+def _invalidate_after_commit(session: AsyncSession, agent_id: uuid.UUID) -> None:
+    """Drop the agent's cached tokens now and again once the transaction commits: a
+    concurrent request may re-cache the old token from the still-committed row meanwhile."""
+    token_cache.invalidate_agent(agent_id)
+    session.info.setdefault(_INVALIDATE_KEY, set()).add(agent_id)
+
+
+@event.listens_for(Session, "after_commit")
+def _on_commit(session: Session) -> None:
+    if session.in_nested_transaction():  # a savepoint release, not the real commit
+        return
+    for agent_id in session.info.pop(_INVALIDATE_KEY, ()):
+        token_cache.invalidate_agent(agent_id)
+
+
+@event.listens_for(Session, "after_rollback")
+def _on_rollback(session: Session) -> None:
+    if not session.in_nested_transaction():
+        session.info.pop(_INVALIDATE_KEY, None)
 
 
 async def _get_agent(session: AsyncSession, agent_id: uuid.UUID) -> Agent:
@@ -110,9 +190,8 @@ async def create_agent(session: AsyncSession, name: str) -> tuple[Agent, str]:
 
 
 async def rotate_token(session: AsyncSession, agent_id: uuid.UUID) -> str:
-    """Issue a new token. Callers must also call `token_cache.invalidate_agent(agent_id)`
-    after committing (another request may have re-cached the old token meanwhile); the cache TTL
-    bounds staleness in other processes."""
+    """Issue a new token. This process's token cache is invalidated now and after the
+    commit; the cache TTL bounds staleness in other processes."""
     agent = await _get_agent(session, agent_id)
     for _ in range(5):
         token, prefix, secret = generate_token()
@@ -124,18 +203,18 @@ async def rotate_token(session: AsyncSession, agent_id: uuid.UUID) -> str:
                 await session.flush()
         except IntegrityError:
             continue
-        token_cache.invalidate_agent(agent_id)
+        _invalidate_after_commit(session, agent_id)
         return token
     raise SMTError(ErrorCode.INVALID_ORDER, "could not rotate token")
 
 
 async def set_agent_active(session: AsyncSession, agent_id: uuid.UUID, active: bool) -> Agent:
-    """Callers must also call `token_cache.invalidate_agent(agent_id)` after committing; the
-    cache TTL bounds staleness in other processes."""
+    """This process's token cache is invalidated now and after the commit; the cache TTL
+    bounds staleness in other processes."""
     agent = await _get_agent(session, agent_id)
     agent.active = active
     await session.flush()
-    token_cache.invalidate_agent(agent_id)
+    _invalidate_after_commit(session, agent_id)
     return agent
 
 
@@ -146,7 +225,10 @@ def _touch(agent: Agent) -> None:
 
 
 async def authenticate(session: AsyncSession, token: str) -> Agent:
-    """Resolve a bearer token to an active agent, or raise FORBIDDEN 'invalid token'."""
+    """Resolve a bearer token to an active agent, or raise FORBIDDEN 'invalid token'.
+
+    At most 4 argon2 verifies run at once (per event loop); a token whose secret failed
+    verification is refused without hashing for the next 60 s (`rejected_tokens`)."""
     if not isinstance(token, str) or _TOKEN_RE.fullmatch(token) is None:
         raise _invalid_token()
     cached_id = token_cache.get(token)
@@ -157,11 +239,17 @@ async def authenticate(session: AsyncSession, token: str) -> Agent:
             return agent
         token_cache.invalidate_agent(cached_id)
 
+    if token in rejected_tokens:
+        raise _invalid_token()
     prefix, secret = _TOKEN_RE.fullmatch(token).groups()  # type: ignore[union-attr]
     agent = await session.scalar(select(Agent).where(Agent.token_prefix == prefix))
     try:
-        await asyncio.to_thread(_hasher.verify, agent.token_hash if agent else _DUMMY_HASH, secret)
+        async with _verify_semaphore():
+            await asyncio.to_thread(
+                _hasher.verify, agent.token_hash if agent else _DUMMY_HASH, secret
+            )
     except VerificationError:
+        rejected_tokens.add(token)
         raise _invalid_token() from None
     if agent is None or not agent.active:
         raise _invalid_token()

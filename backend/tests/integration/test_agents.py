@@ -15,8 +15,10 @@ TOKEN_RE = re.compile(r"^smt_[a-z0-9]{8}_[A-Za-z0-9_-]{40}$")
 @pytest.fixture(autouse=True)
 def _clean_cache():
     service.token_cache.clear()
+    service.rejected_tokens.clear()
     yield
     service.token_cache.clear()
+    service.rejected_tokens.clear()
 
 
 async def test_generate_token_format():
@@ -290,3 +292,142 @@ async def test_assign_missing_agent_or_portfolio_not_found(db_session, portfolio
         with pytest.raises(SMTError) as e:
             await service.assign_portfolio(db_session, a, p, "read")
         assert e.value.code == ErrorCode.NOT_FOUND
+
+
+async def _committed_agent(db_url: str, name: str = "bot"):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from smtrading.common.db import make_engine
+
+    engine = make_engine(db_url)
+    sm = async_sessionmaker(engine, expire_on_commit=False)
+    async with sm() as s:
+        agent, token = await service.create_agent(s, name)
+        await s.commit()
+    return engine, sm, agent, token
+
+
+@pytest.mark.parametrize("change", ["rotate", "deactivate"])
+async def test_old_token_recached_before_commit_is_dropped_after_commit(fresh_db, change):
+    engine, sm, agent, old = await _committed_agent(fresh_db)
+    try:
+        async with sm() as writer:
+            if change == "rotate":
+                await service.rotate_token(writer, agent.id)
+            else:
+                await service.set_agent_active(writer, agent.id, False)
+            # a concurrent request still sees the committed row and re-caches the old token
+            async with sm() as reader:
+                assert (await service.authenticate(reader, old)).id == agent.id
+                await reader.rollback()  # its last_seen_at update would wait on the writer
+            assert service.token_cache.get(old) == agent.id
+            await writer.commit()
+        assert service.token_cache.get(old) is None
+        async with sm() as reader:
+            with pytest.raises(SMTError) as e:
+                await service.authenticate(reader, old)
+            assert e.value.code == ErrorCode.FORBIDDEN
+    finally:
+        await engine.dispose()
+
+
+async def test_pending_invalidation_cleared_on_rollback(fresh_db):
+    engine, sm, agent, old = await _committed_agent(fresh_db)
+    try:
+        async with sm() as writer:
+            await service.rotate_token(writer, agent.id)
+            assert writer.info["smt_invalidate_agents"] == {agent.id}
+            await writer.rollback()
+            assert "smt_invalidate_agents" not in writer.info
+            # rolled back: the old token is still the valid one
+            assert (await service.authenticate(writer, old)).id == agent.id
+            await writer.commit()
+        assert service.token_cache.get(old) == agent.id
+    finally:
+        await engine.dispose()
+
+
+async def test_savepoint_release_does_not_flush_pending_invalidation(fresh_db):
+    engine, sm, agent, old = await _committed_agent(fresh_db)
+    try:
+        async with sm() as writer:
+            await service.rotate_token(writer, agent.id)
+            async with writer.begin_nested():
+                pass
+            assert writer.info["smt_invalidate_agents"] == {agent.id}
+            service.token_cache.put(old, agent.id)  # re-cached concurrently
+            await writer.commit()
+        assert service.token_cache.get(old) is None
+    finally:
+        await engine.dispose()
+
+
+def test_rejected_token_cache_ttl_and_bound():
+    now = [0.0]
+    cache = service.RejectedTokenCache(ttl=60, max_entries=3, clock=lambda: now[0])
+    for t in ("a", "b", "c"):
+        cache.add(t)
+    assert "a" in cache and len(cache) == 3
+    cache.add("d")  # full, nothing expired: the oldest goes
+    assert len(cache) == 3 and "a" not in cache and "d" in cache
+    now[0] = 61
+    assert "b" not in cache
+    cache.add("e")
+    now[0] = 62
+    cache.add("f")
+    cache.add("g")  # full: expired entries are swept first
+    assert len(cache) == 3 and {"e", "f", "g"} == {t for t in "defg" if t in cache}
+
+
+async def test_bad_token_skips_argon2_while_rejected(db_session, monkeypatch):
+    real = service._hasher
+    calls = []
+
+    class Spy:
+        def verify(self, h, s):
+            calls.append(s)
+            return real.verify(h, s)
+
+    agent, token = await service.create_agent(db_session, "bot")
+    monkeypatch.setattr(service, "_hasher", Spy())
+    bad = token[:13] + ("B" if token[13] != "B" else "C") + token[14:]
+    for _ in range(3):
+        with pytest.raises(SMTError):
+            await service.authenticate(db_session, bad)
+    assert len(calls) == 1
+    assert (await service.authenticate(db_session, token)).id == agent.id
+    assert len(calls) == 2
+
+
+async def test_argon2_verify_concurrency_is_bounded(db_session, monkeypatch):
+    import asyncio
+    import threading
+    import time
+
+    lock = threading.Lock()
+    active = [0, 0]  # current, peak
+
+    class Slow:
+        def verify(self, h, s):
+            with lock:
+                active[0] += 1
+                active[1] = max(active[1], active[0])
+            time.sleep(0.05)
+            with lock:
+                active[0] -= 1
+            raise service.VerificationError("no")
+
+    monkeypatch.setattr(service, "_hasher", Slow())
+    tokens = [f"smt_{i:08d}_" + "A" * 40 for i in range(10)]
+
+    async def attempt(t):
+        with pytest.raises(SMTError):
+            await service.authenticate(db_session, t)
+
+    # one AsyncSession cannot run queries concurrently: authenticate with fresh lookups
+    async def no_agent(*a, **k):
+        return None
+
+    monkeypatch.setattr(db_session, "scalar", no_agent)
+    await asyncio.gather(*(attempt(t) for t in tokens))
+    assert active[1] == 4

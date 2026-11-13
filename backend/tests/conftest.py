@@ -210,6 +210,7 @@ async def mcp_server(fresh_db, redis_url, monkeypatch):
     monkeypatch.setenv("SMT_ADMIN_PASSWORD", "test-password")
     get_settings.cache_clear()
     agents.token_cache.clear()
+    agents.rejected_tokens.clear()
 
     engine = make_engine(fresh_db)
     async with async_sessionmaker(engine, expire_on_commit=False)() as s:
@@ -242,6 +243,7 @@ async def mcp_server(fresh_db, redis_url, monkeypatch):
         server.should_exit = True
         thread.join(timeout=15)
         agents.token_cache.clear()
+        agents.rejected_tokens.clear()
 
 
 def _mcp_session(url: str, token: str):
