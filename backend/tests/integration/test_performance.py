@@ -85,12 +85,12 @@ async def test_invalid_period(db_session, portfolio):
 
 
 def test_downsample_keeps_last_of_each_bucket():
-    from smtrading.performance.service import _downsample
+    from smtrading.performance.service import downsample
 
-    assert _downsample([1, 2, 3], 5) == [1, 2, 3]
-    assert _downsample(list(range(10)), 5) == [1, 3, 5, 7, 9]
-    assert _downsample(list(range(11)), 5) == [2, 5, 8, 10]
-    out = _downsample(list(range(1201)), 500)
+    assert downsample([1, 2, 3], 5) == [1, 2, 3]
+    assert downsample(list(range(10)), 5) == [1, 3, 5, 7, 9]
+    assert downsample(list(range(11)), 5) == [2, 5, 8, 10]
+    out = downsample(list(range(1201)), 500)
     assert len(out) <= 500 and out[-1] == 1200
 
 

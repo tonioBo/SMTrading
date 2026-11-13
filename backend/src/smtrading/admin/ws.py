@@ -6,24 +6,23 @@
   a client without `Origin` (not a browser) is allowed.
 - Server → client: `{"type":"event","event":{...}}` for every message on `events`,
   `{"type":"quote","quote":{...}}` for the subscribed `ticks:{sym}`, `{"type":"ping"}`
-  every `PING_INTERVAL_S` (the session is re-validated at each ping: a revoked session
-  closes 4401), `{"type":"subscribed"|"unsubscribed","symbols":[...]}` acknowledgements (sent once
+  every `PING_INTERVAL_S` (the session is re-validated at each ping, without renewing its
+  TTL: a revoked session closes 4401), `{"type":"subscribed"|"unsubscribed","symbols":[...]}` acknowledgements (sent once
   Redis has confirmed every channel of the request) and
-  `{"type":"error","code","message"}` for a malformed client message.
+  `{"type":"error","code","message"}` for a malformed client message (or a binary frame).
 - Client → server: `{"type":"subscribe_quotes","symbols":[...]}` /
   `{"type":"unsubscribe_quotes","symbols":[...]}`; symbols are canonicalized, at most
   `MAX_SYMBOLS` subscribed per client.
 
 One Redis pub/sub connection per client, owned by a single relay task (subscription
 changes are queued to it); it is unsubscribed and closed on disconnect. A Redis failure
-closes the socket with 1011.
+(or any unexpected error, also during authentication) closes the socket with 1011.
 """
 
 import asyncio
 import contextlib
 import json
 import logging
-import uuid
 from collections import deque
 from typing import Any
 from urllib.parse import urlsplit
@@ -32,14 +31,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
-from smtrading.admin.auth import (
-    SESSION_COOKIE,
-    SESSION_TTL_S,
-    _session_key,
-    credentials_fingerprint,
-    destroy_session,
-)
-from smtrading.admin.models import AdminUser
+from smtrading.admin.auth import SESSION_COOKIE, load_admin_session
 from smtrading.common.errors import ErrorCode
 from smtrading.events import EVENTS_CHANNEL
 from smtrading.instruments.service import canonical_symbol
@@ -55,7 +47,7 @@ PING_INTERVAL_S = 25.0
 MAX_SYMBOLS = 200
 MAX_SYMBOL_LEN = 64
 TICKS_PREFIX = "ticks:"
-_POLL_TIMEOUT_S = 1.0
+_POLL_TIMEOUT_S = 0.1  # bounds the delay before a queued (un)subscription is applied
 
 
 class _Close(Exception):
@@ -72,22 +64,13 @@ def _origin_ok(websocket: WebSocket) -> bool:
     return bool(host) and urlsplit(origin).netloc.lower() == host.lower()
 
 
-async def _session_valid(websocket: WebSocket, redis: Redis) -> bool:
-    """The `require_admin` checks (minus CSRF) for the socket's session cookie."""
-    session_id = websocket.cookies.get(SESSION_COOKIE)
-    if not session_id:
-        return False
-    raw = await redis.getex(_session_key(session_id), ex=SESSION_TTL_S)
-    if raw is None:
-        return False
-    data = json.loads(raw)
-    async with websocket.app.state.sessionmaker() as session:
-        user = await session.get(AdminUser, uuid.UUID(data["admin_id"]))
-        fingerprint = None if user is None else credentials_fingerprint(user)
-    if data.get("fp") != fingerprint:
-        await destroy_session(redis, session_id)
-        return False
-    return True
+async def _session_valid(websocket: WebSocket, redis: Redis, *, renew: bool) -> bool:
+    """The `require_admin` session checks (no CSRF) for the socket's session cookie."""
+    async with websocket.app.state.sessionmaker() as db:
+        loaded = await load_admin_session(
+            redis, db, websocket.cookies.get(SESSION_COOKIE), renew=renew
+        )
+    return loaded is not None
 
 
 def _error(message: str) -> dict:
@@ -126,7 +109,13 @@ class _Relay:
 
     async def receive_loop(self) -> None:
         while True:
-            text = await self.ws.receive_text()
+            message = await self.ws.receive()
+            if message["type"] == "websocket.disconnect":
+                raise WebSocketDisconnect(message.get("code", 1000), message.get("reason"))
+            text = message.get("text")
+            if text is None:
+                await self.send(_error("sono ammessi solo messaggi di testo JSON"))
+                continue
             try:
                 msg = json.loads(text)
             except ValueError:
@@ -201,7 +190,7 @@ class _Relay:
     async def ping_loop(self) -> None:
         while True:
             await asyncio.sleep(PING_INTERVAL_S)
-            if not await _session_valid(self.ws, self.redis):
+            if not await _session_valid(self.ws, self.redis, renew=False):
                 raise _Close(CLOSE_UNAUTHENTICATED)
             await self.send({"type": "ping"})
 
@@ -225,9 +214,9 @@ async def admin_ws(websocket: WebSocket) -> None:
         await _close(websocket, CLOSE_FORBIDDEN_ORIGIN)
         return
     try:
-        authenticated = await _session_valid(websocket, redis)
-    except RedisError:
-        log.warning("websocket authentication failed: redis error", exc_info=True)
+        authenticated = await _session_valid(websocket, redis, renew=True)
+    except Exception:
+        log.exception("websocket authentication failed")
         await websocket.accept()
         await _close(websocket, CLOSE_INTERNAL_ERROR)
         return

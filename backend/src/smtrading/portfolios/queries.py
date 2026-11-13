@@ -3,7 +3,7 @@ touching a portfolio (with only its own lines) and the day P&L."""
 
 from datetime import datetime
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import UUID
 
 from sqlalchemy import select
@@ -103,15 +103,23 @@ async def today_day_open(
     )
 
 
-async def day_pnl(
+class DayPnl(NamedTuple):
+    """`pnl` EUR in cents, `pct` to 4 decimals, `base` today's day_open equity (the %
+    denominator); all None without a day_open, `pct` None when `base` is not positive."""
+
+    pnl: Decimal | None
+    pct: Decimal | None
+    base: Decimal | None
+
+
+async def day_pnl_detail(
     session: AsyncSession, qs: QuoteSource, portfolio: Portfolio, valuation: PortfolioValuation
-) -> tuple[Decimal | None, Decimal | None]:
-    """(EUR in cents, % to 4 decimals): equity - today's day_open equity - net deposits
-    since it (external cash flows are not P&L, as in risk.daily_loss); (None, None)
-    without a day_open, % None when the day_open equity is not positive."""
+) -> DayPnl:
+    """Equity - today's day_open equity - net deposits since it (external cash flows are
+    not P&L, as in risk.daily_loss)."""
     day_open = await today_day_open(session, portfolio, valuation.ts)
     if day_open is None:
-        return None, None
+        return DayPnl(None, None, None)
     flows = await net_cash_flows_eur(session, qs, portfolio.id, day_open.ts, valuation.ts)
     pct = None
     with localcontext() as c:
@@ -119,4 +127,12 @@ async def day_pnl(
         raw = valuation.equity_raw - day_open.equity_eur - flows
         if day_open.equity_eur > 0:
             pct = (raw / day_open.equity_eur * 100).quantize(_Q4, rounding=ROUND_HALF_EVEN)
-    return quantize_money(raw, "EUR"), pct
+    return DayPnl(quantize_money(raw, "EUR"), pct, day_open.equity_eur)
+
+
+async def day_pnl(
+    session: AsyncSession, qs: QuoteSource, portfolio: Portfolio, valuation: PortfolioValuation
+) -> tuple[Decimal | None, Decimal | None]:
+    """(EUR in cents, % to 4 decimals) of `day_pnl_detail`."""
+    detail = await day_pnl_detail(session, qs, portfolio, valuation)
+    return detail.pnl, detail.pct

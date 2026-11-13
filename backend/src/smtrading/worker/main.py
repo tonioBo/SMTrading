@@ -2,7 +2,6 @@ import asyncio
 import contextlib
 import logging
 import signal
-import time
 from collections.abc import Awaitable, Callable
 
 import httpx
@@ -11,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
+from smtrading.common.heartbeat import write_heartbeat
 from smtrading.engine.processor import OrderProcessor
 from smtrading.jobs.scheduler import JobScheduler
 from smtrading.marketdata.router import MarketDataRouter
@@ -18,7 +18,6 @@ from smtrading.marketdata.streaming import StreamManager
 
 log = logging.getLogger("smtrading.worker")
 
-HEARTBEAT_KEY = "worker:heartbeat"
 HEARTBEAT_INTERVAL_S = 10
 RESTART_DELAY_S = 5
 HEALTH_FIRST_DELAY_S = 30
@@ -28,7 +27,7 @@ HEALTH_INTERVAL_S = 300
 async def heartbeat(redis) -> None:
     while True:
         try:
-            await redis.set(HEARTBEAT_KEY, str(time.time()))
+            await write_heartbeat(redis)
         except Exception:
             # Retry on the next tick: a Redis outage must not kill the worker.
             log.warning("heartbeat write failed; retrying in %ss", HEARTBEAT_INTERVAL_S,

@@ -171,12 +171,68 @@ async def test_ws_rejects_malformed_messages_and_symbol_overflow(server):
         assert len((await _recv(ws))["symbols"]) == 200
 
 
+async def test_ws_binary_frame_gets_error(server):
+    async with connect(server.ws_url, additional_headers={"Cookie": server.cookie}) as ws:
+        await ws.send(b"\x00\x01")
+        assert (await _recv(ws))["type"] == "error"
+        await ws.send(json.dumps({"type": "subscribe_quotes", "symbols": ["AAPL"]}))
+        assert (await _recv(ws))["type"] == "subscribed"  # still open and serving
+
+
+async def _numsub(redis, channel: str) -> int:
+    return dict(await redis.pubsub_numsub(channel))[channel.encode()]
+
+
+async def test_ws_releases_pubsub_on_disconnect(server):
+    baseline = await _numsub(server.redis, "events")
+    async with connect(server.ws_url, additional_headers={"Cookie": server.cookie}) as ws:
+        await ws.send(json.dumps({"type": "subscribe_quotes", "symbols": ["ZZREL"]}))
+        assert (await _recv(ws))["type"] == "subscribed"
+        assert await _numsub(server.redis, "events") == baseline + 1
+        assert await _numsub(server.redis, "ticks:ZZREL") == 1
+    deadline = time.monotonic() + 5
+    while await _numsub(server.redis, "events") != baseline:
+        assert time.monotonic() < deadline, "pubsub not released"
+        await asyncio.sleep(0.05)
+    assert await _numsub(server.redis, "ticks:ZZREL") == 0
+
+
+async def test_ws_redis_failure_closes_1011(server, monkeypatch):
+    from redis.asyncio.client import PubSub
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
+    async with connect(server.ws_url, additional_headers={"Cookie": server.cookie}) as ws:
+        await ws.send(json.dumps({"type": "subscribe_quotes", "symbols": ["AAPL"]}))
+        assert (await _recv(ws))["type"] == "subscribed"
+
+        async def broken(self, *args, **kwargs):
+            raise RedisConnectionError("redis down")
+
+        monkeypatch.setattr(PubSub, "get_message", broken)
+        assert await _closed_code(ws) == 1011
+
+
+async def test_ws_auth_error_closes_1011(server, monkeypatch):
+    from smtrading.admin import ws as ws_module
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(ws_module, "load_admin_session", boom)
+    async with connect(server.ws_url, additional_headers={"Cookie": server.cookie}) as ws:
+        assert await _closed_code(ws) == 1011
+
+
 async def test_ws_pings_and_closes_when_session_revoked(server, monkeypatch):
     from smtrading.admin import ws as ws_module
 
     monkeypatch.setattr(ws_module, "PING_INTERVAL_S", 0.2)
+    session_key = f"adm:sess:{server.client.cookies['smt_session']}"
     async with connect(server.ws_url, additional_headers={"Cookie": server.cookie}) as ws:
+        await server.redis.expire(session_key, 100)
         assert await _recv(ws) == {"type": "ping"}
+        assert await _recv(ws) == {"type": "ping"}
+        assert 0 < await server.redis.ttl(session_key) <= 100  # ping checks do not renew
         r = await server.client.post("/api/auth/logout")
         assert r.status_code == 204
         assert await _closed_code(ws) == 4401
@@ -201,10 +257,11 @@ async def test_dashboard_values_with_two_portfolios(server):
     async with server.sm() as s:
         p1 = await create_portfolio(s, name="Alpha", initial_cash=D(10000), timezone="UTC")
         p2 = await create_portfolio(s, name="Beta", initial_cash=D(5000), timezone="UTC")
+        p3 = await create_portfolio(s, name="Gamma", initial_cash=D(100), timezone="UTC")
         s.add(Connector(name="zz_test", enabled=True, health_status="ok"))
         await s.commit()
         now = datetime.now(UTC)  # after the initial deposits: they are not P&L flows
-        for p, equity in ((p1, D(9500)), (p2, D(5000))):
+        for p, equity in ((p1, D(9500)), (p2, D(5000)), (p3, D(0))):
             s.add(EquitySnapshot(
                 portfolio_id=p.id, ts=now, kind=SnapshotKind.day_open,
                 local_date=local_date(p, now), equity_eur=equity, cash_eur=equity,
@@ -220,11 +277,13 @@ async def test_dashboard_values_with_two_portfolios(server):
     r = await server.client.get("/api/dashboard")
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["total_equity_eur"] == "15000"
-    assert body["day_pnl_eur"] == "500"
-    assert body["day_pnl_pct"] == "3.4483"  # 500 / 14500
+    assert body["total_equity_eur"] == "15100"
+    assert body["day_pnl_eur"] == "600"
+    # Gamma's day_open equity is 0 (no %): it is out of the % base, 500 / 14500
+    assert body["day_pnl_pct"] == "3.4483"
     by_name = {p["name"]: p for p in body["portfolios"]}
-    assert set(by_name) == {"Alpha", "Beta"}
+    assert set(by_name) == {"Alpha", "Beta", "Gamma"}
+    assert by_name["Gamma"]["day_pnl_eur"] == "100" and by_name["Gamma"]["day_pnl_pct"] is None
     assert by_name["Alpha"]["equity_eur"] == "10000"
     assert by_name["Alpha"]["day_pnl_pct"] == "5.2632"
     assert by_name["Alpha"]["status"] == "active" and by_name["Alpha"]["error"] is None
@@ -238,6 +297,15 @@ async def test_dashboard_values_with_two_portfolios(server):
     assert alerts[0]["kind"] == "liquidation"  # newest first
     assert body["kill_switch"] is False
     assert 4 <= body["worker_heartbeat_age_s"] < 60
+
+
+async def test_dashboard_unreadable_heartbeat_is_null(server):
+    await server.redis.set("worker:heartbeat", "garbage")
+    try:
+        body = (await server.client.get("/api/dashboard")).json()
+    finally:
+        await server.redis.delete("worker:heartbeat")
+    assert body["worker_heartbeat_age_s"] is None
 
 
 async def test_dashboard_reports_unvaluable_portfolio_without_failing(server, monkeypatch):
@@ -288,6 +356,9 @@ async def test_dashboard_equity_buckets_and_sums(server):
         snap(p2, 2, "5000")
         snap(p1, 0.5, "99999", SnapshotKind.day_open)  # not periodic: ignored
         snap(p1, 5, "10200.004")  # p2 missing here: carries 5000
+        p3 = await create_portfolio(s, name="Gamma", initial_cash=D(1), timezone="UTC")
+        snap(p3, -3 * 24 * 60, "700")  # before the window: seeds the carried total only
+        snap(p3, -2 * 24 * 60, "777")
         await s.commit()
 
     r = await server.client.get("/api/dashboard/equity", params={"period": "1d"})
@@ -295,8 +366,9 @@ async def test_dashboard_equity_buckets_and_sums(server):
     body = r.json()
     assert body["period"] == "1d"
     b0, b1 = t0.isoformat(), (t0 + timedelta(minutes=5)).isoformat()
+    assert body["bucket_s"] == 300
     assert body["series"] == [
-        {"ts": b0, "equity_eur": "15100"}, {"ts": b1, "equity_eur": "15200"},
+        {"ts": b0, "equity_eur": "15877"}, {"ts": b1, "equity_eur": "15977"},
     ]
     alpha, beta = body["portfolios"]
     assert (alpha["name"], beta["name"]) == ("Alpha", "Beta")
@@ -324,6 +396,27 @@ async def test_dashboard_equity_caps_points(server):
             ))
         await s.commit()
     body = (await server.client.get("/api/dashboard/equity", params={"period": "1m"})).json()
-    assert 0 < len(body["series"]) <= 500
+    bucket_s = 30 * 86400 // 500
+    assert body["bucket_s"] == bucket_s  # binned in SQL, not 1200 points downsampled
+    expected = {int((start + timedelta(minutes=5 * i)).timestamp()) // bucket_s for i in range(1200)}
+    assert len(body["series"]) == len(expected)
     assert len(body["portfolios"][0]["series"]) <= 500
     assert body["series"][-1]["equity_eur"] == "1199"  # the last point is kept
+
+
+async def test_dashboard_equity_all_bins_on_history_span(server):
+    from smtrading.portfolios.service import create_portfolio
+    from smtrading.risk.models import EquitySnapshot, SnapshotKind
+
+    now = datetime.now(UTC)
+    async with server.sm() as s:
+        p = await create_portfolio(s, name="Old", initial_cash=D(1), timezone="UTC")
+        for days, eq in ((1000, "1"), (500, "2"), (1, "3")):
+            s.add(EquitySnapshot(
+                portfolio_id=p.id, ts=now - timedelta(days=days), kind=SnapshotKind.periodic,
+                equity_eur=D(eq), cash_eur=D(eq), exposure_eur=D(0), margin_used_eur=D(0),
+            ))
+        await s.commit()
+    body = (await server.client.get("/api/dashboard/equity", params={"period": "all"})).json()
+    assert 1000 * 86400 // 500 <= body["bucket_s"] <= 1001 * 86400 // 500
+    assert [p["equity_eur"] for p in body["series"]] == ["1", "2", "3"]

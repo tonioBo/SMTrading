@@ -213,6 +213,27 @@ DbSession = Annotated[AsyncSession, Depends(get_db)]
 RedisClient = Annotated[Redis, Depends(get_redis)]
 
 
+async def load_admin_session(
+    redis: Redis, db: AsyncSession, session_id: str | None, *, renew: bool
+) -> tuple[AdminUser, dict] | None:
+    """(admin, session data) for a live session id, else None. `renew` resets the TTL.
+
+    A session issued before the admin's password or TOTP state changed (fingerprint
+    mismatch), or whose admin is gone, is destroyed and gives None."""
+    if not session_id:
+        return None
+    key = _session_key(session_id)
+    raw = await (redis.getex(key, ex=SESSION_TTL_S) if renew else redis.get(key))
+    if raw is None:
+        return None
+    data = json.loads(raw)
+    user = await db.get(AdminUser, uuid.UUID(data["admin_id"]))
+    if user is None or data.get("fp") != credentials_fingerprint(user):
+        await destroy_session(redis, session_id)
+        return None
+    return user, data
+
+
 async def require_admin(request: Request, session: DbSession, redis: RedisClient) -> AdminUser:
     """The logged-in admin. Renews the session TTL; checks CSRF on unsafe methods.
 
@@ -220,20 +241,14 @@ async def require_admin(request: Request, session: DbSession, redis: RedisClient
 
     The session id is left on `request.state.admin_session_id` (for logout)."""
     session_id = request.cookies.get(SESSION_COOKIE)
-    if not session_id:
+    loaded = await load_admin_session(redis, session, session_id, renew=True)
+    if loaded is None:
         raise NotAuthenticated()
-    raw = await redis.getex(_session_key(session_id), ex=SESSION_TTL_S)
-    if raw is None:
-        raise NotAuthenticated()
-    data = json.loads(raw)
+    user, data = loaded
     if request.method not in _SAFE_METHODS:
         sent = request.headers.get(CSRF_HEADER, "")
         if not secrets.compare_digest(sent.encode(), data["csrf"].encode()):
             raise SMTError(ErrorCode.FORBIDDEN, "CSRF")
-    user = await session.get(AdminUser, uuid.UUID(data["admin_id"]))
-    if user is None or data.get("fp") != credentials_fingerprint(user):
-        await destroy_session(redis, session_id)
-        raise NotAuthenticated()
     request.state.admin_session_id = session_id
     return user
 

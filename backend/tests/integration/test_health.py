@@ -3,7 +3,7 @@ import time
 import pytest
 from redis.asyncio import Redis
 
-from smtrading.api.main import HEARTBEAT_KEY
+from smtrading.common.heartbeat import HEARTBEAT_KEY
 
 
 @pytest.fixture

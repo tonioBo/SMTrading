@@ -31,7 +31,7 @@ from smtrading.risk.models import EquitySnapshot, SnapshotKind
 
 Period = Literal["1d", "1w", "1m", "3m", "1y", "all"]
 PERIODS: tuple[str, ...] = get_args(Period)
-_SPANS = {
+SPANS = {
     "1d": timedelta(days=1), "1w": timedelta(weeks=1), "1m": timedelta(days=30),
     "3m": timedelta(days=90), "1y": timedelta(days=365), "all": None,
 }
@@ -75,7 +75,7 @@ def _sharpe(day_opens: list[Decimal]) -> Decimal | None:
     return _q4(mean / variance.sqrt() * Decimal(_TRADING_DAYS).sqrt())
 
 
-def _downsample[T](points: list[T], limit: int = MAX_SERIES_POINTS) -> list[T]:
+def downsample[T](points: list[T], limit: int = MAX_SERIES_POINTS) -> list[T]:
     """At most `limit` points: the last of each run of ceil(n / limit) consecutive points."""
     size = -(-len(points) // limit)
     if size <= 1:
@@ -87,12 +87,12 @@ async def get_performance(
     session: AsyncSession, portfolio_id: UUID, period: Period, *,
     now: datetime | None = None,
 ) -> dict:
-    if period not in _SPANS:
+    if period not in SPANS:
         raise SMTError(
             ErrorCode.INVALID_ORDER, f"period must be one of {list(PERIODS)}",
             {"field": "period", "allowed": list(PERIODS)},
         )
-    span = _SPANS[period]
+    span = SPANS[period]
     stmt = (
         select(EquitySnapshot.ts, EquitySnapshot.kind, EquitySnapshot.equity_eur)
         .where(EquitySnapshot.portfolio_id == portfolio_id)
@@ -108,7 +108,7 @@ async def get_performance(
     if period in _DAILY_SERIES_PERIODS:
         points = [r for r in rows if r[1] == SnapshotKind.day_open] or rows
     series = [
-        {"ts": ts, "equity_eur": quantize_money(eq, "EUR")} for ts, _, eq in _downsample(points)
+        {"ts": ts, "equity_eur": quantize_money(eq, "EUR")} for ts, _, eq in downsample(points)
     ]
     values = [eq for _, _, eq in rows]
     with localcontext() as ctx:

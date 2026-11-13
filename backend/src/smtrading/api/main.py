@@ -1,5 +1,4 @@
 import logging
-import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 
@@ -23,13 +22,13 @@ from smtrading.admin.routes_system import router as system_router
 from smtrading.admin.ws import router as ws_router
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
+from smtrading.common.heartbeat import heartbeat_age_s
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.mcp.auth import MCP_PATH, McpAuthMiddleware
 from smtrading.mcp.runtime import McpRuntime, get_runtime, set_runtime
 from smtrading.mcp.server import build_mcp, build_mcp_endpoint
 
 log = logging.getLogger(__name__)
-HEARTBEAT_KEY = "worker:heartbeat"
 HEARTBEAT_MAX_AGE_S = 30.0
 
 
@@ -124,9 +123,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
         try:
             await resources.redis.ping()
             redis_ok = True
-            raw = await resources.redis.get(HEARTBEAT_KEY)
-            if raw is not None:
-                age = max(0.0, time.time() - float(raw))
+            age = await heartbeat_age_s(resources.redis)
         except Exception:
             log.warning("health check failed", exc_info=True)
         healthy = db_ok and redis_ok and age is not None and age < HEARTBEAT_MAX_AGE_S
