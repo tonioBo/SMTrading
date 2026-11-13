@@ -44,6 +44,7 @@ the lock (startup recovery).
 """
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -186,28 +187,33 @@ class BrokerSync:
         while True:
             try:
                 async with engine.connect() as conn:
-                    held = False
-                    while True:
-                        if not held:
-                            held = bool(await conn.scalar(
-                                text("select pg_try_advisory_lock(:k)"),
-                                {"k": ADVISORY_LOCK_KEY},
-                            ))
-                            await conn.commit()
-                            if held:
-                                log.info("broker sync: lock acquired")
-                                warned = False
-                                await self._pass(recover=True)
-                            elif not warned:
-                                log.warning(
-                                    "broker sync: another worker holds the lock; waiting"
-                                )
-                                warned = True
-                        else:
-                            await conn.scalar(text("select 1"))  # still holding it
-                            await conn.commit()
-                            await self._pass()
-                        await asyncio.sleep(self._interval_s)
+                    try:
+                        held = False
+                        while True:
+                            if not held:
+                                held = bool(await conn.scalar(
+                                    text("select pg_try_advisory_lock(:k)"),
+                                    {"k": ADVISORY_LOCK_KEY},
+                                ))
+                                await conn.commit()
+                                if held:
+                                    log.info("broker sync: lock acquired")
+                                    warned = False
+                                    await self._pass(recover=True)
+                                elif not warned:
+                                    log.warning(
+                                        "broker sync: another worker holds the lock; waiting"
+                                    )
+                                    warned = True
+                            else:
+                                await conn.scalar(text("select 1"))  # still holding it
+                                await conn.commit()
+                                await self._pass()
+                            await asyncio.sleep(self._interval_s)
+                    finally:
+                        # never return a connection that may hold the lock to the pool
+                        with contextlib.suppress(Exception):
+                            await conn.invalidate()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -254,6 +260,10 @@ class BrokerSync:
             else:
                 await self._poll(order_id)
             return
+        if sent_at is None and status == BrokerState.UNKNOWN:
+            # a send attempted before broker_sent_at existed (pre-0011): attempted
+            await self._update(order_id, self._backfill_sent_at)
+            sent_at = True
         if sent_at is not None:
             await self._match(order_id)
         elif status == BrokerState.CANCEL_REQUESTED:  # never attempted: nothing at broker
@@ -288,6 +298,7 @@ class BrokerSync:
                 await session.rollback()
                 discard_post_commit(session)
                 self._loss_checks.clear()
+                self._followups.clear()  # requested by the rolled back work
                 raise
             finally:
                 self._fill_qs = self._qs
@@ -384,12 +395,13 @@ class BrokerSync:
         self, session: AsyncSession, portfolio: Portfolio, order: Order, *, clamp: bool
     ) -> SMTError | None:
         """The fill-time local checks again, right before sending (Ruling R11; a
-        liquidation always goes). A reduce_only order is clamped to the position
+        liquidation skips the status checks only). A reduce_only order is clamped to the position
         (`clamp`); nothing to reduce is returned as an INVALID_ORDER error."""
-        if order.role == LIQUIDATION_ROLE:
-            return None
         try:
-            if not await broker_send_check(session, portfolio, order, clamp=clamp):
+            if not await broker_send_check(
+                session, portfolio, order, clamp=clamp,
+                status_checks=order.role != LIQUIDATION_ROLE,
+            ):
                 return SMTError(ErrorCode.INVALID_ORDER, NOTHING_TO_REDUCE)
         except SMTError as e:
             return e
@@ -417,6 +429,10 @@ class BrokerSync:
         )
         log.error("order %s: broker outcome unknown (%s); not sent again", order.id, reason)
 
+    async def _backfill_sent_at(self, session: AsyncSession, order: Order) -> None:
+        if order.broker_sent_at is None and order.broker_order_id is None:
+            order.broker_sent_at = order.broker_last_sync_at or order.updated_at
+
     async def _cancel_unsent(self, session: AsyncSession, order: Order) -> None:
         if order.broker_order_id is None and order.broker_sent_at is None:
             self._set_final(session, order, OrderStatus.canceled)
@@ -425,8 +441,10 @@ class BrokerSync:
 
     # -- send ------------------------------------------------------------------------
 
-    async def _send(self, order_id: UUID) -> None:
-        """Send a never-attempted order."""
+    async def _send(self, order_id: UUID, *, retry: bool = True) -> None:
+        """Send a never-attempted order. A liquidation waits until the symbol's other
+        orders at the broker are final (their cancels are sent and read back first, in
+        this pass, so their fills are applied) and is then clamped to the position."""
         now = self._clock()
         async with self._sm() as session:
             order = await _lock(session, order_id)
@@ -458,6 +476,14 @@ class BrokerSync:
                 return
             if not market_status(instrument.market, now).is_open:
                 return
+            if order.role == LIQUIDATION_ROLE:
+                still_open, to_cancel = await self._cancel_others(session, order)
+                if still_open:
+                    await self._commit(session)
+                    if retry:
+                        await self._cancel_now(to_cancel)
+                        await self._send(order_id, retry=False)
+                    return
             refusal = await self._refusal(session, portfolio, order, clamp=True)
             if refusal is not None and refusal.message == NOTHING_TO_REDUCE:
                 self._set_final(session, order, OrderStatus.canceled)
@@ -471,20 +497,10 @@ class BrokerSync:
                 await self._commit(session)
                 return
             adapter = await self._adapter(session, link.id)
-            others = (
-                await self._cancel_others(session, order)
-                if order.role == LIQUIDATION_ROLE else []
-            )
             order.broker_status = BrokerState.SENDING
             order.broker_sent_at = now
             order.broker_last_sync_at = now
             await self._commit(session)  # claimed before any network I/O
-
-        for other in others:  # their cancels go first, in this same pass
-            try:
-                await self._cancel(other)
-            except Exception:
-                log.exception("broker cancel of order %s before a liquidation failed", other)
 
         try:
             await adapter.prepare([instrument])
@@ -508,11 +524,13 @@ class BrokerSync:
             return
         await self._update(order_id, lambda s, o: self._placed(s, o, bo), bo)
 
-    async def _cancel_others(self, session: AsyncSession, order: Order) -> list[UUID]:
-        """A broker liquidation: request the cancel of the symbol's other open orders of
-        the portfolio at the broker; their ids (those with a broker order) to cancel
-        right away."""
-        ids = []
+    async def _cancel_others(
+        self, session: AsyncSession, order: Order
+    ) -> tuple[list[UUID], list[UUID]]:
+        """A broker liquidation: request the cancel of the portfolio's other open orders
+        on the symbol at the broker (never-attempted ones are canceled locally).
+        Returns (still open, those with a broker order to cancel right away)."""
+        still_open, to_cancel = [], []
         for other in await session.scalars(
             select(Order).where(
                 Order.portfolio_id == order.portfolio_id, Order.symbol == order.symbol,
@@ -520,17 +538,27 @@ class BrokerSync:
                 Order.status.in_(_SYNCED),
             ).order_by(Order.created_at, Order.id).with_for_update()
         ):
-            if other.broker_order_id is None and other.broker_sent_at is None:
-                if other.broker_status != BrokerState.SENDING:
-                    self._set_final(session, other, OrderStatus.canceled)
-                    await cancel_held_children(session, other, by="system")
+            if (
+                other.broker_order_id is None and other.broker_sent_at is None
+                and other.broker_status != BrokerState.SENDING
+            ):
+                self._set_final(session, other, OrderStatus.canceled)
+                await cancel_held_children(session, other, by="system")
                 continue
+            still_open.append(other.id)
             if other.broker_status != BrokerState.SENDING:
                 other.broker_status = BrokerState.CANCEL_REQUESTED
                 other.updated_at = datetime.now(UTC)
             if other.broker_order_id is not None:
-                ids.append(other.id)
-        return ids
+                to_cancel.append(other.id)
+        return still_open, to_cancel
+
+    async def _cancel_now(self, order_ids: list[UUID]) -> None:
+        for other in order_ids:
+            try:
+                await self._cancel(other)
+            except Exception:
+                log.exception("broker cancel of order %s before a liquidation failed", other)
 
     def _release(self, order: Order) -> None:
         """Back to the simulator: only for a portfolio the admin unlinked, never sent."""

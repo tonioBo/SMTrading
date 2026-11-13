@@ -16,7 +16,7 @@ from smtrading.corporate.snapshots import ensure_day_open, local_date
 from smtrading.engine.models import OPEN_STATUSES, Order, OrderStatus
 from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.engine.service import cancel_all_orders, close_all_positions
-from smtrading.events import queue_event
+from smtrading.events import dispatch_post_commit, queue_event
 from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, JournalType
@@ -126,7 +126,11 @@ async def reset_portfolio(
             Order.portfolio_id == portfolio_id, Order.status.in_(OPEN_STATUSES)
         ).limit(1)
     )
-    if still_open is not None:  # broker cancels are confirmed asynchronously (R3)
+    if still_open is not None:
+        # broker cancels are confirmed asynchronously (R3): keep the cancel requests
+        # (committed here, the caller rolls back on the error) so BrokerSync sends them
+        await session.commit()
+        await dispatch_post_commit(session, redis)
         raise SMTError(
             ErrorCode.INVALID_ORDER, "Attendi la conferma degli annullamenti dal broker",
             {"order_id": str(still_open)},

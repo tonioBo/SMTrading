@@ -103,7 +103,8 @@ def broker_live(order: Order) -> bool:
 
 
 async def broker_send_check(
-    session: AsyncSession, portfolio: Portfolio, order: Order, *, clamp: bool = True
+    session: AsyncSession, portfolio: Portfolio, order: Order, *, clamp: bool = True,
+    status_checks: bool = True,
 ) -> bool:
     """The fill-time local checks for an order about to be sent to the broker (the same
     the simulator applies at fill, I3): raises PORTFOLIO_LOCKED / REDUCE_ONLY /
@@ -128,7 +129,8 @@ async def broker_send_check(
     reducing = closing and (
         order.reduce_only if remaining is None else remaining <= abs(held)
     )
-    await _check_status(session, portfolio, reducing, order.symbol)
+    if status_checks:  # skipped for a margin liquidation (always goes)
+        await _check_status(session, portfolio, reducing, order.symbol)
     return True
 
 

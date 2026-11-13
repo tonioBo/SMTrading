@@ -43,7 +43,13 @@ from smtrading.engine.service import (
 )
 from smtrading.events import dispatch_post_commit
 from smtrading.instruments.models import AssetClass
-from smtrading.ledger.models import Journal, JournalType
+from smtrading.ledger.models import (
+    Account,
+    AccountBalance,
+    AccountKind,
+    Journal,
+    JournalType,
+)
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
 from smtrading.risk.margin import check_portfolio_margin
@@ -975,15 +981,27 @@ async def test_cancel_error_does_not_hide_fills(maker, redis, qs):
 
 
 async def test_reset_waits_for_broker_cancels(maker, redis, qs):
+    """I3: a reset with orders live at the broker is refused, but its cancel requests
+    are kept (committed although the caller rolls back, as the admin route does); once
+    BrokerSync confirms the cancels, a retry succeeds."""
     pid, _ = await _linked_portfolio(maker)
     oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"))
     await _sync(maker, redis, qs).tick()
     async with maker() as s:
         with pytest.raises(SMTError) as e:
             await reset_portfolio(s, qs, pid, D(1000), reason="test", author_id=None)
+        await s.rollback()  # the route's _transaction on error
     assert e.value.code == ErrorCode.INVALID_ORDER
     assert e.value.message == "Attendi la conferma degli annullamenti dal broker"
-    assert (await _order(maker, oid)).status == OrderStatus.pending
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.pending
+    assert o.broker_status == BrokerState.CANCEL_REQUESTED
+    await _sync(maker, redis, qs).tick()
+    assert BROKER.canceled == ["b1"]
+    assert (await _order(maker, oid)).status == OrderStatus.canceled
+    async with maker() as s:
+        await reset_portfolio(s, qs, pid, D(1000), reason="test", author_id=None)
+        await s.commit()
 
 
 async def test_margin_liquidation_is_routed_to_the_broker(maker, redis):
@@ -1088,6 +1106,64 @@ async def test_broker_liquidation_cancels_the_symbol_orders_first(maker, redis):
     assert (await _order(maker, limit.id)).status == OrderStatus.canceled
 
 
+async def test_broker_liquidation_is_clamped_after_the_symbol_orders_fill(maker, redis):
+    """Re-review: a stop-loss filled at the broker before its cancel -> the liquidation
+    is sent only for what is left after that fill is applied; no short is opened."""
+    q = FakeQuoteSource()
+    q.set_fx("EUR", "USD", D("1.25"))
+    q.set_quote("ENI.MI", D("14.995"), D("15.005"), None, ts=OPEN)
+    async with maker() as s:
+        p = await create_portfolio(
+            s, name=f"M-{uuid.uuid4().hex[:8]}", initial_cash=D(100000), leverage=D(2),
+        )
+        o = Order(portfolio_id=p.id, symbol="ENI.MI", side=OrderSide.buy,
+                  type=OrderType.market, qty=D(13000), status=OrderStatus.new)
+        s.add(o)
+        await s.flush()
+        await execute_fill(s, q, o.id, quote=(await q.get_quotes(["ENI.MI"]))["ENI.MI"])
+        link = await create_link(s, f"L-{uuid.uuid4().hex[:8]}", "fake_test", {})
+        await link_portfolio(s, p.id, link.id)
+        await s.commit()
+        pid = p.id
+    async with maker() as s:
+        stop = await place_order(s, q, PlaceOrderRequest(
+            portfolio_id=pid, symbol="ENI.MI", side=OrderSide.sell, type=OrderType.stop,
+            qty=D(5000), stop_price=D("10"),
+        ), now=OPEN)
+        await s.commit()
+    sync = _sync(maker, redis, q)
+    await sync.tick()
+    assert BROKER.placed[0][1] == str(stop.id)
+    q.set_quote("ENI.MI", D("8.995"), D("9.005"), None, ts=OPEN)
+    async with maker() as s:
+        assert await check_portfolio_margin(s, q, pid, now=OPEN) == "liquidated"
+        await s.commit()
+    async with maker() as s:  # the pass reaches the liquidation before the stop
+        await s.execute(text("update orders set created_at = now() + interval '1 hour'"
+                             " where id = :i"), {"i": stop.id})
+        await s.commit()
+    BROKER.set("b1", "filled", 5000, "9.5")  # the stop filled before its cancel
+    await sync.tick()
+    assert (await _order(maker, stop.id)).status == OrderStatus.filled
+    assert BROKER.placed[-1][2] == D(8000)  # not 13000
+    async with maker() as s:
+        liq = (await s.scalars(select(Order).where(
+            Order.portfolio_id == pid, Order.role == "liquidation"
+        ))).one()
+        assert liq.qty == D(8000)
+    BROKER.set("b2", "filled", 8000, "9")
+    await sync.tick()
+    async with maker() as s:
+        bal = await s.scalar(
+            select(AccountBalance.balance).join(Account).where(
+                Account.portfolio_id == pid, Account.asset == "ENI.MI",
+                Account.kind == AccountKind.position,
+            )
+        )
+        assert bal == 0  # flat, no short opened
+        assert (await s.get(Portfolio, pid)).status == PortfolioStatus.active
+
+
 async def test_cancel_requested_never_sent_is_canceled_locally(maker, redis, qs):
     pid, _ = await _linked_portfolio(maker)
     oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"))
@@ -1129,3 +1205,61 @@ def test_delta_price_not_positive_logs_a_warning(caplog):
                     avg_fill_price=D(101), message=None), D(5),
     )
     assert normal == D(102)
+
+
+async def test_unknown_without_sent_at_is_treated_as_attempted(maker, redis, qs):
+    """Minor (b): an `unknown` order from before broker_sent_at existed is matched
+    (attempted), never left stuck nor resent."""
+    pid, _ = await _linked_portfolio(maker, kind="fake_t212_test")
+    oid = await _place(maker, redis, qs, pid)
+    async with maker() as s:
+        await s.execute(text(
+            "update orders set broker_status = 'unknown', broker_sent_at = null"
+            " where id = :i"), {"i": oid})
+        await s.commit()
+    BROKER.set("t9", "filled", 10, "100")
+    BROKER.candidates = ["t9"]
+    await _sync(maker, redis, qs).tick()
+    o = await _order(maker, oid)
+    assert o.broker_sent_at is not None and o.broker_order_id == "t9"
+    assert o.status == OrderStatus.filled and BROKER.placed == []
+
+
+async def test_rollback_drops_requested_followups(maker, redis, qs):
+    """Minor (c): cancels requested by work that rolled back are not sent."""
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid)
+    sync = _sync(maker, redis, qs)
+
+    async def fails(session, order):
+        sync._followups.append(order.id)
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        await sync._update(oid, fails)
+    assert sync._followups == []
+
+
+async def test_broker_sync_releases_the_lock_when_stopped(maker, redis, qs, fresh_db):
+    """Minor (a): the lock connection is discarded, never pooled with the lock held."""
+    sync = BrokerSync(maker, redis, qs, None, clock=Clock(OPEN), interval_s=0.05)
+    task = asyncio.create_task(sync.run())
+    engine = make_engine(fresh_db)
+    try:
+        for _ in range(50):
+            async with engine.connect() as conn:
+                n = await conn.scalar(text(
+                    "select count(*) from pg_locks where locktype = 'advisory' and granted"))
+            if n:
+                break
+            await asyncio.sleep(0.1)
+        assert n == 1
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        async with engine.connect() as conn:
+            assert await conn.scalar(text(
+                "select count(*) from pg_locks where locktype = 'advisory' and granted"
+            )) == 0
+    finally:
+        await engine.dispose()
