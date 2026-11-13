@@ -596,7 +596,8 @@ async def archive(
     portfolio_id: UUID, admin: CurrentAdmin, session: DbSession, redis: RedisClient,
     qs: Quotes,
 ) -> dict:
-    """Archive (idempotent): refused with open orders or a broker link."""
+    """Archive (idempotent): refused with open orders, a broker link, shorts or a margin
+    loan."""
     async with _transaction(session, redis):
         p = await archive_portfolio(session, portfolio_id, by=admin.email)
     return await _summary(session, qs, redis, p)
@@ -607,7 +608,9 @@ async def unarchive(
     portfolio_id: UUID, admin: CurrentAdmin, session: DbSession, redis: RedisClient,
     qs: Quotes,
 ) -> dict:
-    """Restore (idempotent) with the status the portfolio had when archived."""
+    """Restore (idempotent) with the status the portfolio had when archived, after the
+    dividends/splits missed while archived are applied (PROVIDER_UNAVAILABLE when the
+    calendar cannot be read: retry)."""
     async with _transaction(session, redis):
-        p = await unarchive_portfolio(session, portfolio_id, by=admin.email)
+        p = await unarchive_portfolio(session, portfolio_id, qs=qs, by=admin.email)
     return await _summary(session, qs, redis, p)

@@ -4,8 +4,10 @@ archive/unarchive (Task 13).
 Does not commit: the caller commits, then dispatches the queued post-commit effects.
 """
 
+import logging
+from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -14,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.agents.service import write_audit
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.corporate.actions import KINDS as CORPORATE_KINDS
+from smtrading.corporate.actions import catch_up_portfolio
 from smtrading.corporate.snapshots import ensure_day_open, local_date
 from smtrading.engine.models import OPEN_STATUSES, Order, OrderStatus
 from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
@@ -23,10 +27,13 @@ from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, JournalType
 from smtrading.ledger.service import LineSpec, get_or_create_account, post_journal
+from smtrading.marketdata.types import CalendarEvent
 from smtrading.portfolios.locks import lock_live_portfolio, lock_portfolio
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import clean_currency, deposit
 from smtrading.risk.models import EquitySnapshot, SnapshotKind
+
+log = logging.getLogger("smtrading.admin.portfolio_ops")
 
 _MONEY_KINDS = (AccountKind.cash, AccountKind.collateral, AccountKind.margin_loan)
 CLOSED_MARKETS_MESSAGE = "posizioni aperte su mercati chiusi"
@@ -210,6 +217,11 @@ async def reset_portfolio(
 
 OPEN_ORDERS_MESSAGE = "Annulla prima gli ordini aperti"
 BROKER_LINKED_MESSAGE = "Scollega prima il broker"
+# frozen portfolios are charged no interest: no borrowing may sit in the archive
+BORROWING_MESSAGE = "Chiudi prima le posizioni allo scoperto e rimborsa il prestito a margine"
+CALENDAR_UNAVAILABLE_MESSAGE = (
+    "Riprova: impossibile verificare gli eventi societari del periodo di archiviazione"
+)
 
 
 async def _audit(session: AsyncSession, method: str, portfolio: Portfolio, by: str, **extra):
@@ -224,7 +236,8 @@ async def archive_portfolio(session: AsyncSession, portfolio_id: UUID, *, by: st
     """Archive a portfolio: hidden from lists, agents and dashboards, read-only, skipped
     by every job; its ledger, positions and agent assignments stay as they are.
 
-    Refused (INVALID_ORDER) with open orders or a broker link. Idempotent: an archived
+    Refused (INVALID_ORDER) with open orders, a broker link, a short position or a margin
+    loan (no interest is charged while archived). Idempotent: an archived
     portfolio is returned unchanged. The current status is kept for `unarchive_portfolio`.
     """
     portfolio = await lock_portfolio(session, portfolio_id)
@@ -240,6 +253,17 @@ async def archive_portfolio(session: AsyncSession, portfolio_id: UUID, *, by: st
     )
     if open_order is not None:
         raise SMTError(ErrorCode.INVALID_ORDER, OPEN_ORDERS_MESSAGE, details)
+    borrowing = await session.scalar(
+        select(Account.id)
+        .join(AccountBalance, AccountBalance.account_id == Account.id)
+        .where(
+            Account.portfolio_id == portfolio.id,
+            Account.kind.in_((AccountKind.position, AccountKind.margin_loan)),
+            AccountBalance.balance < 0,
+        ).limit(1)
+    )
+    if borrowing is not None:
+        raise SMTError(ErrorCode.INVALID_ORDER, BORROWING_MESSAGE, details)
     prior = str(portfolio.status)
     portfolio.archived_prior_status = prior
     portfolio.status = PortfolioStatus.archived
@@ -251,13 +275,66 @@ async def archive_portfolio(session: AsyncSession, portfolio_id: UUID, *, by: st
     return portfolio
 
 
+async def _missed_corporate_events(
+    session: AsyncSession, qs: QuoteSource, portfolio: Portfolio, now: datetime
+) -> tuple[list[str], dict[date, dict[str, list[CalendarEvent]]]]:
+    """(held symbols, events by ex-date and symbol) of the days the portfolio
+    spent archived, from the portfolio-local archive date to today. Network I/O: called
+    before any lock. A calendar that cannot be read refuses the unarchive."""
+    held = list(await session.scalars(
+        select(Account.asset)
+        .join(AccountBalance, AccountBalance.account_id == Account.id)
+        .where(
+            Account.portfolio_id == portfolio.id, Account.kind == AccountKind.position,
+            AccountBalance.balance != 0,
+        ).order_by(Account.asset)
+    ))
+    if not held or portfolio.archived_at is None:
+        return held, {}
+    start = local_date(portfolio, portfolio.archived_at)
+    end = max(now.astimezone(UTC).date(), local_date(portfolio, now))
+    try:
+        found = await qs.get_calendar(held, start, end) if start <= end else []
+    except Exception as e:  # noqa: BLE001 - never restored without the catch-up
+        log.warning("unarchive of %s: calendar unavailable: %s", portfolio.id, e)
+        raise SMTError(
+            ErrorCode.PROVIDER_UNAVAILABLE, CALENDAR_UNAVAILABLE_MESSAGE,
+            {"portfolio_id": str(portfolio.id)},
+        ) from None
+    by_day: dict[date, dict[str, list[CalendarEvent]]] = defaultdict(lambda: defaultdict(list))
+    for e in found:
+        if e.kind in CORPORATE_KINDS and e.symbol in held and start <= e.date <= end:
+            by_day[e.date][e.symbol].append(e)
+    for events in by_day.values():
+        for evs in events.values():
+            evs.sort(key=lambda e: CORPORATE_KINDS.index(e.kind))
+    return held, by_day
+
+
 async def unarchive_portfolio(
-    session: AsyncSession, portfolio_id: UUID, *, by: str
+    session: AsyncSession, portfolio_id: UUID, *, qs: QuoteSource, by: str,
+    now: datetime | None = None,
 ) -> Portfolio:
-    """Back to the status it had when archived (active when unknown). Idempotent."""
+    """Back to the status it had when archived (active when unknown). Idempotent.
+
+    The dividends and splits whose ex-date fell while it was archived (skipped by the
+    daily job) are applied first, in the same transaction, with the daily job's per-event
+    keys so nothing is applied twice. Refused (PROVIDER_UNAVAILABLE) when the calendar
+    cannot be read: never restored without the catch-up.
+    """
+    now = now or datetime.now(UTC)
+    current = await session.get(Portfolio, portfolio_id, populate_existing=True)
+    if current is None or current.status != PortfolioStatus.archived:
+        return await lock_portfolio(session, portfolio_id)
+    archived_at = current.archived_at
+    held, by_day = await _missed_corporate_events(session, qs, current, now)
+
     portfolio = await lock_portfolio(session, portfolio_id)
     if portfolio.status != PortfolioStatus.archived:
         return portfolio
+    if portfolio.archived_at != archived_at:  # re-archived meanwhile: read again
+        raise SMTError(ErrorCode.INVALID_ORDER, "Riprova: portafoglio modificato",
+                       {"portfolio_id": str(portfolio.id)})
     try:
         restored = PortfolioStatus(portfolio.archived_prior_status or "active")
     except ValueError:
@@ -269,6 +346,8 @@ async def unarchive_portfolio(
     portfolio.archived_by = None
     portfolio.archived_prior_status = None
     await session.flush()
-    await _audit(session, "admin:portfolio.unarchive", portfolio, by, status=str(restored))
+    applied = await catch_up_portfolio(session, portfolio.id, held, by_day)
+    await _audit(session, "admin:portfolio.unarchive", portfolio, by, status=str(restored),
+                 corporate_journals=applied)
     queue_event(session, "portfolio.unarchived", {"portfolio_id": portfolio.id})
     return portfolio

@@ -1,7 +1,7 @@
 """Task 13: archived portfolios: hidden, read-only and skipped by every job."""
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -40,6 +40,7 @@ from smtrading.ledger.service import (
 from smtrading.marketdata.types import CalendarEvent
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
+from smtrading.positions.models import Position
 from smtrading.risk.margin import check_portfolio_margin, margin_holdings, margin_sweep
 from smtrading.risk.models import EquitySnapshot
 from smtrading.seed import run_seed
@@ -121,10 +122,10 @@ async def test_archive_and_unarchive_round_trip(db_session, seeded):
     again = await archive_portfolio(db_session, pid, by="other@example.com")  # idempotent
     assert again.archived_by == "admin@example.com"
 
-    p = await unarchive_portfolio(db_session, pid, by="admin@example.com")
+    p = await unarchive_portfolio(db_session, pid, qs=FakeQuoteSource(), by="admin@example.com")
     assert p.status == PortfolioStatus.active
     assert p.archived_at is None and p.archived_by is None and p.archived_prior_status is None
-    assert (await unarchive_portfolio(db_session, pid, by="x")).status == PortfolioStatus.active
+    assert (await unarchive_portfolio(db_session, pid, qs=FakeQuoteSource(), by="x")).status == PortfolioStatus.active
 
     methods = list(await db_session.scalars(
         select(McpAuditLog.method).where(McpAuditLog.params["portfolio_id"].astext == str(pid))
@@ -141,7 +142,7 @@ async def test_unarchive_restores_the_prior_status(db_session, seeded, prior):
     p.reduce_only_reason = "daily_loss" if prior == PortfolioStatus.reduce_only else None
     await db_session.flush()
     await archive_portfolio(db_session, pid, by="a")
-    p = await unarchive_portfolio(db_session, pid, by="a")
+    p = await unarchive_portfolio(db_session, pid, qs=FakeQuoteSource(), by="a")
     assert p.status == prior
     if prior == PortfolioStatus.reduce_only:
         assert p.reduce_only_reason == "daily_loss"
@@ -265,10 +266,84 @@ async def test_interest_skips_archived(db_session, seeded, qs):
     live, archived = await _portfolio(db_session, cash=0), await _portfolio(db_session, cash=0)
     for pid in (live, archived):
         await _borrow_eur(db_session, pid, 36000)
-    await archive_portfolio(db_session, archived, by="a")
+    await _force_archived(db_session, archived)  # e.g. archived before the guard
     assert await run_interest(db_session, qs, DAY) == 1
     assert await _balance(db_session, archived, "EUR", AccountKind.cash) == D(36000)
     assert await _balance(db_session, live, "EUR", AccountKind.cash) == D("35995.00")
+
+
+# --- unarchive catch-up / archive guardrails ------------------------------------------
+
+
+async def _archived_days_ago(session, pid, days: int) -> date:
+    await archive_portfolio(session, pid, by="a")
+    p = await session.get(Portfolio, pid)
+    p.archived_at = datetime.now(UTC) - timedelta(days=days)
+    await session.flush()
+    return datetime.now(UTC).date()
+
+
+async def test_unarchive_applies_missed_split(db_session, seeded, qs):
+    pid = await _portfolio(db_session, ccy="USD")
+    await _fill(db_session, qs, pid, "AAPL", OrderSide.buy, 10)
+    avg = (await db_session.get(Position, (pid, "AAPL"))).avg_price
+    today = await _archived_days_ago(db_session, pid, 5)
+    qs.set_calendar([
+        CalendarEvent("AAPL", "split", today - timedelta(days=2), {"ratio": "2"}),
+        CalendarEvent("AAPL", "split", today - timedelta(days=30), {"ratio": "3"}),  # before
+    ])
+    p = await unarchive_portfolio(db_session, pid, qs=qs, by="a")
+    assert p.status == PortfolioStatus.active
+    assert await _balance(db_session, pid, "AAPL", AccountKind.position) == D(20)
+    pos = await db_session.get(Position, (pid, "AAPL"))
+    assert pos.qty == D(20) and pos.avg_price == avg / 2
+
+    await _archived_days_ago(db_session, pid, 5)  # second cycle: never applied twice
+    await unarchive_portfolio(db_session, pid, qs=qs, by="a")
+    assert await _balance(db_session, pid, "AAPL", AccountKind.position) == D(20)
+
+
+async def test_unarchive_applies_missed_dividend(db_session, seeded, qs):
+    pid = await _portfolio(db_session, ccy="USD")
+    await _fill(db_session, qs, pid, "AAPL", OrderSide.buy, 10)
+    before = await _balance(db_session, pid, "USD", AccountKind.cash)
+    today = await _archived_days_ago(db_session, pid, 3)
+    qs.set_calendar([CalendarEvent("AAPL", "dividend", today - timedelta(days=1),
+                                   {"amount": "0.25", "currency": "USD"})])
+    await unarchive_portfolio(db_session, pid, qs=qs, by="a")
+    assert await _balance(db_session, pid, "USD", AccountKind.cash) == before + D("2.50")
+
+
+async def test_unarchive_refused_when_the_calendar_is_unavailable(db_session, seeded, qs):
+    class NoCalendar(FakeQuoteSource):
+        async def get_calendar(self, symbols, start, end):
+            raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE, "no calendar provider")
+
+    pid = await _portfolio(db_session, ccy="USD")
+    await _fill(db_session, qs, pid, "AAPL", OrderSide.buy, 10)
+    await _archived_days_ago(db_session, pid, 3)
+    with pytest.raises(SMTError) as e:
+        await unarchive_portfolio(db_session, pid, qs=NoCalendar(), by="a")
+    assert _code(e) == "PROVIDER_UNAVAILABLE"
+    assert e.value.message == (
+        "Riprova: impossibile verificare gli eventi societari del periodo di archiviazione"
+    )
+    assert (await db_session.get(Portfolio, pid)).status == PortfolioStatus.archived
+
+
+async def test_archive_refused_with_short_or_margin_loan(db_session, seeded, qs):
+    short = await _portfolio(db_session, leverage=2)
+    await _fill(db_session, qs, short, "ENI.MI", OrderSide.sell, 100)
+    loan = await _portfolio(db_session, cash=0)
+    await _borrow_eur(db_session, loan, 1000)
+    for pid in (short, loan):
+        with pytest.raises(SMTError) as e:
+            await archive_portfolio(db_session, pid, by="a")
+        assert _code(e) == "INVALID_ORDER"
+        assert e.value.message == (
+            "Chiudi prima le posizioni allo scoperto e rimborsa il prestito a margine"
+        )
+        assert (await db_session.get(Portfolio, pid)).status == PortfolioStatus.active
 
 
 async def test_corporate_actions_skip_archived(db_session, seeded, qs):
@@ -287,7 +362,7 @@ async def test_margin_skips_archived(db_session, seeded, qs):
     pid = await _portfolio(db_session, leverage=2)
     await _fill(db_session, qs, pid, "ENI.MI", OrderSide.buy, 13000)
     assert pid in (await margin_holdings(db_session))["ENI.MI"]
-    await archive_portfolio(db_session, pid, by="a")
+    await _force_archived(db_session, pid)  # e.g. archived before the guard
     assert "ENI.MI" not in await margin_holdings(db_session)
     qs.set_quote("ENI.MI", D("8.995"), D("9.005"), None)  # deep in maintenance
     assert await check_portfolio_margin(db_session, qs, pid, now=TUE) == "ok"
@@ -327,7 +402,7 @@ async def test_snapshots_and_sweeps_skip_archived(maker, redis, qs):
         archived = await _portfolio(s, leverage=2)
         for pid in (live, archived):
             await _fill(s, qs, pid, "ENI.MI", OrderSide.buy, 13000)
-        await archive_portfolio(s, archived, by="a")
+        await _force_archived(s, archived)  # e.g. archived before the guard
         await s.commit()
 
     await take_snapshots(maker, qs, clock=lambda: TUE)

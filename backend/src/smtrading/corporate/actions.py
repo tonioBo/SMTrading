@@ -180,6 +180,31 @@ async def _apply_portfolio(
     return journals
 
 
+async def catch_up_portfolio(
+    session: AsyncSession, portfolio_id: UUID, held: list[str],
+    events_by_day: dict[date, dict[str, list[CalendarEvent]]],
+) -> int:
+    """Apply missed events (unarchive) day by day, oldest first, with the same per-event
+    keys as the daily job. The portfolio must be locked and live; the caller commits.
+    Archived portfolios hold no open orders, so no split cancels are needed."""
+    symbols = sorted({s for events in events_by_day.values() for s in events})
+    if not symbols:
+        return 0
+    instruments = {
+        symbol: _Inst(symbol, ccy) for symbol, ccy in (await session.execute(
+            select(Instrument.symbol, Instrument.currency).where(Instrument.symbol.in_(symbols))
+        )).all()
+    }
+    journals = 0
+    for day in sorted(events_by_day):
+        events = events_by_day[day]
+        journals += await _apply_portfolio(
+            session, portfolio_id, [s for s in held if s in events], [], events,
+            instruments, day,
+        )
+    return journals
+
+
 async def run_corporate_actions(
     session: AsyncSession, qs: QuoteSource, day: date, *, redis=None
 ) -> int:
