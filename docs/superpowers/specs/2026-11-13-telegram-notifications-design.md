@@ -87,6 +87,17 @@ Ogni elemento contiene `{id, ts, type, agent, portfolio, summary, data}`. Il fee
   - il feed marca con `already_sent: true` gli eventi che SMTrading ha già inviato.
 - Il prompt suggerito per il Notifier va in `docs/paperclip-mcp.md`.
 
+### Decisioni dell'utente (sera del 2026-11-13)
+- **Ore notturne, 23:00–07:00 Europe/Rome:**
+  - gli eventi critici partono subito, con `disable_notification=true`;
+  - ordini eseguiti e gli altri eventi diretti si accumulano e vengono inviati in un unico riepilogo alle 07:00.
+- **Riepiloghi programmati:** giornaliero alle 18:00 e settimanale il venerdì alle 18:30.
+  - Li prepara SMTrading con un job del worker, così arrivano anche se Paperclip è fermo.
+  - Il Notifier li può arricchire con le decisioni.
+- **Classifica:** i riepiloghi includono una tabella dei portafogli attivi con rendimento, drawdown e numero di operazioni, ordinata per rendimento. Oggi i portafogli attivi sono i 4 «Test 250».
+- **Permesso `notify`:** si aggiunge all'agente «Notifier», che esiste già con permesso read. Il token non cambia.
+- **Configurazione iniziale:** bot e gruppo li carica il controller dal file privato dell'utente. La sezione Notifiche permette di modificarli.
+
 ## Lasciato al builder
 - Il formato esatto dei messaggi.
 - I nomi di colonne e indici.
