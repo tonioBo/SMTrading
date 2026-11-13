@@ -32,6 +32,7 @@ import { errorMessage } from "@/lib/errors";
 import { formatDateTime, formatDecimal, formatMoney, formatPct, formatQty } from "@/lib/format";
 import { Movements } from "@/pages/PortfolioDetailMovements";
 import { Operations } from "@/pages/PortfolioDetailOperations";
+import { PortfolioSettings } from "@/pages/PortfolioDetailSettings";
 
 function Kpi({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -469,6 +470,7 @@ export default function PortfolioDetail() {
             <TabsTrigger value="movements">Movimenti</TabsTrigger>
             <TabsTrigger value="operations">Operazioni</TabsTrigger>
             <TabsTrigger value="risk">Rischio</TabsTrigger>
+            <TabsTrigger value="settings">Impostazioni</TabsTrigger>
           </TabsList>
           <TabsContent value="overview">
             <Overview portfolio={portfolio} />
@@ -487,6 +489,9 @@ export default function PortfolioDetail() {
           </TabsContent>
           <TabsContent value="risk">
             <Risk portfolio={portfolio} />
+          </TabsContent>
+          <TabsContent value="settings">
+            <PortfolioSettings portfolio={portfolio} />
           </TabsContent>
         </Tabs>
       )}

@@ -13,19 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { errorMessage } from "@/lib/errors";
 import { formatBytes, formatDateTime } from "@/lib/format";
-
-const FALLBACK_TIMEZONES = ["Europe/Rome", "Europe/London", "Europe/Paris", "Europe/Berlin", "America/New_York", "America/Chicago", "America/Los_Angeles", "Asia/Tokyo", "UTC"];
-
-function timezones(current: string): string[] {
-  let list = FALLBACK_TIMEZONES;
-  try {
-    const supported = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf?.("timeZone");
-    if (supported?.length) list = supported;
-  } catch {
-    // keep the fallback list
-  }
-  return list.includes(current) ? list : [current, ...list];
-}
+import { timezones } from "@/lib/timezones";
 
 function TimezoneEditor({ initial }: { initial: string }) {
   const [tz, setTz] = useState(initial);

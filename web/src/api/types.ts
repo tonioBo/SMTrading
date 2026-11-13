@@ -105,6 +105,13 @@ export interface PortfolioCreate {
 
 export interface PortfolioPatch {
   status?: "active" | "locked";
+  name?: string;
+  leverage?: string;
+  maintenance_margin_pct?: string;
+  warning_margin_pct?: string;
+  slippage_bps?: number;
+  risk_profile_id?: string | null;
+  timezone?: string;
 }
 
 export interface PositionValuation {

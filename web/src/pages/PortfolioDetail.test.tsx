@@ -420,4 +420,65 @@ describe("PortfolioDetail", () => {
     await screen.findByText("Prudente");
     expect(screen.queryByRole("button", { name: "Sblocca" })).not.toBeInTheDocument();
   });
+
+  it("sends the movement date filters as day bounds in the portfolio timezone", async () => {
+    current = { ...portfolio, timezone: "America/New_York" };
+    const user = await openTab("Movimenti");
+    await screen.findByRole("link", { name: "Esporta CSV" });
+    await user.type(screen.getByLabelText("Dal"), "2026-11-12");
+    await user.type(screen.getByLabelText("Al"), "2026-11-13");
+    await waitFor(() => expect(txRequests.at(-1)!.searchParams.get("to")).toBe("2026-11-13T23:59:59.999-05:00"));
+    expect(txRequests.at(-1)!.searchParams.get("from")).toBe("2026-11-12T00:00:00-05:00");
+  });
+
+  it("edits the portfolio settings, sending only the changed fields", async () => {
+    const user = await openTab("Impostazioni");
+    const name = await screen.findByLabelText("Nome");
+    expect(name).toHaveValue("Alfa");
+    expect(screen.getByLabelText("Leva")).toHaveValue("2");
+    const save = screen.getByRole("button", { name: "Salva impostazioni" });
+    expect(save).toBeDisabled();
+    await user.clear(name);
+    await user.type(name, "Beta");
+    await user.clear(screen.getByLabelText("Leva"));
+    await user.type(screen.getByLabelText("Leva"), "1.000");
+    await user.click(save);
+    expect(screen.getByText("Usa la virgola per i decimali (es. 10.000,00)")).toBeInTheDocument();
+    await user.clear(screen.getByLabelText("Leva"));
+    await user.type(screen.getByLabelText("Leva"), "12");
+    await user.click(save);
+    expect(screen.getByText("Leva: da 1 a 10")).toBeInTheDocument();
+    expect(patches).toEqual([]);
+    await user.clear(screen.getByLabelText("Leva"));
+    await user.type(screen.getByLabelText("Leva"), "2,5");
+    await user.clear(screen.getByLabelText("Slippage (bps)"));
+    await user.type(screen.getByLabelText("Slippage (bps)"), "10");
+    await user.selectOptions(screen.getByLabelText("Profilo di rischio"), "");
+    await user.selectOptions(screen.getByLabelText("Fuso orario"), "Asia/Tokyo");
+    await user.click(save);
+    await waitFor(() =>
+      expect(patches).toEqual([{ name: "Beta", leverage: "2.5", slippage_bps: 10, risk_profile_id: null, timezone: "Asia/Tokyo" }]),
+    );
+  });
+
+  it("shows a server refusal next to its field", async () => {
+    server.use(
+      http.patch("*/api/portfolios/p1", async ({ request }) => {
+        patches.push(await request.json());
+        return HttpResponse.json(
+          { code: "INVALID_ORDER", message: "serve 0 < maintenance_margin_pct < warning_margin_pct <= 100", details: { field: "warning_margin_pct" } },
+          { status: 400 },
+        );
+      }),
+    );
+    const user = await openTab("Impostazioni");
+    const warn = await screen.findByLabelText("Soglia di avviso (%)");
+    expect(warn).toHaveValue("75");
+    await user.clear(warn);
+    await user.type(warn, "40,5");
+    await user.click(screen.getByRole("button", { name: "Salva impostazioni" }));
+    expect(await screen.findByText("serve 0 < maintenance_margin_pct < warning_margin_pct <= 100")).toBeInTheDocument();
+    expect(warn).toHaveAttribute("aria-invalid", "true");
+    expect(patches).toEqual([{ warning_margin_pct: "40.5" }]);
+  });
 });
