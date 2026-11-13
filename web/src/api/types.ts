@@ -260,3 +260,125 @@ export interface RiskProfile {
   allowed_markets: string[];
   short_allowed: boolean;
 }
+
+export type AgentPermission = "read" | "trade";
+
+export interface AgentPortfolioLink {
+  portfolio_id: string;
+  portfolio_name: string;
+  permission: AgentPermission;
+}
+
+export interface Agent {
+  id: string;
+  name: string;
+  active: boolean;
+  created_at: string;
+  last_seen_at: string | null;
+  portfolios: AgentPortfolioLink[];
+}
+
+/** The only responses that carry a token: agent creation and rotation. */
+export interface AgentCreated {
+  agent: Agent;
+  token: string;
+}
+
+export interface AgentRotated {
+  token: string;
+}
+
+export interface AgentPortfolioAssignment {
+  portfolio_id: string;
+  permission: AgentPermission;
+}
+
+export interface McpAuditEntry {
+  id: number;
+  agent_id: string | null;
+  method: string;
+  params: unknown;
+  outcome: string;
+  latency_ms: number;
+  created_at: string;
+}
+
+export interface McpAuditFilters {
+  agent_id: string;
+  method: string;
+  outcome: string;
+  since: string; // yyyy-mm-dd or ""
+}
+
+export type FeeScope = "global" | "asset_class" | "portfolio";
+export type FeeSide = "buy" | "sell" | "both";
+
+export interface FeeTier {
+  up_to: string | null;
+  pct: string;
+}
+
+export interface FeeRule {
+  id: string;
+  name: string;
+  scope: FeeScope;
+  scope_ref: string | null;
+  side: FeeSide;
+  currency: string;
+  fixed: string;
+  pct: string;
+  min_fee: string | null;
+  max_fee: string | null;
+  tiers: FeeTier[] | null;
+  fx_pct: string;
+  priority: number;
+  active: boolean;
+  created_at: string;
+}
+
+export type FeeRuleInput = Omit<FeeRule, "id" | "created_at">;
+
+export interface FeeSimulateRequest {
+  portfolio_id: string;
+  symbol: string;
+  side: "buy" | "sell";
+  qty?: string;
+  notional?: string;
+}
+
+export interface FeeSimulation {
+  rule_id: string;
+  rule_name: string;
+  notional_eur: string | null;
+  fee: string;
+  fee_currency: string;
+  fx_fee_eur: string | null;
+}
+
+export interface RiskProfileInput {
+  name: string;
+  max_order_notional_eur: string | null;
+  max_position_pct: string | null;
+  max_daily_loss_pct: string | null;
+  max_daily_loss_eur: string | null;
+  allowed_symbols: string[];
+  allowed_asset_classes: string[];
+  allowed_markets: string[];
+  short_allowed: boolean;
+}
+
+export type InterestKind = "loan" | "borrow";
+
+export interface InterestRate {
+  kind: InterestKind;
+  key: string;
+  annual_pct: string;
+}
+
+export type AssetClass = "us_equity" | "eu_equity" | "crypto" | "forex";
+
+export interface AppSettings {
+  stale_quote_s: Record<string, number>;
+  default_spread_bps: Record<string, number>;
+  timezone: string;
+}
