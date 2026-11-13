@@ -19,12 +19,13 @@ test("regola di commissione per portafoglio e simulazione", async ({ page }) => 
   await expect(dlg).toBeHidden();
   await expect(page.getByRole("row").filter({ hasText: rule })).toBeVisible();
 
-  // simulation (by notional, no market data needed)
-  await page.getByLabel("Portafoglio", { exact: true }).selectOption({ label: name });
-  await page.getByLabel("Simbolo").fill("AAPL");
-  await page.getByLabel("Indica").selectOption({ label: "controvalore" });
-  await page.getByLabel("Controvalore").fill("1000,00");
-  await page.getByRole("button", { name: "Simula" }).click();
+  // «Simula commissione» (EUR notional on an EUR portfolio: no market data needed)
+  const sim = page.getByRole("form", { name: "Simula commissione" });
+  await sim.getByLabel("Portafoglio", { exact: true }).selectOption({ label: name });
+  await sim.getByLabel("Classe di asset").selectOption({ label: "Azioni USA" });
+  await sim.getByLabel("Controvalore").fill("1000,00");
+  await sim.getByLabel("Valuta dello strumento").selectOption("EUR");
+  await sim.getByRole("button", { name: "Simula" }).click();
   const result = page.getByRole("region", { name: "Risultato simulazione" });
   await expect(result).toContainText(rule);
   await expect(result).toContainText("1,50");
