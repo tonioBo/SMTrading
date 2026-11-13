@@ -42,7 +42,13 @@ const server = setupServer(
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
   http.get("*/api/fee-rules", () => HttpResponse.json([rule])),
-  http.get("*/api/portfolios", () => HttpResponse.json([{ id: "p1", name: "Alfa" }])),
+  http.get("*/api/portfolios", ({ request }) =>
+    HttpResponse.json(
+      new URL(request.url).searchParams.get("include_archived")
+        ? [{ id: "p1", name: "Alfa", status: "active" }, { id: "p9", name: "Test 250 · Difensivo", status: "archived" }]
+        : [{ id: "p1", name: "Alfa", status: "active" }],
+    ),
+  ),
   http.post("*/api/fee-rules", async ({ request }) => {
     const body = (await request.json()) as Record<string, unknown>;
     posts.push(body);
@@ -66,15 +72,11 @@ const server = setupServer(
       { status: 400 },
     );
   }),
-  http.post("*/api/fee-rules/simulate", async ({ request }) => {
+  http.post("*/api/fees/simulate", async ({ request }) => {
     simulated.push(await request.json());
     return HttpResponse.json({
-      rule_id: "r1",
-      rule_name: "Globale",
-      notional_eur: "1500",
-      fee: "2.75",
-      fee_currency: "EUR",
-      fx_fee_eur: "3.75",
+      rule_id: "r1", rule_name: "Globale", scope: "global", fee: "2.75", currency: "EUR",
+      fx_fee: "3.75", fx_currency: "EUR",
     });
   }),
 );
@@ -100,10 +102,39 @@ describe("Fees", () => {
     renderApp("/commissioni");
     const table = await screen.findByRole("table", { name: "Regole di commissione" });
     const row = (await within(table).findByText("Globale")).closest("tr")!;
-    expect(within(row).getByText("globale")).toBeInTheDocument();
-    expect(within(row).getByText("0,1%")).toBeInTheDocument();
-    expect(within(row).getByText("fino a 1.000: 0,2%; oltre: 0,1%")).toBeInTheDocument();
+    expect(within(row).getByText("Tutti")).toBeInTheDocument();
+    expect(within(row).getByText("(min 0,50 €)")).toBeInTheDocument();
     expect(within(row).getByText("Sì")).toBeInTheDocument();
+    expect(within(row).queryByText("fino a 1.000: 0,2%; oltre: 0,1%")).not.toBeInTheDocument();
+    await userEvent.setup().click(within(row).getByRole("button", { name: "scaglioni" }));
+    expect(within(row).getByText("fino a 1.000: 0,2%; oltre: 0,1%")).toBeInTheDocument();
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual([
+      "Nome", "Si applica a", "Lato", "Commissione", "Cambio %", "Priorità", "Attiva", "Azioni",
+    ]);
+  });
+
+  it("names archived portfolios, writes simple fees in one string and hides inactive rules", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("*/api/fee-rules", () =>
+        HttpResponse.json([
+          { ...rule, id: "r3", name: "Zero", scope: "portfolio", scope_ref: "p9", fixed: "0", pct: "0", min_fee: null, tiers: null, fx_pct: "0.15" },
+          { ...rule, id: "r4", name: "Std", scope: "asset_class", scope_ref: "crypto", fixed: "1", pct: "0.1", min_fee: "1", max_fee: "20", tiers: null },
+          { ...rule, id: "r5", name: "Vecchia", active: false, tiers: null },
+        ]),
+      ),
+    );
+    renderApp("/commissioni");
+    const table = await screen.findByRole("table", { name: "Regole di commissione" });
+    const zero = (await within(table).findByText("Zero")).closest("tr")!;
+    expect(await within(zero).findByText("Portafoglio: Test 250 · Difensivo (archiviato)")).toBeInTheDocument();
+    expect(within(zero).getByText("0,00 €")).toBeInTheDocument();
+    const std = within(table).getByText("Std").closest("tr")!;
+    expect(within(std).getByText("Classe: Crypto")).toBeInTheDocument();
+    expect(std).toHaveTextContent("1,00 € + 0,1%(min 1,00 €, max 20,00 €)");
+    expect(within(table).queryByText("Vecchia")).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText("Mostra disattivate"));
+    expect(within(table).getByText("Vecchia")).toBeInTheDocument();
   });
 
   it("forces the last tier to 'oltre' and rejects a missing limit client-side", async () => {
@@ -202,14 +233,19 @@ describe("Fees", () => {
     const user = userEvent.setup();
     renderApp("/commissioni");
     await screen.findByText("Globale");
-    await user.selectOptions(await screen.findByLabelText("Portafoglio"), "p1");
-    await user.type(screen.getByLabelText("Simbolo"), "AAPL");
-    await user.type(screen.getByLabelText("Quantità"), "10");
-    await user.click(screen.getByRole("button", { name: "Simula" }));
+    const form = screen.getByRole("form", { name: "Simula commissione" });
+    await waitFor(() => expect(within(within(form).getByLabelText("Portafoglio")).getAllByRole("option")).toHaveLength(2));
+    await user.selectOptions(within(form).getByLabelText("Portafoglio"), "p1"); // active only
+    await user.selectOptions(within(form).getByLabelText("Classe di asset"), "crypto");
+    await user.type(within(form).getByLabelText("Controvalore"), "1.500,50");
+    await user.selectOptions(within(form).getByLabelText("Valuta dello strumento"), "USD");
+    await user.click(within(form).getByRole("button", { name: "Simula" }));
     const result = await screen.findByRole("region", { name: "Risultato simulazione" });
     expect(within(result).getByText("Globale")).toBeInTheDocument();
     expect(within(result).getByText("2,75 €")).toBeInTheDocument();
     expect(within(result).getByText("3,75 €")).toBeInTheDocument();
-    expect(simulated).toEqual([{ portfolio_id: "p1", symbol: "AAPL", side: "buy", qty: "10" }]);
+    expect(simulated).toEqual([
+      { portfolio_id: "p1", asset_class: "crypto", side: "buy", notional: "1500.50", currency: "USD" },
+    ]);
   });
 });

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
-import type { FeeRule, FeeRuleInput, FeeSimulateRequest, FeeSimulation } from "@/api/types";
+import type { FeeRule, FeeRuleInput, FeeRuleSimulateRequest, FeeRuleSimulation } from "@/api/types";
 
 export const feeRulesKey = ["fee-rules"] as const;
 
@@ -29,9 +29,9 @@ export function useDeactivateFeeRule() {
   });
 }
 
-export function useSimulateFee() {
+export function useSimulateFeeRule() {
   return useMutation({
-    mutationFn: (body: FeeSimulateRequest) =>
-      apiFetch<FeeSimulation>("/api/fee-rules/simulate", { method: "POST", body }),
+    mutationFn: (body: FeeRuleSimulateRequest) =>
+      apiFetch<FeeRuleSimulation>("/api/fees/simulate", { method: "POST", body }),
   });
 }

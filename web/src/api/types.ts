@@ -398,6 +398,25 @@ export interface FeeSimulateRequest {
   notional?: string;
 }
 
+/** POST /api/fees/simulate: which rule wins for (portfolio, class, side) and its amounts. */
+export interface FeeRuleSimulateRequest {
+  portfolio_id: string;
+  asset_class: AssetClass;
+  side: "buy" | "sell";
+  notional: string;
+  currency: string;
+}
+
+export interface FeeRuleSimulation {
+  rule_id: string;
+  rule_name: string;
+  scope: FeeScope;
+  fee: string;
+  currency: string;
+  fx_fee: string;
+  fx_currency: string;
+}
+
 export interface FeeSimulation {
   rule_id: string;
   rule_name: string;

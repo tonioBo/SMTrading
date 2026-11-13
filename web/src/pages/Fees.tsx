@@ -1,12 +1,11 @@
 import { Pencil, Plus, PowerOff } from "lucide-react";
 import { useState, type FormEvent } from "react";
-import { useDeactivateFeeRule, useFeeRules, useSaveFeeRule, useSimulateFee } from "@/api/hooks/fees";
+import { useDeactivateFeeRule, useFeeRules, useSaveFeeRule, useSimulateFeeRule } from "@/api/hooks/fees";
 import { usePortfolios } from "@/api/hooks/portfolios";
 import type { AssetClass, FeeRule, FeeRuleInput, FeeScope, FeeSide, FeeTier } from "@/api/types";
 import { DataTable, type Column } from "@/components/DataTable";
 import { AmountPreview } from "@/components/AmountPreview";
 import { FormField, selectClass } from "@/components/FormField";
-import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { normalizeAmount, subtractDecimal, toInputDecimal } from "@/lib/decimal";
 import { errorField, errorMessage } from "@/lib/errors";
 import { buildTiers, type TierRow } from "@/lib/feeTiers";
+import { assetClassLabel } from "@/lib/labels";
 import { formatDecimal, formatMoney, formatQty } from "@/lib/format";
 
 const ASSET_CLASSES: AssetClass[] = ["us_equity", "eu_equity", "crypto", "forex"];
@@ -28,7 +28,6 @@ function tiersText(tiers: FeeTier[] | null): string {
     .join("; ");
 }
 
-const optional = (v: string | null, render: (v: string) => string) => (v === null ? "—" : render(v));
 
 interface FormState {
   name: string;
@@ -292,33 +291,36 @@ function RuleDialog({ rule, onClose }: { rule: FeeRule | null; onClose: () => vo
   );
 }
 
+const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "JPY"];
+
+/** «Simula commissione»: the rule that wins and its amounts for a hypothetical trade. */
 function Simulator() {
-  const portfolios = usePortfolios();
-  const simulate = useSimulateFee();
+  const portfolios = usePortfolios(); // active ones only
+  const simulate = useSimulateFeeRule();
   const [portfolioId, setPortfolioId] = useState("");
-  const [symbol, setSymbol] = useState("");
+  const [assetClass, setAssetClass] = useState<AssetClass>("us_equity");
   const [side, setSide] = useState<"buy" | "sell">("buy");
-  const [mode, setMode] = useState<"qty" | "notional">("qty");
   const [amount, setAmount] = useState("");
+  const [currency, setCurrency] = useState("USD");
   const [error, setError] = useState<string | null>(null);
 
   function submit(e: FormEvent) {
     e.preventDefault();
     const value = normalizeAmount(amount);
-    if (!portfolioId || !symbol.trim()) return setError("Portafoglio e simbolo sono obbligatori");
+    if (!portfolioId) return setError("Scegli un portafoglio");
     if (value === null) return setError("Importo non valido");
     setError(null);
-    simulate.mutate({ portfolio_id: portfolioId, symbol: symbol.trim().toUpperCase(), side, [mode]: value });
+    simulate.mutate({ portfolio_id: portfolioId, asset_class: assetClass, side, notional: value, currency });
   }
 
   const res = simulate.data;
   return (
     <Card className="mt-6">
       <CardHeader>
-        <CardTitle>Simulatore</CardTitle>
+        <CardTitle>Simula commissione</CardTitle>
       </CardHeader>
       <CardContent>
-        <form onSubmit={submit} className="grid gap-3 sm:grid-cols-5" noValidate>
+        <form aria-label="Simula commissione" onSubmit={submit} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5" noValidate>
           <FormField label="Portafoglio">
             <select className={selectClass} value={portfolioId} onChange={(e) => setPortfolioId(e.target.value)}>
               <option value="">Seleziona…</option>
@@ -329,8 +331,14 @@ function Simulator() {
               ))}
             </select>
           </FormField>
-          <FormField label="Simbolo">
-            <Input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="AAPL" />
+          <FormField label="Classe di asset">
+            <select className={selectClass} value={assetClass} onChange={(e) => setAssetClass(e.target.value as AssetClass)}>
+              {ASSET_CLASSES.map((c) => (
+                <option key={c} value={c}>
+                  {assetClassLabel(c)}
+                </option>
+              ))}
+            </select>
           </FormField>
           <FormField label="Lato">
             <select className={selectClass} value={side} onChange={(e) => setSide(e.target.value as "buy" | "sell")}>
@@ -338,16 +346,19 @@ function Simulator() {
               <option value="sell">vendita</option>
             </select>
           </FormField>
-          <FormField label="Indica">
-            <select className={selectClass} value={mode} onChange={(e) => setMode(e.target.value as "qty" | "notional")}>
-              <option value="qty">quantità</option>
-              <option value="notional">controvalore</option>
+          <FormField label="Controvalore">
+            <Input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" placeholder="1.000,00" />
+          </FormField>
+          <FormField label="Valuta dello strumento">
+            <select className={selectClass} value={currency} onChange={(e) => setCurrency(e.target.value)}>
+              {CURRENCIES.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
             </select>
           </FormField>
-          <FormField label={mode === "qty" ? "Quantità" : "Controvalore"}>
-            <Input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" />
-          </FormField>
-          <div className="sm:col-span-5">
+          <div className="sm:col-span-2 lg:col-span-5">
             <Button type="submit" disabled={simulate.isPending}>
               Simula
             </Button>
@@ -361,18 +372,13 @@ function Simulator() {
         {res && (
           <section aria-label="Risultato simulazione" className="mt-4 grid gap-1 text-sm">
             <div>
-              Regola applicata: <strong>{res.rule_name}</strong>
-            </div>
-            {res.notional_eur != null && (
-              <div>
-                Controvalore: <Money value={res.notional_eur} />
-              </div>
-            )}
-            <div>
-              Commissione: <span className="num">{formatMoney(res.fee, res.fee_currency)}</span>
+              Regola applicata: <strong>{res.rule_name}</strong> <span className="text-muted">({SCOPE_LABEL[res.scope]})</span>
             </div>
             <div>
-              Commissione di cambio: <Money value={res.fx_fee_eur} />
+              Commissione: <span className="num">{formatMoney(res.fee, res.currency)}</span>
+            </div>
+            <div>
+              Commissione di cambio: <span className="num">{formatMoney(res.fx_fee, res.fx_currency)}</span>
             </div>
           </section>
         )}
@@ -381,40 +387,56 @@ function Simulator() {
   );
 }
 
+const isZero = (v: string) => /^-?0*(\.0*)?$/.test(v);
+
+/** One readable string: "0 €" / "1,00 € + 0,1% (min 0,50 €, max 20,00 €)" / tiers chip. */
+function FeeSummary({ rule: r }: { rule: FeeRule }) {
+  const [open, setOpen] = useState(false);
+  const parts: React.ReactNode[] = [];
+  if (!isZero(r.fixed)) parts.push(formatMoney(r.fixed, r.currency));
+  if (r.tiers?.length) {
+    parts.push(
+      <button key="tiers" type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)}
+        className="rounded-md border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-xs hover:bg-accent/20">
+        scaglioni
+      </button>,
+    );
+  } else if (!isZero(r.pct)) {
+    parts.push(`${formatQty(r.pct)}%`);
+  }
+  const bounds = [r.min_fee !== null && `min ${formatMoney(r.min_fee, r.currency)}`, r.max_fee !== null && `max ${formatMoney(r.max_fee, r.currency)}`].filter(Boolean);
+  return (
+    <div>
+      <span className="num inline-flex flex-wrap items-center gap-1">
+        {parts.length === 0 ? formatMoney("0", r.currency) : parts.flatMap((p, i) => (i ? [" + ", p] : [p]))}
+        {bounds.length > 0 && <span className="text-muted">({bounds.join(", ")})</span>}
+      </span>
+      {open && r.tiers && <p className="mt-1 text-xs text-muted">{tiersText(r.tiers)}</p>}
+    </div>
+  );
+}
+
 export default function Fees() {
   const { data, isLoading, isError } = useFeeRules();
   const portfolios = usePortfolios({ includeArchived: true }); // names of every rule's portfolio
   const deactivate = useDeactivateFeeRule();
   const [editing, setEditing] = useState<FeeRule | "new" | null>(null);
-  const refName = (r: FeeRule) =>
-    r.scope === "portfolio" ? (portfolios.data?.find((p) => p.id === r.scope_ref)?.name ?? r.scope_ref) : r.scope_ref;
+  const [showInactive, setShowInactive] = useState(false);
+  const appliesTo = (r: FeeRule): string => {
+    if (r.scope === "global") return "Tutti";
+    if (r.scope === "asset_class") return `Classe: ${assetClassLabel(r.scope_ref ?? "")}`;
+    const p = portfolios.data?.find((x) => x.id === r.scope_ref);
+    if (!p) return `Portafoglio: ${r.scope_ref ?? "—"}`;
+    return `Portafoglio: ${p.name}${p.status === "archived" ? " (archiviato)" : ""}`;
+  };
+  const rows = data?.filter((r) => showInactive || r.active);
 
   const columns: Column<FeeRule>[] = [
     { key: "name", header: "Nome", sortValue: (r) => r.name, cell: (r) => r.name },
-    { key: "scope", header: "Portata", cell: (r) => SCOPE_LABEL[r.scope] },
-    { key: "ref", header: "Riferimento", cell: (r) => refName(r) ?? "—" },
+    { key: "applies", header: "Si applica a", sortValue: (r) => appliesTo(r), cell: (r) => appliesTo(r) },
     { key: "side", header: "Lato", cell: (r) => SIDE_LABEL[r.side] },
-    {
-      key: "fixed",
-      header: "Fissa",
-      align: "right",
-      cell: (r) => <span className="num">{formatMoney(r.fixed, r.currency)}</span>,
-    },
-    { key: "pct", header: "%", align: "right", cell: (r) => <span className="num">{formatQty(r.pct)}%</span> },
-    {
-      key: "min",
-      header: "Min",
-      align: "right",
-      cell: (r) => <span className="num">{optional(r.min_fee, (v) => formatMoney(v, r.currency))}</span>,
-    },
-    {
-      key: "max",
-      header: "Max",
-      align: "right",
-      cell: (r) => <span className="num">{optional(r.max_fee, (v) => formatMoney(v, r.currency))}</span>,
-    },
-    { key: "tiers", header: "Scaglioni", cell: (r) => tiersText(r.tiers) },
-    { key: "fx", header: "Cambio", align: "right", cell: (r) => <span className="num">{formatQty(r.fx_pct)}%</span> },
+    { key: "fee", header: "Commissione", cell: (r) => <FeeSummary rule={r} /> },
+    { key: "fx", header: "Cambio %", align: "right", cell: (r) => <span className="num">{formatQty(r.fx_pct)}%</span> },
     {
       key: "priority",
       header: "Priorità",
@@ -466,10 +488,14 @@ export default function Fees() {
       )}
       <Card>
         <CardContent className="overflow-x-auto pt-6">
+          <label className="mb-3 flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} className="h-4 w-4 accent-[rgb(var(--accent))]" />
+            Mostra disattivate
+          </label>
           <DataTable
             aria-label="Regole di commissione"
             columns={columns}
-            rows={data}
+            rows={rows}
             rowKey={(r) => r.id}
             loading={isLoading}
             empty="Nessuna regola"

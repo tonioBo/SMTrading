@@ -103,7 +103,7 @@ describe("Agents", () => {
     expect(within(row).getByRole("button", { name: "Trade · 1" })).toBeInTheDocument();
     await user.click(within(row).getByRole("button", { name: "Lettura · 2" }));
     const table = within(row).getByRole("table", { name: "Portafogli di Bot uno" });
-    const names = within(table).getAllByRole("row").slice(1).map((r) => r.cells[0].textContent);
+    const names = within(table).getAllByRole("row").slice(1).map((r) => (r as HTMLTableRowElement).cells[0].textContent);
     expect(names).toEqual(["Alfa", "Beta", "Gamma"]);
     expect(within(table).getAllByText("Lettura", { selector: "td" })).toHaveLength(2);
     await user.click(within(row).getByRole("button", { name: "Nascondi" }));
