@@ -17,12 +17,15 @@ export function KillSwitchButton() {
   const [cancelOpen, setCancelOpen] = useState(false);
   const checkId = useId();
   const turningOn = !data?.on;
+  // the action is frozen when the dialog opens: a refetch (or a live event) flipping the
+  // state meanwhile must not turn "Attiva" into "Disattiva" under the user's click
+  const [intentOn, setIntentOn] = useState(true);
 
   const mutation = useMutation({
-    mutationFn: () =>
+    mutationFn: (on: boolean) =>
       apiFetch<KillSwitchResult>("/api/kill-switch", {
         method: "POST",
-        body: { on: turningOn, cancel_open: turningOn && cancelOpen },
+        body: { on, cancel_open: on && cancelOpen },
       }),
     onSuccess: (res) => {
       qc.setQueryData(killSwitchKey, { on: res.on });
@@ -45,6 +48,7 @@ export function KillSwitchButton() {
         variant={turningOn ? "destructive" : "outline"}
         onClick={() => {
           setCancelOpen(false);
+          setIntentOn(turningOn);
           setOpen(true);
         }}
       >
@@ -54,18 +58,18 @@ export function KillSwitchButton() {
       <ConfirmDialog
         open={open}
         onOpenChange={setOpen}
-        title={turningOn ? "Attivare il kill-switch?" : "Disattivare il kill-switch?"}
+        title={intentOn ? "Attivare il kill-switch?" : "Disattivare il kill-switch?"}
         description={
-          turningOn
+          intentOn
             ? "Tutti i nuovi ordini degli agenti verranno bloccati."
             : "Gli agenti potranno tornare a inviare ordini."
         }
-        confirmLabel={turningOn ? "Attiva" : "Disattiva"}
-        destructive={turningOn}
+        confirmLabel={intentOn ? "Attiva" : "Disattiva"}
+        destructive={intentOn}
         pending={mutation.isPending}
-        onConfirm={() => mutation.mutate()}
+        onConfirm={() => mutation.mutate(intentOn)}
       >
-        {turningOn && (
+        {intentOn && (
           <div className="flex items-center gap-2 text-sm">
             <input
               id={checkId}

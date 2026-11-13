@@ -87,10 +87,57 @@ describe("LiveSocket", () => {
     expect(FakeSocket.instances).toHaveLength(3);
     last().open();
     expect(last().sent).toEqual([{ type: "subscribe_quotes", symbols: ["AAPL", "MSFT"] }]);
-    // after a successful open the backoff restarts from 1s
+    // after a stable open (here: a first message) the backoff restarts from 1s
+    last().receive({ type: "ping" });
     last().drop();
     vi.advanceTimersByTime(1000);
     expect(FakeSocket.instances).toHaveLength(4);
+  });
+
+  it("keeps backing off when the socket opens and drops at once", () => {
+    const s = make();
+    s.acquire();
+    for (const delay of [1000, 2000, 4000]) {
+      last().open(); // open without a message, dropped before 5s: not stable
+      last().drop();
+      const n = FakeSocket.instances.length;
+      vi.advanceTimersByTime(delay - 1);
+      expect(FakeSocket.instances).toHaveLength(n);
+      vi.advanceTimersByTime(1);
+      expect(FakeSocket.instances).toHaveLength(n + 1);
+    }
+    // open for 5s without messages: stable, the backoff restarts
+    last().open();
+    vi.advanceTimersByTime(5000);
+    last().drop();
+    vi.advanceTimersByTime(1000);
+    expect(FakeSocket.instances).toHaveLength(5);
+  });
+
+  it("on close 4403 (origin refused) does not reconnect", () => {
+    const s = make();
+    s.acquire();
+    last().open();
+    last().drop(4403);
+    vi.advanceTimersByTime(60000);
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(s.status).toBe("closed");
+  });
+
+  it("ignores messages of a replaced socket", () => {
+    const s = make();
+    const events = vi.fn();
+    s.on("event", events);
+    s.acquire();
+    const first = last();
+    first.open();
+    first.drop();
+    vi.advanceTimersByTime(1000);
+    last().open();
+    first.receive({ type: "event", event: { type: "stale" } });
+    expect(events).not.toHaveBeenCalled();
+    last().receive({ type: "event", event: { type: "fresh" } });
+    expect(events).toHaveBeenCalledWith({ type: "fresh" });
   });
 
   it("reference-counts quote subscriptions", () => {

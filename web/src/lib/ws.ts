@@ -1,8 +1,9 @@
 /**
  * Live WebSocket `/ws` (one connection for the whole app): typed emitter for `event`
- * and `quote` messages, exponential reconnect 1s → 30s, quote subscriptions with
- * reference counting re-sent on every reconnect. Close 4401 (session gone) does not
- * reconnect: the app goes to /login.
+ * and `quote` messages, exponential reconnect 1s → 30s (the backoff restarts only after a
+ * stable connection: a first message, or 5s open), quote subscriptions with reference
+ * counting re-sent on every reconnect. Close 4401 (session gone) does not reconnect: the
+ * app goes to /login; neither does 4403 (Origin refused: retrying cannot help).
  */
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import { notifyUnauthorized } from "@/api/client";
@@ -30,6 +31,9 @@ type Listener<T> = (payload: T) => void;
 export const RECONNECT_MIN_MS = 1000;
 export const RECONNECT_MAX_MS = 30000;
 export const CLOSE_UNAUTHORIZED = 4401;
+export const CLOSE_FORBIDDEN_ORIGIN = 4403;
+/** an open socket counts as stable after this long (or its first message) */
+export const STABLE_OPEN_MS = 5000;
 const WS_OPEN = 1;
 
 export function reconnectDelay(attempt: number): number {
@@ -52,6 +56,7 @@ export class LiveSocket {
   private users = 0;
   private attempt = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private stableTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly symbols = new Map<string, number>();
   private readonly listeners: { [K in keyof Messages]: Set<Listener<Messages[K]>> } = {
     event: new Set(),
@@ -124,21 +129,37 @@ export class LiveSocket {
     const ws = this.createSocket(this.url());
     this.ws = ws;
     ws.onopen = () => {
-      this.attempt = 0;
+      if (this.ws !== ws) return;
       this.setStatus("open");
+      this.clearStableTimer();
+      this.stableTimer = setTimeout(() => {
+        this.stableTimer = null;
+        if (this.ws === ws) this.attempt = 0;
+      }, STABLE_OPEN_MS);
       if (this.symbols.size) this.send({ type: "subscribe_quotes", symbols: [...this.symbols.keys()] });
     };
-    ws.onmessage = (e: MessageEvent) => this.dispatch(e.data);
+    ws.onmessage = (e: MessageEvent) => {
+      if (this.ws !== ws) return; // a replaced socket
+      this.attempt = 0; // the server talks to us: a stable connection
+      this.dispatch(e.data);
+    };
     ws.onclose = (e: CloseEvent) => {
       if (this.ws !== ws) return;
       this.ws = null;
+      this.clearStableTimer();
       this.setStatus("closed");
       if (e.code === CLOSE_UNAUTHORIZED) {
         notifyUnauthorized();
         return;
       }
+      if (e.code === CLOSE_FORBIDDEN_ORIGIN) return;
       if (this.users > 0) this.scheduleReconnect();
     };
+  }
+
+  private clearStableTimer(): void {
+    if (this.stableTimer !== null) clearTimeout(this.stableTimer);
+    this.stableTimer = null;
   }
 
   private scheduleReconnect(): void {
@@ -152,6 +173,7 @@ export class LiveSocket {
 
   private disconnect(): void {
     this.clearTimer();
+    this.clearStableTimer();
     this.attempt = 0;
     const ws = this.ws;
     this.ws = null;
