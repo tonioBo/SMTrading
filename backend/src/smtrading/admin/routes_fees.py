@@ -6,7 +6,8 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.admin.auth import DbSession, RedisClient, require_admin
@@ -123,15 +124,36 @@ async def _validated(session: AsyncSession, raw: dict[str, Any], exclude: UUID |
     if exclude is not None:
         taken = taken.where(FeeRule.id != exclude)
     if await session.scalar(taken.limit(1)) is not None:
-        raise SMTError(
-            ErrorCode.INVALID_ORDER, "esiste già una regola con questo nome per lo stesso ambito",
-            {"field": "name", "name": name},
-        )
+        raise _duplicate_name(name)
     return {
         "name": name, "scope": scope, "scope_ref": scope_ref, "side": side,
         "currency": currency, **values, "tiers": _tiers(raw["tiers"]), "priority": priority,
         "active": bool(raw["active"]),
     }
+
+
+def _duplicate_name(name: str) -> SMTError:
+    return SMTError(
+        ErrorCode.INVALID_ORDER, "esiste già una regola con questo nome per lo stesso ambito",
+        {"field": "name", "name": name},
+    )
+
+
+async def _require_global_rule(session: AsyncSession) -> None:
+    """Every order needs a rule: an active global rule for both sides must always remain."""
+    await session.flush()
+    count = await session.scalar(
+        select(func.count()).select_from(FeeRule).where(
+            FeeRule.scope == FeeScope.global_, FeeRule.side == FeeSide.both,
+            FeeRule.active.is_(True),
+        )
+    )
+    if not count:
+        raise SMTError(
+            ErrorCode.INVALID_ORDER,
+            "Deve restare una regola globale attiva per entrambi i lati",
+            {"field": "active"},
+        )
 
 
 def _tier_dicts(tiers) -> list[dict[str, Any]] | None:
@@ -148,11 +170,14 @@ async def list_fee_rules(session: DbSession) -> list[dict]:
 async def create_fee_rule(body: FeeRuleCreateIn, session: DbSession, redis: RedisClient) -> dict:
     raw = body.model_dump()
     raw["tiers"] = _tier_dicts(body.tiers)
-    async with _transaction(session, redis):
-        rule = FeeRule(**await _validated(session, raw, None))
-        session.add(rule)
-        await session.flush()
-        await session.refresh(rule)
+    try:
+        async with _transaction(session, redis):
+            rule = FeeRule(**await _validated(session, raw, None))
+            session.add(rule)
+            await session.flush()
+            await session.refresh(rule)
+    except IntegrityError:
+        raise _duplicate_name(str(raw["name"]).strip()) from None
     return _rule_dto(rule)
 
 
@@ -172,10 +197,13 @@ async def patch_fee_rule(
     for f in ("name", "scope", "side", "currency", "fixed", "pct", "fx_pct", "priority", "active"):
         if raw[f] is None:
             raise _invalid(f, f"{f} non può essere nullo")
-    async with _transaction(session, redis):
-        for key, value in (await _validated(session, raw, rule_id)).items():
-            setattr(rule, key, value)
-        await session.flush()
+    try:
+        async with _transaction(session, redis):
+            for key, value in (await _validated(session, raw, rule_id)).items():
+                setattr(rule, key, value)
+            await _require_global_rule(session)
+    except IntegrityError:
+        raise _duplicate_name(str(raw["name"]).strip()) from None
     return _rule_dto(rule)
 
 
@@ -185,7 +213,7 @@ async def deactivate_fee_rule(rule_id: UUID, session: DbSession, redis: RedisCli
     rule = await _rule(session, rule_id)
     async with _transaction(session, redis):
         rule.active = False
-        await session.flush()
+        await _require_global_rule(session)
     return _rule_dto(rule)
 
 

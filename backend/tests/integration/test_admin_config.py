@@ -252,6 +252,26 @@ async def test_fee_rule_crud_and_deactivate(admin):
     assert (await c.delete(f"/api/fee-rules/{uuid.uuid4()}")).status_code == 404
 
 
+async def test_last_global_fee_rule_cannot_be_deactivated(admin):
+    c = admin.client
+    glob = (await c.get("/api/fee-rules")).json()[0]
+    msg = "Deve restare una regola globale attiva per entrambi i lati"
+    r = await c.delete(f"/api/fee-rules/{glob['id']}")
+    assert r.status_code == 400 and r.json()["code"] == "INVALID_ORDER" and r.json()["message"] == msg
+    for patch in ({"active": False}, {"side": "buy"}, {"scope": "asset_class", "scope_ref": "crypto"}):
+        r = await c.patch(f"/api/fee-rules/{glob['id']}", json=patch)
+        assert r.status_code == 400 and r.json()["message"] == msg, patch
+    assert next(x for x in (await c.get("/api/fee-rules")).json() if x["id"] == glob["id"])[
+        "active"
+    ] is True
+
+    # with a second global rule for both sides the first can go
+    other = await c.post("/api/fee-rules", json={"name": "Altra", "pct": "0.2"})
+    assert other.status_code == 200
+    assert (await c.delete(f"/api/fee-rules/{glob['id']}")).json()["active"] is False
+    assert (await c.delete(f"/api/fee-rules/{other.json()['id']}")).status_code == 400
+
+
 async def test_fee_rule_tiers_validation_and_storage(admin):
     c = admin.client
     pid = (await _portfolio(c))["id"]

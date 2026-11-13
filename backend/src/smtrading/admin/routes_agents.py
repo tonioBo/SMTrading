@@ -91,15 +91,13 @@ async def list_agents(session: DbSession) -> list[dict]:
 @router.post("/agents")
 async def create_agent(body: AgentCreateIn, session: DbSession, redis: RedisClient) -> dict:
     name = _clean_name(body.name)
+    if await session.scalar(select(Agent.id).where(Agent.name == name)) is not None:
+        raise _duplicate_name(name)
     try:
         async with _transaction(session, redis):
             agent, token = await agents.create_agent(session, name)
     except IntegrityError:  # a concurrent creation with the same name won the race
         raise _duplicate_name(name) from None
-    except SMTError as e:
-        if "already exists" in e.message:
-            raise _duplicate_name(name) from None
-        raise
     return {"agent": await _agent_dto(session, agent), "token": token}
 
 
