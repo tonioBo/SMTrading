@@ -137,3 +137,17 @@ async def test_write_quote_overwrites_legacy_entry_without_ts_us(r):
     q = Quote("AAPL", None, None, Decimal(2), datetime(2026, 1, 1, tzinfo=UTC), "yahoo")
     assert await write_quote(r, q) is True
     assert (await read_quote(r, "AAPL")).last == Decimal(2)
+
+
+async def test_write_quote_future_ts_cannot_freeze_the_symbol(r):
+    from datetime import timedelta
+
+    now = datetime.now(UTC)
+    bad = Quote("AAPL", None, None, Decimal(1), now + timedelta(days=365), "yahoo")
+    assert await write_quote(r, bad) is True
+    assert int(await r.hget("quote:AAPL", "ts_us")) <= int(
+        (datetime.now(UTC) + timedelta(seconds=5)).timestamp() * 1_000_000
+    )
+    later = Quote("AAPL", None, None, Decimal(2), now + timedelta(seconds=6), "yahoo")
+    assert await write_quote(r, later) is True  # beats the clamped bad quote
+    assert (await read_quote(r, "AAPL")).last == Decimal(2)

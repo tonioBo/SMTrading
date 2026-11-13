@@ -134,8 +134,20 @@ def test_partial_quote_filled_from_last():
     assert ask == D("50.0125")
 
 
-def test_partial_quote_without_last_mirrors():
-    assert effective_bid_ask(q(ask="7"), 5) == (D(7), D(7))
+def test_partial_quote_without_last_uses_the_present_side_and_spread():
+    # no zero-spread mirror: the missing side is the present one -+ bps/10000
+    assert effective_bid_ask(q(ask="7"), 5) == (D("6.9965"), D(7))
+    assert effective_bid_ask(q(bid="7"), 5) == (D(7), D("7.0035"))
+
+
+@pytest.mark.parametrize(("kw", "expected"), [
+    ({"bid": "51", "last": "50"}, (D(51), D("51.0255"))),  # last + half would be < bid
+    ({"ask": "49", "last": "50"}, (D("48.9755"), D(49))),  # last - half would be > ask
+    ({"bid": "50.0125", "last": "50"}, (D("50.0125"), D("50.03750625"))),  # would touch
+])
+def test_side_synthesised_from_last_never_crosses(kw, expected):
+    bid, ask = effective_bid_ask(q(**kw), 5)
+    assert (bid, ask) == expected and bid < ask
 
 
 def test_no_price_raises():

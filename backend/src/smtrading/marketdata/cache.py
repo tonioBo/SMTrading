@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from smtrading.marketdata import serialization
@@ -59,6 +59,11 @@ return 1
 """
 
 
+# a source ts further in the future than this is clamped for the newer-wins comparison,
+# so one bad future timestamp cannot freeze a symbol
+MAX_FUTURE_SKEW = timedelta(seconds=5)
+
+
 def _ts_us(ts: datetime) -> int:
     return int(ts.astimezone(UTC).timestamp() * 1_000_000)
 
@@ -67,9 +72,11 @@ async def write_quote(redis, q: Quote, *, fetched_at: datetime | None = None) ->
     """Store and publish the latest quote unless the cached one is newer (by event `ts`).
 
     `fetched_at` (default now, UTC) is when we received it. Returns True when written.
+    The comparison key `ts_us` is clamped to now + MAX_FUTURE_SKEW (the stored `ts` is the
+    source's, unchanged).
     """
     fetched = (fetched_at or datetime.now(UTC)).astimezone(UTC)
-    ts_us = _ts_us(q.ts)
+    ts_us = min(_ts_us(q.ts), _ts_us(datetime.now(UTC) + MAX_FUTURE_SKEW))
     fields = {
         "bid": _opt(q.bid),
         "ask": _opt(q.ask),

@@ -20,23 +20,31 @@ class QuoteView:
 
 
 def effective_bid_ask(q: QuoteView, default_spread_bps: int) -> tuple[Decimal, Decimal]:
-    """Bid/ask, synthesising missing sides from `last` +- last * bps / 2 / 10000."""
+    """Bid/ask, synthesising a missing side.
+
+    - from `last`: last -+ last * bps / 2 / 10000;
+    - without `last`, or when the side synthesised from `last` would cross (or touch)
+      the side that is present: the present side -+ present * bps / 10000 (full spread).
+    A synthesised side never crosses the present one.
+    """
     with localcontext() as ctx:
         ctx.prec = _PREC
-        bid, ask = q.bid, q.ask
+        bid, ask, last = q.bid, q.ask, q.last
         if bid is not None and ask is not None:
             return bid, ask
-        if q.last is not None:
-            half = q.last * Decimal(default_spread_bps) / 2 / _BPS
-            return (
-                bid if bid is not None else q.last - half,
-                ask if ask is not None else q.last + half,
-            )
-        if bid is not None:
-            return bid, bid
-        if ask is not None:
-            return ask, ask
-    raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE, "quote has no usable price")
+        frac = Decimal(default_spread_bps) / _BPS
+        half = last * frac / 2 if last is not None else None
+        if bid is None and ask is None:
+            if last is None:
+                raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE, "quote has no usable price")
+            return last - half, last + half
+        if bid is None:
+            if last is None or last - half >= ask:
+                return ask * (1 - frac), ask
+            return last - half, ask
+        if last is None or last + half <= bid:
+            return bid, bid * (1 + frac)
+        return bid, last + half
 
 
 def market_price(
