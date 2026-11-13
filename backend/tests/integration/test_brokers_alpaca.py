@@ -288,5 +288,6 @@ async def test_find_order_by_client_reference(http):
     found = await AlpacaPaperAdapter(CFG, http).find_order(o, _inst(), None)
     assert found is not None and found.broker_order_id == "x1"
     assert route.calls[0].request.url.params["client_order_id"] == f"{o.id}-2"
+    assert await AlpacaPaperAdapter(CFG, http).find_order(o, _inst(), None, frozenset({"x1"})) is None
     route.mock(return_value=httpx.Response(404, json={"message": "not found"}))
     assert await AlpacaPaperAdapter(CFG, http).find_order(o, _inst(), None) is None

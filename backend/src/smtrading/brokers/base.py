@@ -64,10 +64,13 @@ class BrokerAdapter:
         raise NotImplementedError
 
     async def find_order(
-        self, order: Order, instrument: Instrument, since: datetime
+        self, order: Order, instrument: Instrument, since: datetime,
+        exclude: frozenset[str] = frozenset(),
     ) -> BrokerOrder | None:
-        """The broker order created for `order` at or after `since`, if one can be
-        identified unambiguously (used after a non-idempotent send failed)."""
+        """The broker order created for `order`'s current submission at or after
+        `since`, if one can be identified unambiguously, ignoring the broker order ids in
+        `exclude` (already linked to other orders). Used after a send whose outcome is
+        unknown; None means "not found" (definitive only for idempotent adapters)."""
         return None
 
     async def get_order(self, broker_order_id: str) -> BrokerOrder:

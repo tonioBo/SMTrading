@@ -189,8 +189,11 @@ class AlpacaPaperAdapter(BrokerAdapter):
             raise self._fail(resp)
         return self._to_broker_order(self._parse(resp))
 
-    async def find_order(self, order: Order, instrument: Instrument, since) -> BrokerOrder | None:
-        """The order sent with this submission's client_order_id, if Alpaca has it."""
+    async def find_order(
+        self, order: Order, instrument: Instrument, since, exclude: frozenset[str] = frozenset()
+    ) -> BrokerOrder | None:
+        """The order sent with this submission's client_order_id, if Alpaca has it (only
+        the current one: earlier submissions were confirmed canceled before a resend)."""
         resp = await self._request(
             "GET", "/v2/orders:by_client_order_id",
             params={"client_order_id": self.client_ref(order)},
@@ -199,7 +202,8 @@ class AlpacaPaperAdapter(BrokerAdapter):
             return None
         if resp.status_code >= 300:
             raise self._fail(resp)
-        return self._to_broker_order(self._parse(resp))
+        found = self._to_broker_order(self._parse(resp))
+        return None if found.broker_order_id in exclude else found
 
     async def get_order(self, broker_order_id: str) -> BrokerOrder:
         resp = await self._request("GET", f"/v2/orders/{broker_order_id}")

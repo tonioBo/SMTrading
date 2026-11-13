@@ -356,4 +356,17 @@ async def test_find_order_matches_ticker_side_qty_and_time(http):
     a = T212DemoAdapter(CFG, http)
     found = await a.find_order(_order(), _inst(), since)
     assert found is not None and found.broker_order_id == "3"
+    # C1: a broker order already linked to another order is never matched again
+    assert await a.find_order(_order(), _inst(), since, frozenset({"3"})) is None
     assert await a.find_order(_order(side=OrderSide.sell), _inst(), since) is None
+
+
+@respx.mock
+async def test_cancel_4xx_is_terminal_5xx_raises(http):
+    a = T212DemoAdapter(CFG, http)
+    route = respx.delete(f"{API}/orders/x")
+    route.mock(return_value=httpx.Response(400, json={"code": "NotCancellable"}))
+    await a.cancel_order("x")  # BrokerSync reads it back
+    route.mock(return_value=httpx.Response(503, json={}))
+    with pytest.raises(RuntimeError):
+        await a.cancel_order("x")

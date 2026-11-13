@@ -320,10 +320,12 @@ class T212DemoAdapter(BrokerAdapter):
         return None
 
     async def find_order(
-        self, order: Order, instrument: Instrument, since: datetime
+        self, order: Order, instrument: Instrument, since: datetime,
+        exclude: frozenset[str] = frozenset(),
     ) -> BrokerOrder | None:
         """Ruling R7: the pending orders, then the first history page, for exactly one
-        order on the same ticker, side and quantity created at or after `since`."""
+        order on the same ticker, side and quantity created at or after `since`, not
+        counting the broker orders in `exclude` (linked to other orders: C1)."""
         await self._load_instruments()
         ticker = resolve_ticker(order.symbol, instrument.asset_class, instrument.currency)
         if ticker is None or order.qty is None:
@@ -355,7 +357,7 @@ class T212DemoAdapter(BrokerAdapter):
         hits = [
             self._to_broker_order(o)
             for o in (pending if isinstance(pending, list) else [])
-            if isinstance(o, dict) and matches(o)
+            if isinstance(o, dict) and matches(o) and str(o.get("id")) not in exclude
         ]
         resp = await self._request("GET", f"{_API}/history/orders?limit=50")
         if resp.status_code >= 300:
@@ -363,7 +365,9 @@ class T212DemoAdapter(BrokerAdapter):
         page = self._parse(resp)
         for it in page.get("items", []) if isinstance(page, dict) else []:
             o = it.get("order") or {}
-            if matches(o) and str(o.get("id")) not in {h.broker_order_id for h in hits}:
+            if matches(o) and str(o.get("id")) not in exclude | {
+                h.broker_order_id for h in hits
+            }:
                 hits.append(self._to_broker_order(o, _dec((it.get("fill") or {}).get("price"))))
         return hits[0] if len(hits) == 1 else None
 
@@ -380,8 +384,9 @@ class T212DemoAdapter(BrokerAdapter):
 
     async def cancel_order(self, broker_order_id: str) -> None:
         resp = await self._request("DELETE", f"{_API}/orders/{broker_order_id}")
-        # 404: already terminal, the sync reflects it
-        if resp.status_code >= 300 and resp.status_code != 404:
+        # a 4xx (404 unknown, 400 not cancelable...) means the order is already terminal
+        # or cannot be canceled: BrokerSync reads it back and reflects its real state
+        if resp.status_code >= 500:
             raise self._fail(resp)
 
     async def get_positions(self) -> dict[str, Decimal]:
