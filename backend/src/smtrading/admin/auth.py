@@ -1,12 +1,14 @@
 """Admin authentication: argon2 passwords, optional TOTP, Redis sessions, CSRF double-submit.
 
-Sessions live in Redis at `adm:sess:{id}` as JSON {admin_id, csrf, created_at} with a 12h
-TTL renewed on every authenticated request. The session id travels in the httpOnly
+Sessions live in Redis at `adm:sess:{id}` as JSON {admin_id, csrf, created_at, fp} with a
+12h TTL renewed on every authenticated request. `fp` fingerprints the admin's credentials
+(password hash + TOTP state): changing either invalidates every session issued before. The session id travels in the httpOnly
 `smt_session` cookie; the CSRF token in the JS-readable `smt_csrf` cookie, which the web
 app echoes in `X-CSRF-Token` on every non-GET/HEAD/OPTIONS request.
 """
 
 import asyncio
+import hashlib
 import json
 import secrets
 import uuid
@@ -36,6 +38,7 @@ LOGIN_FAIL_LIMIT = 5
 LOGIN_FAIL_WINDOW_S = 15 * 60
 MIN_PASSWORD_LEN = 10
 TOTP_ISSUER = "SMTrading"
+TOTP_USED_TTL_S = 90  # covers valid_window=1 (previous, current, next 30s step)
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 _hasher = PasswordHasher()  # argon2id defaults
@@ -52,6 +55,11 @@ def _session_key(session_id: str) -> str:
 
 def _fail_key(email: str) -> str:
     return f"adm:login_fail:{normalize_email(email)}"
+
+
+def credentials_fingerprint(user: AdminUser) -> str:
+    raw = f"{user.password_hash}|{user.totp_enabled}".encode()
+    return hashlib.sha256(raw).hexdigest()[:16]
 
 
 async def hash_password(password: str) -> str:
@@ -85,18 +93,34 @@ def _totp_ok(secret: str | None, code: str | None) -> bool:
     return pyotp.TOTP(secret).verify(code.strip(), valid_window=1)
 
 
-async def _record_failure(redis: Redis, email: str) -> None:
+async def _check_totp(redis: Redis, user: AdminUser, code: str | None) -> None:
+    """Verify `code` against the stored secret; a code is accepted once (replay guard)."""
+    if not _totp_ok(_totp_secret(user), code):
+        raise _bad_totp()
+    used_key = f"adm:totp_used:{user.id}:{code.strip()}"
+    if not await redis.set(used_key, "1", nx=True, ex=TOTP_USED_TTL_S):
+        raise SMTError(ErrorCode.FORBIDDEN, "codice TOTP già usato")
+
+
+async def _count_attempt(redis: Redis, email: str) -> int:
+    """Count this login attempt (the counter is cleared on success); return the count."""
     key = _fail_key(email)
     async with redis.pipeline(transaction=True) as pipe:
         pipe.incr(key)
-        pipe.expire(key, LOGIN_FAIL_WINDOW_S, nx=True)  # window starts at the first failure
-        await pipe.execute()
+        pipe.expire(key, LOGIN_FAIL_WINDOW_S, nx=True)  # window starts at the first attempt
+        count, _ = await pipe.execute()
+    return int(count)
 
 
-async def create_session(redis: Redis, admin_id: uuid.UUID) -> tuple[str, str]:
+async def create_session(redis: Redis, user: AdminUser) -> tuple[str, str]:
     session_id = secrets.token_urlsafe(32)
     csrf = secrets.token_urlsafe(32)
-    value = {"admin_id": str(admin_id), "csrf": csrf, "created_at": datetime.now(UTC).isoformat()}
+    value = {
+        "admin_id": str(user.id),
+        "csrf": csrf,
+        "created_at": datetime.now(UTC).isoformat(),
+        "fp": credentials_fingerprint(user),
+    }
     await redis.set(_session_key(session_id), json.dumps(value), ex=SESSION_TTL_S)
     return session_id, csrf
 
@@ -108,9 +132,11 @@ async def destroy_session(redis: Redis, session_id: str) -> None:
 async def login(
     session: AsyncSession, redis: Redis, email: str, password: str, totp: str | None
 ) -> tuple[str, str]:
-    """Return (session_id, csrf). Does not commit (sets `last_login_at`)."""
-    fails = await redis.get(_fail_key(email))
-    if fails is not None and int(fails) >= LOGIN_FAIL_LIMIT:
+    """Return (session_id, csrf). Does not commit (sets `last_login_at`).
+
+    Every attempt is counted first (no check-then-increment race); a successful login clears
+    the counter, so only failures accumulate: the 6th attempt after 5 failures is refused."""
+    if await _count_attempt(redis, email) > LOGIN_FAIL_LIMIT:
         ttl = await redis.ttl(_fail_key(email))
         raise SMTError(
             ErrorCode.RATE_LIMITED, "troppi tentativi di accesso, riprova più tardi",
@@ -120,19 +146,16 @@ async def login(
     # an unknown email still costs one argon2 verify: no timing oracle on which emails exist
     ok = await verify_password(user.password_hash if user else _DUMMY_HASH, password)
     if user is None or not ok:
-        await _record_failure(redis, email)
         raise _bad_credentials()
     if user.totp_enabled:
         if not totp:
             raise SMTError(
                 ErrorCode.FORBIDDEN, "codice TOTP richiesto", {"totp_required": True}
             )
-        if not _totp_ok(_totp_secret(user), totp):
-            await _record_failure(redis, email)
-            raise _bad_totp()
+        await _check_totp(redis, user, totp)
     await redis.delete(_fail_key(email))
     user.last_login_at = datetime.now(UTC)
-    return await create_session(redis, user.id)
+    return await create_session(redis, user)
 
 
 def totp_setup(user: AdminUser) -> tuple[str, str]:
@@ -145,19 +168,19 @@ def totp_setup(user: AdminUser) -> tuple[str, str]:
     return secret, uri
 
 
-def totp_enable(user: AdminUser, code: str) -> None:
+async def totp_enable(redis: Redis, user: AdminUser, code: str) -> None:
+    if user.totp_enabled:
+        raise SMTError(ErrorCode.INVALID_ORDER, "TOTP già attivo", {"field": "totp"})
     if user.totp_secret_encrypted is None:
         raise SMTError(ErrorCode.INVALID_ORDER, "TOTP non configurato", {"field": "totp"})
-    if not _totp_ok(_totp_secret(user), code):
-        raise _bad_totp()
+    await _check_totp(redis, user, code)
     user.totp_enabled = True
 
 
-def totp_disable(user: AdminUser, code: str) -> None:
+async def totp_disable(redis: Redis, user: AdminUser, code: str) -> None:
     if not user.totp_enabled:
         raise SMTError(ErrorCode.INVALID_ORDER, "TOTP non attivo", {"field": "totp"})
-    if not _totp_ok(_totp_secret(user), code):
-        raise _bad_totp()
+    await _check_totp(redis, user, code)
     user.totp_enabled = False
     user.totp_secret_encrypted = None
 
@@ -193,6 +216,8 @@ RedisClient = Annotated[Redis, Depends(get_redis)]
 async def require_admin(request: Request, session: DbSession, redis: RedisClient) -> AdminUser:
     """The logged-in admin. Renews the session TTL; checks CSRF on unsafe methods.
 
+    A session issued before the admin's password or TOTP state changed is revoked (401).
+
     The session id is left on `request.state.admin_session_id` (for logout)."""
     session_id = request.cookies.get(SESSION_COOKIE)
     if not session_id:
@@ -206,7 +231,7 @@ async def require_admin(request: Request, session: DbSession, redis: RedisClient
         if not secrets.compare_digest(sent.encode(), data["csrf"].encode()):
             raise SMTError(ErrorCode.FORBIDDEN, "CSRF")
     user = await session.get(AdminUser, uuid.UUID(data["admin_id"]))
-    if user is None:
+    if user is None or data.get("fp") != credentials_fingerprint(user):
         await destroy_session(redis, session_id)
         raise NotAuthenticated()
     request.state.admin_session_id = session_id

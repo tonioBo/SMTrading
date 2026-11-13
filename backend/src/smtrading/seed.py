@@ -6,7 +6,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from smtrading.admin.auth import hash_password, normalize_email
+from smtrading.admin.auth import MIN_PASSWORD_LEN, hash_password, normalize_email
 from smtrading.admin.models import AdminUser
 from smtrading.agents.models import Agent
 from smtrading.agents.service import assign_portfolio, create_agent
@@ -129,9 +129,19 @@ async def run_seed(session: AsyncSession, *, admin: tuple[str, str] | None = Non
 
 
 async def seed_admin(session: AsyncSession, email: str, password: str) -> None:
-    """Create the admin user if no admin has this email; an existing password is kept."""
+    """Create the admin user if no admin has this email; an existing password is kept.
+
+    Empty credentials or a password shorter than MIN_PASSWORD_LEN are refused (logged)."""
     email = normalize_email(email)
-    if await session.scalar(select(AdminUser.id).where(AdminUser.email == email)) is not None:
+    if email and await session.scalar(
+        select(AdminUser.id).where(AdminUser.email == email)
+    ) is not None:
+        return
+    if not email or len(password) < MIN_PASSWORD_LEN:
+        log.error(
+            "admin not created: SMT_ADMIN_EMAIL must be set and SMT_ADMIN_PASSWORD must have"
+            " at least %d characters", MIN_PASSWORD_LEN,
+        )
         return
     session.add(AdminUser(email=email, password_hash=await hash_password(password)))
     await session.flush()

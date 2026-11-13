@@ -1,19 +1,24 @@
-from pydantic import BaseModel
+from typing import Annotated
+
+from pydantic import BaseModel, Field
+
+ShortStr = Annotated[str, Field(max_length=256)]
+TotpCode = Annotated[str, Field(max_length=16)]
 
 
 class LoginIn(BaseModel):
-    email: str
-    password: str
-    totp: str | None = None
+    email: ShortStr
+    password: ShortStr
+    totp: TotpCode | None = None
 
 
 class TotpCodeIn(BaseModel):
-    code: str
+    code: TotpCode
 
 
 class PasswordChangeIn(BaseModel):
-    current: str
-    new: str
+    current: ShortStr
+    new: ShortStr
 
 
 class AdminOut(BaseModel):

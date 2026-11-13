@@ -1,5 +1,6 @@
 import asyncio
 import re
+import time
 import uuid
 
 import httpx
@@ -13,21 +14,42 @@ from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
 
 LOGIN_PATH = "/api/auth/login"
+PUBLIC_API_PATHS = {LOGIN_PATH, "/api/auth/logout"}  # logout is best effort
+NON_API_ROUTE_ALLOWLIST: set[str] = set()  # non-APIRoute routes allowed under /api/
 PASSWORD = "correct-horse-battery"
 
 
-def _protected_routes() -> list[tuple[str, str]]:
+def _api_route_contexts():
     from smtrading.api.main import create_app
 
     # iter_route_contexts flattens included routers (paths carry the router prefix)
+    return [
+        ctx for ctx in iter_route_contexts(create_app().routes)
+        if (ctx.path or "").startswith("/api/")
+    ]
+
+
+def _protected_routes() -> list[tuple[str, str]]:
     return sorted(
         (method, ctx.path)
-        for ctx in iter_route_contexts(create_app().routes)
-        if isinstance(ctx.original_route, APIRoute)
-        and ctx.path.startswith("/api/")
-        and ctx.path != LOGIN_PATH
+        for ctx in _api_route_contexts()
+        if isinstance(ctx.original_route, APIRoute) and ctx.path not in PUBLIC_API_PATHS
         for method in ctx.methods
     )
+
+
+class AdminApp:
+    """Unpacks as (client, sessionmaker); `new_client()` opens another client (own cookies)."""
+
+    def __init__(self, client, sessionmaker, transport, redis_url):
+        self.client, self.sessionmaker, self.transport = client, sessionmaker, transport
+        self.redis_url = redis_url
+
+    def __iter__(self):
+        return iter((self.client, self.sessionmaker))
+
+    def new_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=self.transport, base_url="http://test")
 
 
 @pytest.fixture
@@ -58,7 +80,9 @@ async def admin_app(migrated_db, redis_url, monkeypatch):
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            yield client, async_sessionmaker(engine, expire_on_commit=False)
+            yield AdminApp(
+                client, async_sessionmaker(engine, expire_on_commit=False), transport, redis_url
+            )
     finally:
         stop.set()
         await lifespan
@@ -86,6 +110,25 @@ async def _login(client, email, password=PASSWORD, **extra):
 
 def _csrf(client) -> dict:
     return {"X-CSRF-Token": client.cookies["smt_csrf"]}
+
+
+def _wrong_code(totp) -> str:
+    valid = {totp.at(time.time() + d) for d in (-60, -30, 0, 30, 60)}
+    return next(c for c in ("000000", "111111", "222222", "333333", "444444", "555555")
+                if c not in valid)
+
+
+async def _forget_used_codes(redis_url: str, admin_id) -> None:
+    """Lift the replay guard so the test can use the current code again."""
+    from redis.asyncio import Redis
+
+    redis = Redis.from_url(redis_url)
+    try:
+        keys = [k async for k in redis.scan_iter(f"adm:totp_used:{admin_id}:*")]
+        if keys:
+            await redis.delete(*keys)
+    finally:
+        await redis.aclose()
 
 
 async def test_login_then_me(admin_app, admin_user):
@@ -146,6 +189,10 @@ async def test_wrong_credentials_then_rate_limit(admin_app, admin_user):
 
 async def test_totp_flow(admin_app, admin_user):
     client, _ = admin_app
+
+    def forget():
+        return _forget_used_codes(admin_app.redis_url, admin_user.id)
+
     await _login(client, admin_user.email)
     setup = await client.post("/api/auth/totp/setup", headers=_csrf(client))
     assert setup.status_code == 200
@@ -155,21 +202,25 @@ async def test_totp_flow(admin_app, admin_user):
     totp = pyotp.TOTP(secret)
     assert (await client.get("/api/auth/me")).json()["totp_enabled"] is False  # not active yet
 
-    bad = await client.post("/api/auth/totp/enable", json={"code": "000000"}, headers=_csrf(client))
+    bad = await client.post(
+        "/api/auth/totp/enable", json={"code": _wrong_code(totp)}, headers=_csrf(client)
+    )
     assert bad.status_code == 403
     ok = await client.post("/api/auth/totp/enable", json={"code": totp.now()}, headers=_csrf(client))
     assert ok.status_code == 200 and ok.json()["totp_enabled"] is True
 
     await client.post("/api/auth/logout", headers=_csrf(client))
     client.cookies.clear()
+    await forget()
     missing = await _login(client, admin_user.email)
     assert missing.status_code == 403
     assert missing.json()["details"] == {"totp_required": True}
-    wrong = await _login(client, admin_user.email, totp="123456" if totp.now() != "123456" else "654321")
+    wrong = await _login(client, admin_user.email, totp=_wrong_code(totp))
     assert wrong.status_code == 403 and wrong.json()["message"] == "codice TOTP non valido"
     good = await _login(client, admin_user.email, totp=totp.now())
     assert good.status_code == 200 and good.json()["totp_enabled"] is True
 
+    await forget()
     off = await client.post(
         "/api/auth/totp/disable", json={"code": totp.now()}, headers=_csrf(client)
     )
@@ -205,7 +256,7 @@ async def test_logout_invalidates_session(admin_app, admin_user):
     sid = client.cookies["smt_session"]
     csrf = client.cookies["smt_csrf"]
     r = await client.post("/api/auth/logout", headers={"X-CSRF-Token": csrf})
-    assert r.status_code == 200
+    assert r.status_code == 204
     client.cookies.clear()
     client.cookies.set("smt_session", sid)  # replaying the old cookie does not work
     me = await client.get("/api/auth/me")
@@ -252,9 +303,93 @@ async def test_api_routes_require_login(admin_app, method, path):
     assert r.json() == {"code": "FORBIDDEN", "message": "login richiesto", "details": None}
 
 
+async def test_logout_is_best_effort(admin_app, admin_user):
+    client, _ = admin_app
+    anon = await client.post("/api/auth/logout")  # no session, no CSRF
+    assert anon.status_code == 204
+    await _login(client, admin_user.email)
+    sid = client.cookies["smt_session"]
+    r = await client.post("/api/auth/logout")  # session but no CSRF header
+    assert r.status_code == 204
+    cleared = r.headers.get_list("set-cookie")
+    assert any(c.startswith("smt_session=") and "Max-Age=0" in c for c in cleared)
+    assert any(c.startswith("smt_csrf=") and "Max-Age=0" in c for c in cleared)
+    client.cookies.clear()
+    client.cookies.set("smt_session", sid)
+    assert (await client.get("/api/auth/me")).status_code == 401
+
+
+async def test_password_change_revokes_other_sessions(admin_app, admin_user):
+    changer, _ = admin_app
+    await _login(changer, admin_user.email)
+    async with admin_app.new_client() as other:
+        await _login(other, admin_user.email)
+        assert (await other.get("/api/auth/me")).status_code == 200
+        old_sid = changer.cookies["smt_session"]
+        r = await changer.post(
+            "/api/auth/password", json={"current": PASSWORD, "new": "brand-new-password"},
+            headers=_csrf(changer),
+        )
+        assert r.status_code == 200
+        assert changer.cookies["smt_session"] != old_sid  # re-issued
+        assert (await changer.get("/api/auth/me")).status_code == 200
+        assert (await changer.post("/api/auth/totp/setup", headers=_csrf(changer))).status_code == 200
+        assert (await other.get("/api/auth/me")).status_code == 401
+    async with admin_app.new_client() as replay:
+        replay.cookies.set("smt_session", old_sid)
+        assert (await replay.get("/api/auth/me")).status_code == 401
+
+
+async def test_totp_disable_revokes_other_sessions(admin_app, admin_user):
+    changer, _ = admin_app
+    await _login(changer, admin_user.email)
+    secret = (await changer.post("/api/auth/totp/setup", headers=_csrf(changer))).json()["secret"]
+    totp = pyotp.TOTP(secret)
+    r = await changer.post("/api/auth/totp/enable", json={"code": totp.now()}, headers=_csrf(changer))
+    assert r.status_code == 200
+    assert (await changer.get("/api/auth/me")).json()["totp_enabled"] is True  # re-issued
+    await _forget_used_codes(admin_app.redis_url, admin_user.id)
+    async with admin_app.new_client() as other:
+        assert (await _login(other, admin_user.email, totp=totp.now())).status_code == 200
+        await _forget_used_codes(admin_app.redis_url, admin_user.id)
+        off = await changer.post(
+            "/api/auth/totp/disable", json={"code": totp.now()}, headers=_csrf(changer)
+        )
+        assert off.status_code == 200
+        assert (await changer.get("/api/auth/me")).json()["totp_enabled"] is False
+        assert (await other.get("/api/auth/me")).status_code == 401
+
+
+async def test_totp_code_cannot_be_replayed(admin_app, admin_user):
+    client, _ = admin_app
+    await _login(client, admin_user.email)
+    secret = (await client.post("/api/auth/totp/setup", headers=_csrf(client))).json()["secret"]
+    totp = pyotp.TOTP(secret)
+    code = totp.now()
+    assert (await client.post(
+        "/api/auth/totp/enable", json={"code": code}, headers=_csrf(client)
+    )).status_code == 200
+    client.cookies.clear()
+    reused = await _login(client, admin_user.email, totp=code)
+    assert reused.status_code == 403 and reused.json()["message"] == "codice TOTP già usato"
+
+
+async def test_oversized_fields_rejected(admin_app):
+    client, _ = admin_app
+    r = await _login(client, "x@example.com", "p" * 257)
+    assert r.status_code == 400 and r.json()["details"] == {"fields": ["password"]}
+
+
+def test_no_unexpected_non_api_routes_under_api():
+    others = {
+        ctx.path for ctx in _api_route_contexts() if not isinstance(ctx.original_route, APIRoute)
+    }
+    assert others <= NON_API_ROUTE_ALLOWLIST
+
+
 def test_protected_routes_cover_auth_endpoints():
     paths = {p for _, p in _protected_routes()}
-    assert {"/api/auth/me", "/api/auth/logout", "/api/auth/password"} <= paths
+    assert {"/api/auth/me", "/api/auth/password", "/api/auth/totp/disable"} <= paths
 
 
 async def test_seed_admin_idempotent(db_session):
@@ -282,3 +417,26 @@ async def test_run_seed_creates_admin(db_session):
     await run_seed(db_session, admin=creds)
     emails = (await db_session.execute(select(AdminUser.email))).scalars().all()
     assert emails.count("settings-admin@example.com") == 1
+
+
+@pytest.mark.parametrize(
+    ("email", "password"), [("", "long-enough-password"), ("short@example.com", "short")]
+)
+async def test_seed_admin_refuses_bad_credentials(db_session, caplog, email, password):
+    from smtrading.admin.models import AdminUser
+    from smtrading.seed import seed_admin
+
+    before = len((await db_session.execute(select(AdminUser.id))).all())
+    with caplog.at_level("ERROR", logger="smtrading.seed"):
+        await seed_admin(db_session, email, password)
+    assert "admin not created" in caplog.text
+    assert len((await db_session.execute(select(AdminUser.id))).all()) == before
+
+
+async def test_seed_admin_existing_admin_is_not_an_error(db_session, caplog):
+    from smtrading.seed import seed_admin
+
+    await seed_admin(db_session, "kept@example.com", "long-enough-password")
+    with caplog.at_level("ERROR", logger="smtrading.seed"):
+        await seed_admin(db_session, "kept@example.com", "short")  # e.g. .env edited later
+    assert "admin not created" not in caplog.text
