@@ -159,3 +159,126 @@ async def posted_journal(db_session):
     for sql, params in stmts:
         await db_session.execute(text(sql), params)
     return jid
+
+
+# --- MCP server fixtures -------------------------------------------------------------
+
+
+class McpTestServer:
+    """A live uvicorn SMTrading API for MCP tests. Unpacks as (url, token).
+
+    `url` is the MCP endpoint, `token` the bearer token of the fixture agent (trade on
+    the "Demo" portfolio), `qs` the FakeQuoteSource every tool call sees (wrapped in a
+    fresh MemoQuoteSource per call), `mcp` the MCPServer, for test-only tools.
+    """
+
+    def __init__(self, **kw) -> None:
+        self.__dict__.update(kw)
+
+    def __iter__(self):
+        return iter((self.url, self.token))
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.fixture
+async def mcp_server(fresh_db, redis_url, monkeypatch):
+    import asyncio
+    import threading
+    import time
+    from decimal import Decimal
+
+    import uvicorn
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from smtrading.agents import service as agents
+    from smtrading.api.main import create_app
+    from smtrading.engine.quotesource import FakeQuoteSource
+    from smtrading.mcp.runtime import McpRuntime
+    from smtrading.portfolios.service import create_portfolio
+
+    monkeypatch.setenv("SMT_DATABASE_URL", fresh_db)
+    monkeypatch.setenv("SMT_REDIS_URL", redis_url)
+    monkeypatch.setenv("SMT_MASTER_KEY", "test-master-key")
+    monkeypatch.setenv("SMT_ADMIN_EMAIL", "admin@example.com")
+    monkeypatch.setenv("SMT_ADMIN_PASSWORD", "test-password")
+    get_settings.cache_clear()
+    agents.token_cache.clear()
+
+    engine = make_engine(fresh_db)
+    async with async_sessionmaker(engine, expire_on_commit=False)() as s:
+        demo = await create_portfolio(s, name="Demo", initial_cash=Decimal(100000))
+        agent, token = await agents.create_agent(s, "test-agent")
+        await agents.assign_portfolio(s, agent.id, demo.id, "trade")
+        await s.commit()
+    await engine.dispose()
+
+    qs = FakeQuoteSource()
+    app = create_app(runtime_factory=lambda sm, redis: McpRuntime(sm, redis, qs, None))
+    port = _free_port()
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="on")
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 15
+    while not server.started:
+        if not thread.is_alive() or time.monotonic() > deadline:
+            raise RuntimeError("mcp test server did not start")
+        await asyncio.sleep(0.02)
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        yield McpTestServer(
+            base_url=base_url, url=f"{base_url}/mcp", token=token, agent_id=agent.id,
+            demo_id=demo.id, db_url=fresh_db, qs=qs, mcp=app.state.mcp, app=app,
+        )
+    finally:
+        server.should_exit = True
+        thread.join(timeout=15)
+        agents.token_cache.clear()
+
+
+def _mcp_session(url: str, token: str):
+    import contextlib
+
+    from mcp.client.session import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+    from mcp.shared._httpx_utils import create_mcp_http_client
+
+    @contextlib.asynccontextmanager
+    async def session():
+        async with (
+            create_mcp_http_client(headers={"Authorization": f"Bearer {token}"}) as http,
+            streamable_http_client(url, http_client=http) as (read, write),
+            ClientSession(read, write) as cs,
+        ):
+            await cs.initialize()
+            yield cs
+
+    return session()
+
+
+async def mcp_call(url: str, token: str, tool: str, args: dict | None = None):
+    """Call an MCP tool; returns (is_error, payload) with the JSON text content parsed."""
+    import json
+
+    async with _mcp_session(url, token) as cs:
+        result = await cs.call_tool(tool, args or {})
+    text = "".join(c.text for c in result.content if c.type == "text")
+    return result.is_error, json.loads(text)
+
+
+async def mcp_list_tools(url: str, token: str) -> list[str]:
+    async with _mcp_session(url, token) as cs:
+        return [t.name for t in (await cs.list_tools()).tools]
+
+
+# exposed as fixtures so tests need not import from conftest
+mcp_call_fixture = pytest.fixture(name="mcp_call")(lambda: mcp_call)
+mcp_list_tools_fixture = pytest.fixture(name="mcp_list_tools")(lambda: mcp_list_tools)

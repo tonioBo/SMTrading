@@ -1,14 +1,21 @@
 import logging
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, Response
 from redis.asyncio import Redis
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from starlette.routing import Route
 
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
+from smtrading.marketdata.router import MarketDataRouter
+from smtrading.mcp.auth import MCP_PATH, McpAuthMiddleware
+from smtrading.mcp.runtime import McpRuntime, get_runtime, set_runtime
+from smtrading.mcp.server import build_mcp, build_mcp_endpoint
 
 log = logging.getLogger(__name__)
 HEARTBEAT_KEY = "worker:heartbeat"
@@ -43,16 +50,41 @@ class _Resources:
             self._redis = None
 
 
-def create_app() -> FastAPI:
+RuntimeFactory = Callable[[async_sessionmaker[AsyncSession], Redis], McpRuntime]
+
+
+def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
+    """`runtime_factory(sessionmaker, redis)` overrides the MCP runtime (tests inject a
+    FakeQuoteSource); by default the MarketDataRouter is the MCP quote source."""
     resources = _Resources()
+    mcp = build_mcp()
+    mcp_endpoint = build_mcp_endpoint(mcp)
 
     @asynccontextmanager
-    async def lifespan(_: FastAPI):
-        yield
-        await resources.close()
+    async def lifespan(app: FastAPI):
+        sessionmaker = async_sessionmaker(resources.engine, expire_on_commit=False)
+        try:
+            async with httpx.AsyncClient() as http:
+                if runtime_factory is not None:
+                    runtime = runtime_factory(sessionmaker, resources.redis)
+                else:
+                    router = MarketDataRouter(sessionmaker, resources.redis, http)
+                    runtime = McpRuntime(sessionmaker, resources.redis, router, router)
+                set_runtime(runtime)
+                app.state.mcp_runtime = runtime
+                async with mcp.session_manager.run():
+                    yield
+        finally:
+            set_runtime(None)
+            await resources.close()
 
     app = FastAPI(title="SMTrading", lifespan=lifespan)
     app.state.close_resources = resources.close
+    app.state.mcp = mcp
+    # raw ASGI routes (all methods) at /mcp and /mcp/: no slash redirect either way
+    app.router.routes.append(Route(MCP_PATH, endpoint=mcp_endpoint))
+    app.router.routes.append(Route(MCP_PATH + "/", endpoint=mcp_endpoint))
+    app.add_middleware(McpAuthMiddleware, get_sessionmaker=lambda: get_runtime().sessionmaker)
 
     @app.get("/health")
     async def health(response: Response) -> dict:
