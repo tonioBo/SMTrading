@@ -58,13 +58,38 @@ services:
     entrypoint: ["/app/docker/entrypoint-api.sh"]
     ports:
       - "127.0.0.1:8000:8000"  # local only (spec); Paperclip uses the docker network
+    volumes:
+      - backups:/backups:ro  # listed by GET /api/system/backups
 
   worker:
     <<: *app
     command: ["python", "-m", "smtrading.worker.main"]
 
+  # Daily pg_dump | gzip into the `backups` volume; keeps 14 days.
+  backup:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    command:
+      - sh
+      - -c
+      - >-
+        while true; do
+        pg_dump -h postgres -U smtrading smtrading | gzip > /backups/smtrading-$$(date +%F).sql.gz;
+        find /backups -name "*.sql.gz" -mtime +14 -delete;
+        sleep 86400;
+        done
+    volumes:
+      - backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [smtrading-net]
+
 volumes:
   pgdata:
+  backups:
 
 networks:
   smtrading-net:
