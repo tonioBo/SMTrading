@@ -1,0 +1,50 @@
+import type { Connector, ConnectorPatch } from "@/api/types";
+
+const SECRET_HINTS = ["key", "secret", "token", "pem", "password"];
+export const isSecret = (key: string) => SECRET_HINTS.some((h) => key.toLowerCase().includes(h));
+export const isScalar = (v: unknown): v is string | number | null => v === null || typeof v === "string" || typeof v === "number";
+
+/** The PATCH body for what the user changed: untouched masked secrets are left out (the server keeps them). */
+export function buildConnectorPatch(
+  connector: Connector,
+  edits: { rate: string; fields: Record<string, string>; removed: Set<string> },
+): { patch: ConnectorPatch; error: string | null } {
+  const patch: ConnectorPatch = {};
+  const rate = edits.rate.trim();
+  if (rate !== String(connector.rate_limit_per_min ?? "")) {
+    const n = Number(rate);
+    if (!/^\d+$/.test(rate) || n < 1) return { patch, error: "Limite di richieste non valido" };
+    patch.rate_limit_per_min = n;
+  }
+  const config: Record<string, unknown> = {};
+  let dirty = false;
+  for (const [key, stored] of Object.entries(connector.config_masked)) {
+    if (isSecret(key) && isScalar(stored)) {
+      if (edits.removed.has(key)) {
+        config[key] = null;
+        dirty = true;
+      } else if (edits.fields[key]) {
+        config[key] = edits.fields[key];
+        dirty = true;
+      }
+    } else if (isScalar(stored) && key in edits.fields) {
+      const text = edits.fields[key];
+      if (typeof stored === "number") {
+        if (text.trim() === "" || Number.isNaN(Number(text))) return { patch, error: `${key}: numero non valido` };
+        config[key] = Number(text);
+      } else {
+        config[key] = text;
+      }
+      dirty ||= text !== String(stored ?? "");
+    } else {
+      config[key] = stored; // nested values pass through (their masked leaves merge back)
+    }
+  }
+  if (connector.requires_key && !("api_key" in connector.config_masked) && edits.fields.api_key) {
+    config.api_key = edits.fields.api_key;
+    dirty = true;
+  }
+  if (dirty) patch.config = config;
+  return { patch, error: null };
+}
+

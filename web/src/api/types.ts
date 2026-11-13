@@ -382,3 +382,108 @@ export interface AppSettings {
   default_spread_bps: Record<string, number>;
   timezone: string;
 }
+
+export interface Connector {
+  name: string;
+  enabled: boolean;
+  requires_key: boolean;
+  capabilities: string[];
+  asset_classes: string[];
+  /** false: the provider exists in the catalog but has no implementation yet */
+  implemented: boolean;
+  /** secret leaves are masked ("••••abcd") */
+  config_masked: Record<string, unknown>;
+  rate_limit_per_min: number | null;
+  health_status: string; // ok | error | unknown
+  last_error: string | null;
+  last_checked_at: string | null;
+}
+
+/** PATCH merge: omitted secret = kept, null = removed, unchanged masked value = kept. */
+export interface ConnectorPatch {
+  enabled?: boolean;
+  config?: Record<string, unknown>;
+  rate_limit_per_min?: number;
+}
+
+export interface ConnectorTestResult {
+  ok: boolean;
+  error: string | null;
+  checked_at?: string;
+}
+
+export interface ProviderPriority {
+  asset_class: AssetClass;
+  capability: string;
+  providers: string[];
+}
+
+export type StreamState = "connected" | "connecting" | "backoff";
+
+export interface StreamStatus {
+  streams: Record<string, { symbols: string[]; state: StreamState | string }>;
+  polling: string[];
+  /** false: the worker's status is stale or absent */
+  available: boolean;
+  tracked: string[];
+}
+
+export interface Instrument {
+  symbol: string;
+  name: string;
+  asset_class: AssetClass;
+  market: string;
+  currency: string;
+  lot_size: string;
+  tick_size: string;
+  shortable: boolean;
+  active: boolean;
+  provider_symbols: Record<string, string>;
+}
+
+export interface InstrumentCreate {
+  symbol: string;
+  name: string;
+  asset_class: AssetClass;
+  market: string;
+  currency: string;
+  lot_size: string;
+  tick_size: string;
+  shortable: boolean;
+}
+
+export interface Quote {
+  symbol: string;
+  bid: string | null;
+  ask: string | null;
+  last: string | null;
+  ts: string | null;
+  provider: string | null;
+}
+
+/** GET /api/quotes: a quote per symbol, or `{error}` for a symbol that failed. */
+export type QuotesResponse = Record<string, Quote | { error: string }>;
+
+export interface MarketStatus {
+  market: string;
+  is_open: boolean;
+  next_open: string | null;
+  next_close: string | null;
+}
+
+export interface VerifyChainResult {
+  ok: boolean;
+  checked: number;
+  first_bad_journal_id: string | null;
+}
+
+export interface VerifyBalancesResult {
+  ok: boolean;
+  bad_accounts: string[];
+}
+
+export interface BackupFile {
+  name: string;
+  size_bytes: number;
+  modified_at: string;
+}

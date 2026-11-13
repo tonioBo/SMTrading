@@ -29,6 +29,7 @@ const server = setupServer(
   }),
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: true })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
+  http.get("*/api/agents", () => HttpResponse.json([])),
 );
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {

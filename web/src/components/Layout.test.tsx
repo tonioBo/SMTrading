@@ -15,6 +15,11 @@ let killSwitchOn = false;
 const server = setupServer(
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: killSwitchOn })),
+  http.get("*/api/risk-profiles", () => HttpResponse.json([])),
+  http.get("*/api/interest-rates", () => HttpResponse.json([])),
+  http.get("*/api/settings/app", () =>
+    HttpResponse.json({ stale_quote_s: {}, default_spread_bps: {}, timezone: "Europe/Rome" }),
+  ),
   http.get("*/api/dashboard", () => new HttpResponse(null, { status: 503 })),
   http.get("*/api/dashboard/equity", () => new HttpResponse(null, { status: 503 })),
   http.post("*/api/auth/logout", () => new HttpResponse(null, { status: 204 })),

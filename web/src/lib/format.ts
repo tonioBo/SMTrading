@@ -93,3 +93,10 @@ export function formatDateTime(iso: string): string {
   const p = Object.fromEntries(DATE_TIME.formatToParts(date).map((x) => [x.type, x.value]));
   return `${p.day}/${p.month}/${p.year} ${p.hour}:${p.minute}:${p.second}`;
 }
+
+/** Bytes as "512 B", "1,5 KB", "2,3 MB" (one decimal, it-IT). */
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${formatQty((Math.round((n / 1024) * 10) / 10).toString())} KB`;
+  return `${formatQty((Math.round((n / 1024 / 1024) * 10) / 10).toString())} MB`;
+}
