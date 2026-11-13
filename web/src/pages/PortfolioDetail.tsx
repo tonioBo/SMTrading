@@ -27,6 +27,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { BROKER_STATUS_LABELS } from "@/lib/broker";
 import { subtractDecimal } from "@/lib/decimal";
 import { errorMessage } from "@/lib/errors";
 import { formatDateTime, formatDecimal, formatMoney, formatPct, formatQty } from "@/lib/format";
@@ -191,6 +192,7 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
   queued: "In coda",
   pending: "In attesa",
   triggered: "Attivato",
+  partially_filled: "Parzialmente eseguito",
   filled: "Eseguito",
   canceled: "Annullato",
   rejected: "Rifiutato",
@@ -213,7 +215,22 @@ function orderPrice(o: Order): string {
   return parts.join(" · ") || "—";
 }
 
-function Orders({ portfolioId }: { portfolioId: string }) {
+/** Where the order lives: at the broker (routed by a linked portfolio) or simulated only. */
+function BrokerCell({ order, linked }: { order: Order; linked: boolean }) {
+  if (order.broker_link_id) {
+    const status = order.broker_status ? (BROKER_STATUS_LABELS[order.broker_status] ?? order.broker_status) : null;
+    return (
+      <span className="flex flex-col items-start gap-0.5">
+        <Badge variant={order.broker_status === "rejected" || order.broker_status === "unknown" ? "destructive" : "default"}>Broker</Badge>
+        {status && <span className="text-xs">{status}</span>}
+        {order.broker_order_id && <span className="font-mono text-xs text-muted">{order.broker_order_id}</span>}
+      </span>
+    );
+  }
+  return linked ? <Badge variant="outline">Solo simulato</Badge> : <span className="text-muted">—</span>;
+}
+
+function Orders({ portfolioId, linked }: { portfolioId: string; linked: boolean }) {
   const [status, setStatus] = useState("open");
   const { data, isLoading, isError, error } = useOrders(portfolioId, status);
   const cancel = useCancelOrder(portfolioId);
@@ -242,6 +259,7 @@ function Orders({ portfolioId }: { portfolioId: string }) {
       ),
     },
     { key: "source", header: "Origine", cell: (o) => o.source },
+    { key: "broker", header: "Broker", cell: (o) => <BrokerCell order={o} linked={linked} /> },
     {
       key: "actions",
       header: <span className="sr-only">Azioni</span>,
@@ -479,7 +497,7 @@ export default function PortfolioDetail() {
             <Positions portfolioId={portfolio.id} />
           </TabsContent>
           <TabsContent value="orders">
-            <Orders portfolioId={portfolio.id} />
+            <Orders portfolioId={portfolio.id} linked={Boolean(portfolio.broker_link_id)} />
           </TabsContent>
           <TabsContent value="movements">
             <Movements portfolioId={portfolio.id} timezone={portfolio.timezone} />

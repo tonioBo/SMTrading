@@ -1,6 +1,7 @@
 import { Navigate, type RouteObject } from "react-router-dom";
 import { Layout } from "@/components/Layout";
 import Agents from "@/pages/Agents";
+import Brokers from "@/pages/Brokers";
 import Connectors from "@/pages/Connectors";
 import Dashboard from "@/pages/Dashboard";
 import Fees from "@/pages/Fees";
@@ -25,6 +26,7 @@ export const routes: RouteObject[] = [
       { path: "commissioni", element: <Fees /> },
       { path: "rischio", element: <Risk /> },
       { path: "connettori", element: <Connectors /> },
+      { path: "broker", element: <Brokers /> },
       { path: "mercati", element: <Markets /> },
       { path: "log-mcp", element: <McpLog /> },
       { path: "impostazioni", element: <Settings /> },

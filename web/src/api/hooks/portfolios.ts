@@ -41,7 +41,7 @@ export function isReversible(tx: Transaction): boolean {
 }
 
 /** Open (non-final) order statuses: these can be canceled. */
-export const OPEN_ORDER_STATUSES: ReadonlySet<string> = new Set(["new", "held", "queued", "pending", "triggered"]);
+export const OPEN_ORDER_STATUSES: ReadonlySet<string> = new Set(["new", "held", "queued", "pending", "triggered", "partially_filled"]);
 
 export function usePortfolios() {
   return useQuery({ queryKey: portfoliosKey, queryFn: () => apiFetch<Portfolio[]>("/api/portfolios") });

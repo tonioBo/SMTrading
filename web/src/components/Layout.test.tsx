@@ -43,6 +43,7 @@ describe("Layout", () => {
       "Commissioni",
       "Rischio e margine",
       "Connettori",
+      "Broker",
       "Mercati",
       "Log MCP",
       "Impostazioni",

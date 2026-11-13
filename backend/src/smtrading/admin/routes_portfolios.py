@@ -157,7 +157,7 @@ async def _name_taken(session: AsyncSession, name: str, exclude: UUID | None = N
 PORTFOLIO_FIELDS = (
     "id", "name", "base_currency", "leverage", "maintenance_margin_pct",
     "warning_margin_pct", "slippage_bps", "status", "timezone", "risk_profile_id",
-    "reduce_only_reason", "reduce_only_until", "created_at",
+    "reduce_only_reason", "reduce_only_until", "created_at", "broker_link_id",
 )
 
 
@@ -306,6 +306,17 @@ async def performance(portfolio_id: UUID, session: DbSession, period: str = "1m"
 
 # --- orders --------------------------------------------------------------------------
 
+ORDER_BROKER_FIELDS = (
+    "broker_link_id", "broker_replicated", "broker_status", "broker_order_id",
+)
+
+
+def _order_dto(o) -> dict[str, Any]:
+    """order_dto plus the broker replication state (admin only; the MCP DTO is unchanged)."""
+    out = order_dto(o)
+    out.update({f: to_jsonable(getattr(o, f)) for f in ORDER_BROKER_FIELDS})
+    return out
+
 
 def _parse_statuses(value: str | None) -> list[OrderStatus] | None:
     """Comma-separated order statuses; "open" stands for every non-final status."""
@@ -329,14 +340,14 @@ async def get_orders(
     n = parse_int(limit, "limit", 1, MAX_ORDER_LIMIT)
     await _portfolio(session, portfolio_id)
     orders = await list_orders(session, portfolio_id, status=statuses, limit=n)  # type: ignore[arg-type]
-    return [order_dto(o) for o in orders]
+    return [_order_dto(o) for o in orders]
 
 
 @router.post("/orders/{order_id}/cancel")
 async def cancel(order_id: UUID, session: DbSession, redis: RedisClient) -> dict:
     async with _transaction(session, redis):
         order = await cancel_order(session, order_id, by="admin")
-        out = order_dto(order)
+        out = _order_dto(order)
     return out
 
 

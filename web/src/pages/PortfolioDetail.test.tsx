@@ -385,6 +385,26 @@ describe("PortfolioDetail", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
+  it("shows the broker state of routed orders and marks the simulated ones", async () => {
+    current = { ...portfolio, broker_link_id: "b1" };
+    server.use(
+      http.get("*/api/portfolios/p1/orders", () =>
+        HttpResponse.json([
+          { ...openOrder, broker_link_id: "b1", broker_replicated: true, broker_status: "cancel_requested", broker_order_id: "ALP-42" },
+          { ...openOrder, id: "o2", symbol: "AAPL", broker_link_id: null, broker_replicated: false, broker_status: null, broker_order_id: null },
+        ]),
+      ),
+    );
+    await openTab("Ordini");
+    const table = await screen.findByRole("table", { name: "Ordini" });
+    const routed = (await within(table).findByText("MSFT")).closest("tr") as HTMLElement;
+    expect(within(routed).getByText("Broker")).toBeInTheDocument();
+    expect(within(routed).getByText("Annullamento richiesto")).toBeInTheDocument();
+    expect(within(routed).getByText("ALP-42")).toBeInTheDocument();
+    const simulated = within(table).getByText("AAPL").closest("tr") as HTMLElement;
+    expect(within(simulated).getByText("Solo simulato")).toBeInTheDocument();
+  });
+
   it("requires the portfolio name to reset and shows the server refusal", async () => {
     const user = await openTab("Operazioni");
     await user.click(screen.getByRole("button", { name: "Reset portafoglio" }));

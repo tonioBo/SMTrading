@@ -91,6 +91,8 @@ export interface Portfolio {
   day_pnl_pct: string | null;
   /** error code when the portfolio could not be valued (equity/P&L are then null) */
   valuation_error: string | null;
+  /** the broker link (paper/demo account) the portfolio's orders are routed to */
+  broker_link_id?: string | null;
 }
 
 export interface PortfolioCreate {
@@ -165,6 +167,7 @@ export type OrderStatus =
   | "queued"
   | "pending"
   | "triggered"
+  | "partially_filled"
   | "filled"
   | "canceled"
   | "rejected"
@@ -192,6 +195,13 @@ export interface Order {
   source: string;
   created_at: string;
   updated_at: string;
+  /** set when the order was routed to the portfolio's broker */
+  broker_link_id?: string | null;
+  /** true once the broker has the order */
+  broker_replicated?: boolean;
+  /** to_send, sending, unknown, cancel_requested, replace_requested or the broker's state */
+  broker_status?: string | null;
+  broker_order_id?: string | null;
 }
 
 export type JournalType =
@@ -495,4 +505,59 @@ export interface BackupFile {
   name: string;
   size_bytes: number;
   modified_at: string;
+}
+
+// --- broker ---------------------------------------------------------------------------
+
+export type BrokerKind = "alpaca_paper" | "t212_demo";
+
+export interface BrokerLink {
+  id: string;
+  name: string;
+  kind: BrokerKind | string;
+  enabled: boolean;
+  status: string; // ok | error | unknown
+  last_error: string | null;
+  /** fixed paper/demo endpoint (never editable) */
+  base_url: string;
+  /** secret values masked ("••••abcd") */
+  config_masked: Record<string, string>;
+  secret_keys: string[];
+  portfolios: { id: string; name: string }[];
+  created_at: string;
+}
+
+export interface BrokerLinkCreate {
+  name: string;
+  kind: BrokerKind;
+  config: Record<string, string>;
+}
+
+/** omitted secret = kept, null = removed */
+export interface BrokerLinkPatch {
+  name?: string;
+  enabled?: boolean;
+  config?: Record<string, string | null>;
+}
+
+export interface BrokerTestResult {
+  ok: boolean;
+  error: string | null;
+  checked_at: string;
+}
+
+export interface ReconciliationDiff {
+  symbol: string;
+  ours: string;
+  broker: string;
+}
+
+export interface Reconciliation {
+  id: string;
+  broker_link_id: string;
+  portfolio_id: string;
+  portfolio_name: string | null;
+  ts: string;
+  ok: boolean;
+  diffs: ReconciliationDiff[];
 }
