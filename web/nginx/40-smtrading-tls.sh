@@ -25,7 +25,10 @@ for h in $(echo "$HOSTS" | tr ',' ' '); do
   else
     san="$san,DNS:$h"
   fi
-  names="$names $h"
+  case "$h" in
+    *:*) names="$names [$h]" ;;
+    *)   names="$names $h" ;;
+  esac
 done
 echo "server_name $names;" > "$CONF/server_names.conf"
 
