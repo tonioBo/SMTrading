@@ -21,6 +21,8 @@
 - Gli agenti **non** possono creare portafogli, depositare, prelevare o modificare i limiti: questi metodi non esistono nell'MCP.
 - Nome del server MCP: `SMTrading`. URL interno: `http://api:8000/mcp`. Agente seed: `paperclip-demo`, con permesso `trade` sul portafoglio "Demo".
 
+- Contratto del motore (piano 3): i servizi del motore non fanno commit e mettono in coda gli effetti; `run_tool` fa `commit()` e poi `await dispatch_post_commit(session, runtime.redis)`. In caso di rollback si chiama `discard_post_commit(session)`. Un `client_order_id` già rifiutato rilancia l'errore originale. Gli ordini `close_*` sono `reduce_only`.
+
 ## Review Focus
 
 1. **Agente che chiede un portafoglio di un altro agente** (per id, in qualsiasi metodo, compresi `get_order` e `cancel_order` per order_id) → `FORBIDDEN`, mai i dati. Test in Task 3 e Task 4.
@@ -160,7 +162,7 @@ scripts/connect-paperclip.sh
 
 **Interfaces:** ogni metodo richiede `trade` (tranne `get_order`, `list_orders` e `preview_order`, che richiedono `read`) e fa il controllo sul portafoglio dell'ordine anche quando riceve solo `order_id`.
 - `preview_order(portfolio_id, symbol, side, type, qty?, notional?, limit_price?, stop_price?, trail_pct?, trail_amount?)` → `CheckResult` serializzato: con `ok=false` il risultato contiene il codice, ma **non** è un errore MCP.
-- `place_order(... come preview ..., tif="gtc", client_order_id?)` → `order_dto`. Usa `run_tool(..., commit_on_error=True)` per salvare gli ordini rifiutati. Per `source` e `agent_id` usa l'agente corrente.
+- `place_order(... come preview ..., tif="gtc", client_order_id?)` → `order_dto`. Usa `run_tool(..., commit_on_error=True)` per salvare gli ordini rifiutati. Anche `place_bracket_order`, `place_oco_order`, `close_position` e `close_all_positions` usano `commit_on_error=True`. Dopo **ogni** commit, anche quello sul percorso di errore, si chiama `dispatch_post_commit(session, redis)`. Ogni richiesta usa una `MemoQuoteSource` nuova che avvolge il router. Per `source` e `agent_id` usa l'agente corrente.
 - `place_bracket_order(portfolio_id, symbol, side, qty, type="market", limit_price?, take_profit, stop_loss, tif="gtc", client_order_id?)` → lista di ordini
 - `place_oco_order(portfolio_id, symbol, side, qty, a: {type, limit_price?, stop_price?}, b: {...}, tif="gtc")` → lista
 - `modify_order(order_id, qty?, limit_price?, stop_price?, trail_pct?, trail_amount?)`, `cancel_order(order_id)`, `cancel_all_orders(portfolio_id, symbol?)` → `{"canceled": n}`
