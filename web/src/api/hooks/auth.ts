@@ -36,3 +36,34 @@ export function useChangePassword() {
     onSuccess: () => qc.invalidateQueries({ queryKey: meKey }),
   });
 }
+
+export interface TotpSetup {
+  secret: string;
+  otpauth_uri: string;
+}
+
+/** A new (not yet active) TOTP secret; it becomes active with useTotpEnable. */
+export function useTotpSetup() {
+  return useMutation({
+    gcTime: 0, // the secret does not linger in the mutation cache
+    mutationFn: () => apiFetch<TotpSetup>("/api/auth/totp/setup", { method: "POST" }),
+  });
+}
+
+/** Enables (or disables) TOTP; the server re-issues this session's cookies: /me is refetched. */
+export function useTotpToggle(action: "enable" | "disable") {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (code: string) => apiFetch<AdminUser>(`/api/auth/totp/${action}`, { method: "POST", body: { code } }),
+    onSuccess: (user) => {
+      qc.setQueryData(meKey, user);
+      return qc.invalidateQueries({ queryKey: meKey });
+    },
+  });
+}
+
+export function useRevokeOtherSessions() {
+  return useMutation({
+    mutationFn: () => apiFetch<{ revoked: number }>("/api/auth/sessions/revoke-others", { method: "POST" }),
+  });
+}

@@ -4,6 +4,8 @@ import { useAppSettings } from "@/api/hooks/risk";
 import { useBackups, useDownloadBackup, useSaveTimezone, useVerifyIntegrity } from "@/api/hooks/system";
 import type { BackupFile } from "@/api/types";
 import { ChangePasswordSection } from "@/components/ChangePasswordSection";
+import { SessionsSection } from "@/components/SessionsSection";
+import { TotpSection } from "@/components/TotpSection";
 import { DataTable, type Column } from "@/components/DataTable";
 import { FormField, selectClass } from "@/components/FormField";
 import { PageHeader } from "@/components/PageHeader";
@@ -132,6 +134,8 @@ export default function Settings() {
         </CardContent>
       </Card>
       <ChangePasswordSection />
+      <TotpSection />
+      <SessionsSection />
       <IntegritySection />
       <BackupSection />
     </div>

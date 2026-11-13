@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 import { formatBytes } from "@/lib/format";
 import { renderApp } from "@/test/render";
 
@@ -12,10 +13,27 @@ vi.mock("@/lib/ws", async (orig) => ({
 }));
 
 let pwPosts: unknown[] = [];
+let totpEnabled = false;
+let totpCalls: { action: string; body: unknown }[] = [];
+let meCalls = 0;
 let pwForbidden = false;
 let tzPuts: unknown[] = [];
 const server = setupServer(
-  http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
+  http.get("*/api/auth/me", () => {
+    meCalls += 1;
+    return HttpResponse.json({ email: "admin@example.com", totp_enabled: totpEnabled });
+  }),
+  http.post("*/api/auth/totp/setup", () =>
+    HttpResponse.json({ secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/SMTrading:admin%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=SMTrading" }),
+  ),
+  http.post("*/api/auth/totp/:action", async ({ request, params }) => {
+    const body = (await request.json()) as { code: string };
+    totpCalls.push({ action: String(params.action), body });
+    if (body.code === "000000") return HttpResponse.json({ code: "FORBIDDEN", message: "codice TOTP non valido", details: null }, { status: 403 });
+    totpEnabled = params.action === "enable";
+    return HttpResponse.json({ email: "admin@example.com", totp_enabled: totpEnabled });
+  }),
+  http.post("*/api/auth/sessions/revoke-others", () => HttpResponse.json({ revoked: 2 })),
   http.post("*/api/auth/password", async ({ request }) => {
     pwPosts.push(await request.json());
     if (pwForbidden) return HttpResponse.json({ code: "FORBIDDEN", message: "password attuale errata", details: null }, { status: 403 });
@@ -40,6 +58,9 @@ afterEach(() => {
   tzPuts = [];
   pwPosts = [];
   pwForbidden = false;
+  totpEnabled = false;
+  totpCalls = [];
+  meCalls = 0;
 });
 afterAll(() => server.close());
 
@@ -146,5 +167,60 @@ describe("Settings", () => {
     await user.type(screen.getByLabelText("Conferma nuova password"), "longenough123");
     await user.click(screen.getByRole("button", { name: "Aggiorna password" }));
     expect(await screen.findByText("Password attuale errata")).toBeInTheDocument();
+  });
+
+  it("sets up TOTP: QR code and secret, server error inline, then enabled", async () => {
+    const user = userEvent.setup();
+    renderApp("/impostazioni");
+    expect(await screen.findByText("non attiva")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Configura" }));
+    expect(await screen.findByAltText("Codice QR per l'app di autenticazione")).toHaveAttribute("src", expect.stringMatching(/^data:image\/png;base64,/));
+    expect(screen.getByText("JBSWY3DPEHPK3PXP")).toBeInTheDocument();
+    const code = screen.getByLabelText("Codice dall'app");
+    await user.type(code, "12");
+    await user.click(screen.getByRole("button", { name: "Attiva" }));
+    expect(screen.getByText("Inserisci le 6 cifre del codice")).toBeInTheDocument();
+    expect(totpCalls).toEqual([]);
+    await user.clear(code);
+    await user.type(code, "000000");
+    await user.click(screen.getByRole("button", { name: "Attiva" }));
+    expect(await screen.findByText("codice TOTP non valido")).toBeInTheDocument();
+    await user.clear(code);
+    await user.type(code, "123456");
+    const before = meCalls;
+    await user.click(screen.getByRole("button", { name: "Attiva" }));
+    expect(await screen.findByText("attiva")).toBeInTheDocument();
+    expect(totpCalls.at(-1)).toEqual({ action: "enable", body: { code: "123456" } });
+    await waitFor(() => expect(meCalls).toBeGreaterThan(before)); // /me refetched (new session)
+    expect(screen.queryByText("JBSWY3DPEHPK3PXP")).not.toBeInTheDocument();
+  });
+
+  it("disables TOTP with a code", async () => {
+    totpEnabled = true;
+    const user = userEvent.setup();
+    renderApp("/impostazioni");
+    expect(await screen.findByText("attiva")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Codice dall'app"), "654321");
+    await user.click(screen.getByRole("button", { name: "Disattiva" }));
+    expect(await screen.findByText("non attiva")).toBeInTheDocument();
+    expect(totpCalls).toEqual([{ action: "disable", body: { code: "654321" } }]);
+    expect(screen.getByRole("button", { name: "Configura" })).toBeInTheDocument();
+  });
+
+  it("closes the other sessions", async () => {
+    const success = vi.spyOn(toast, "success");
+    let posted = 0;
+    server.use(
+      http.post("*/api/auth/sessions/revoke-others", () => {
+        posted += 1;
+        return HttpResponse.json({ revoked: 2 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderApp("/impostazioni");
+    await user.click(await screen.findByRole("button", { name: "Chiudi tutte le altre sessioni" }));
+    await waitFor(() => expect(success).toHaveBeenCalledWith("Chiuse 2 altre sessioni"));
+    expect(posted).toBe(1);
+    success.mockRestore();
   });
 });
