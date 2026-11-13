@@ -6,6 +6,10 @@ COPY . .
 RUN npm run build
 
 FROM nginx:1.27-alpine
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+RUN apk add --no-cache openssl
+COPY nginx/default.conf /etc/nginx/conf.d/default.conf
+COPY nginx/app.conf nginx/proxy-common.conf nginx/proxy-api.conf nginx/ca-cert.conf \
+     nginx/security-headers.conf /etc/nginx/smt/
+COPY --chmod=755 nginx/40-smtrading-tls.sh /docker-entrypoint.d/40-smtrading-tls.sh
 COPY --from=build /app/dist /usr/share/nginx/html
-EXPOSE 80
+EXPOSE 80 443 8080

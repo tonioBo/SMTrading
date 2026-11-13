@@ -65,14 +65,22 @@ services:
     <<: *app
     command: ["python", "-m", "smtrading.worker.main"]
 
-  # Admin web app (nginx: SPA + proxy of /api/ and /ws to api).
+  # Admin web app (nginx: SPA + proxy of /api/ and /ws to api). Ruling R12:
+  # https://<pc-ip>/ for the LAN (certificate from a local CA kept in `web_certs`; port 80
+  # redirects to https), plain http only on the local entry 127.0.0.1:3000.
+  # API/MCP stay on 127.0.0.1.
   web:
     build: ./web
     image: smtrading-web:local
     restart: unless-stopped
+    environment:
+      SMT_PUBLIC_HOSTS: ${SMT_PUBLIC_HOSTS:-192.168.30.7}  # LAN names/IPs of this PC
     ports:
-      - "127.0.0.1:3000:80"  # local access (used by e2e)
-      - "80:80"              # LAN access: http://<pc-ip>/ (user request; API/MCP stay on 127.0.0.1)
+      - "80:80"
+      - "443:443"
+      - "127.0.0.1:3000:8080"
+    volumes:
+      - web_certs:/etc/nginx/certs
     depends_on:
       - api
     networks: [smtrading-net]
@@ -102,6 +110,7 @@ services:
 volumes:
   pgdata:
   backups:
+  web_certs:
 
 networks:
   smtrading-net:
