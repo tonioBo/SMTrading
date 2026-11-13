@@ -4,10 +4,10 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.streamable_http_manager import StreamableHTTPASGIApp
 from mcp.server.transport_security import TransportSecuritySettings
 
-from smtrading.mcp import tools_portfolio
+from smtrading.mcp import resources, tools_portfolio
 
 SERVER_NAME = "SMTrading"
-_TOOL_MODULES = (tools_portfolio,)
+_TOOL_MODULES = (tools_portfolio, resources)
 
 
 def build_mcp() -> MCPServer:
