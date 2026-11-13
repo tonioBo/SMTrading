@@ -17,7 +17,7 @@ from smtrading.risk.profiles import DEFAULT_RISK_PROFILE_NAME
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 
 
-def _clean_currency(currency: str) -> str:
+def clean_currency(currency: str) -> str:
     ccy = currency.strip().upper()
     if not _CURRENCY_RE.match(ccy):
         raise SMTError(
@@ -46,7 +46,7 @@ def _quantize(amount: Decimal, ccy: str, field: str) -> Decimal:
 
 
 def _clean_amount(amount: Decimal, currency: str) -> tuple[Decimal, str]:
-    ccy = _clean_currency(currency)
+    ccy = clean_currency(currency)
     _check_finite(amount, "amount")
     return _quantize(amount, ccy, "amount"), ccy
 
@@ -105,7 +105,7 @@ async def create_portfolio(
 ) -> Portfolio:
     """A new portfolio with its initial deposit; without `risk_profile_id` it gets the
     seeded Default risk profile (if present)."""
-    ccy = _clean_currency(base_currency)
+    ccy = clean_currency(base_currency)
     _check_finite(initial_cash, "initial_cash")
     # Checked before quantizing: -0.001 would otherwise round to -0.00 and pass.
     if initial_cash < 0:
@@ -115,7 +115,10 @@ async def create_portfolio(
         )
     cash_amount = _quantize(initial_cash, ccy, "initial_cash")
     if await session.scalar(select(Portfolio.id).where(Portfolio.name == name)) is not None:
-        raise SMTError(ErrorCode.INVALID_ORDER, "portfolio name already exists", {"name": name})
+        raise SMTError(
+            ErrorCode.INVALID_ORDER, "portfolio name already exists",
+            {"field": "name", "name": name},
+        )
     if risk_profile_id is None:
         risk_profile_id = await session.scalar(
             select(RiskProfile.id).where(RiskProfile.name == DEFAULT_RISK_PROFILE_NAME)

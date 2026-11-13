@@ -12,6 +12,7 @@ from starlette.routing import Route
 
 from smtrading.admin.errors import install_error_handlers
 from smtrading.admin.routes_auth import router as auth_router
+from smtrading.admin.routes_portfolios import router as portfolios_router
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
 from smtrading.marketdata.router import MarketDataRouter
@@ -91,6 +92,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.add_middleware(McpAuthMiddleware, get_sessionmaker=lambda: get_runtime().sessionmaker)
     install_error_handlers(app)
     app.include_router(auth_router)
+    app.include_router(portfolios_router)
 
     @app.get("/health")
     async def health(response: Response) -> dict:
