@@ -6,7 +6,8 @@ trader; the quantity is the largest whole number of lots affordable net of the f
 positions are marked at each bar's close and valued at the last close at the end.
 """
 
-from datetime import datetime
+from collections.abc import Mapping
+from datetime import datetime, timedelta
 from decimal import Decimal, localcontext
 from typing import Any
 
@@ -130,7 +131,8 @@ def _cagr_pct(initial: Decimal, final: Decimal, first: datetime, last: datetime)
 
 def run_backtest(
     bars_by_symbol: dict[str, list[Bar]], strategy: str, params: dict, *,
-    initial_cash: Decimal, fee_rule: FeeRuleData, slippage_bps: int,
+    initial_cash: Decimal, fee_rule: FeeRuleData | Mapping[str, FeeRuleData],
+    slippage_bps: int,
     lot_by_symbol: dict[str, Decimal],
 ) -> dict:
     params = strategies.validate_params(strategy, params)
@@ -143,13 +145,14 @@ def run_backtest(
     trades: list[dict] = []
     exposure: list[Decimal] = []
     for sym in symbols:
+        rule = fee_rule[sym] if isinstance(fee_rule, Mapping) else fee_rule
         bars = sorted(bars_by_symbol[sym], key=lambda b: b.ts)
         if len(bars) < need:
             warnings.append(f"insufficient_data:{sym}")
             curves[sym] = {b.ts: share for b in bars}
             continue
         eq, tr, inv = _simulate_symbol(
-            sym, bars, strategy, params, share, fee_rule, slip,
+            sym, bars, strategy, params, share, rule, slip,
             lot_by_symbol.get(sym, Decimal(1)),
         )
         curves[sym] = eq
@@ -167,6 +170,8 @@ def run_backtest(
         curve.append((ts, sum(last_seen.values(), Decimal(0))))
 
     final = curve[-1][1] if curve else initial_cash
+    if len(curve) > 1 and curve[-1][0] - curve[0][0] < timedelta(days=365):
+        warnings.append("cagr_annualised_from_short_span")
     wins = sum(1 for t in trades if t["pnl"] > 0)
     metrics = {
         "total_return_pct": _q((final / initial_cash - 1) * 100) if initial_cash else Decimal(0),

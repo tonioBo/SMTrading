@@ -49,7 +49,7 @@ def register(mcp: MCPServer) -> None:
     async def run_backtest(
         strategy: str, symbols: list[str], from_date: str, to_date: str,
         timeframe: str = "1d", initial_cash: Num = "10000", params: dict | None = None,
-        portfolio_id: str | None = None,
+        portfolio_id: str | None = None, slippage_bps: int | None = None,
     ) -> CallToolResult:
         """Queue a backtest of a long-only strategy (pure simulation, no orders):
         {backtest_id, status: "queued"}; poll get_backtest. strategy: sma_cross
@@ -57,10 +57,11 @@ def register(mcp: MCPServer) -> None:
         breakout (lookback=20, exit_lookback=10) | buy_and_hold. Signals execute at the
         next bar's open with slippage; cash is split equally between symbols. With
         portfolio_id (read permission) the portfolio's fees apply, else the global rule.
-        At most 2 queued/running per agent, 5 years of daily or 90 days of intraday bars."""
+        Slippage: slippage_bps, else the portfolio's, else 5 bps. At most 2 queued/running per agent, 5 years of daily or 90 days of intraday bars."""
         args = {"strategy": strategy, "symbols": symbols, "timeframe": timeframe,
                 "from_date": from_date, "to_date": to_date, "initial_cash": initial_cash,
-                "params": params, "portfolio_id": portfolio_id}
+                "params": params, "portfolio_id": portfolio_id,
+                "slippage_bps": slippage_bps}
 
         async def fn(ctx: ToolCtx) -> Any:
             if not isinstance(strategy, str):
@@ -81,7 +82,8 @@ def register(mcp: MCPServer) -> None:
             bt = await enqueue_backtest(
                 ctx.session, ctx.agent_id, strategy=strategy, symbols=symbols,
                 timeframe=timeframe, start=start, end=end, initial_cash=cash,
-                params=params or {}, portfolio_id=pid,
+                params={**(params or {}), **({} if slippage_bps is None else {"slippage_bps": slippage_bps})},
+                portfolio_id=pid,
             )
             return {"backtest_id": bt.id, "status": bt.status.value}
 

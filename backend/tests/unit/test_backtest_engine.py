@@ -46,7 +46,7 @@ def test_buy_and_hold_linear_rise():
     out = run(bars, cash=10000)
     m = out["metrics"]
     assert m["total_return_pct"] == D("10.0000")
-    assert m["trades"] == 0 and out["warnings"] == []
+    assert m["trades"] == 0 and out["warnings"] == ["cagr_annualised_from_short_span"]
     assert out["equity"][0]["equity"] == D("10000.0000")
     assert out["equity"][-1]["equity"] == D("11000.0000")
 
@@ -88,7 +88,7 @@ def test_never_buys_more_than_cash_net_of_fee():
 
 def test_insufficient_data_warns_and_does_not_trade():
     out = run(series([10] * 5), "sma_cross", {"fast": 2, "slow": 10})
-    assert out["warnings"] == ["insufficient_data:X"]
+    assert out["warnings"] == ["insufficient_data:X", "cagr_annualised_from_short_span"]
     assert out["trades"] == [] and out["metrics"]["total_return_pct"] == D(0)
 
 
@@ -137,3 +137,14 @@ def test_invalid_params(strategy, params):
     with pytest.raises(SMTError) as e:
         strategies.validate_params(strategy, params)
     assert e.value.code == ErrorCode.INVALID_ORDER
+
+
+def test_short_span_warns_and_per_symbol_rules():
+    out = run(series([100, 101, 102]))
+    assert "cagr_annualised_from_short_span" in out["warnings"]
+    bars = series([100, 100, 100])
+    res = run_backtest(
+        {"A": bars, "B": bars}, "buy_and_hold", {}, initial_cash=D(1000),
+        fee_rule={"A": rule(), "B": rule(fixed=10)}, slippage_bps=0, lot_by_symbol={},
+    )
+    assert res["equity"][-1]["equity"] == D("990.0000")  # only B pays its 10 fee

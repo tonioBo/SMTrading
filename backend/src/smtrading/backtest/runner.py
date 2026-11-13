@@ -15,6 +15,8 @@ with the error. At start, `running` backtests older than 10 minutes go back to `
 
 import asyncio
 import logging
+import time
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -27,12 +29,13 @@ from smtrading.backtest import strategies
 from smtrading.backtest.engine import run_backtest
 from smtrading.backtest.models import Backtest, BacktestStatus
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.fees.calculator import FeeRuleData
+from smtrading.fees.calculator import FeeRuleData, Tier
 from smtrading.fees.models import FeeScope, FeeSide
 from smtrading.fees.resolver import load_rules, resolve_rule
 from smtrading.instruments.service import canonical_symbol, get_instrument
 from smtrading.marketdata.types import Timeframe
 from smtrading.mcp.dto import to_jsonable
+from smtrading.portfolios.models import Portfolio
 
 log = logging.getLogger("smtrading.backtest.runner")
 
@@ -42,7 +45,8 @@ MAX_DAILY_SPAN_DAYS = 5 * 366
 MAX_INTRADAY_SPAN_DAYS = 90
 MAX_TRADES_STORED = 1000
 DEFAULT_SLIPPAGE_BPS = 5
-STALE_AFTER = timedelta(minutes=10)
+STALE_MARGIN_S = 60.0
+REQUEUE_EVERY_S = 60.0
 TIMEOUT_S = 300.0
 _DAILY = (Timeframe.d1, Timeframe.w1)
 
@@ -65,6 +69,12 @@ async def enqueue_backtest(
     portfolio_id: UUID | None,
 ) -> Backtest:
     """Validate and queue a backtest (the caller has checked portfolio read permission)."""
+    params = dict(params or {})
+    slip = params.pop("slippage_bps", None)  # explicit slippage override, not a strategy param
+    if slip is not None and (
+        isinstance(slip, bool) or not isinstance(slip, int) or not 0 <= slip <= 1000
+    ):
+        raise _invalid("slippage_bps", "slippage_bps must be an integer 0-1000")
     norm = strategies.validate_params(strategy, params)
     try:
         tf = Timeframe(timeframe)
@@ -104,7 +114,7 @@ async def enqueue_backtest(
                        {"limit": MAX_ACTIVE})
     bt = Backtest(
         agent_id=agent_id, strategy=strategy, symbols=names, timeframe=tf.value,
-        start=start, end=end, initial_cash=initial_cash, params=to_jsonable(norm),
+        start=start, end=end, initial_cash=initial_cash, params={**to_jsonable(norm), **({} if slip is None else {"slippage_bps": slip})},
         portfolio_id=portfolio_id, status=BacktestStatus.queued, warnings=[],
     )
     session.add(bt)
@@ -115,35 +125,44 @@ async def enqueue_backtest(
 class BacktestRunner:
     def __init__(self, sessionmaker: async_sessionmaker[AsyncSession], router, *,
                  poll_s: float = 2.0, timeout_s: float = TIMEOUT_S,
-                 slippage_bps: int = DEFAULT_SLIPPAGE_BPS) -> None:
+                 slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
+                 requeue_every_s: float = REQUEUE_EVERY_S) -> None:
         self._sm = sessionmaker
         self._router = router
         self._poll_s = poll_s
         self._timeout_s = timeout_s
         self._slippage_bps = slippage_bps
+        self._requeue_every_s = requeue_every_s
 
     async def run(self) -> None:
-        await self.requeue_stale()
+        last_requeue = float("-inf")
         while True:
             try:
-                await self.run_once()
+                if time.monotonic() - last_requeue >= self._requeue_every_s:
+                    last_requeue = time.monotonic()
+                    await self.requeue_stale()
+                if await self.run_once():
+                    continue  # one backtest per iteration: look for the next at once
             except Exception:
                 log.exception("backtest runner tick failed")
             await asyncio.sleep(self._poll_s)
 
     async def requeue_stale(self) -> int:
+        """`running` rows older than the run timeout (plus a margin) were left by a dead
+        worker: back to `queued`."""
+        stale = datetime.now(UTC) - timedelta(seconds=self._timeout_s + STALE_MARGIN_S)
         async with self._sm() as s:
             res = await s.execute(
                 update(Backtest)
                 .where(Backtest.status == BacktestStatus.running,
-                       Backtest.started_at < datetime.now(UTC) - STALE_AFTER)
+                       Backtest.started_at < stale)
                 .values(status=BacktestStatus.queued, started_at=None)
             )
             await s.commit()
             return res.rowcount or 0
 
     async def run_once(self) -> int:
-        """Claim the runnable queued backtests and run them; returns how many ran."""
+        """Claim one runnable queued backtest and run it; returns how many ran (0 or 1)."""
         ids = await self._claim()
         for bid in ids:
             await self._execute(bid)
@@ -166,10 +185,10 @@ class BacktestRunner:
             for bt in rows:
                 if running.get(bt.agent_id, 0) >= MAX_ACTIVE:
                     continue
-                running[bt.agent_id] = running.get(bt.agent_id, 0) + 1
                 bt.status = BacktestStatus.running
-                bt.started_at = datetime.now(UTC)
+                bt.started_at = datetime.now(UTC)  # execution starts right after the claim
                 claimed.append(bt.id)
+                break  # one per iteration: the others stay queued for the next one
             await s.commit()
         return claimed
 
@@ -195,31 +214,62 @@ class BacktestRunner:
             rules = await load_rules(s)
             spec = (bt.strategy, dict(bt.params or {}), bt.initial_cash, bt.portfolio_id,
                     bt.timeframe, bt.start, bt.end, list(bt.symbols))
+            portfolio = await s.get(Portfolio, bt.portfolio_id) if bt.portfolio_id else None
+            portfolio_slip = portfolio.slippage_bps if portfolio else None
         strategy, params, cash, portfolio_id, timeframe, start, end, symbols = spec
+        explicit = params.pop("slippage_bps", None)  # explicit > portfolio > default
+        slippage = next(v for v in (explicit, portfolio_slip, self._slippage_bps)
+                        if v is not None)
         warnings: list[str] = []
-        fee_rule = zero_fee_rule()
-        try:  # fee schedule: the portfolio's (or the global one); read-only
-            fee_rule = resolve_rule(
-                rules, portfolio_id=portfolio_id or UUID(int=0),
-                asset_class=instruments[symbols[0]].asset_class,
-                side="buy",
-            )
-        except SMTError:
-            warnings.append("no_fee_rule: simulated without fees")
+        fee_rules: dict[str, FeeRuleData] = {}
+        for sym in symbols:  # fee schedule per symbol's asset class; read-only
+            instr = instruments[sym]
+            try:
+                rule = resolve_rule(rules, portfolio_id=portfolio_id or UUID(int=0),
+                                    asset_class=instr.asset_class, side="buy")
+            except SMTError:
+                warnings.append(f"no_fee_rule:{sym}: simulated without fees")
+                fee_rules[sym] = zero_fee_rule()
+                continue
+            fee_rules[sym] = await self._in_instrument_currency(rule, instr.currency, warnings)
         bars = {sym: await self._router.get_bars(sym, Timeframe(timeframe), start, end)
                 for sym in symbols}
         result = await asyncio.to_thread(
-            run_backtest, bars, strategy, params, initial_cash=cash, fee_rule=fee_rule,
-            slippage_bps=self._slippage_bps,
+            run_backtest, bars, strategy, params, initial_cash=cash, fee_rule=fee_rules,
+            slippage_bps=slippage,
             lot_by_symbol={n: i.lot_size for n, i in instruments.items()},
         )
         warnings += result["warnings"]
         if len(result["trades"]) > MAX_TRADES_STORED:
             result["trades"] = result["trades"][:MAX_TRADES_STORED]
             warnings.append(f"trades_truncated:{MAX_TRADES_STORED}")
-        result["slippage_bps"] = self._slippage_bps
-        result["fee_rule_id"] = str(fee_rule.id)
+        result["slippage_bps"] = slippage
+        result["fee_rule_ids"] = {s: str(r.id) for s, r in fee_rules.items()}
         return to_jsonable(result), warnings
+
+    async def _in_instrument_currency(
+        self, rule: FeeRuleData, currency: str, warnings: list[str]
+    ) -> FeeRuleData:
+        """Fixed fee, min/max and tier bounds converted at the FX rate of the backtest
+        start; the schedule's fx_pct is added to the percentage for cross-currency trades.
+        No rate available: the rule is kept as is and a warning is added."""
+        if rule.currency == currency:
+            return rule
+        try:
+            rate = await self._router.get_fx_rate(rule.currency, currency)
+        except SMTError:
+            warnings.append(f"fee_currency_unconverted:{rule.currency}->{currency}")
+            return rule
+        fx = rule.fx_pct
+
+        def conv(v: Decimal | None) -> Decimal | None:
+            return None if v is None else v * rate
+
+        tiers = None if rule.tiers is None else tuple(
+            Tier(up_to=conv(t.up_to), pct=t.pct + fx) for t in rule.tiers
+        )
+        return replace(rule, currency=currency, fixed=rule.fixed * rate, pct=rule.pct + fx,
+                       min_fee=conv(rule.min_fee), max_fee=conv(rule.max_fee), tiers=tiers)
 
     async def _finish(self, backtest_id: UUID, *, result: dict | None = None,
                       warnings: list[str] | None = None, error: str | None = None) -> None:

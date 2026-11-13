@@ -1,5 +1,7 @@
 """Backtest enqueue limits and the BacktestRunner (Plan 6 Task 11)."""
 
+import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -9,12 +11,14 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from smtrading.agents.service import create_agent
 from smtrading.backtest.models import Backtest, BacktestStatus
-from smtrading.backtest.runner import BacktestRunner, enqueue_backtest
+from smtrading.backtest.runner import BacktestRunner, enqueue_backtest, zero_fee_rule
 from smtrading.common.db import make_engine
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.quotesource import FakeMarketData
+from smtrading.fees.models import FeeRule, FeeScope, FeeSide
 from smtrading.ledger.models import Journal
 from smtrading.marketdata.types import Bar
+from smtrading.portfolios.models import Portfolio
 from smtrading.seed import run_seed
 
 D = Decimal
@@ -134,3 +138,100 @@ async def test_runner_respects_running_cap_and_requeues_stale(maker):
     async with maker() as s:
         assert (await s.get(Backtest, a)).status == BacktestStatus.queued
         assert (await s.get(Backtest, b)).status == BacktestStatus.running
+
+
+async def test_stale_requeue_is_periodic_without_restart(maker):
+    agent = await _agent(maker)
+    bid = await _enqueue(maker, agent)
+    md = FakeMarketData()
+    md.set_bars(SYM, _bars())
+    async with maker() as s:
+        bt = await s.get(Backtest, bid)
+        bt.status = BacktestStatus.running
+        bt.started_at = datetime.now(UTC) - timedelta(minutes=7)  # past timeout + margin
+        await s.commit()
+    runner = BacktestRunner(maker, md, poll_s=0.02, requeue_every_s=0.05)
+    task = asyncio.create_task(runner.run())
+    try:
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            async with maker() as s:
+                if (await s.get(Backtest, bid)).status == BacktestStatus.completed:
+                    break
+        else:
+            pytest.fail("stale backtest never requeued and completed")
+    finally:
+        task.cancel()
+
+
+async def test_one_claim_per_iteration(maker):
+    agent = await _agent(maker)
+    a = await _enqueue(maker, agent)
+    b = await _enqueue(maker, agent)
+    md = FakeMarketData()
+    md.set_bars(SYM, _bars())
+    runner = BacktestRunner(maker, md)
+    assert await runner.run_once() == 1
+    async with maker() as s:
+        assert (await s.get(Backtest, a)).status == BacktestStatus.completed
+        assert (await s.get(Backtest, b)).status == BacktestStatus.queued
+    assert await runner.run_once() == 1
+
+
+async def test_slippage_precedence_explicit_portfolio_default(maker):
+    agent = await _agent(maker)
+    async with maker() as s:
+        pf = (await s.execute(select(Portfolio))).scalars().first()
+        pf.slippage_bps = 100
+        await s.commit()
+        pid = pf.id
+    md = FakeMarketData()
+    md.set_bars(SYM, _bars())
+    runner = BacktestRunner(maker, md)
+
+    async def slip(**kw):
+        bid = await _enqueue(maker, agent, **kw)
+        await runner.run_once()
+        async with maker() as s:
+            bt = await s.get(Backtest, bid)
+            assert bt.status == BacktestStatus.completed, bt.error
+            return bt.result["slippage_bps"]
+
+    assert await slip(portfolio_id=pid) == 100
+    assert await slip(portfolio_id=pid, params={"slippage_bps": 7}) == 7
+    assert await slip() == 5
+
+
+async def test_per_symbol_fee_rules_and_short_span_warning(maker):
+    agent = await _agent(maker)
+    async with maker() as s:
+        s.add(FeeRule(name="crypto", scope=FeeScope.asset_class, scope_ref="crypto",
+                      side=FeeSide.both, currency="EUR", pct=D("0.5")))
+        await s.commit()
+    md = FakeMarketData()
+    md.set_bars(SYM, _bars())
+    md.set_bars("BTC-USD", _bars())
+    bid = await _enqueue(maker, agent, symbols=[SYM, "BTC-USD"])
+    await BacktestRunner(maker, md).run_once()
+    async with maker() as s:
+        bt = await s.get(Backtest, bid)
+        assert bt.status == BacktestStatus.completed, bt.error
+        ids = bt.result["fee_rule_ids"]
+        assert ids[SYM] != ids["BTC-USD"]
+        assert "cagr_annualised_from_short_span" in bt.warnings
+        assert "fee_currency_unconverted:EUR->USD" in bt.warnings  # no EUR/USD in the fake
+
+
+async def test_fee_currency_conversion(maker):
+    md = FakeMarketData()
+    md.set_fx("EUR", "USD", D("1.25"))
+    runner = BacktestRunner(maker, md)
+    rule = replace(zero_fee_rule(), fixed=D(2), pct=D(1), fx_pct=D("0.25"), min_fee=D(1),
+                   max_fee=D(20))
+    warnings: list[str] = []
+    out = await runner._in_instrument_currency(rule, "USD", warnings)
+    assert (out.currency, out.fixed, out.pct, out.min_fee, out.max_fee) == (
+        "USD", D("2.50"), D("1.25"), D("1.25"), D("25.00"))
+    assert warnings == []
+    same = await runner._in_instrument_currency(rule, "EUR", warnings)
+    assert same is rule
