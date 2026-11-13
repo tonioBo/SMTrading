@@ -188,6 +188,18 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _discovery_fake():
+    """FakeMarketData plus the router's probe_quote (on-demand instruments): the quote of
+    any symbol set with set_quote, catalog or not."""
+    from smtrading.engine.quotesource import FakeMarketData
+
+    class DiscoveryFake(FakeMarketData):
+        async def probe_quote(self, symbol, asset_class, provider_symbols=None):
+            return (await self.get_quotes([symbol]))[symbol]
+
+    return DiscoveryFake()
+
+
 @pytest.fixture
 async def mcp_server(fresh_db, redis_url, monkeypatch):
     import asyncio
@@ -200,7 +212,6 @@ async def mcp_server(fresh_db, redis_url, monkeypatch):
 
     from smtrading.agents import service as agents
     from smtrading.api.main import create_app
-    from smtrading.engine.quotesource import FakeMarketData
     from smtrading.mcp.runtime import McpRuntime
     from smtrading.portfolios.service import create_portfolio
 
@@ -221,7 +232,7 @@ async def mcp_server(fresh_db, redis_url, monkeypatch):
         await s.commit()
     await engine.dispose()
 
-    qs = FakeMarketData()  # also the router of the market-data tools
+    qs = _discovery_fake()  # also the router of the market-data tools
     app = create_app(runtime_factory=lambda sm, redis: McpRuntime(sm, redis, qs, qs))
     port = _free_port()
     server = uvicorn.Server(

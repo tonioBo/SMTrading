@@ -701,3 +701,12 @@ def test_describe_redacts_secrets():
     assert "abc" not in out and "https://finnhub.io/api/v1/quote?<redacted>" in out
     assert "abc" not in _describe(RuntimeError("bad token=abc&x=1 and apikey=zzz key=q"))
     assert "zzz" not in _describe(RuntimeError("apikey=zzz")) and _describe(RuntimeError("ok")) == "RuntimeError: ok"
+
+
+async def test_probe_quote_without_instrument(env):
+    router, _ = env
+    q = await router.probe_quote("doge-usd", AssetClass.crypto)
+    assert q.symbol == "DOGE-USD" and q.provider == "fake_a"
+    assert FakeA.calls == [("quote", ["DOGE-USD"])]
+    with pytest.raises(SMTError):  # still unknown to the catalog
+        await router.get_quotes(["DOGE-USD"])

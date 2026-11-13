@@ -505,6 +505,16 @@ class MarketDataRouter:
         result = await self._single_flight(key, lambda: self._quotes(instrs, max_age_s))
         return {s: result[s] for s in instrs}
 
+    @_guard
+    async def probe_quote(
+        self, symbol: str, asset_class: AssetClass, provider_symbols: dict | None = None
+    ) -> Quote:
+        """A fresh quote for a symbol that need not be an instrument yet (on-demand
+        discovery): same providers and fallback as get_quotes, without the catalog lookup."""
+        sym = canonical_symbol(symbol)
+        instr = _Instr(sym, AssetClass(asset_class), dict(provider_symbols or {}))
+        return (await self._quotes({sym: instr}, 0))[sym]
+
     async def _fresh_cached_quote(self, sym: str, max_age_s: int, now: datetime) -> Quote | None:
         if max_age_s == 0:  # explicit refresh
             return None

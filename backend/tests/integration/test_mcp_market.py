@@ -53,18 +53,23 @@ async def test_tools_listed(mcp_server, mcp_list_tools):
 async def test_search_merges_local_and_provider(env):
     env["qs"].set_search([
         InstrumentHit("BTC-USD", "Bitcoin", AssetClass.crypto, "CCC", "USD", "fake"),
-        InstrumentHit("BTCX", "Bitcoin Xtra", AssetClass.crypto, "CCC", "USD", "fake"),
+        InstrumentHit("BTCX-USD", "Bitcoin Xtra", AssetClass.crypto, "CCC", "USD", "fake"),
+        InstrumentHit("BTCQ", "Not addable", AssetClass.crypto, "CCC", "USD", "fake"),
         InstrumentHit("ZZINACT", "Dormant Co", AssetClass.us_equity, "NYSE", "USD", "fake"),
     ])
     err, rows = await env["call"]("search_instruments", {"query": "btc"})
     assert not err
     by = {r["symbol"]: r for r in rows}
     assert by["BTC-USD"]["tradable"] is True and by["BTC-USD"]["provider"] == "local"
-    assert by["BTCX"]["tradable"] is False and by["BTCX"]["provider"] == "fake"
+    assert by["BTC-USD"]["in_catalogo"] is True
+    assert by["BTCX-USD"]["tradable"] is False and by["BTCX-USD"]["provider"] == "fake"
+    assert by["BTCX-USD"]["in_catalogo"] is False and by["BTCX-USD"]["aggiungibile"] is True
+    assert "BTCQ" not in by  # a provider hit that could not be added is left out
     assert len([r for r in rows if r["symbol"] == "BTC-USD"]) == 1
 
     err, rows = await env["call"]("search_instruments", {"query": "dormant"})
-    assert [(r["symbol"], r["tradable"]) for r in rows] == [("ZZINACT", False)]
+    assert [(r["symbol"], r["tradable"], r["in_catalogo"]) for r in rows] == [
+        ("ZZINACT", False, True)]
 
     err, rows = await env["call"](
         "search_instruments", {"query": "btc", "asset_class": "forex"})
@@ -91,7 +96,7 @@ async def test_get_quote_and_isolated_errors(env):
     err, out = await env["call"]("get_quote", {"symbols": [SYM, "MISSING"]})
     assert not err
     assert out[SYM]["last"] == "50000"
-    assert out["MISSING"] == {"error": "PROVIDER_UNAVAILABLE"}
+    assert out["MISSING"]["error"] == "SYMBOL_NOT_FOUND"  # unknown to the providers too
 
 
 async def test_get_quote_limit_and_validation(env):

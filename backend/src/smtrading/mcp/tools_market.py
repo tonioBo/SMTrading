@@ -16,12 +16,14 @@ from sqlalchemy import select
 
 from smtrading.agents.models import AgentPortfolio
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.instruments.market_hours import all_market_status, market_status
+from smtrading.instruments.discovery import Unsupported, classify_hit
+from smtrading.instruments.market_hours import MARKETS, all_market_status, market_status
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.instruments.service import canonical_symbol
 from smtrading.marketdata.indicators_service import IndicatorSpec, compute_indicators
 from smtrading.marketdata.types import ScreenFilter, Timeframe
 from smtrading.mcp.dto import instrument_dto, parse_decimal, parse_enum, parse_int, parse_ts
+from smtrading.mcp.instruments import ensure_instrument
 from smtrading.mcp.runtime import ToolCtx, run_tool
 from smtrading.positions.models import Position
 
@@ -30,7 +32,7 @@ MAX_BARS = 1000
 MAX_LOOKBACK = 1000
 MAX_PERIOD = 1000
 _PERIOD_PARAMS = frozenset({"period", "fast", "slow", "signal"})
-MAX_SEARCH = 100
+MAX_SEARCH = 50
 MAX_LIST = 200
 DEFAULT_BAR_COUNT = 200
 
@@ -100,11 +102,25 @@ def _escape_like(s: str) -> str:
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _local_hit(i: Instrument) -> dict:
+    return {
+        "symbol": i.symbol, "name": i.name, "asset_class": i.asset_class, "market": i.market,
+        "exchange": i.market, "currency": i.currency, "tradable": bool(i.active),
+        "in_catalogo": True, "aggiungibile": False, "provider": "local",
+    }
+
+
 async def _search_instruments(
-    ctx: ToolCtx, query: Any, asset_class: str | None, limit: Any
+    ctx: ToolCtx, query: Any, asset_class: str | None, market: Any, include_provider: Any,
+    limit: Any,
 ) -> list[dict]:
     q = _str(query, "query")
     ac = parse_enum(AssetClass, asset_class, "asset_class")
+    mk = _str(market, "market").upper() if market is not None else None
+    if mk is not None and mk not in MARKETS:
+        raise _invalid("market", f"market must be one of {list(MARKETS)}")
+    if not isinstance(include_provider, bool):
+        raise _invalid("include_provider", "include_provider must be a boolean")
     n = _int(limit, "limit", 20, MAX_SEARCH)
 
     pattern = f"%{_escape_like(q)}%"
@@ -117,39 +133,42 @@ async def _search_instruments(
     )
     if ac is not None:
         stmt = stmt.where(Instrument.asset_class == ac)
-    local = list(await ctx.session.scalars(stmt))
-    out: dict[str, dict] = {
-        i.symbol: {
-            "symbol": i.symbol, "name": i.name, "asset_class": i.asset_class,
-            "exchange": i.market, "currency": i.currency, "tradable": bool(i.active),
-            "provider": "local",
-        }
-        for i in local
-    }
-    if len(out) < n:
+    if mk is not None:
+        stmt = stmt.where(Instrument.market == mk)
+    out: dict[str, dict] = {i.symbol: _local_hit(i) for i in await ctx.session.scalars(stmt)}
+    if not include_provider or len(out) >= n:
+        return list(out.values())
+    try:
+        hits = await _router(ctx).search(q, n)
+    except SMTError:
+        if not out:
+            raise
+        hits = []
+    candidates: dict[str, tuple] = {}
+    for h in hits:
         try:
-            hits = await _router(ctx).search(q, n)
-        except SMTError:
-            if not out:
-                raise
-            hits = []
-        active = set(await ctx.session.scalars(
-            select(Instrument.symbol).where(
-                Instrument.symbol.in_([h.symbol for h in hits]), Instrument.active.is_(True))
-        )) if hits else set()
-        for h in hits:
-            if h.symbol in out or (ac is not None and h.asset_class not in (None, ac)):
-                continue
-            out[h.symbol] = {
-                "symbol": h.symbol, "name": h.name, "asset_class": h.asset_class,
-                "exchange": h.exchange, "currency": h.currency,
-                "tradable": h.symbol in active, "provider": h.provider,
-            }
+            c = classify_hit(h)  # only what get_instrument(symbol) would add
+        except Unsupported:
+            continue
+        if (ac is None or c.asset_class == ac) and (mk is None or c.market == mk):
+            candidates.setdefault(c.symbol, (c, h))
+    stored = set(await ctx.session.scalars(
+        select(Instrument.symbol).where(Instrument.symbol.in_(list(candidates)))
+    )) if candidates else set()
+    for sym, (c, h) in candidates.items():
+        if sym in out or sym in stored:
+            continue
+        out[sym] = {
+            "symbol": sym, "name": c.name, "asset_class": c.asset_class, "market": c.market,
+            "exchange": h.exchange, "currency": c.currency, "tradable": False,
+            "in_catalogo": False, "aggiungibile": True, "provider": h.provider,
+        }
     return list(out.values())[:n]
 
 
 async def _get_instrument(ctx: ToolCtx, symbol: Any) -> dict:
     sym = canonical_symbol(_str(symbol, "symbol"))
+    await ensure_instrument(ctx, sym)
     instr = await ctx.session.get(Instrument, sym)
     if instr is None:
         raise SMTError(ErrorCode.SYMBOL_NOT_FOUND, f"unknown symbol {sym}", {"symbol": sym})
@@ -164,18 +183,26 @@ async def _get_instrument(ctx: ToolCtx, symbol: Any) -> dict:
 async def _get_quote(ctx: ToolCtx, symbols: Any) -> dict:
     syms = _symbols(symbols)
     router = _router(ctx)
-    try:
-        return dict(await router.get_quotes(syms))
-    except SMTError:
-        pass  # all-or-error batch: isolate the failing symbols
-
-    async def one(sym: str):
+    refused: dict[str, dict] = {}
+    for sym in syms:  # unknown symbols are added on demand, one refusal per symbol
         try:
-            return (await router.get_quotes([sym]))[sym]
+            await ensure_instrument(ctx, sym)
         except SMTError as e:
-            return {"error": str(e.code)}
+            refused[sym] = {"error": str(e.code), "message": e.message}
+    todo = [s for s in syms if s not in refused]
+    found: dict[str, Any] = {}
+    if todo:
+        try:
+            found = dict(await router.get_quotes(todo))
+        except SMTError:  # all-or-error batch: isolate the failing symbols
+            async def one(sym: str):
+                try:
+                    return (await router.get_quotes([sym]))[sym]
+                except SMTError as e:
+                    return {"error": str(e.code)}
 
-    return dict(zip(syms, await asyncio.gather(*(one(s) for s in syms)), strict=True))
+            found = dict(zip(todo, await asyncio.gather(*(one(s) for s in todo)), strict=True))
+    return {s: refused[s] if s in refused else found[s] for s in syms}
 
 
 async def _get_bars(
@@ -184,6 +211,7 @@ async def _get_bars(
     sym = _str(symbol, "symbol")
     tf = _timeframe(timeframe)
     n = _int(limit, "limit", 500, MAX_BARS)
+    await ensure_instrument(ctx, sym)
     start, end = parse_ts(from_ts, "from_ts"), parse_ts(to_ts, "to_ts")
     end = end or datetime.now(UTC)
     start = start or end - _DEFAULT_SPAN[tf]
@@ -227,6 +255,7 @@ async def _get_indicators(
     tf = _timeframe(timeframe)
     specs = _specs(indicators)
     n = _int(lookback, "lookback", 100, MAX_LOOKBACK)
+    await ensure_instrument(ctx, sym)
     return await compute_indicators(_router(ctx), sym, tf, specs, n)
 
 
@@ -284,19 +313,30 @@ async def _screen(ctx: ToolCtx, a: dict[str, Any]) -> list[dict]:
 def register(mcp: MCPServer) -> None:
     @mcp.tool(structured_output=False)
     async def search_instruments(
-        query: str, asset_class: str | None = None, limit: int | str | None = 20
+        query: str, asset_class: str | None = None, market: str | None = None,
+        include_provider: bool = True, limit: int | str | None = 20,
     ) -> CallToolResult:
-        """Search instruments by symbol or name: the local catalogue first, then market
-        data providers. `tradable` is true only for active local instruments. asset_class:
-        us_equity | eu_equity | crypto | forex."""
-        params = {"query": query, "asset_class": asset_class, "limit": limit}
-        return await run_tool("search_instruments", params,
-                              lambda ctx: _search_instruments(ctx, query, asset_class, limit))
+        """Search instruments by symbol or name (at most 50 results). First the catalog
+        (in_catalogo: true; tradable false when deactivated), then, with include_provider,
+        market data provider results not in the catalog that can be added on demand
+        (in_catalogo: false, aggiungibile: true): call get_instrument(symbol) (or quote/
+        trade it) to add one. Nothing is created by a search. asset_class: us_equity |
+        eu_equity | crypto | forex; market: NASDAQ | NYSE | MTA | XETRA | EURONEXT_PARIS |
+        CRYPTO | FX."""
+        params = {"query": query, "asset_class": asset_class, "market": market,
+                  "include_provider": include_provider, "limit": limit}
+        return await run_tool(
+            "search_instruments", params,
+            lambda ctx: _search_instruments(
+                ctx, query, asset_class, market, include_provider, limit))
 
     @mcp.tool(structured_output=False)
     async def get_instrument(symbol: str) -> CallToolResult:
         """Instrument master data (market, currency, lot/tick size, shortable) plus the
-        current status of its market."""
+        current status of its market. A symbol not in the catalog is added on demand when
+        a provider quotes it on a supported market (NASDAQ/NYSE in USD, .MI/.DE/.PA in
+        EUR, crypto XXX-USD, forex XXXYYY), at most 25 per agent per day; otherwise
+        INVALID_ORDER "Strumento non supportato: ..." or SYMBOL_NOT_FOUND."""
         return await run_tool("get_instrument", {"symbol": symbol},
                               lambda ctx: _get_instrument(ctx, symbol))
 
@@ -325,7 +365,7 @@ def register(mcp: MCPServer) -> None:
     @mcp.tool(structured_output=False)
     async def get_market_status(market: str | None = None) -> CallToolResult:
         """Open/closed status and next open/close of a market (NASDAQ, NYSE, MTA, XETRA,
-        CRYPTO, FX), or of all markets when omitted."""
+        EURONEXT_PARIS, CRYPTO, FX), or of all markets when omitted."""
         return await run_tool("get_market_status", {"market": market},
                               lambda ctx: _async(_market_status, market))
 

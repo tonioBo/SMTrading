@@ -28,6 +28,7 @@ from smtrading.mcp.dto import (
     parse_int,
     parse_uuid,
 )
+from smtrading.mcp.instruments import ensure_instrument
 from smtrading.mcp.runtime import ToolCtx, run_tool
 
 MAX_ORDERS = 500
@@ -155,6 +156,7 @@ def register(mcp: MCPServer) -> None:
                 limit_price=limit_price, stop_price=stop_price, trail_pct=trail_pct,
                 trail_amount=trail_amount,
             )
+            await ensure_instrument(ctx, req.symbol)
             return await engine.preview_order(ctx.session, ctx.qs, req, redis=ctx.redis)
 
         return await run_tool("preview_order", params, fn)
@@ -186,6 +188,7 @@ def register(mcp: MCPServer) -> None:
                 limit_price=limit_price, stop_price=stop_price, trail_pct=trail_pct,
                 trail_amount=trail_amount, tif=tif, client_order_id=client_order_id,
             )
+            await ensure_instrument(ctx, req.symbol)
             order = await engine.place_order(ctx.session, ctx.qs, req, redis=ctx.redis)
             return await _loaded(ctx, order)
 
@@ -215,6 +218,7 @@ def register(mcp: MCPServer) -> None:
             )
             tp = _required(parse_decimal(take_profit, "take_profit"), "take_profit")
             sl = _required(parse_decimal(stop_loss, "stop_loss"), "stop_loss")
+            await ensure_instrument(ctx, req.symbol)
             orders = await engine.place_bracket_order(
                 ctx.session, ctx.qs, req, take_profit=tp, stop_loss=sl, redis=ctx.redis
             )
@@ -240,6 +244,7 @@ def register(mcp: MCPServer) -> None:
             pid = await _portfolio(ctx, portfolio_id, "trade")
             leg_a = _oco_leg(ctx, pid, "a", a, symbol, side, qty, tif)
             leg_b = _oco_leg(ctx, pid, "b", b, symbol, side, qty, tif)
+            await ensure_instrument(ctx, leg_a.symbol)
             orders = await engine.place_oco_order(
                 ctx.session, ctx.qs, leg_a, leg_b, redis=ctx.redis
             )

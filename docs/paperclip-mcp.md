@@ -108,8 +108,8 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
 - `list_orders`: ordini del portafoglio, dal piu' recente, filtrabili per stato.
 - `close_position`: chiude una posizione (o parte di essa) con un ordine market reduce-only.
 - `close_all_positions`: chiude tutte le posizioni aperte con ordini market reduce-only.
-- `search_instruments`: cerca strumenti per simbolo o nome (catalogo locale e provider).
-- `get_instrument`: anagrafica di uno strumento e stato del suo mercato.
+- `search_instruments`: cerca strumenti per simbolo o nome (al massimo 50 risultati), filtrabili per `asset_class` e `market`: prima il catalogo (`in_catalogo: true`), poi, con `include_provider` (default `true`), i risultati dei provider non ancora in catalogo che si possono aggiungere (`in_catalogo: false`, `aggiungibile: true`). La ricerca non crea nulla: per aggiungerne uno basta chiamare `get_instrument(symbol)` (o quotarlo, o fare trading).
+- `get_instrument`: anagrafica di uno strumento e stato del suo mercato; un simbolo non in catalogo viene aggiunto automaticamente (vedi sotto).
 - `get_quote`: ultime quotazioni (bid, ask, last) fino a 50 simboli.
 - `get_bars`: barre OHLCV per timeframe e intervallo.
 - `get_market_status`: apertura/chiusura e prossimi orari di uno o tutti i mercati.
@@ -123,12 +123,24 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
 - `get_triggered_alerts`: notifiche dei portafogli dell'agente (o indirizzate a lui): `{alerts, next_after_id}`; senza cursore dalla piu' recente, con `since`/`after_id` dalla piu' vecchia; `limit` 1-500.
 - `list_watchlists`: le watchlist dell'agente con i loro simboli.
 - `create_watchlist`: crea una watchlist vuota (nome unico per agente, al massimo 20).
-- `add_to_watchlist`: aggiunge simboli del catalogo a una watchlist (al massimo 200 per watchlist); le loro quotazioni vengono seguite in streaming.
+- `add_to_watchlist`: aggiunge simboli (del catalogo, o aggiunti automaticamente) a una watchlist (al massimo 200 per watchlist); le loro quotazioni vengono seguite in streaming.
 - `remove_from_watchlist`: toglie simboli da una watchlist.
 - `delete_watchlist`: elimina una watchlist.
 - `create_alert`: crea un alert di prezzo (al massimo 100 attivi per agente): `price_above`/`price_below` (valore = prezzo) o `change_pct_above`/`change_pct_below` (valore = variazione percentuale dal prezzo alla creazione, es. `-5`). Il prezzo e' `last`, altrimenti il mid; scatta una sola volta e arriva in `get_triggered_alerts` come notifica `price_alert` (`payload`: `alert_id`, `symbol`, `condition`, `value`, `price`).
 - `list_alerts`: gli alert dell'agente, filtrabili per stato (`active`/`triggered`).
 - `delete_alert`: elimina un alert dell'agente.
+
+### Strumenti: catalogo e aggiunta automatica
+
+Il catalogo contiene circa 400 strumenti verificati: azioni ed ETF USA (Nasdaq-100, S&P 100, principali ETF), Europa (FTSE MIB `.MI`, DAX `.DE`, CAC 40 `.PA`, ETF UCITS su Xetra in EUR), le principali crypto in USD (`BTC-USD`, ...) e le coppie forex maggiori e incrociate (`EURUSD`, ...). Mercati: `NASDAQ`, `NYSE`, `MTA`, `XETRA`, `EURONEXT_PARIS`, `CRYPTO`, `FX`.
+
+Quando un agente usa un simbolo che non e' in catalogo (`get_instrument`, `get_quote`, `get_bars`, `get_indicators`, `preview_order`, `place_order` e varianti, `create_alert`, `add_to_watchlist`, `run_backtest`), la piattaforma prova ad aggiungerlo:
+
+- accettati: azioni ed ETF su NASDAQ/NYSE in USD, `.MI`/`.DE`/`.PA` in EUR, crypto `XXX-USD`, forex `XXXYYY`, solo con una quotazione attuale a prezzo positivo;
+- rifiutati con `INVALID_ORDER` "Strumento non supportato: <motivo>": OTC, LSE/GBX e altre borse, fondi, crypto non in USD, prezzo nullo; un simbolo che nessun provider conosce resta `SYMBOL_NOT_FOUND`; un guasto dei provider e' `PROVIDER_UNAVAILABLE` (si puo' riprovare);
+- al massimo 25 aggiunte per agente al giorno (oltre: `RISK_LIMIT_EXCEEDED`); l'admin puo' disattivare l'aggiunta automatica dalla pagina Mercati (allora un simbolo sconosciuto e' `SYMBOL_NOT_FOUND`);
+- uno strumento disattivato dall'admin non viene mai riattivato;
+- lo strumento aggiunto resta in catalogo anche se l'operazione che l'ha richiesto fallisce, con origine "auto: agente <nome>", una riga di audit e una notifica `instrument.added`.
 
 ### Backtest
 

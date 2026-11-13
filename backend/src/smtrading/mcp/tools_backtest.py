@@ -15,9 +15,10 @@ from sqlalchemy import select
 
 from smtrading.agents.service import require_permission
 from smtrading.backtest.models import Backtest
-from smtrading.backtest.runner import enqueue_backtest
+from smtrading.backtest.runner import MAX_SYMBOLS, enqueue_backtest
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.mcp.dto import parse_decimal, parse_int, parse_ts, parse_uuid
+from smtrading.mcp.instruments import ensure_instruments
 from smtrading.mcp.runtime import ToolCtx, run_tool
 
 Num = str | int | float | None
@@ -79,6 +80,8 @@ def register(mcp: MCPServer) -> None:
             pid = parse_uuid(portfolio_id, "portfolio_id")
             if pid is not None:
                 await require_permission(ctx.session, ctx.agent_id, pid, "read")
+            if len(symbols) <= MAX_SYMBOLS:  # over the limit: enqueue_backtest refuses
+                await ensure_instruments(ctx, symbols)
             bt = await enqueue_backtest(
                 ctx.session, ctx.agent_id, strategy=strategy, symbols=symbols,
                 timeframe=timeframe, start=start, end=end, initial_cash=cash,

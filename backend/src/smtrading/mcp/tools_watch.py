@@ -14,6 +14,7 @@ from mcp.types import CallToolResult
 
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.mcp.dto import parse_decimal, parse_enum, parse_uuid
+from smtrading.mcp.instruments import ensure_instrument, ensure_instruments
 from smtrading.mcp.runtime import ToolCtx, run_tool
 from smtrading.watch import service as watch
 from smtrading.watch.models import AlertCondition
@@ -72,7 +73,9 @@ def register(mcp: MCPServer) -> None:
 
         async def fn(ctx: ToolCtx) -> Any:
             wid = _required_uuid(watchlist_id, "watchlist_id")
-            return await watch.add_to_watchlist(ctx.session, ctx.agent_id, wid, _symbols(symbols))
+            syms = _symbols(symbols)
+            await ensure_instruments(ctx, syms)
+            return await watch.add_to_watchlist(ctx.session, ctx.agent_id, wid, syms)
 
         return await run_tool("add_to_watchlist", params, fn)
 
@@ -123,6 +126,7 @@ def register(mcp: MCPServer) -> None:
             v = parse_decimal(value, "value")
             if v is None:
                 raise _invalid("value", "value is required")
+            await ensure_instrument(ctx, symbol)
             return await watch.create_alert(
                 ctx.session, ctx.qs, ctx.agent_id, symbol, cond, v, _note(note)
             )
