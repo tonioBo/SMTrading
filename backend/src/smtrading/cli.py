@@ -33,6 +33,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+import smtrading.models  # noqa: F401  (complete mapper registry, e.g. broker_links FK)
 from smtrading.agents import service as agents
 from smtrading.agents.models import Agent, AgentPortfolio
 from smtrading.common.config import get_settings

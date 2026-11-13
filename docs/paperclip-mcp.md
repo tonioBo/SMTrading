@@ -16,8 +16,9 @@ Il token compare nei log **solo al primo avvio**, quando l'agente viene creato: 
 successivi non lo ristampano (e i log del container possono essere stati ruotati o
 cancellati). Formato: `smt_<prefix>_<secret>`.
 
-Se il token e' andato perso, in attesa della web app di amministrazione (piano 5) si ruota
-dalla CLI: viene stampato il nuovo token (una sola volta) e il vecchio smette di funzionare.
+Se il token e' andato perso, dalla web app: **Agenti → Rigenera token** sull'agente; il
+nuovo token e' mostrato una sola volta e il vecchio smette di funzionare. In alternativa, da
+CLI:
 
 ```bash
 docker compose exec api python -m smtrading.cli agent rotate paperclip-demo
@@ -48,12 +49,16 @@ se il container e' gia' sulla rete non fa nulla.
 
 ## 3. Configurare il server MCP in Paperclip
 
-Server MCP di tipo HTTP:
+In Paperclip: **Connectors → Connect your own MCP server**.
 
 - URL: `http://api:8000/mcp` (oppure `http://smtrading-api-1:8000/mcp`)
-- Header: `Authorization: Bearer <token>`
+- **Advanced → authentication header**: `Authorization: Bearer <token>`
+- **Permissions**: *Just agents I pick*, scegliendo gli agenti che devono usarlo
+- Azioni di scrittura (ordini, watchlist, alert, backtest, ...): **Allowed** solo per
+  l'agente che deve fare trading; per gli altri lasciale non consentite
+- Dopo ogni aggiornamento di SMTrading che aggiunge o cambia metodi: **Refresh actions**
 
-Esempio di configurazione:
+Configurazione equivalente per client MCP generici:
 
 ```json
 {
@@ -87,6 +92,15 @@ docker compose exec api python -m smtrading.cli agent deactivate smoke-agent
 ```
 
 ## 4. Metodi
+
+Portafogli collegati a un broker paper/demo (pagina *Broker*): per l'agente gli ordini
+funzionano allo stesso modo, ma l'esecuzione e' asincrona. `place_order` risponde con
+l'ordine in stato aperto; il fill (o il rifiuto del broker) arriva dopo, quindi va
+controllato con `get_order`/`list_orders`. Un annullamento resta in attesa finche' il broker
+non lo conferma. Su questi portafogli nulla si esegue localmente: gli ordini non
+instradabili al broker sono rifiutati, il trailing stop diventa al trigger un market
+reduce-only inviato al broker. Un portafoglio archiviato e' invisibile all'agente
+(`NOT_FOUND`).
 
 Passa i numeri come stringhe per mantenere la precisione esatta (es. `"qty": "0.1"`).
 Gli agenti non possono creare portafogli, depositare, prelevare o modificare i limiti.
