@@ -23,7 +23,8 @@ from smtrading.agents import service as agents
 from smtrading.agents.models import Agent, AgentPortfolio
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.mcp.dto import parse_ts, to_jsonable
-from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.mode import portfolio_mode
+from smtrading.portfolios.models import Portfolio, PortfolioStatus
 
 router = APIRouter(prefix="/api", tags=["agents"], dependencies=[Depends(require_admin)])
 
@@ -50,19 +51,21 @@ def _duplicate_name(name: str) -> SMTError:
 async def _agent_dtos(session: AsyncSession, agents_: list[Agent]) -> list[dict[str, Any]]:
     links = (
         await session.execute(
-            select(AgentPortfolio, Portfolio.name)
+            select(AgentPortfolio, Portfolio)
             .join(Portfolio, Portfolio.id == AgentPortfolio.portfolio_id)
             .where(AgentPortfolio.agent_id.in_([a.id for a in agents_]))
             .order_by(Portfolio.name)
         )
     ).all()
     by_agent: dict[UUID, list[dict[str, Any]]] = {a.id: [] for a in agents_}
-    for link, name in links:
+    for link, portfolio in links:
         by_agent[link.agent_id].append(
             {
                 "portfolio_id": str(link.portfolio_id),
-                "portfolio_name": name,
+                "portfolio_name": portfolio.name,
                 "permission": link.permission,
+                "archived": portfolio.status == PortfolioStatus.archived,
+                "mode": to_jsonable(portfolio_mode(portfolio)),
             }
         )
     return [

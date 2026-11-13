@@ -112,6 +112,8 @@ async def test_agent_token_only_on_create_and_rotate(admin):
     mine = next(a for a in listed.json() if a["name"] == "bot-1")
     assert mine["last_seen_at"] is None
     assert "Demo" in {p["portfolio_name"] for a in listed.json() for p in a["portfolios"]}
+    demo = next(p for a in listed.json() for p in a["portfolios"] if p["portfolio_name"] == "Demo")
+    assert demo["archived"] is False and demo["mode"] == "simulazione"
 
     assert (await c.post("/api/agents", json={"name": "bot-1"})).json()["details"]["field"] == "name"
     assert (await c.post("/api/agents", json={"name": "  "})).status_code == 400

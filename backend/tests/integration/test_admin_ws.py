@@ -297,6 +297,7 @@ async def test_dashboard_values_with_two_portfolios(server):
     assert alerts[0]["kind"] == "liquidation"  # newest first
     assert body["kill_switch"] is False
     assert 4 <= body["worker_heartbeat_age_s"] < 60
+    assert body["held_symbols"] == []  # cash only
 
 
 async def test_dashboard_unreadable_heartbeat_is_null(server):
@@ -476,12 +477,40 @@ async def test_dashboard_leaves_archived_portfolios_out(server):
                 margin_used_eur=D(0),
             ))
         await notify(s, portfolio_id=archived.id, kind="margin_warning", payload={})
+        from smtrading.instruments.models import AssetClass, Instrument
+        from smtrading.positions.models import Position
+
+        s.add(Instrument(symbol="ZZARCH", name="x", asset_class=AssetClass.us_equity,
+                         market="NASDAQ", currency="USD"))
+        await s.flush()
+        s.add(Position(portfolio_id=archived.id, symbol="ZZARCH", qty=D(1), avg_price=D(1)))
         await s.commit()
 
     body = (await server.client.get("/api/dashboard")).json()
     assert [p["name"] for p in body["portfolios"]] == ["Live"]
+    assert "ZZARCH" not in body["held_symbols"]  # an archived position is not followed
+    modes = (await server.client.get("/api/dashboard/modes")).json()
+    assert modes == {"simulazione": 1, "paper": 0, "reale": 0}
     assert body["total_equity_eur"] == "2000"
     assert body["margin_alerts"] == []
     curve = (await server.client.get("/api/dashboard/equity", params={"period": "1d"})).json()
     assert [p["name"] for p in curve["portfolios"]] == ["Live"]
     assert curve["series"][-1]["equity_eur"] == "2000"
+
+
+async def test_dashboard_lists_the_held_symbols_of_live_portfolios(server):
+    from smtrading.instruments.models import AssetClass, Instrument
+    from smtrading.portfolios.service import create_portfolio
+    from smtrading.positions.models import Position
+
+    async with server.sm() as s:
+        p = await create_portfolio(s, name="Holder", initial_cash=D(1000), timezone="UTC")
+        for sym in ("ZZHELD", "ZZFLAT"):
+            s.add(Instrument(symbol=sym, name="x", asset_class=AssetClass.us_equity,
+                             market="NASDAQ", currency="USD"))
+        await s.flush()
+        s.add(Position(portfolio_id=p.id, symbol="ZZHELD", qty=D(2), avg_price=D(1)))
+        s.add(Position(portfolio_id=p.id, symbol="ZZFLAT", qty=D(0), avg_price=D(0)))
+        await s.commit()
+    body = (await server.client.get("/api/dashboard")).json()
+    assert "ZZHELD" in body["held_symbols"] and "ZZFLAT" not in body["held_symbols"]

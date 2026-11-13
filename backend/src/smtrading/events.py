@@ -62,6 +62,9 @@ async def notify(
     )
     session.add(n)
     await session.flush()
+    # the web app refreshes on it (alerts, broker, risk); the payload stays in the table
+    queue_event(session, "notification",
+                {"kind": kind, "portfolio_id": portfolio_id, "agent_id": agent_id})
     return n
 
 

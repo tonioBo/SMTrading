@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import quantize_money
+from smtrading.events import queue_event
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, Journal, JournalType
 from smtrading.ledger.service import LineSpec, get_or_create_account, post_journal
 from smtrading.portfolios.locks import lock_portfolio
@@ -71,6 +72,10 @@ async def _post_cash_move(
         session, portfolio_id=None, asset=ccy, kind=AccountKind.system_equity
     )
     delta = value if sign > 0 else value.copy_negate()
+    queue_event(session, "portfolio.cash", {
+        "portfolio_id": portfolio_id, "type": "deposit" if sign > 0 else "withdrawal",
+        "amount": value, "currency": ccy,
+    })
     return await post_journal(
         session, type=type,
         lines=[LineSpec(cash.id, delta), LineSpec(equity.id, delta.copy_negate())],
@@ -129,6 +134,7 @@ async def create_portfolio(
     )
     session.add(portfolio)
     await session.flush()
+    queue_event(session, "portfolio.created", {"portfolio_id": portfolio.id, "name": name})
     if cash_amount > 0:
         await deposit(
             session, portfolio.id, cash_amount, ccy, author_id=author_id,

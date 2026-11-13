@@ -40,6 +40,7 @@ from smtrading.performance.service import MAX_SERIES_POINTS, PERIODS, SPANS, dow
 from smtrading.portfolios.mode import PortfolioMode, portfolio_mode
 from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
 from smtrading.portfolios.queries import day_pnl_detail
+from smtrading.positions.models import Position
 from smtrading.risk.models import EquitySnapshot, Notification, SnapshotKind
 from smtrading.risk.settings import is_kill_switch_on
 from smtrading.valuation.service import value_portfolio
@@ -52,6 +53,17 @@ MAX_MARGIN_ALERTS = 10
 MIN_BUCKET_S = 300
 _EPOCH = "1970-01-01 00:00:00+00"
 _PCT_Q = Decimal("0.0001")
+
+
+@router.get("/dashboard/modes")
+async def dashboard_modes(session: DbSession) -> dict[str, int]:
+    """Live portfolios per mode (cheap: no valuation), for the global mode banner."""
+    modes = {m.value: 0 for m in PortfolioMode}
+    for p in await session.scalars(
+        select(Portfolio).where(Portfolio.status != PortfolioStatus.archived)
+    ):
+        modes[portfolio_mode(p).value] += 1
+    return modes
 
 
 @router.get("/dashboard")
@@ -127,6 +139,12 @@ async def dashboard(session: DbSession, redis: RedisClient, qs: Quotes) -> dict[
             for n in alerts
         ],
         "kill_switch": await is_kill_switch_on(session),
+        # the web app follows their quotes (WS) to refresh the values in real time
+        "held_symbols": list(await session.scalars(
+            select(Position.symbol).distinct()
+            .where(Position.portfolio_id.in_(live_portfolio_ids()), Position.qty != 0)
+            .order_by(Position.symbol)
+        )),
         "worker_heartbeat_age_s": await _heartbeat_age(redis),
     }
 
