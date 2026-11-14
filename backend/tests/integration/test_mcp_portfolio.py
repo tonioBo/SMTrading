@@ -458,3 +458,65 @@ async def test_mcp_hide_mode_setting(mcp_server, mcp_call, book):
     assert {p["mode"] for p in listed} == {"simulazione"}
     _, got = await mcp_call(url, token, "get_portfolio", args)
     assert got["mode"] == "simulazione"
+
+
+async def _live_link_for_demo(db_url, demo_id, state):
+    """A real-money link row (canary keys, never used: no network) linked to Demo."""
+    from smtrading.brokers.live.account import encrypt_live_config
+    from smtrading.brokers.models import BrokerLink
+
+    async with _Db(db_url) as s:
+        link = BrokerLink(
+            name="Conto", kind="t212_live", live_state=state, health_failures=0,
+            config_encrypted=encrypt_live_config(
+                {"api_key": "CANARYKEYID0001", "api_secret": "CANARYSECRET-do-not-use"}),
+        )
+        s.add(link)
+        await s.flush()
+        demo = await s.get(Portfolio, demo_id)
+        demo.broker_link_id = link.id
+        demo.name = "Principale"  # the seeded name "Demo" would be a false positive
+        await s.commit()
+        return link.id
+
+
+async def _set_live_state(db_url, link_id, state):
+    from smtrading.brokers.models import BrokerLink
+
+    async with _Db(db_url) as s:
+        (await s.get(BrokerLink, link_id)).live_state = state
+        await s.commit()
+
+
+async def test_portfolio_dto_mode_reale_and_live_state(mcp_server, mcp_call, book):
+    """Agents see `reale` (and live_state) for an armed real-money portfolio even with
+    mcp_hide_mode on; a link not armed sends nothing: hidden like any other mode."""
+    url, token, demo = mcp_server.url, mcp_server.token, mcp_server.demo_id
+    args = {"portfolio_id": str(demo)}
+    link_id = await _live_link_for_demo(mcp_server.db_url, demo, "armed")
+    _, listed = await mcp_call(url, token, "list_portfolios")
+    assert [(p["mode"], p["live_state"]) for p in listed] == [("reale", "armed")]
+    _, got = await mcp_call(url, token, "get_portfolio", args)
+    assert got["mode"] == "reale" and got["live_state"] == "armed"
+
+    for state in ("dry_run", "configured"):
+        await _set_live_state(mcp_server.db_url, link_id, state)
+        _, listed = await mcp_call(url, token, "list_portfolios")
+        assert all("mode" not in p and "live_state" not in p for p in listed), listed
+        _, got = await mcp_call(url, token, "get_portfolio", args)
+        assert "mode" not in got and "live_state" not in got
+        low = json.dumps([listed, got]).lower()
+        assert not any(w in low for w in ("simulaz", "paper", "demo", "dry_run")), low
+
+    await _set_hide_mode(mcp_server.db_url, False)
+    _, got = await mcp_call(url, token, "get_portfolio", args)
+    assert got["mode"] == "paper" and got["live_state"] == "configured"
+
+
+async def test_mcp_order_on_suspended_real_portfolio_live_not_armed(mcp_server, mcp_call, book):
+    await _live_link_for_demo(mcp_server.db_url, mcp_server.demo_id, "configured")
+    is_error, out = await mcp_call(mcp_server.url, mcp_server.token, "place_order", {
+        "portfolio_id": str(mcp_server.demo_id), "symbol": "ENI.MI", "side": "buy",
+        "type": "market", "qty": "1"})
+    assert is_error and out["code"] == "LIVE_NOT_ARMED", out
+    assert "CANARY" not in json.dumps(out)

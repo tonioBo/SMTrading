@@ -37,7 +37,7 @@ from smtrading.common.money import quantize_money
 from smtrading.connectors.models import Connector
 from smtrading.mcp.dto import to_jsonable
 from smtrading.performance.service import MAX_SERIES_POINTS, PERIODS, SPANS, downsample
-from smtrading.portfolios.mode import PortfolioMode, portfolio_mode
+from smtrading.portfolios.mode import PortfolioMode, mode_fields, portfolio_links
 from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
 from smtrading.portfolios.queries import day_pnl_detail
 from smtrading.positions.models import Position
@@ -59,10 +59,12 @@ _PCT_Q = Decimal("0.0001")
 async def dashboard_modes(session: DbSession) -> dict[str, int]:
     """Live portfolios per mode (cheap: no valuation), for the global mode banner."""
     modes = {m.value: 0 for m in PortfolioMode}
-    for p in await session.scalars(
+    portfolios = list(await session.scalars(
         select(Portfolio).where(Portfolio.status != PortfolioStatus.archived)
-    ):
-        modes[portfolio_mode(p).value] += 1
+    ))
+    links = await portfolio_links(session, portfolios)
+    for p in portfolios:
+        modes[mode_fields(p, links.get(p.broker_link_id))["mode"].value] += 1
     return modes
 
 
@@ -77,10 +79,11 @@ async def dashboard(session: DbSession, redis: RedisClient, qs: Quotes) -> dict[
     pct_pnl = Decimal(0)  # the % covers only the portfolios with a defined day %
     pct_base = Decimal(0)
     items = []
+    links = await portfolio_links(session, portfolios)
     for p in portfolios:
         item: dict[str, Any] = {
             "id": str(p.id), "name": p.name, "status": to_jsonable(p.status),
-            "mode": to_jsonable(portfolio_mode(p)),
+            **to_jsonable(mode_fields(p, links.get(p.broker_link_id))),
             "equity_eur": None, "day_pnl_eur": None, "day_pnl_pct": None,
             "stale_symbols": [], "error": None,
         }
@@ -103,8 +106,8 @@ async def dashboard(session: DbSession, redis: RedisClient, qs: Quotes) -> dict[
         )
 
     modes = {m.value: 0 for m in PortfolioMode}
-    for p in portfolios:
-        modes[portfolio_mode(p).value] += 1
+    for item in items:
+        modes[item["mode"]] += 1
 
     total_pct = None
     if pct_base > 0:

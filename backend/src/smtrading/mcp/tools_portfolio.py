@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from smtrading.agents.models import AgentPortfolio
 from smtrading.agents.service import require_permission
+from smtrading.brokers.models import BrokerLink
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import quantize_money
 from smtrading.ledger.models import JournalType
@@ -27,7 +28,7 @@ from smtrading.mcp.dto import (
 )
 from smtrading.mcp.runtime import ToolCtx, run_tool
 from smtrading.performance import service as performance
-from smtrading.portfolios.mode import PortfolioMode, portfolio_mode
+from smtrading.portfolios.mode import PortfolioMode, mode_fields
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.queries import day_pnl, list_portfolio_journals, today_day_open
 from smtrading.risk.daily_loss import net_cash_flows_eur
@@ -69,12 +70,15 @@ async def _valuation(ctx: ToolCtx, portfolio: Portfolio) -> PortfolioValuation:
 
 
 async def _mode_field(ctx: ToolCtx, portfolio: Portfolio) -> dict[str, Any]:
-    """`{"mode": ...}`, or nothing for a non-live portfolio while the admin setting
-    `mcp_hide_mode` is on (agents must not learn that a portfolio is simulated/paper)."""
-    mode = portfolio_mode(portfolio)
-    if mode != PortfolioMode.reale and await get_mcp_hide_mode(ctx.session):
+    """`{"mode", "live_state"}`, or nothing for a portfolio that is not `reale` (an armed
+    real-money link) while the admin setting `mcp_hide_mode` is on: agents must not learn
+    that a portfolio is simulated, paper or a real-money link that sends nothing."""
+    link = (await ctx.session.get(BrokerLink, portfolio.broker_link_id)
+            if portfolio.broker_link_id is not None else None)
+    fields = mode_fields(portfolio, link)
+    if fields["mode"] != PortfolioMode.reale and await get_mcp_hide_mode(ctx.session):
         return {}
-    return {"mode": mode}
+    return fields
 
 
 async def _list_portfolios(ctx: ToolCtx) -> list[dict]:

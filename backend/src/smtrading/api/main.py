@@ -13,7 +13,6 @@ from starlette.routing import Route
 import smtrading.models  # noqa: F401  (complete mapper registry before any session)
 from smtrading.admin.errors import install_error_handlers
 from smtrading.admin.routes_agent_docs import router as agent_docs_router
-from smtrading.agentdocs import export as agent_docs_export
 from smtrading.admin.routes_agents import router as agents_router
 from smtrading.admin.routes_auth import router as auth_router
 from smtrading.admin.routes_brokers import router as brokers_router
@@ -21,6 +20,7 @@ from smtrading.admin.routes_connectors import router as connectors_router
 from smtrading.admin.routes_dashboard import router as dashboard_router
 from smtrading.admin.routes_fees import router as fees_router
 from smtrading.admin.routes_halts import router as halts_router
+from smtrading.admin.routes_live import router as live_router
 from smtrading.admin.routes_markets import router as markets_router
 from smtrading.admin.routes_portfolios import router as portfolios_router
 from smtrading.admin.routes_risk import router as risk_router
@@ -28,6 +28,7 @@ from smtrading.admin.routes_system import router as system_router
 from smtrading.admin.routes_telegram import router as telegram_router
 from smtrading.admin.routes_watch import router as watch_router
 from smtrading.admin.ws import router as ws_router
+from smtrading.agentdocs import export as agent_docs_export
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
 from smtrading.common.heartbeat import heartbeat_age_s
@@ -119,7 +120,7 @@ async def _export_agent_docs(sessionmaker) -> None:
     try:
         async with sessionmaker() as session:
             await agent_docs_export.export_all(session)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logging.getLogger(__name__).warning("agent docs export at startup failed", exc_info=True)
 
 
@@ -175,6 +176,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(halts_router)
     app.include_router(connectors_router)
     app.include_router(brokers_router)
+    app.include_router(live_router)
     app.include_router(markets_router)
     app.include_router(system_router)
     app.include_router(dashboard_router)

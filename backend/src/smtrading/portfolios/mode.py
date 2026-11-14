@@ -7,6 +7,7 @@ the three live states apart for the screens that show them."""
 
 import enum
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.brokers.live import LIVE_KINDS
@@ -49,3 +50,21 @@ async def load_portfolio_mode(session: AsyncSession, portfolio: Portfolio) -> Po
     if link is None:
         return PortfolioMode.paper
     return portfolio_mode(portfolio, link.kind, link.live_state)
+
+
+async def portfolio_links(session: AsyncSession, portfolios) -> dict:
+    """The broker link of each linked portfolio ({link_id: BrokerLink}), one query."""
+    ids = {p.broker_link_id for p in portfolios if p.broker_link_id is not None}
+    if not ids:
+        return {}
+    return {link.id: link for link in await session.scalars(
+        select(BrokerLink).where(BrokerLink.id.in_(ids)))}
+
+
+def mode_fields(portfolio: Portfolio, link: BrokerLink | None) -> dict:
+    """`{"mode", "live_state"}` of a portfolio given its link (the DTOs' fields)."""
+    return {
+        "mode": portfolio_mode(portfolio, link.kind if link else None,
+                               link.live_state if link else None),
+        "live_state": live_state_of(link),
+    }

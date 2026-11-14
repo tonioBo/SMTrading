@@ -13,6 +13,10 @@
     agent deactivate NAME
     agent notify NAME on|off (the `notify` permission: send_telegram)
     agent halt-permission NAME on|off (the `halt` permission: set_trading_halt)
+    live status              (the real-money links: state, portfolio, last test)
+    live disarm NAME [--reason TEXT]
+                             («Disattiva denaro reale» from the shell: no TOTP; nothing
+                             saves live keys or arms from the CLI)
     telegram set --chat-id ID [--token-stdin] [--no-verify] [--enable]
                  (the bot token is read only from stdin, never from argv; verified with
                  getMe/getChat like the admin API; the output never contains it)
@@ -65,6 +69,8 @@ from smtrading.valuation.service import value_portfolio
 SOURCE = "admin"
 SOURCE_CLI = "cli"
 _ORDER_TYPES = (OrderType.market.value, OrderType.limit.value)
+LIVE_DISARM_REASON = "disattivato da riga di comando"
+NO_LIVE_LINKS = "nessun collegamento live"
 
 
 def _decimal(text: str) -> Decimal:
@@ -121,6 +127,13 @@ def build_parser() -> argparse.ArgumentParser:
     halt = agent_sub.add_parser("halt-permission", help="grant/revoke the halt permission")
     halt.add_argument("name")
     halt.add_argument("state", choices=["on", "off"])
+
+    live = sub.add_parser("live", help="real-money links (emergency disarm, status)")
+    live_sub = live.add_subparsers(dest="live_command", required=True)
+    live_sub.add_parser("status", help="the real-money links and their state")
+    disarm = live_sub.add_parser("disarm", help="disarm a real-money link (no TOTP)")
+    disarm.add_argument("name")
+    disarm.add_argument("--reason", default=LIVE_DISARM_REASON)
 
     telegram = sub.add_parser("telegram", help="Telegram notifications")
     telegram_sub = telegram.add_subparsers(dest="telegram_command", required=True)
@@ -226,6 +239,43 @@ async def execute_agent(args: argparse.Namespace, session: AsyncSession) -> obje
     raise AssertionError(args.agent_command)  # pragma: no cover
 
 
+async def execute_live(args: argparse.Namespace, session: AsyncSession) -> object:
+    """`live status` / `live disarm` (the same service as the admin's one-click disarm)."""
+    from smtrading.brokers.live import LIVE_KINDS
+    from smtrading.brokers.live.service import Actor, disarm_live_link
+    from smtrading.brokers.models import BrokerLink
+
+    match args.live_command:
+        case "status":
+            rows = (await session.execute(
+                select(BrokerLink, Portfolio.name)
+                .outerjoin(Portfolio, Portfolio.broker_link_id == BrokerLink.id)
+                .where(BrokerLink.kind.in_(LIVE_KINDS)).order_by(BrokerLink.name)
+            )).all()
+            if not rows:
+                return {"links": [], "message": NO_LIVE_LINKS}
+            return {"links": [
+                {"name": link.name, "kind": link.kind, "live_state": link.live_state,
+                 "portfolio": portfolio, "armed_at": link.armed_at, "armed_by": link.armed_by,
+                 "disarmed_at": link.disarmed_at, "disarmed_reason": link.disarmed_reason,
+                 "last_test_at": link.last_test_at, "health_failures": link.health_failures}
+                for link, portfolio in rows
+            ]}
+        case "disarm":
+            link_id = await session.scalar(select(BrokerLink.id).where(
+                BrokerLink.name == args.name, BrokerLink.kind.in_(LIVE_KINDS)))
+            if link_id is None:
+                raise SMTError(ErrorCode.NOT_FOUND, "collegamento reale non trovato",
+                               {"name": args.name})
+            reason = (args.reason or "").strip() or LIVE_DISARM_REASON
+            orders = await disarm_live_link(session, link_id, actor=Actor(SOURCE_CLI),
+                                            reason=reason)
+            state = await session.scalar(select(BrokerLink.live_state)
+                                         .where(BrokerLink.id == link_id))
+            return {"name": args.name, "live_state": state, "orders": orders}
+    raise AssertionError(args.live_command)  # pragma: no cover
+
+
 def _read_token_stdin() -> str:
     return sys.stdin.read()
 
@@ -256,6 +306,8 @@ async def execute(
     match args.command:
         case "telegram":
             return await execute_telegram(args, session)
+        case "live":
+            return await execute_live(args, session)
         case "agent":
             return await execute_agent(args, session)
         case "order":

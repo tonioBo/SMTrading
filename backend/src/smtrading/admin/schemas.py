@@ -166,6 +166,7 @@ class RiskProfileCreateIn(BaseModel):
     allowed_markets: list[str] = []
     short_allowed: bool = True
     description: str | None = None
+    max_live_orders_per_hour: StrictInt | None = None  # R8.1 fuse; None: the default (30)
 
 
 class RiskProfilePatchIn(BaseModel):
@@ -181,6 +182,7 @@ class RiskProfilePatchIn(BaseModel):
     allowed_markets: list[str] | None = None
     short_allowed: bool | None = None
     description: str | None = None
+    max_live_orders_per_hour: StrictInt | None = None
 
 
 class InterestRateIn(BaseModel):

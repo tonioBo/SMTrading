@@ -46,13 +46,14 @@ _CURRENCY = re.compile(r"^[A-Z0-9]{2,16}$")
 PROFILE_FIELDS = (
     "id", "name", "max_order_notional_eur", "max_position_pct", "max_daily_loss_pct",
     "max_daily_loss_eur", "allowed_symbols", "allowed_asset_classes", "allowed_markets",
-    "short_allowed", "description",
+    "short_allowed", "description", "max_live_orders_per_hour",
 )
 _LIMIT_FIELDS = (
     "max_order_notional_eur", "max_position_pct", "max_daily_loss_pct", "max_daily_loss_eur",
 )
 _LIST_FIELDS = ("allowed_symbols", "allowed_asset_classes", "allowed_markets")
 _PCT_FIELDS = ("max_position_pct", "max_daily_loss_pct")
+FUSE_MIN, FUSE_MAX, FUSE_DEFAULT = 1, 1000, 30  # Ruling R8.1: real orders per hour
 
 
 # --- risk profiles -------------------------------------------------------------------
@@ -105,6 +106,13 @@ async def _validated_profile(
         out[f] = value
     for f in _LIST_FIELDS:
         out[f] = _string_list(raw[f], f)
+    fuse = raw.get("max_live_orders_per_hour")
+    fuse = FUSE_DEFAULT if fuse is None else fuse
+    if isinstance(fuse, bool) or not isinstance(fuse, int) or not FUSE_MIN <= fuse <= FUSE_MAX:
+        raise _invalid("max_live_orders_per_hour",
+                       f"max_live_orders_per_hour deve essere un intero tra {FUSE_MIN} e"
+                       f" {FUSE_MAX}")
+    out["max_live_orders_per_hour"] = fuse
     for cls in out["allowed_asset_classes"]:
         parse_enum(AssetClass, cls, "allowed_asset_classes")
     taken = select(RiskProfile.id).where(RiskProfile.name == name)
@@ -164,7 +172,7 @@ async def patch_risk_profile(
         raw[f] = None if raw[f] is None else decimal_to_str(raw[f])
     for f in body.model_fields_set:
         raw[f] = getattr(body, f)
-    for f in ("name", "short_allowed", *_LIST_FIELDS):
+    for f in ("name", "short_allowed", "max_live_orders_per_hour", *_LIST_FIELDS):
         if raw[f] is None:
             raise _invalid(f, f"{f} non può essere nullo")
     try:

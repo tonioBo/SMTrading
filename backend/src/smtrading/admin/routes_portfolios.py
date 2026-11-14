@@ -40,6 +40,7 @@ from smtrading.admin.schemas import (
     ResetIn,
     ReverseIn,
 )
+from smtrading.brokers.models import BrokerLink
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import OPEN_STATUSES, OrderStatus
@@ -60,7 +61,7 @@ from smtrading.mcp.dto import (
 )
 from smtrading.performance.service import get_performance
 from smtrading.portfolios.locks import lock_live_portfolio
-from smtrading.portfolios.mode import portfolio_mode
+from smtrading.portfolios.mode import mode_fields
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.queries import day_pnl, list_portfolio_journals
 from smtrading.portfolios.service import (
@@ -178,10 +179,18 @@ PORTFOLIO_FIELDS = (
 )
 
 
-def _portfolio_dto(p: Portfolio) -> dict[str, Any]:
+def _portfolio_dto(p: Portfolio, link: BrokerLink | None = None) -> dict[str, Any]:
+    """PORTFOLIO_FIELDS plus `mode` and `live_state` (from `link`, the portfolio's broker
+    link: `reale` only for an armed real-money link)."""
     out = {f: to_jsonable(getattr(p, f)) for f in PORTFOLIO_FIELDS}
-    out["mode"] = to_jsonable(portfolio_mode(p))
+    out.update(to_jsonable(mode_fields(p, link)))
     return out
+
+
+async def portfolio_dto(session: AsyncSession, p: Portfolio) -> dict[str, Any]:
+    """_portfolio_dto with the link read from the database (identity map first)."""
+    link = await session.get(BrokerLink, p.broker_link_id) if p.broker_link_id else None
+    return _portfolio_dto(p, link)
 
 
 async def _summary(
@@ -189,7 +198,7 @@ async def _summary(
 ) -> dict[str, Any]:
     """The portfolio settings plus equity_eur and the day P&L. A portfolio that cannot be
     valued (no quote, no cache) has them null and `valuation_error` set to the code."""
-    out = _portfolio_dto(portfolio)
+    out = await portfolio_dto(session, portfolio)
     out.update(equity_eur=None, day_pnl_eur=None, day_pnl_pct=None, valuation_error=None)
     try:
         v = await value_portfolio(session, qs, portfolio.id, redis=redis)

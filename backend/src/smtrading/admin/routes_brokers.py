@@ -1,6 +1,12 @@
 """Admin API: broker links (paper/demo accounts only), connection test, portfolio link,
 reconciliations and broker positions.
 
+Real-money links (LIVE_KINDS) are created, changed and linked only through the
+«denaro reale» routes (admin.routes_live): here they are listed (masked, with their
+`live_state`) and refused on create/change/link; the connection test, the positions and
+the reconciliation of a live link go through the live flow (read-only test, the live
+gate, the live reconciliation), never through the paper path.
+
 Configs are stored encrypted and go out masked (admin.common helpers); the secret keys
 of each kind are fixed here. The base URL is fixed per kind: a config naming any other
 URL is refused with FORBIDDEN by the adapter constructor, and the URL is never stored.
@@ -21,8 +27,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from smtrading.admin.auth import DbSession, RedisClient, require_admin
+from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
 from smtrading.admin.common import (
+    MASK,
+    Quotes,
     _invalid,
     _transaction,
     mask_config,
@@ -31,11 +39,16 @@ from smtrading.admin.common import (
     secret_values,
 )
 from smtrading.admin.idempotency import Idempotency, idempotent
-from smtrading.admin.routes_portfolios import _portfolio_dto
+from smtrading.admin.routes_live import live_http_factory, request_actor, run_live_test
+from smtrading.admin.routes_portfolios import portfolio_dto
 from smtrading.brokers.alpaca_paper import PAPER_URL
+from smtrading.brokers.live import LIVE_KINDS
+from smtrading.brokers.live.account import LIVE_FIELDS, key_masked, live_secrets
+from smtrading.brokers.live.reconcile import reconcile_live
 from smtrading.brokers.models import BrokerLink, Reconciliation
 from smtrading.brokers.registry import adapter_class
 from smtrading.brokers.service import (
+    USE_LIVE_FLOW_MESSAGE,
     create_link,
     get_link_config,
     link_portfolio,
@@ -111,12 +124,32 @@ async def _link(session: AsyncSession, link_id: UUID) -> BrokerLink:
     return link
 
 
+def _client(request: Request, link: BrokerLink) -> httpx.AsyncClient:
+    """The HTTP client for a link's broker I/O: a live link's LiveClient (the live gate in
+    front of every request), a plain client otherwise."""
+    if link.kind in LIVE_KINDS:
+        return live_http_factory(request)(link.id)
+    return httpx.AsyncClient()
+
+
+def _refuse_live(kind: str) -> None:
+    if kind in LIVE_KINDS:
+        raise _invalid("kind", USE_LIVE_FLOW_MESSAGE)
+
+
 async def _dto(session: AsyncSession, link: BrokerLink) -> dict[str, Any]:
     base_url, secret_keys = KINDS.get(link.kind, ("", ()))
     portfolios = (await session.execute(
         select(Portfolio.id, Portfolio.name)
         .where(Portfolio.broker_link_id == link.id).order_by(Portfolio.name)
     )).all()
+    if link.kind in LIVE_KINDS:  # never more than the key ID's last 4 characters
+        config = await get_link_config(session, link.id)
+        key_field, secret_field, _ = LIVE_FIELDS[link.kind]
+        masked = {key_field: key_masked(link.kind, config), secret_field: MASK}
+        secret_keys = (key_field, secret_field)
+    else:
+        masked = mask_config(await get_link_config(session, link.id))
     return {
         "id": str(link.id),
         "name": link.name,
@@ -124,8 +157,9 @@ async def _dto(session: AsyncSession, link: BrokerLink) -> dict[str, Any]:
         "enabled": link.enabled,
         "status": link.status,
         "last_error": link.last_error,
+        "live_state": link.live_state,
         "base_url": base_url,
-        "config_masked": mask_config(await get_link_config(session, link.id)),
+        "config_masked": masked,
         "secret_keys": list(secret_keys),
         "portfolios": [{"id": str(pid), "name": name} for pid, name in portfolios],
         "created_at": to_jsonable(link.created_at),
@@ -140,8 +174,11 @@ async def _record(session: AsyncSession, redis, link_id: UUID, error: str | None
 
 def link_secrets(kind: str, config: dict[str, Any]) -> list[str]:
     """The texts to mask in broker errors: every secret of the config and, for T212, the
-    Base64 Basic credential the adapter sends (longest first)."""
+    Base64 Basic credential the adapter sends (longest first); a live kind: its keys and
+    (t212_live) its Basic credential too."""
     found = secret_values(config)
+    if kind in LIVE_KINDS:
+        found.extend(live_secrets(kind, config))
     if kind == "t212_demo" and config.get("api_key"):
         cred = f"{config.get('api_key', '')}:{config.get('api_secret', '')}"
         found.append(base64.b64encode(cred.encode()).decode())
@@ -179,6 +216,7 @@ async def post_link(
     body: BrokerLinkIn, session: DbSession, redis: RedisClient, idem: BrokerIdem
 ):
     async def run() -> dict:
+        _refuse_live(body.kind)
         if body.kind not in KINDS:
             raise _invalid("kind", "tipo di broker non supportato (alpaca_paper, t212_demo)")
         name = _name(body.name)
@@ -200,6 +238,7 @@ async def patch_link(
             raise _invalid(f, f"{f} non può essere nullo")
     async with _transaction(session, redis):
         link = await _link(session, link_id)
+        _refuse_live(link.kind)
         name = None
         if body.name is not None:
             name = _name(body.name)
@@ -218,18 +257,30 @@ async def patch_link(
 
 @router.post("/broker-links/{link_id}/test")
 async def test_link(
-    link_id: UUID, session: DbSession, redis: RedisClient, idem: BrokerIdem
+    link_id: UUID, request: Request, admin: CurrentAdmin, session: DbSession,
+    redis: RedisClient, idem: BrokerIdem,
 ):
-    """The adapter's health check with the stored config; the outcome goes to the link."""
+    """The adapter's health check with the stored config; the outcome goes to the link.
+    A live link runs the read-only test of the live flow (snapshot, fingerprint, audit)."""
 
     async def run() -> dict:
-        secrets = await _secrets(session, await _link(session, link_id))
+        link = await _link(session, link_id)
+        secrets = await _secrets(session, link)
+        live = link.kind in LIVE_KINDS
         error = None
         try:
-            async with httpx.AsyncClient() as http, open_adapter(session, link_id, http) as adapter:
-                await session.commit()  # no transaction across the network call
-                await asyncio.wait_for(adapter.health_check(), BROKER_TIMEOUT_S)
+            if live:
+                await session.commit()  # the live test uses its own sessions
+                await asyncio.wait_for(
+                    run_live_test(request, link_id, request_actor(request, admin)),
+                    BROKER_TIMEOUT_S)
+            else:
+                async with httpx.AsyncClient() as http, \
+                        open_adapter(session, link_id, http) as adapter:
+                    await session.commit()  # no transaction across the network call
+                    await asyncio.wait_for(adapter.health_check(), BROKER_TIMEOUT_S)
         except Exception as e:  # noqa: BLE001 - reported to the admin and recorded
+            await session.rollback()
             error = _error_text(e, secrets)
         await _record(session, redis, link_id, error)
         return {"ok": error is None, "error": error, "checked_at": datetime.now(UTC).isoformat()}
@@ -238,11 +289,16 @@ async def test_link(
 
 
 @router.get("/broker-links/{link_id}/positions")
-async def get_broker_positions(link_id: UUID, session: DbSession, redis: RedisClient) -> dict:
-    """The outcome is recorded on the link: a failure (answered redacted) or ok."""
-    secrets = await _secrets(session, await _link(session, link_id))
+async def get_broker_positions(
+    link_id: UUID, request: Request, session: DbSession, redis: RedisClient
+) -> dict:
+    """The outcome is recorded on the link: a failure (answered redacted) or ok. A live
+    link reads through its gated LiveClient (GET only)."""
+    link = await _link(session, link_id)
+    secrets = await _secrets(session, link)
     try:
-        async with httpx.AsyncClient() as http, open_adapter(session, link_id, http) as adapter:
+        async with _client(request, link) as http, \
+                open_adapter(session, link_id, http) as adapter:
             await session.commit()
             await asyncio.wait_for(adapter.prepare(), BROKER_TIMEOUT_S)
             positions = await asyncio.wait_for(adapter.get_positions(), BROKER_TIMEOUT_S)
@@ -274,10 +330,15 @@ async def put_portfolio_link(
     async with _transaction(session, redis):
         if body.broker_link_id is not None:
             link = await _link(session, body.broker_link_id)
+            _refuse_live(link.kind)
             if not link.enabled:
                 raise _invalid("broker_link_id", "collegamento broker disattivato")
+        current = await session.scalar(
+            select(BrokerLink.kind).join(Portfolio, Portfolio.broker_link_id == BrokerLink.id)
+            .where(Portfolio.id == portfolio_id))
+        _refuse_live(current or "")  # a real-money portfolio: PUT .../live-link
         portfolio = await link_portfolio(session, portfolio_id, body.broker_link_id)
-        out = _portfolio_dto(portfolio)
+        out = await portfolio_dto(session, portfolio)
     return out
 
 
@@ -286,7 +347,7 @@ async def put_portfolio_link(
 
 def _reconciliation_dto(r: Reconciliation, portfolio_name: str | None) -> dict[str, Any]:
     return {
-        "id": str(r.id),
+        "id": to_jsonable(r.id),  # None: a live outcome not stored (unchanged)
         "broker_link_id": str(r.broker_link_id),
         "portfolio_id": str(r.portfolio_id),
         "portfolio_name": portfolio_name,
@@ -315,19 +376,30 @@ async def get_reconciliations(
 
 @router.post("/broker-links/{link_id}/reconcile")
 async def post_reconcile(
-    link_id: UUID, request: Request, session: DbSession, redis: RedisClient, idem: BrokerIdem
+    link_id: UUID, request: Request, session: DbSession, redis: RedisClient, qs: Quotes,
+    idem: BrokerIdem,
 ):
     """Reconcile now (one row per linked portfolio); the outcome goes to the link status.
-    A broker failure is recorded and answered with PROVIDER_UNAVAILABLE."""
+    A broker failure is recorded and answered with PROVIDER_UNAVAILABLE. A live link runs
+    the live reconciliation (GET only, never corrects anything; its outcome is stored only
+    when it changed)."""
 
     async def run() -> dict:
-        secrets = await _secrets(session, await _link(session, link_id))
+        link = await _link(session, link_id)
+        secrets = await _secrets(session, link)
+        live = link.kind in LIVE_KINDS
         try:
             await session.commit()  # reconcile uses its own sessions (no tx across I/O)
-            async with httpx.AsyncClient() as http:
-                rows = await asyncio.wait_for(
-                    reconcile(request.app.state.sessionmaker, link_id, http), BROKER_TIMEOUT_S
-                )
+            sm = request.app.state.sessionmaker
+            if live:
+                row = await asyncio.wait_for(
+                    reconcile_live(sm, link_id, live_http_factory(request), qs=qs),
+                    BROKER_TIMEOUT_S)
+                rows = [row] if row is not None else []
+            else:
+                async with httpx.AsyncClient() as http:
+                    rows = await asyncio.wait_for(reconcile(sm, link_id, http),
+                                                  BROKER_TIMEOUT_S)
             names = dict((await session.execute(
                 select(Portfolio.id, Portfolio.name)
                 .where(Portfolio.id.in_([r.portfolio_id for r in rows]))
