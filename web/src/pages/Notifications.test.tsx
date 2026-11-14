@@ -4,6 +4,7 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Agent, Decision, OutboxItem, TelegramSettings } from "@/api/types";
+import type { QueryClient } from "@tanstack/react-query";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
 
@@ -85,7 +86,9 @@ const server = setupServer(
   http.put("*/api/telegram/config", async ({ request }) => {
     const body = (await request.json()) as Record<string, unknown>;
     configPuts.push(body);
-    settings = { ...settings, ...("chat_id" in body ? { chat_id: String(body.chat_id), chat_title: "Nuovo gruppo" } : {}) };
+    // an @username is normalised to the numeric id, like the real API does
+    const chat = String(body.chat_id).startsWith("@") ? "-100777" : String(body.chat_id);
+    settings = { ...settings, ...("chat_id" in body ? { chat_id: chat, chat_title: "Nuovo gruppo" } : {}) };
     return HttpResponse.json(settings);
   }),
   http.post("*/api/telegram/detect-chats", async ({ request }) => {
@@ -148,6 +151,13 @@ afterEach(() => {
   detectBodies = [];
 });
 afterAll(() => server.close());
+
+function mutationsHoldingToken(queryClient: QueryClient) {
+  return queryClient
+    .getMutationCache()
+    .getAll()
+    .filter((m) => JSON.stringify([m.state.variables, m.state.data, m.options.mutationKey]).includes(TOKEN));
+}
 
 async function connection() {
   return within(await screen.findByRole("region", { name: "Collegamento" }));
@@ -223,6 +233,65 @@ describe("Notifiche", () => {
     await user.type(c.getByLabelText("Token del bot"), TOKEN);
     await user.click(c.getByRole("button", { name: "Rileva gruppi" }));
     await waitFor(() => expect(detectBodies).toEqual([{ bot_token: TOKEN }]));
+  });
+
+  it("no mutation keeps the token after detect, manual id and save", async () => {
+    const user = userEvent.setup();
+    const { queryClient } = renderApp("/notifiche");
+    const c = await connection();
+    await user.click(c.getByRole("button", { name: "Sostituisci token" }));
+    await user.type(c.getByLabelText("Token del bot"), TOKEN);
+    await user.click(c.getByRole("button", { name: "Rileva gruppi" }));
+    await c.findByRole("list", { name: "Gruppi rilevati" });
+    expect(mutationsHoldingToken(queryClient)).not.toHaveLength(0);
+    const chat = c.getByLabelText("ID del gruppo");
+    await user.clear(chat);
+    await user.type(chat, "-4001");
+    await user.click(c.getByRole("button", { name: "Salva" }));
+    await waitFor(() => expect(configPuts).toEqual([{ bot_token: TOKEN, chat_id: "-4001" }]));
+    await waitFor(() => expect(mutationsHoldingToken(queryClient)).toHaveLength(0));
+  });
+
+  it("no mutation keeps the token after a failed save and Annulla", async () => {
+    server.use(
+      http.put("*/api/telegram/config", () =>
+        HttpResponse.json({ code: "INVALID_ORDER", message: "Token del bot non valido", details: { field: "bot_token" } }, { status: 400 }),
+      ),
+    );
+    const user = userEvent.setup();
+    const { queryClient } = renderApp("/notifiche");
+    const c = await connection();
+    await user.click(c.getByRole("button", { name: "Sostituisci token" }));
+    await user.type(c.getByLabelText("Token del bot"), TOKEN);
+    await user.click(c.getByRole("button", { name: "Salva" }));
+    expect(await c.findByText("Token del bot non valido")).toBeInTheDocument();
+    expect(mutationsHoldingToken(queryClient)).not.toHaveLength(0);
+    await user.click(c.getByRole("button", { name: "Annulla" }));
+    await waitFor(() => expect(mutationsHoldingToken(queryClient)).toHaveLength(0));
+    expect(c.queryByText("Token del bot non valido")).not.toBeInTheDocument();
+  });
+
+  it("chat id follows the server: normalised on save, updated when untouched", async () => {
+    const user = userEvent.setup();
+    const { queryClient } = renderApp("/notifiche");
+    const c = await connection();
+    const chat = c.getByLabelText("ID del gruppo");
+    expect(chat).not.toHaveAttribute("inputmode");
+    await user.clear(chat);
+    await user.type(chat, "@sala_operativa");
+    await user.click(c.getByRole("button", { name: "Salva" }));
+    await waitFor(() => expect(chat).toHaveValue("-100777"));
+    // e.g. the group became a supergroup: the untouched field shows the new id
+    settings = { ...settings, chat_id: "-100888", chat_title: "Sala migrata" };
+    await queryClient.invalidateQueries({ queryKey: ["telegram"], exact: true });
+    await waitFor(() => expect(chat).toHaveValue("-100888"));
+    expect(c.getByText("Sala migrata")).toBeInTheDocument();
+  });
+
+  it("sections are labelled regions", async () => {
+    renderApp("/notifiche");
+    expect(await screen.findByRole("region", { name: "Ultimi messaggi" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Decisioni" })).toBeInTheDocument();
   });
 
   it("server error shown under the field", async () => {

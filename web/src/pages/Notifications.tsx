@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 import { useAgents } from "@/api/hooks/agents";
 import { usePortfolios } from "@/api/hooks/portfolios";
@@ -74,7 +74,9 @@ function ConnectionSection({ settings }: { settings: TelegramSettings }) {
   const hasToken = settings.bot_token_masked !== null && !unreadable;
   const [replacing, setReplacing] = useState(false);
   const [token, setToken] = useState("");
-  const [chatId, setChatId] = useState(settings.chat_id ?? "");
+  // null = untouched: the field follows the server (e.g. @username → id, supergroup migration)
+  const [chatDraft, setChatDraft] = useState<string | null>(null);
+  const chatId = chatDraft ?? settings.chat_id ?? "";
   const [localError, setLocalError] = useState<string | null>(null);
   const editingToken = replacing || !hasToken;
 
@@ -84,10 +86,23 @@ function ConnectionSection({ settings }: { settings: TelegramSettings }) {
   const chatError = serverField === "chat_id" ? serverMessage : null;
   const otherError = save.error && serverField !== "bot_token" && serverField !== "chat_id" ? serverMessage : null;
 
+  // the mutations' variables may hold the typed token: never keep them in the query client
+  const { reset: resetSave } = save;
+  const { reset: resetDetect } = detect;
+  useEffect(
+    () => () => {
+      resetSave();
+      resetDetect();
+    },
+    [resetSave, resetDetect],
+  );
+
   function cancelReplace() {
     setReplacing(false);
     setToken("");
     setLocalError(null);
+    resetSave();
+    resetDetect();
   }
 
   function submit() {
@@ -108,15 +123,15 @@ function ConnectionSection({ settings }: { settings: TelegramSettings }) {
     save.mutate(body, {
       onSuccess: () => {
         cancelReplace();
-        save.reset(); // the variables held the token
+        setChatDraft(null); // show the id as the server saved it
         toast.success("Impostazioni Telegram salvate");
       },
     });
   }
 
   function chooseChat(chat: TelegramChat) {
-    setChatId(String(chat.id));
-    detect.reset();
+    setChatDraft(String(chat.id));
+    resetDetect();
   }
 
   return (
@@ -162,7 +177,7 @@ function ConnectionSection({ settings }: { settings: TelegramSettings }) {
           </div>
 
           <FormField label="ID del gruppo" error={chatError} hint={settings.chat_title && chatId.trim() === settings.chat_id ? settings.chat_title : undefined}>
-            <Input inputMode="numeric" autoComplete="off" value={chatId} onChange={(e) => setChatId(e.target.value)} placeholder="-1001234567890" />
+            <Input autoComplete="off" value={chatId} onChange={(e) => setChatDraft(e.target.value)} placeholder="-1001234567890" />
           </FormField>
 
           <div className="space-y-2">
@@ -170,7 +185,8 @@ function ConnectionSection({ settings }: { settings: TelegramSettings }) {
               Rileva gruppi
             </Button>
             <p className="text-xs text-muted">
-              Scrivi <code className="font-mono">/start@{botName(settings)}</code> nel gruppo, poi premi Rileva gruppi
+              Scrivi <code className="font-mono">/start@{botName(settings)}</code> nel gruppo, poi premi Rileva gruppi. L&apos;elenco mostra
+              solo i gruppi degli ultimi messaggi ricevuti dal bot e non ancora letti: se non compare nulla, scrivi di nuovo il comando.
             </p>
             {detect.error && (
               <p role="alert" className="text-loss">
@@ -322,6 +338,7 @@ function OutboxSection() {
   const [status, setStatus] = useState("");
   const { data, isLoading, isError } = useOutbox(status);
   const retry = useRetryOutbox();
+  const titleId = useId();
   const columns: Column<OutboxItem>[] = [
     { key: "ts", header: "Data", cell: (m) => <span className="num whitespace-nowrap">{formatDateTime(m.created_at)}</span> },
     { key: "source", header: "Origine", cell: (m) => (m.source === "system" ? "Sistema" : (m.agent ?? "Agente")) },
@@ -347,9 +364,9 @@ function OutboxSection() {
     },
   ];
   return (
-    <Card>
+    <Card role="region" aria-labelledby={titleId}>
       <CardHeader className="flex-row flex-wrap items-end justify-between gap-3 space-y-0">
-        <CardTitle>Ultimi messaggi</CardTitle>
+        <CardTitle id={titleId}>Ultimi messaggi</CardTitle>
         <div className="w-44">
           <FormField label="Stato">
             <select className={selectClass} value={status} onChange={(e) => setStatus(e.target.value)}>
@@ -384,6 +401,7 @@ function DecisionsSection() {
   const [filters, setFilters] = useState(NO_FILTERS);
   const agents = useAgents();
   const portfolios = usePortfolios({ includeArchived: true });
+  const titleId = useId();
   const { data, isLoading, isError, hasNextPage, fetchNextPage, isFetchingNextPage } = useDecisions(filters);
   const set = (field: keyof DecisionFilters) => (e: { target: { value: string } }) => setFilters((f) => ({ ...f, [field]: e.target.value }));
   const rows = data?.pages.flatMap((p) => p.items);
@@ -396,9 +414,9 @@ function DecisionsSection() {
     { key: "symbols", header: "Simboli", cell: (d) => (d.symbols.length ? <span className="font-mono text-xs">{d.symbols.join(", ")}</span> : "—") },
   ];
   return (
-    <Card>
+    <Card role="region" aria-labelledby={titleId}>
       <CardHeader>
-        <CardTitle>Decisioni</CardTitle>
+        <CardTitle id={titleId}>Decisioni</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-3">

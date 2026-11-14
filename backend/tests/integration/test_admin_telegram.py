@@ -4,6 +4,7 @@ notify permission and the CLI `telegram set` / `agent notify`. Telegram is mocke
 import asyncio
 import io
 import json
+import logging
 import uuid
 
 import httpx
@@ -444,6 +445,58 @@ async def test_routes_require_login(admin):
             assert (await anon.request(method, path, json={})).status_code == 401
 
 
+@pytest.mark.parametrize("method,path,body", [
+    ("PUT", "/api/telegram/config", {"enabled": False}),
+    ("POST", "/api/telegram/detect-chats", {}),
+    ("POST", "/api/telegram/test", None),
+    ("PUT", "/api/telegram/paused", {"paused": True}),
+    ("POST", "/api/telegram/outbox/1/retry", None),
+])
+async def test_mutating_routes_require_csrf(admin, method, path, body):
+    async with httpx.AsyncClient(transport=admin.client._transport, base_url="http://test",
+                                 cookies=admin.client.cookies) as no_csrf:
+        r = await no_csrf.request(method, path, json=body)
+    assert r.status_code == 403, r.text
+
+
+async def test_invalid_filter_messages_list_values(admin):
+    r = await admin.client.get("/api/telegram/outbox?status=nope")
+    assert r.status_code == 400
+    assert r.json()["message"].endswith("pending, sent, failed, paused")
+    r = await admin.client.get("/api/decisions?kind=loud")
+    assert r.status_code == 400
+    assert r.json()["message"].endswith(
+        "proposal, approval, veto, allocation, strategy, risk_rule, other")
+    assert "<" not in r.json()["message"] and "Kind" not in r.json()["message"]
+
+
+async def test_token_change_keeps_concurrent_chat_migration(admin):
+    """A supergroup migration saved while the new token is being verified is not reverted."""
+    from smtrading.risk.models import AppSetting
+    from smtrading.telegram.config import load_config
+
+    with respx.mock(assert_all_called=False) as router:
+        await _configure(admin, router)
+
+    async def migrate_then_answer(request):
+        async with admin.sm() as s:
+            row = await s.get(AppSetting, "telegram")
+            row.value = {**row.value, "chat_id": "-100999", "chat_title": "Migrato"}
+            await s.commit()
+        return _ok({"id": 2, "username": "smt_bot2"})
+
+    with respx.mock(assert_all_called=False) as router:
+        router.post(f"{BASE2}/getMe").mock(side_effect=migrate_then_answer)
+        router.post(f"{BASE2}/getChat").mock(
+            return_value=_ok({"id": int(CHAT), "type": "supergroup", "title": "Trading"}))
+        r = await admin.client.put("/api/telegram/config", json={"bot_token": TOKEN2})
+    assert r.status_code == 200, r.text
+    assert r.json()["chat_id"] == "-100999" and r.json()["chat_title"] == "Migrato"
+    async with admin.sm() as s:
+        cfg = await load_config(s)
+    assert cfg.bot_token == TOKEN2 and cfg.chat_id == "-100999"
+
+
 # --- CLI ---------------------------------------------------------------------------------
 
 async def _cli(admin, monkeypatch, argv, stdin=""):
@@ -461,6 +514,8 @@ async def _cli(admin, monkeypatch, argv, stdin=""):
 
 async def test_cli_telegram_set_reads_token_from_stdin(admin, monkeypatch, caplog):
     from smtrading.telegram.config import load_config
+
+    caplog.set_level(logging.DEBUG)
 
     with respx.mock(assert_all_called=False) as router:
         me, _ = _mock_ok(router)

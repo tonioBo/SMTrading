@@ -148,6 +148,9 @@ async def apply_config(
 
     await _lock_settings(session)
     fresh = await load_config(session)  # pause may have changed during the verification
+    if new_chat is None and fresh.chat_id != current.chat_id:
+        # the sender migrated the group to a supergroup meanwhile: keep its new id
+        chat, title = fresh.chat_id, fresh.chat_title
     cfg = TelegramConfig(
         bot_token=token, chat_id=chat,
         enabled=fresh.enabled if enabled is None else enabled,
@@ -156,7 +159,7 @@ async def apply_config(
     if cfg.enabled and not (cfg.bot_token and cfg.chat_id):
         raise _invalid("enabled", "per attivare le notifiche servono il token e il gruppo")
     changed = [name for name, yes in (
-        ("bot_token", token_changed), ("chat_id", chat_changed or cfg.chat_id != current.chat_id),
+        ("bot_token", token_changed), ("chat_id", new_chat is not None and cfg.chat_id != current.chat_id),
         ("enabled", cfg.enabled != current.enabled),
     ) if yes]
     await save_config(session, cfg)
@@ -223,7 +226,8 @@ async def put_telegram_config(
 @router.post("/telegram/detect-chats")
 async def detect_chats(body: DetectChatsIn, session: DbSession) -> dict:
     """Groups, supergroups and channels seen in the bot's pending updates (read only: the
-    updates are not consumed), newest first, one per id."""
+    updates are not consumed), newest first, one per id. Only the updates Telegram still
+    holds are seen: if a group is missing, write `/start@<bot>` in it again."""
     if body.bot_token is not None:
         token = clean_token(body.bot_token)
     else:
@@ -311,7 +315,7 @@ async def get_outbox(
     stmt = select(TelegramOutbox)
     if status:
         if status not in OutboxStatus.__members__:
-            raise _invalid("status", f"stato non valido: usa uno tra {list(OutboxStatus)}")
+            raise _invalid("status", "stato non valido: usa uno tra " + ", ".join(OutboxStatus))
         stmt = stmt.where(TelegramOutbox.status == status)
     if category:
         stmt = stmt.where(TelegramOutbox.category == category)
@@ -340,7 +344,7 @@ async def get_decisions(
     limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
 ) -> dict:
     if kind and kind not in DecisionKind.__members__:
-        raise _invalid("kind", f"tipo non valido: usa uno tra {list(DecisionKind)}")
+        raise _invalid("kind", "tipo non valido: usa uno tra " + ", ".join(DecisionKind))
     rows: list[Decision] = await list_decisions(
         session, viewer_agent_id=None, agent_id=agent_id, portfolio_id=portfolio_id,
         kind=kind or None, before_id=before_id, limit=limit,
