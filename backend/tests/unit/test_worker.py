@@ -97,11 +97,12 @@ class _IdleProcessor:
 
 @pytest.fixture(autouse=True)
 def _idle_telegram_loops(monkeypatch):
-    """The real Telegram loops would run against _FakeEngine and fail quietly under
+    """The real Telegram loops (and the live monitor) would run against _FakeEngine and fail quietly under
     `supervise`: every run() test gets idle ones (a test may override them)."""
     monkeypatch.setattr(worker, "TelegramPlanner", _IdleProcessor)
     monkeypatch.setattr(worker, "OutboxSender", _IdleProcessor)
     monkeypatch.setattr(worker, "SummaryScheduler", _IdleProcessor)
+    monkeypatch.setattr(worker, "LiveMonitor", _IdleProcessor)
 
 
 class _FakeEngine:
@@ -340,3 +341,33 @@ async def test_run_supervises_telegram_planner_and_sender(monkeypatch):
     assert all(e.is_set() for e in started.values())
     assert seen["planner"] is seen["sender"] is seen["summaries"]
     assert isinstance(seen["http"], worker.httpx.AsyncClient)
+
+
+async def test_run_supervises_live_monitor(monkeypatch):
+    started = asyncio.Event()
+    seen = {}
+
+    class FakeMonitor:
+        def __init__(self, sessionmaker, **kwargs):
+            seen.update(sessionmaker=sessionmaker, **kwargs)
+
+        async def run(self):
+            started.set()
+            signal.raise_signal(signal.SIGTERM)
+            await asyncio.sleep(3600)
+
+    monkeypatch.setattr(
+        worker, "get_settings",
+        lambda: SimpleNamespace(redis_url="redis://unused:6379/0", database_url="x"),
+    )
+    monkeypatch.setattr(worker.Redis, "from_url", staticmethod(lambda url: _FlakyRedis()))
+    monkeypatch.setattr(worker, "make_engine", lambda url: _FakeEngine())
+    monkeypatch.setattr(worker, "StreamManager", _IdleProcessor)
+    monkeypatch.setattr(worker, "health_checks", lambda router: asyncio.sleep(3600))
+    monkeypatch.setattr(worker, "OrderProcessor", _IdleProcessor)
+    monkeypatch.setattr(worker, "AlertEvaluator", _IdleProcessor)
+    monkeypatch.setattr(worker, "JobScheduler", _IdleProcessor)
+    monkeypatch.setattr(worker, "LiveMonitor", FakeMonitor)
+    await asyncio.wait_for(worker.run(), 2)
+    assert started.is_set()
+    assert isinstance(seen["qs"], worker.MarketDataRouter)

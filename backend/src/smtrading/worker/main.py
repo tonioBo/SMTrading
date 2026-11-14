@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 import smtrading.models  # noqa: F401  (complete mapper registry before any session)
 from smtrading.backtest.runner import BacktestRunner
+from smtrading.brokers.live.monitor import LiveMonitor
 from smtrading.brokers.sync import BrokerSync
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
@@ -109,6 +110,10 @@ async def run() -> None:
                     tg.create_task(
                         supervise("broker sync",
                                   lambda: BrokerSync(sessionmaker, redis, router, http).run())
+                    ),
+                    tg.create_task(
+                        supervise("live monitor",
+                                  lambda: LiveMonitor(sessionmaker, qs=router).run())
                     ),
                     tg.create_task(
                         supervise("job scheduler",
