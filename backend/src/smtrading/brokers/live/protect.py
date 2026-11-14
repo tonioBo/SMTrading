@@ -33,7 +33,7 @@ log = logging.getLogger(__name__)
 
 TRIP_CAUSES = frozenset({
     "reconcile_diff", "order_unknown", "fingerprint_changed", "cash_shortfall", "fuse",
-    "health",
+    "health", "margin_account",
 })
 ALERT_REPEAT_AFTER = timedelta(hours=1)  # one alert per cause per hour on a blocked portfolio
 REDUCE_ONLY_KIND = "reduce_only"
@@ -45,6 +45,7 @@ CAUSE_TEXT = {
     "cash_shortfall": "liquidità al broker inferiore a quella del portafoglio",
     "fuse": "fusibile: troppi ordini reali nell'ultima ora",
     "health": "broker non raggiungibile",
+    "margin_account": "il conto Alpaca non è più un conto cash (margine attivo)",
 }
 
 Phase = Literal["sent", "filled", "partial", "rejected", "canceled", "dry_run"]
@@ -67,6 +68,9 @@ ALERT_TITLES = {
     "order_unknown": "esito sconosciuto",
     "reconcile_diff": "riconciliazione con differenze",
     "fuse": "fusibile di frequenza",
+    "credentials_rejected": "credenziali rifiutate",
+    "monitor_failed": "controllo del conto reale non riuscito",
+    "reconcile_unexplained": "riconciliazione non verificabile",
 }
 TYPE_LABELS = {
     "market": "mercato", "limit": "limite", "stop": "stop", "stop_limit": "stop limite",
@@ -250,7 +254,7 @@ async def _alerted_recently(session: AsyncSession, portfolio_id: uuid.UUID,
 
 
 async def trip_reduce_only(session: AsyncSession, portfolio_id: uuid.UUID, *, cause: str,
-                           details: dict, actor: str = "system") -> bool:
+                           details: dict, actor: str = "system", alert: bool = True) -> bool:
     """Puts a real-money portfolio in reduce-only for `cause` (an anomaly): only
     `resume_live_portfolio` (TOTP) makes it active again.
 
@@ -262,7 +266,8 @@ async def trip_reduce_only(session: AsyncSession, portfolio_id: uuid.UUID, *, ca
       status stays locked): returns False.
 
     The critical alert is sent when the status changes and otherwise once per cause per
-    hour; each alert is recorded in live_audit (`reduce_only_auto`)."""
+    hour; each alert is recorded in live_audit (`reduce_only_auto`). `alert=False`: the
+    caller sends its own single alert (an account change); the audit is still written."""
     if cause not in TRIP_CAUSES:
         raise ValueError(f"unknown live reduce-only cause: {cause}")
     portfolio = await lock_portfolio(session, portfolio_id)
@@ -281,7 +286,7 @@ async def trip_reduce_only(session: AsyncSession, portfolio_id: uuid.UUID, *, ca
         portfolio.reduce_only_reason = reason  # unlocking it now needs the TOTP resume
         portfolio.reduce_only_until = None
     await session.flush()
-    if not changed and await _alerted_recently(session, portfolio_id, cause):
+    if alert and not changed and await _alerted_recently(session, portfolio_id, cause):
         return False
     text = CAUSE_TEXT[cause]
     summary = (f"Portafoglio in reduce-only: {text}. Verifica e riprendi con TOTP"
@@ -296,11 +301,12 @@ async def trip_reduce_only(session: AsyncSession, portfolio_id: uuid.UUID, *, ca
             details={"cause": cause, "changed": changed, "status": portfolio.status,
                      **details},
         )
-    await live_alert(
-        session, kind=REDUCE_ONLY_KIND, summary=summary, portfolio_id=portfolio_id,
-        link_id=portfolio.broker_link_id,
-        data={"cause": cause, "changed": changed, "details": details},
-    )
+    if alert:
+        await live_alert(
+            session, kind=REDUCE_ONLY_KIND, summary=summary, portfolio_id=portfolio_id,
+            link_id=portfolio.broker_link_id,
+            data={"cause": cause, "changed": changed, "details": details},
+        )
     log.warning("live portfolio %s: reduce-only (%s), changed=%s", portfolio_id, cause,
                 changed)
     return changed

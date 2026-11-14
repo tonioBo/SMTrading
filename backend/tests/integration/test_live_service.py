@@ -274,7 +274,7 @@ async def _armed_with_portfolio(sm, redis, fake, *, totp_admin=None):
     async with sm() as s:
         await set_dry_run(s, link_id, True, actor=WHO)
         await s.commit()
-    pid = await _portfolio(sm)
+    pid = await _portfolio(sm, ccy="USD")  # R8.5: the Alpaca fake account is in USD
     async with sm() as s:
         await link_live_portfolio(s, redis, pid, link_id, admin=await s.get(AdminUser, admin.id),
                                   totp=totp.code(), actor=WHO, qs=_qs())
@@ -490,7 +490,7 @@ async def test_arm_checks_the_linked_portfolio(sm, redis, fake):
     async with sm() as s:
         await set_dry_run(s, link_id, True, actor=WHO)
         await s.commit()
-    pid = await _portfolio(sm)
+    pid = await _portfolio(sm, ccy="USD")
     async with sm() as s:
         await link_live_portfolio(s, redis, pid, link_id,
                                   admin=await s.get(AdminUser, admin.id), totp=totp.code(),
@@ -540,8 +540,10 @@ async def test_fingerprint_change_disarms_and_reduce_only(sm, redis, fake):
         p = await s.get(Portfolio, pid)
         assert p.status == PortfolioStatus.reduce_only
         assert p.reduce_only_reason == "live_fingerprint_changed"
-        kinds = set(await s.scalars(select(Activity.type).where(Activity.portfolio_id == pid)))
-    assert {"live.account_changed", "live.reduce_only", "live.disarmed"} <= kinds
+        alerts = list(await s.scalars(select(Activity.type).where(
+            Activity.portfolio_id == pid, Activity.level == "critical",
+            Activity.type != "live.armed")))
+    assert alerts == ["live.account_changed"]  # M4: one critical alert, not two
     actions = [a.action for a in await _audit(sm, link_id)]
     assert {"disarmed", "reduce_only_auto"} <= set(actions[-4:])
     # arming again: a new test, then a new TOTP
@@ -575,15 +577,16 @@ async def test_link_checks_profile_short_leverage_currency_cash_one_to_one(sm, r
     await check(await _portfolio(sm, profile=await _profile(sm, short_allowed=True)),
                 "short_allowed")
     await check(await _portfolio(sm, leverage=2), "leverage")
-    await check(await _portfolio(sm, cash=801), "cash")  # 801 EUR = 1001.25 USD
-    ok = await _portfolio(sm, cash=800)  # 1000.00 USD: allowed
+    await check(await _portfolio(sm, ccy="EUR"), "base_currency")  # R8.5: Alpaca too
+    await check(await _portfolio(sm, cash=1001, ccy="USD"), "cash")
+    ok = await _portfolio(sm, cash=1000, ccy="USD")  # 1000.00 USD: allowed
     async with sm() as s:
         await check_live_portfolio(s, await s.get(Portfolio, ok),
                                    await s.get(BrokerLink, link_id), qs=qs)
         await link_live_portfolio(s, redis, ok, link_id, admin=await s.get(AdminUser, admin.id),
                                   totp=totp.code(), actor=WHO, qs=qs)
         await s.commit()
-    await check(await _portfolio(sm), "link_id")  # 1 live link <-> 1 portfolio
+    await check(await _portfolio(sm, ccy="USD"), "link_id")  # 1 live link <-> 1 portfolio
 
     t212 = await _tested(sm, fake, "t212_live", T212)  # Trading 212 fake: EUR
     async with sm() as s:
@@ -595,7 +598,7 @@ async def test_link_checks_profile_short_leverage_currency_cash_one_to_one(sm, r
 async def test_link_allowed_in_dry_run(sm, redis, fake):
     admin, totp = await _admin(sm)
     link_id = await _tested(sm, fake)
-    pid = await _portfolio(sm)
+    pid = await _portfolio(sm, ccy="USD")
     async with sm() as s:  # configured: not yet
         await _expect(link_live_portfolio(s, redis, pid, link_id,
                                           admin=await s.get(AdminUser, admin.id),
@@ -648,9 +651,9 @@ async def test_unlink_live_refused_with_positions_and_audited(sm, redis, fake):
 
 
 async def _order(s, pid, link_id, **kw) -> uuid.UUID:
-    o = Order(portfolio_id=pid, symbol="AAPL", side=OrderSide.buy, type=OrderType.limit,
-              qty=D(1), limit_price=D(90), status=OrderStatus.pending,
-              broker_link_id=link_id, **kw)
+    values = {"side": OrderSide.buy, "type": OrderType.limit, "qty": D(1),
+              "limit_price": D(90), "status": OrderStatus.pending, **kw}
+    o = Order(portfolio_id=pid, symbol="AAPL", broker_link_id=link_id, **values)
     s.add(o)
     await s.flush()
     return o.id
@@ -764,3 +767,198 @@ def test_mode_reale_for_live_kinds():
     assert live_state_of(None) is None
     assert live_state_of(BrokerLink(kind="t212_demo", live_state=None)) is None
     assert live_state_of(BrokerLink(kind="t212_live", live_state="dry_run")) == "dry_run"
+
+
+# -- fix round T5-T7 (plan 8) ---------------------------------------------------------------
+
+async def test_disarm_finalises_unsent_bracket_and_requests_cancel_of_sending(sm, redis,
+                                                                              fake):
+    """I1/M3/M6: a never-sent bracket entry is rejected through the engine finalisation
+    (held children canceled, order.rejected notified) with its live.order.rejected; an
+    order being sent (`sending`) gets a cancellation request."""
+    from smtrading.risk.models import Notification
+
+    link_id, pid, _, _ = await _armed_with_portfolio(sm, redis, fake)
+    async with sm() as s:
+        entry = await _order(s, pid, link_id, broker_status=BrokerState.TO_SEND, role="entry")
+        children = [await _order(s, pid, None, side=OrderSide.sell, parent_id=entry,
+                                 status=OrderStatus.held, reduce_only=True, role=role)
+                    for role in ("take_profit", "stop_loss")]
+        sending = await _order(s, pid, link_id, broker_status=BrokerState.SENDING,
+                               broker_sent_at=datetime.now(UTC))
+        await s.commit()
+    async with sm() as s:
+        assert await disarm_live_link(s, link_id, actor=WHO, reason="disattivato") == 2
+        await s.commit()
+    async with sm() as s:
+        e = await s.get(Order, entry)
+        assert (e.status, e.reject_code) == (OrderStatus.rejected, "LIVE_NOT_ARMED")
+        assert [(await s.get(Order, c)).status for c in children] == [OrderStatus.canceled] * 2
+        o = await s.get(Order, sending)
+        assert (o.status, o.broker_status) == (OrderStatus.pending,
+                                               BrokerState.CANCEL_REQUESTED)
+        acts = list(await s.scalars(select(Activity.type).where(
+            Activity.data["order_id"].astext == str(entry))))
+        assert "live.order.rejected" in acts
+        assert await s.scalar(select(Notification.id).where(
+            Notification.kind == "order.rejected",
+            Notification.payload["order_id"].astext == str(entry))) is not None
+    assert fake.writes == []
+
+
+async def test_test_result_discarded_when_keys_replaced_meanwhile(sm, fake, monkeypatch):
+    """I2: the keys are replaced while the read-only test waits on the broker: its result
+    belongs to the old keys and is discarded (no last_test_at)."""
+    link_id = await _keys(sm)
+    link = await _link(sm, link_id)
+    real = AlpacaLiveAdapter.get_account
+
+    async def replace_then_read(self):
+        async with sm() as s:
+            await save_live_keys(s, name=link.name, kind="alpaca_live",
+                                 config={"key_id": "CANARYKEYID0002", "secret_key": SECRET},
+                                 actor=WHO, link_id=link_id)
+            await s.commit()
+        return await real(self)
+
+    monkeypatch.setattr(AlpacaLiveAdapter, "get_account", replace_then_read)
+    async with _client(sm, link_id, fake) as http:
+        e = await _expect(test_live_link(sm, link_id, actor=WHO, http=http),
+                          ErrorCode.INVALID_ORDER, "test")
+    assert e.message == "chiavi sostituite durante il test: ripeti il test"
+    link = await _link(sm, link_id)
+    assert link.last_test_at is None and link.account_fingerprint is None
+    assert (await _audit(sm, link_id))[-1].action == "test_failed"
+
+
+class MarginFake(Fake):
+    def _alpaca(self, method, path, params, body):
+        resp = super()._alpaca(method, path, params, body)
+        if (method, path) == ("GET", "/v2/account"):
+            return httpx.Response(200, json={**resp.json(), "multiplier": "2"})
+        return resp
+
+
+async def test_alpaca_margin_account_fails_the_test_and_cannot_be_armed(sm, redis):
+    """R8.10: an Alpaca live account must be a cash account (multiplier 1)."""
+    admin, totp = await _admin(sm)
+    await _telegram(sm)
+    link_id = await _keys(sm)
+    async with _client(sm, link_id, MarginFake()) as http:
+        e = await _expect(test_live_link(sm, link_id, actor=WHO, http=http),
+                          ErrorCode.INVALID_ORDER, "account_type")
+    assert e.message == "Il conto Alpaca deve essere un conto cash (senza margine)"
+    link = await _link(sm, link_id)
+    assert link.last_test_at is None and link.last_account_snapshot["account_type"] == "margin"
+    assert (await _audit(sm, link_id))[-1].action == "test_failed"
+    async with sm() as s:  # a fresh test of the margin account cannot be armed either
+        await s.execute(update(BrokerLink).where(BrokerLink.id == link_id)
+                        .values(last_test_at=datetime.now(UTC)))
+        await s.commit()
+    await _expect(_arm(sm, redis, link_id, admin, totp, totp=BAD), ErrorCode.INVALID_ORDER,
+                  "account_type")
+
+
+async def _held_position(sm, pid, link_id, qty=D(2)) -> None:
+    async with sm() as s:  # a position filled while unlinked
+        await s.execute(update(Portfolio).where(Portfolio.id == pid)
+                        .values(broker_link_id=None))
+        await place_order(s, _qs(), PlaceOrderRequest(
+            portfolio_id=pid, symbol="AAPL", side=OrderSide.buy, type=OrderType.market,
+            qty=qty), now=OPEN)
+        await s.execute(update(Portfolio).where(Portfolio.id == pid)
+                        .values(broker_link_id=link_id))
+        await s.commit()
+
+
+async def _flatten(sm, redis, pid, admin, code):
+    async with sm() as s:
+        ids = await flatten_live_portfolio(s, redis, _qs(), pid,
+                                           admin=await s.get(AdminUser, admin.id),
+                                           totp=code, actor=WHO, now=OPEN)
+        await s.commit()
+        return ids
+
+
+async def test_flatten_refused_on_a_link_not_armed(sm, redis, fake):
+    """M2: nothing could be sent: the admin closes from the broker's app."""
+    link_id, pid, admin, totp = await _armed_with_portfolio(sm, redis, fake)
+    await _held_position(sm, pid, link_id)
+    async with sm() as s:
+        await disarm_live_link(s, link_id, actor=WHO, reason="prova")
+        await s.commit()
+    e = await _expect(_flatten(sm, redis, pid, admin, BAD), ErrorCode.INVALID_ORDER,
+                      "live_state")
+    assert "app del broker" in e.message
+
+
+async def test_flatten_with_kill_switch_on(sm, redis, fake):
+    """M6: the flatten orders pass the kill switch (Ruling R8.2)."""
+    from smtrading.risk.settings import set_kill_switch
+
+    link_id, pid, admin, totp = await _armed_with_portfolio(sm, redis, fake)
+    await _held_position(sm, pid, link_id)
+    async with sm() as s:
+        await set_kill_switch(s, True)
+        await s.commit()
+    ids = await _flatten(sm, redis, pid, admin, totp.code())
+    assert len(ids) == 1
+    async with sm() as s:
+        o = await s.get(Order, ids[0])
+    assert o.status != OrderStatus.rejected and o.live_flatten
+    assert (await _audit(sm, link_id))[-1].details["failed"] == []
+
+
+async def test_flatten_records_refused_positions(sm, redis, fake, monkeypatch):
+    """M6: a position whose closing order is refused goes to the audit's `failed`."""
+    from smtrading.engine import service as engine_service
+
+    link_id, pid, admin, totp = await _armed_with_portfolio(sm, redis, fake)
+    await _held_position(sm, pid, link_id)
+
+    async def refuse(*a, **kw):
+        raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE, "quotazione non disponibile")
+
+    monkeypatch.setattr(engine_service, "place_order", refuse)
+    assert await _flatten(sm, redis, pid, admin, totp.code()) == []
+    row = (await _audit(sm, link_id))[-1]
+    assert row.action == "flatten" and row.details["orders"] == []
+    assert row.details["failed"] == [{"symbol": "AAPL", "code": "PROVIDER_UNAVAILABLE",
+                                      "message": "quotazione non disponibile"}]
+
+
+async def test_lock_order_link_before_portfolio(sm, redis, fake):
+    """R8.9: link_live_portfolio and disarm lock the link (FOR NO KEY UPDATE) before the
+    portfolio (FOR UPDATE)."""
+    from sqlalchemy import event
+
+    admin, totp = await _admin(sm)
+    link_id = await _tested(sm, fake)
+    async with sm() as s:
+        await set_dry_run(s, link_id, True, actor=WHO)
+        await s.commit()
+    pid = await _portfolio(sm, ccy="USD")
+    seen: list[str] = []
+
+    def record(conn, cursor, statement, *args):
+        if "FOR NO KEY UPDATE" in statement and "broker_links" in statement:
+            seen.append("link")
+        elif "FOR UPDATE" in statement and "FROM portfolios" in statement:
+            seen.append("portfolio")
+
+    bind = sm.kw["bind"].sync_connection
+    event.listen(bind, "before_cursor_execute", record)
+    try:
+        async with sm() as s:
+            await link_live_portfolio(s, redis, pid, link_id,
+                                      admin=await s.get(AdminUser, admin.id),
+                                      totp=totp.code(), actor=WHO, qs=_qs())
+            await s.commit()
+        assert seen[:2] == ["link", "portfolio"], seen
+        seen.clear()
+        async with sm() as s:
+            await disarm_live_link(s, link_id, actor=WHO, reason="prova")
+            await s.commit()
+        assert seen[:2] == ["link", "portfolio"], seen
+    finally:
+        event.remove(bind, "before_cursor_execute", record)

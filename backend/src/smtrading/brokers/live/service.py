@@ -9,14 +9,22 @@ reale» (`armed`, TOTP) -> one-click disarm (back to `configured`, no TOTP).
   (masked in every log text of the process).
 - The read-only test does only GET requests, outside any transaction (no network I/O
   under a lock); a different account behind the same credentials puts the link back in
-  `configured` and the linked portfolio in reduce-only.
+  `configured` and the linked portfolio in reduce-only (one critical alert,
+  `live.account_changed`). Keys replaced while the test ran: its result is discarded.
+  An Alpaca account must be a cash account (multiplier 1, `account_type` "cash"): a
+  margin account fails the test and cannot be armed.
 - Arming needs the admin TOTP, the three confirmations and the link name, a successful
   read-only test of an empty account from the last 15 minutes, a working Telegram (a
   test message sent in the last 24 hours) and a linked portfolio that passes
-  `check_live_portfolio`. It never bypasses the kill switch or a trading halt: the live
-  gate and the pre-trade checks still apply.
+  `check_live_portfolio` (base currency = account currency, for both brokers). It never
+  bypasses the kill switch or a trading halt: the live gate and the pre-trade checks
+  still apply.
+- Disarming rejects the never-sent orders through engine.service.reject_broker_order
+  (held bracket children canceled, notified, untracked) with one `live.order.rejected`
+  each; the others get a cancellation request.
 - Linking a portfolio (allowed in `dry_run` and `armed`), resuming it after an automatic
-  reduce-only and «Chiudi tutte le posizioni reali» need the TOTP too.
+  reduce-only and «Chiudi tutte le posizioni reali» (`armed` only) need the TOTP too.
+- Lock order (R8.9, portfolios.locks): link (FOR NO KEY UPDATE), portfolio, orders.
 - Every step is recorded in the append-only `live_audit`.
 """
 
@@ -49,7 +57,11 @@ from smtrading.brokers.live.account import (
 from smtrading.brokers.live.audit import record_live_audit
 from smtrading.brokers.live.gate import LiveClient, make_live_client
 from smtrading.brokers.live.models import LiveState
-from smtrading.brokers.live.protect import live_alert, trip_reduce_only
+from smtrading.brokers.live.protect import (
+    live_alert,
+    record_live_order_activity,
+    trip_reduce_only,
+)
 from smtrading.brokers.models import BrokerLink
 from smtrading.brokers.registry import adapter_class
 from smtrading.common.errors import ErrorCode, SMTError
@@ -64,9 +76,10 @@ from smtrading.engine.models import (
     TimeInForce,
 )
 from smtrading.engine.quotesource import QuoteSource
+from smtrading.engine.service import reject_broker_order
 from smtrading.events import POST_COMMIT_KEY, queue_event
 from smtrading.instruments.models import AssetClass, Instrument
-from smtrading.portfolios.locks import lock_live_portfolio, lock_portfolio
+from smtrading.portfolios.locks import lock_broker_link, lock_live_portfolio, lock_portfolio
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import get_cash_balances, is_live_reason, set_portfolio_status
 from smtrading.positions.models import Position
@@ -83,6 +96,10 @@ ACCOUNT_CHANGED_REASON = "conto cambiato"
 DISARMED_MESSAGE = "denaro reale disattivato"
 TOTP_REQUIRED_MESSAGE = "Attiva prima l'autenticazione a due fattori"
 NOT_DEDICATED_MESSAGE = "Il conto non è dedicato: chiudi posizioni e ordini dall'app del broker"
+CASH_ACCOUNT_MESSAGE = "Il conto Alpaca deve essere un conto cash (senza margine)"
+KEYS_CHANGED_MESSAGE = "chiavi sostituite durante il test: ripeti il test"
+FLATTEN_NOT_ARMED_MESSAGE = ("denaro reale non attivo sul collegamento: chiudi le posizioni"
+                             " dall'app del broker")
 CLOSE_REAL_POSITIONS_MESSAGE = "Chiudi prima le posizioni reali"
 
 
@@ -161,10 +178,11 @@ def offline_live_client(link_id: uuid.UUID, sessionmaker: async_sessionmaker | N
 
 async def _live_link(session: AsyncSession, link_id: uuid.UUID, *, lock: bool = True
                      ) -> BrokerLink:
-    query = select(BrokerLink).where(BrokerLink.id == link_id)
+    """The real-money link; with `lock` FOR NO KEY UPDATE, before any portfolio (R8.9)."""
     if lock:
-        query = query.with_for_update().execution_options(populate_existing=True)
-    link = await session.scalar(query)
+        link = await lock_broker_link(session, link_id)
+    else:
+        link = await session.scalar(select(BrokerLink).where(BrokerLink.id == link_id))
     if link is None or link.kind not in LIVE_KINDS:
         raise SMTError(ErrorCode.NOT_FOUND, "collegamento reale non trovato",
                        {"link_id": str(link_id)})
@@ -261,6 +279,7 @@ async def test_live_link(
     async with sessionmaker() as session:
         link = await _live_link(session, link_id, lock=False)
         kind = link.kind
+        keys = link.config_encrypted  # the keys this test reads with
         config = decrypt_live_config(link)
         await session.commit()
     secrets = live_secrets(kind, config)
@@ -288,40 +307,63 @@ async def test_live_link(
     snapshot = snapshot_record(snap)
     empty = _is_empty(snapshot)
     fp = account_fingerprint(kind, snap.account_id)
+    margin = not _cash_account(kind, snapshot)
     async with sessionmaker() as session:
         link = await _live_link(session, link_id)
+        if link.config_encrypted != keys:  # replaced while the test ran: not these keys
+            await record_live_audit(session, action="test_failed", link_id=link_id,
+                                    **_who(actor), details={"error": KEYS_CHANGED_MESSAGE})
+            await session.commit()
+            raise _invalid(KEYS_CHANGED_MESSAGE, "test")
         changed = link.account_fingerprint is not None and link.account_fingerprint != fp
         link.account_fingerprint = fp
         link.last_account_snapshot = snapshot
         link.last_snapshot_at = now
-        link.last_test_at = None if changed else now  # after a change: test again
+        # after a change, or on a margin account: test again
+        link.last_test_at = None if changed or margin else now
         if changed:
-            await _account_changed(session, link, actor)
-        await record_live_audit(
-            session, action="test_ok", link_id=link_id, **_who(actor),
-            details={**snapshot, "empty": empty, "account_changed": changed},
-        )
+            await account_changed(session, link, actor)
+        details = {**snapshot, "empty": empty, "account_changed": changed}
+        if margin:
+            details["error"] = CASH_ACCOUNT_MESSAGE
+        await record_live_audit(session, action="test_failed" if margin else "test_ok",
+                                link_id=link_id, **_who(actor), details=details)
         await session.commit()
+    if margin:
+        raise _invalid(CASH_ACCOUNT_MESSAGE, "account_type",
+                       account_type=snapshot.get("account_type"))
     return {**snapshot, "empty": empty, "account_changed": changed}
 
 
 test_live_link.__test__ = False  # a service function, not a pytest test
 
 
-async def _account_changed(session: AsyncSession, link: BrokerLink, actor: Actor | str
-                           ) -> None:
-    if link.live_state != LiveState.configured:
-        await disarm_live_link(session, link.id, actor=actor, reason=ACCOUNT_CHANGED_REASON)
+ACCOUNT_CHANGED_SUMMARY = ("Conto diverso dietro le stesse credenziali: denaro reale"
+                           " disattivato, portafoglio in reduce-only")
+
+
+async def account_changed(session: AsyncSession, link: BrokerLink, actor: Actor | str, *,
+                          data: dict | None = None) -> list[uuid.UUID]:
+    """Another account behind the keys (read-only test or reconciliation): disarmed
+    (`conto cambiato`) when it was not `configured`, every linked portfolio in reduce-only
+    and ONE critical alert, `live.account_changed` (the disarm and the reduce-only are
+    recorded in the audit without their own alerts). The link row is locked by the
+    caller. Returns the linked portfolios."""
+    was = link.live_state
+    if was != LiveState.configured:
+        await disarm_live_link(session, link.id, actor=actor, reason=ACCOUNT_CHANGED_REASON,
+                               alert=False)
     portfolios = await _linked_portfolios(session, link.id)
     for p in portfolios:
         await trip_reduce_only(session, p.id, cause="fingerprint_changed",
-                               details={"link_id": link.id}, actor=_who(actor)["actor"] or "system")
+                               details={"link_id": link.id}, alert=False,
+                               actor=_who(actor)["actor"] or "system")
     await live_alert(
-        session, kind="account_changed",
-        summary="Conto diverso dietro le stesse credenziali: denaro reale sospeso",
+        session, kind="account_changed", summary=ACCOUNT_CHANGED_SUMMARY,
         portfolio_id=portfolios[0].id if portfolios else None, link_id=link.id,
-        data={"link_name": link.name},
+        data={"link_name": link.name, "from": was, **(data or {})},
     )
+    return [p.id for p in portfolios]
 
 
 # -- dry run, arm, disarm ------------------------------------------------------------------
@@ -331,11 +373,18 @@ def _test_age_ok(link: BrokerLink, now: datetime) -> bool:
             and now - link.last_test_at <= timedelta(seconds=LIVE_TEST_MAX_AGE_S))
 
 
+def _cash_account(kind: str, snapshot: dict | None) -> bool:
+    """R8.10: an Alpaca live account must be a cash account (multiplier 1)."""
+    return kind != "alpaca_live" or (snapshot or {}).get("account_type") == "cash"
+
+
 def _require_fresh_empty_test(link: BrokerLink, now: datetime) -> None:
     if not _test_age_ok(link, now) or link.account_fingerprint is None:
         raise _invalid("esegui il test in sola lettura (valido 15 minuti)", "test")
     if not _is_empty(link.last_account_snapshot):
         raise _invalid(NOT_DEDICATED_MESSAGE, "test")
+    if not _cash_account(link.kind, link.last_account_snapshot):
+        raise _invalid(CASH_ACCOUNT_MESSAGE, "account_type")
 
 
 async def set_dry_run(session: AsyncSession, link_id: uuid.UUID, on: bool, *,
@@ -348,6 +397,8 @@ async def set_dry_run(session: AsyncSession, link_id: uuid.UUID, on: bool, *,
             raise _invalid("esegui prima il test in sola lettura", "test")
         if not _is_empty(link.last_account_snapshot):
             raise _invalid(NOT_DEDICATED_MESSAGE, "test")
+        if not _cash_account(link.kind, link.last_account_snapshot):
+            raise _invalid(CASH_ACCOUNT_MESSAGE, "account_type")
         link.live_state = LiveState.dry_run
         action = "dry_run_on"
     elif not on and link.live_state == LiveState.dry_run:
@@ -418,29 +469,21 @@ async def arm_live_link(
     return link
 
 
-async def _reject_unsent(session: AsyncSession, order: Order) -> None:
-    order.status = OrderStatus.rejected
-    order.reject_code = str(ErrorCode.LIVE_NOT_ARMED)
-    order.reject_message = DISARMED_MESSAGE
-    order.broker_status = None
-    order.updated_at = _now()
-    queue_event(session, "order.rejected", {
-        "order_id": order.id, "portfolio_id": order.portfolio_id, "agent_id": order.agent_id,
-        "symbol": order.symbol, "code": str(ErrorCode.LIVE_NOT_ARMED),
-    })
-
-
 async def disarm_live_link(session: AsyncSession, link_id: uuid.UUID, *,
-                           actor: Actor | str, reason: str) -> int:
+                           actor: Actor | str, reason: str, alert: bool = True) -> int:
     """«Disattiva denaro reale»: one click, no TOTP. Back to `configured`; the open orders
     already at (or maybe at) the broker get a cancellation request (BrokerSync sends the
     DELETE, which the gate always lets through), the ones never sent are rejected with
-    LIVE_NOT_ARMED. Returns how many orders it touched."""
+    LIVE_NOT_ARMED through engine.service.reject_broker_order (their held bracket
+    children canceled, notified, untracked) with a `live.order.rejected` each. Held
+    children of an entry at the broker stay with it (BrokerSync settles them). Lock order
+    (R8.9): link, portfolios, orders. `alert=False`: the caller sends its own alert (an
+    account change). Returns how many orders it touched."""
     link = await _live_link(session, link_id)
     previous = link.live_state
     portfolios = await _linked_portfolios(session, link.id)
     for p in portfolios:
-        await lock_portfolio(session, p.id)  # lock order: portfolio, then its orders
+        await lock_portfolio(session, p.id)  # lock order: link, portfolio, its orders
     orders = list(await session.scalars(
         select(Order).where(Order.broker_link_id == link.id,
                             Order.portfolio_id.in_([p.id for p in portfolios]),
@@ -450,6 +493,8 @@ async def disarm_live_link(session: AsyncSession, link_id: uuid.UUID, *,
     touched = 0
     now = _now()
     for o in orders:
+        if o.status not in OPEN_STATUSES or o.status == OrderStatus.held:
+            continue  # canceled with its entry, or waiting for an entry at the broker
         if broker_live(o):
             if o.broker_status != BrokerState.CANCEL_REQUESTED:
                 o.broker_status = BrokerState.CANCEL_REQUESTED
@@ -460,7 +505,9 @@ async def disarm_live_link(session: AsyncSession, link_id: uuid.UUID, *,
                 })
                 touched += 1
         else:
-            await _reject_unsent(session, o)
+            o.broker_status = None
+            await reject_broker_order(session, o, ErrorCode.LIVE_NOT_ARMED, DISARMED_MESSAGE)
+            await record_live_order_activity(session, o, "rejected", message=DISARMED_MESSAGE)
             touched += 1
     link.live_state = LiveState.configured
     link.disarmed_at = now
@@ -470,7 +517,7 @@ async def disarm_live_link(session: AsyncSession, link_id: uuid.UUID, *,
     await record_live_audit(session, action="disarmed", link_id=link.id,
                             portfolio_id=portfolio_id, **_who(actor),
                             details={"reason": reason, "from": previous, "orders": touched})
-    if previous in (LiveState.armed, LiveState.dry_run):
+    if alert and previous in (LiveState.armed, LiveState.dry_run):
         await live_alert(session, kind="disarmed",
                          summary=f"Denaro reale disattivato su {link.name}: {reason}",
                          portfolio_id=portfolio_id, link_id=link.id,
@@ -513,7 +560,7 @@ async def check_live_portfolio(session: AsyncSession, portfolio: Portfolio, link
     if not snapshot:
         raise _invalid("esegui prima il test in sola lettura", "test")
     broker_ccy = str(snapshot.get("currency") or "")
-    if link.kind == "t212_live" and portfolio.base_currency != broker_ccy:
+    if portfolio.base_currency != broker_ccy:  # R8.5: both brokers
         raise _invalid(f"la valuta del portafoglio deve essere {broker_ccy}", "base_currency")
     other = await session.scalar(
         select(Portfolio.id).where(Portfolio.broker_link_id == link.id,
@@ -537,8 +584,8 @@ async def link_live_portfolio(
     from smtrading.brokers.service import check_relink, link_portfolio
 
     _require_totp_enabled(admin)
+    link = await _live_link(session, link_id)  # lock order: link, then portfolio (R8.9)
     pf = await lock_live_portfolio(session, portfolio_id)
-    link = await _live_link(session, link_id)
     if link.live_state not in (LiveState.dry_run, LiveState.armed):
         raise _invalid("avvia la prova a secco o attiva il denaro reale prima di collegare",
                        "live_state")
@@ -581,17 +628,23 @@ async def flatten_live_portfolio(
     session: AsyncSession, redis: Redis, qs: QuoteSource, portfolio_id: uuid.UUID, *,
     admin: AdminUser, totp: str | None, actor: Actor, now: datetime | None = None,
 ) -> list[uuid.UUID]:
-    """«Chiudi tutte le posizioni reali» (TOTP): one reduce-only market order per open
-    position, flagged `live_flatten` (they pass the kill switch, Ruling R8.2). Returns
-    the ids of the orders placed; a position whose order is refused is recorded in the
-    audit details."""
+    """«Chiudi tutte le posizioni reali» (TOTP, link `armed` only: otherwise nothing could
+    be sent and the admin closes from the broker's app): one reduce-only market order per
+    open position, flagged `live_flatten` (they pass the kill switch, Ruling R8.2).
+    Returns the ids of the orders placed; a position whose order is refused is recorded
+    in the audit details (`failed`). The agents' resting orders (openings included) are
+    NOT canceled: the kill switch, a halt or «Disattiva denaro reale» does that."""
     from smtrading.engine.service import PlaceOrderRequest, place_order
 
     _require_totp_enabled(admin)
-    pf = await lock_live_portfolio(session, portfolio_id)
-    link = await session.get(BrokerLink, pf.broker_link_id) if pf.broker_link_id else None
-    if link is None or link.kind not in LIVE_KINDS:
+    link_id = await session.scalar(select(Portfolio.broker_link_id)
+                                   .where(Portfolio.id == portfolio_id))
+    link = await lock_broker_link(session, link_id) if link_id is not None else None
+    pf = await lock_live_portfolio(session, portfolio_id)  # lock order: link, portfolio
+    if link is None or link.kind not in LIVE_KINDS or pf.broker_link_id != link.id:
         raise _invalid("il portafoglio non è collegato a un conto reale", "portfolio_id")
+    if link.live_state != LiveState.armed:
+        raise _invalid(FLATTEN_NOT_ARMED_MESSAGE, "live_state")
     await _verify_totp(redis, admin, totp)
     positions = list(await session.scalars(
         select(Position).where(Position.portfolio_id == pf.id, Position.qty != 0)
