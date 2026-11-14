@@ -45,12 +45,18 @@ link's LiveClient itself (every request through the live gate, on this sessionma
 knows which order requests passed the gate (they reached its inner transport):
 
 - before claiming an order: link `armed`/`dry_run` (else LIVE_NOT_ARMED), the kill switch
-  for every order but a live-flatten one (KILL_SWITCH_ACTIVE), then the cash cap of a buy
-  with a broker snapshot of at most SNAPSHOT_MAX_AGE_S (read again with `get_account`,
-  GET only, outside any transaction, at most once every ACCOUNT_READ_MIN_INTERVAL; the
-  order waits meanwhile) and the fuse (risk.live_checks); a refusal rejects the order.
-  A never-sent order of a portfolio unlinked from a live link is rejected (never the
-  simulator);
+  for every order but a live-flatten one (KILL_SWITCH_ACTIVE), the aggregate no-short
+  check of a sell that is not reduce-only, then the aggregate cash cap of a buy (the
+  other open buys ahead of it taken off, risk.live_checks) with a broker snapshot of at
+  most SNAPSHOT_MAX_AGE_S not marked stale (read again with `get_account`, GET only,
+  outside any transaction, at most once every ACCOUNT_READ_MIN_INTERVAL; the order waits
+  meanwhile) and the fuse; a refusal rejects the order. Every quote and FX rate the
+  checks need is prefetched into a frozen memo before the lock (no network I/O under it);
+  a miss, or a quote outage, makes the order wait like a stale snapshot. An order still
+  waiting after LIVE_WAIT_MAX (account unreadable, another account behind the keys, no
+  quote) is rejected. Every accepted real buy marks the snapshot stale, so the next buy
+  reads the account first. A never-sent order of a portfolio unlinked from a live link is
+  rejected (never the simulator);
 - `LiveDryRun`: rejected LIVE_DRY_RUN «prova a secco: ordine non inviato», the payload in
   its `live.order.dry_run` activity, no `broker_sent_at`;
 - `LiveGateClosed` (the state changed after the checks): never sent, definitive:
@@ -61,9 +67,12 @@ knows which order requests passed the gate (they reached its inner transport):
 - a send accepted: `live.order.sent` and live_audit `order_sent` (payload and response,
   never headers); then `live.order.partial|filled|canceled|rejected` for every outcome
   (the planner skips the plain order.* rows of these orders); a fill with a broker fee
-  uses it (`fee_override`, the broker's cumulative fee less what earlier fills took);
-- `_give_up` on a live order (unknown outcome, Ruling R7): the portfolio goes reduce-only
-  (`trip_reduce_only(cause="order_unknown")`) besides the rejection;
+  uses it (`fee_override`, the broker's cumulative fee less what earlier fills took,
+  converted to the same currency);
+- an unknown outcome of a live order (`_mark_unknown`, and again at `_give_up`, Ruling R7):
+  the portfolio goes reduce-only at once (`trip_reduce_only(cause="order_unknown")`, a
+  critical alert) besides the rejection; `live.order.sent` is recorded only once the
+  broker order is linked to the order (`_adopt`);
 - `_must_stop`: an order found at the broker on a link no longer armed/dry run, or with
   the kill switch on (not flatten), is canceled.
 
@@ -113,7 +122,6 @@ from smtrading.engine.execution import (
     execute_fill,
 )
 from smtrading.engine.models import (
-    BROKER_LIQUIDATION_REASON,
     LIQUIDATION_ROLE,
     OPEN_STATUSES,
     BrokerState,
@@ -125,27 +133,31 @@ from smtrading.engine.models import (
 )
 from smtrading.engine.prefetch import prefetch_portfolio
 from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
-from smtrading.engine.service import cancel_held_children
+from smtrading.engine.service import cancel_held_children, order_closed, reject_broker_order
 from smtrading.events import (
     discard_post_commit,
     dispatch_post_commit,
     notify,
     queue_event,
-    queue_untrack,
 )
+from smtrading.fees.resolver import load_rules
 from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, JournalType
 from smtrading.portfolios.locks import lock_portfolio
-from smtrading.portfolios.models import Portfolio, PortfolioStatus
+from smtrading.portfolios.models import Portfolio
 from smtrading.risk.daily_loss import check_daily_loss
 from smtrading.risk.live_checks import (
+    EUR,
     SENDABLE_STATES,
     check_live_cash,
     check_live_fuse,
     check_live_state,
+    check_no_short,
     estimate_buy,
+    mark_snapshot_stale,
     snapshot_fresh,
+    to_currency,
 )
 from smtrading.risk.models import Notification
 from smtrading.risk.settings import is_kill_switch_on
@@ -169,6 +181,10 @@ NOT_SENT_MESSAGE = "cancello live non disponibile: ordine non inviato"
 LIVE_UNLINKED_MESSAGE = "collegamento reale rimosso: ordine non inviato"
 NOT_ARMED_STOP = "denaro reale non attivo"
 _STALE = object()  # a real buy waits for a fresh broker snapshot
+_WAIT = object()  # a real order waits for a quote / FX rate (not prefetched, outage)
+LIVE_WAIT_MAX = timedelta(minutes=30)
+WAIT_TOO_LONG_MESSAGE = ("dati del conto o quotazioni non disponibili da 30 minuti:"
+                         " ordine non inviato")
 
 
 class _SentRecorder(httpx.AsyncBaseTransport):
@@ -224,15 +240,6 @@ async def _lock(session: AsyncSession, order_id: UUID) -> Order | None:
     ).scalar_one()
 
 
-async def _untrack_if_idle(session: AsyncSession, symbol: str) -> None:
-    await session.flush()
-    still_open = await session.scalar(
-        select(Order.id).where(Order.symbol == symbol, Order.status.in_(OPEN_STATUSES)).limit(1)
-    )
-    if still_open is None:
-        queue_untrack(session, symbol, "orders")
-
-
 async def _linked_ids(session: AsyncSession, link_id: UUID, but: UUID) -> frozenset[str]:
     """Broker order ids already linked to other orders on `link_id` (C1)."""
     return frozenset(await session.scalars(
@@ -269,6 +276,9 @@ class BrokerSync:
         self._live_clients: dict[UUID, tuple[LiveClient, _SentRecorder]] = {}
         self._live_kind: dict[UUID, bool] = {}
         self._account_read_at: dict[UUID, datetime] = {}
+        # real orders waiting for account data / quotes since (kept in memory: a restart
+        # starts the wait again, never shorter)
+        self._waiting: dict[UUID, datetime] = {}
 
     async def aclose(self) -> None:
         """Closes the per-link LiveClients (run() does it when it ends)."""
@@ -342,6 +352,8 @@ class BrokerSync:
                 .where(Order.broker_link_id.is_not(None), Order.status.in_(_SYNCED))
                 .order_by(Order.created_at, Order.id)
             )).all()
+        open_ids = {row[0] for row in rows}  # the waits of orders no longer open end
+        self._waiting = {k: v for k, v in self._waiting.items() if k in open_ids}
         for order_id, status, broker_order_id, sent_at in rows:
             try:
                 await self._step(order_id, status, broker_order_id, sent_at, recover)
@@ -447,7 +459,7 @@ class BrokerSync:
         if bo is None or bo.avg_fill_price is None:
             return self._qs
         row = (await session.execute(
-            select(Order.portfolio_id, Order.symbol, Order.filled_qty)
+            select(Order.portfolio_id, Order.symbol, Order.filled_qty, Order.broker_link_id)
             .where(Order.id == order_id)
         )).first()
         if row is None or bo.filled_qty <= (row.filled_qty or Decimal(0)):
@@ -455,6 +467,11 @@ class BrokerSync:
             return self._qs
         memo = MemoQuoteSource.wrap(self._qs)
         await prefetch_portfolio(session, memo, row.portfolio_id, symbols=[row.symbol])
+        if bo.fees is not None and await self._is_live(session, row.broker_link_id):
+            link = await session.get(BrokerLink, row.broker_link_id)  # the fee's currency
+            snap = link.last_account_snapshot if link is not None else None
+            if isinstance(snap, dict) and snap.get("currency"):
+                await memo.prefetch([], {(str(snap["currency"]).upper(), EUR)} - {(EUR, EUR)})
         await session.commit()
         return memo
 
@@ -481,22 +498,10 @@ class BrokerSync:
         self, session: AsyncSession, order: Order, code: ErrorCode, message: str | None,
         *, phase: str = "rejected", payload: dict | None = None,
     ) -> None:
-        order.status = OrderStatus.rejected
-        order.reject_code = str(code)
-        # a NUL from the broker would make the order UPDATE fail (Postgres text)
-        order.reject_message = (message or "").replace("\x00", "")[:512]
-        order.updated_at = datetime.now(UTC)
-        await cancel_held_children(session, order, by="system")
-        await notify(
-            session, portfolio_id=order.portfolio_id, agent_id=order.agent_id,
-            kind="order.rejected",
-            payload={
-                "order_id": order.id, "symbol": order.symbol, "code": str(code),
-                "message": message, "broker": True,
-            },
-        )
+        """engine.service.reject_broker_order (held children, notify, untrack,
+        liquidation unlock) plus the live.order.<phase> activity of a real order."""
+        await reject_broker_order(session, order, code, message)
         await self._live_note(session, order, phase, message=message, payload=payload)
-        await self._closed(session, order)
         log.warning("order %s rejected: %s %s", order.id, code, message)
 
     async def _set_final(self, session: AsyncSession, order: Order,
@@ -511,25 +516,7 @@ class BrokerSync:
                               message="scaduto" if status == OrderStatus.expired else None)
 
     async def _closed(self, session: AsyncSession, order: Order) -> None:
-        """After an order became final: untrack; unlock a portfolio whose broker
-        liquidation is over (Ruling R10 b)."""
-        await _untrack_if_idle(session, order.symbol)
-        if order.role != LIQUIDATION_ROLE:
-            return
-        still = await session.scalar(
-            select(Order.id).where(
-                Order.portfolio_id == order.portfolio_id, Order.role == LIQUIDATION_ROLE,
-                Order.status.in_(OPEN_STATUSES), Order.id != order.id,
-            ).limit(1)
-        )
-        portfolio = await session.get(Portfolio, order.portfolio_id)
-        if (
-            still is None and portfolio.status == PortfolioStatus.locked
-            and portfolio.reduce_only_reason == BROKER_LIQUIDATION_REASON
-        ):
-            portfolio.status = PortfolioStatus.active
-            portfolio.reduce_only_reason = None
-            log.warning("portfolio %s unlocked: broker liquidation done", portfolio.id)
+        await order_closed(session, order)
 
     async def _refusal(
         self, session: AsyncSession, portfolio: Portfolio, order: Order, *, clamp: bool
@@ -564,9 +551,15 @@ class BrokerSync:
         return None if refusal is None else refusal.message
 
     async def _mark_unknown(self, session: AsyncSession, order: Order, reason: str) -> None:
+        """The outcome of a send is unknown (Ruling R7). A real order may exist at the
+        broker: the portfolio goes reduce-only at once, with its critical alert."""
         if order.broker_status == BrokerState.SENDING:
             order.broker_status = BrokerState.UNKNOWN
         order.updated_at = datetime.now(UTC)
+        if await self._is_live(session, order.broker_link_id):
+            await trip_reduce_only(session, order.portfolio_id, cause="order_unknown",
+                                   details={"order_id": order.id, "symbol": order.symbol,
+                                            "reason": reason})
         await notify(
             session, portfolio_id=order.portfolio_id, agent_id=order.agent_id,
             kind="broker.order_unknown",
@@ -650,11 +643,16 @@ class BrokerSync:
             if refusal is None and live:
                 refusal = await self._live_refusal(session, memo, portfolio, order, link,
                                                    instrument, now)
-                if refusal is _STALE:
-                    await self._commit(session)  # nothing changed: the lock is released
-                    if not refreshed and await self._refresh_account(link.id):
-                        await self._send(order_id, retry=retry, refreshed=True)
-                    return
+                if refusal is _STALE or refusal is _WAIT:
+                    since = self._waiting.setdefault(order_id, now)
+                    if now - since <= LIVE_WAIT_MAX:
+                        await self._commit(session)  # nothing changed: the lock is released
+                        if (refusal is _STALE and not refreshed
+                                and await self._refresh_account(link.id)):
+                            await self._send(order_id, retry=retry, refreshed=True)
+                        return
+                    refusal = SMTError(ErrorCode.PROVIDER_UNAVAILABLE, WAIT_TOO_LONG_MESSAGE)
+                self._waiting.pop(order_id, None)
             if refusal is not None:
                 await self._reject(session, order, refusal.code, refusal.message)
                 await self._commit(session)
@@ -714,12 +712,16 @@ class BrokerSync:
             return
         payload = self._live_client(link.id)[1].reached.pop(str(order_id), None) if live else None
         await self._update(order_id, lambda s, o: self._placed(s, o, bo, payload), bo)
+        if live and order.side == OrderSide.buy and bo.status != "rejected":
+            await self._mark_stale(link.id)
 
     # -- real money ------------------------------------------------------------------
 
     async def _live_memo(self, order_id: UUID) -> QuoteSource:
-        """For a real-money order, a memo with the quotes/FX of its portfolio and symbol,
-        fetched before any lock (I1); `self._qs` otherwise."""
+        """For a real-money order, a frozen memo with every quote/FX rate its checks need
+        (its portfolio, its symbol and those of the portfolio's other open buys, the fee
+        rule and broker snapshot currencies to EUR), fetched before any lock (I1, I2):
+        a miss under the lock makes the order wait. `self._qs` otherwise."""
         async with self._sm() as session:
             row = (await session.execute(
                 select(Order.portfolio_id, Order.symbol, Order.broker_link_id)
@@ -728,26 +730,52 @@ class BrokerSync:
             if row is None or not await self._is_live(session, row.broker_link_id):
                 await session.commit()
                 return self._qs
+            buys = set(await session.scalars(
+                select(Order.symbol).where(
+                    Order.portfolio_id == row.portfolio_id, Order.side == OrderSide.buy,
+                    Order.status.in_(_SYNCED), Order.broker_link_id.is_not(None))
+            ))
+            link = await session.get(BrokerLink, row.broker_link_id)
+            snap = link.last_account_snapshot if link is not None else None
+            ccys = {r.currency for r in await load_rules(session)}
+            if isinstance(snap, dict) and snap.get("currency"):
+                ccys.add(str(snap["currency"]).upper())
             memo = MemoQuoteSource.wrap(self._qs)
-            await prefetch_portfolio(session, memo, row.portfolio_id, symbols=[row.symbol])
+            await prefetch_portfolio(session, memo, row.portfolio_id,
+                                     symbols=sorted({row.symbol, *buys}))
+            await memo.prefetch([], {(c, EUR) for c in ccys if c != EUR})
             await session.commit()
-            return memo
+        memo.freeze()
+        return memo
 
     async def _live_refusal(
         self, session: AsyncSession, qs: QuoteSource, portfolio: Portfolio, order: Order,
         link: BrokerLink, instrument: Instrument, now: datetime,
     ):
         """The real-money checks right before sending (risk.live_checks): an SMTError,
-        _STALE (a buy needs a fresh broker snapshot first) or None."""
+        _STALE (a buy needs a fresh broker snapshot first), _WAIT (a quote or FX rate is
+        missing: not prefetched, or a quote outage) or None."""
         try:
             await check_live_state(session, link, live_flatten=order.live_flatten)
+            if order.side == OrderSide.sell and not order.reduce_only:
+                await check_no_short(
+                    session, portfolio=portfolio, symbol=order.symbol, order=order,
+                    qty=None if order.qty is None
+                    else order.qty - (order.filled_qty or Decimal(0)))
             if order.side == OrderSide.buy:
                 if not snapshot_fresh(link, now):
                     return _STALE
-                value, fees = await estimate_buy(session, qs, portfolio=portfolio,
-                                                 instrument=instrument, order=order)
-                await check_live_cash(session, qs, portfolio=portfolio, link=link,
-                                      est_value=value, est_fees=fees, now=now)
+                try:
+                    value, fees = await estimate_buy(session, qs, portfolio=portfolio,
+                                                     instrument=instrument, order=order)
+                    await check_live_cash(session, qs, portfolio=portfolio, link=link,
+                                          est_value=value, est_fees=fees, now=now,
+                                          order=order)
+                except SMTError as e:
+                    if e.code == ErrorCode.PROVIDER_UNAVAILABLE:
+                        log.warning("order %s waits: %s", order.id, e.message)
+                        return _WAIT
+                    raise
             await check_live_fuse(session, portfolio=portfolio, now=now,
                                   reduce_only=order.reduce_only,
                                   live_flatten=order.live_flatten, exclude=order.id)
@@ -788,15 +816,26 @@ class BrokerSync:
             await session.commit()
         return True
 
+    async def _mark_stale(self, link_id: UUID) -> None:
+        """A real buy was sent: the snapshot's cash no longer counts it (its own short
+        transaction, after the order's: the link row is never locked after a portfolio)."""
+        async with self._sm() as session:
+            link = await session.get(BrokerLink, link_id)
+            if link is not None:
+                mark_snapshot_stale(link, await session.scalar(select(func.now())))
+            await session.commit()
+
     async def _not_sent(self, session: AsyncSession, order: Order, code: ErrorCode,
                         message: str, *, phase: str = "rejected",
                         payload: dict | None = None) -> None:
         """A claimed real order whose request never reached the broker: rejected (a
-        cancel requested meanwhile cancels it); `broker_sent_at` is cleared."""
-        if order.broker_status not in (BrokerState.SENDING, BrokerState.CANCEL_REQUESTED):
+        cancel or a modify requested meanwhile cancels it: nothing is at the broker);
+        `broker_sent_at` is cleared."""
+        stop = (BrokerState.CANCEL_REQUESTED, BrokerState.REPLACE_REQUESTED)
+        if order.broker_status != BrokerState.SENDING and order.broker_status not in stop:
             return
         order.broker_sent_at = None
-        if order.broker_status == BrokerState.CANCEL_REQUESTED:
+        if order.broker_status in stop:
             await self._cancel_unsent(session, order)
             return
         order.broker_status = "rejected"  # reached BrokerSync: told by its live.order.* row
@@ -805,7 +844,9 @@ class BrokerSync:
     async def _fee_override(self, session: AsyncSession, order: Order,
                             bo: BrokerOrder) -> tuple[Decimal | None, str | None]:
         """The broker's fee for this fill of a real order: its cumulative fee for the
-        order less what earlier fills took (in the account currency), or (None, None)."""
+        order (in the account currency) less what earlier fills took, every earlier fee
+        converted to that currency first (through EUR, the prefetched memo), or (None,
+        None)."""
         if bo.fees is None or not await self._is_live(session, order.broker_link_id):
             return None, None
         link = await session.get(BrokerLink, order.broker_link_id)
@@ -815,11 +856,15 @@ class BrokerSync:
             ccy = await session.scalar(
                 select(Instrument.currency).where(Instrument.symbol == order.symbol))
         ccy = str(ccy).upper()
-        taken = await session.scalar(
-            select(func.coalesce(func.sum(Fill.fee_amount), 0)).where(
-                Fill.order_id == order.id, Fill.fee_currency == ccy)
-        )
-        return max(bo.fees - Decimal(taken or 0), Decimal(0)), ccy
+        taken = Decimal(0)
+        for fee_ccy, amount in (await session.execute(
+            select(Fill.fee_currency, func.coalesce(func.sum(Fill.fee_amount), 0))
+            .where(Fill.order_id == order.id).group_by(Fill.fee_currency)
+        )).all():
+            if amount:
+                taken += await to_currency(self._fill_qs, Decimal(amount),
+                                           str(fee_ccy or ccy), ccy)
+        return max(bo.fees - taken, Decimal(0)), ccy
 
     async def _cancel_others(
         self, session: AsyncSession, order: Order
@@ -919,9 +964,7 @@ class BrokerSync:
                 bo.message or "rejected by the broker",
             )
             return
-        if await self._is_live(session, order.broker_link_id):
-            await self._live_sent(session, order, bo, payload)
-        await self._adopt(session, order, bo)
+        await self._adopt(session, order, bo, live_payload=payload)
 
     async def _live_sent(self, session: AsyncSession, order: Order, bo: BrokerOrder,
                          payload: dict | None, *, matched: bool = False) -> None:
@@ -937,8 +980,10 @@ class BrokerSync:
                      "broker_order_id": bo.broker_order_id, "matched": matched},
         )
 
-    async def _adopt(self, session: AsyncSession, order: Order, bo: BrokerOrder) -> bool:
-        """Link `bo` to the order (refused if another order already has it, C1)."""
+    async def _adopt(self, session: AsyncSession, order: Order, bo: BrokerOrder, *,
+                     live_payload: dict | None = None, matched: bool = False) -> bool:
+        """Link `bo` to the order (refused if another order already has it, C1); a real
+        order's `live.order.sent` is recorded once linked, before its fills."""
         taken = await session.scalar(
             select(Order.id).where(
                 Order.broker_link_id == order.broker_link_id,
@@ -951,6 +996,8 @@ class BrokerSync:
             return False
         order.broker_order_id = bo.broker_order_id
         order.broker_replicated = True
+        if await self._is_live(session, order.broker_link_id):
+            await self._live_sent(session, order, bo, live_payload, matched=matched)
         if order.broker_status in (BrokerState.SENDING, BrokerState.TO_SEND,
                                    BrokerState.UNKNOWN):
             order.broker_status = bo.status
@@ -1005,9 +1052,7 @@ class BrokerSync:
     async def _matched(self, session: AsyncSession, order: Order, bo: BrokerOrder) -> None:
         if order.broker_order_id is not None or order.broker_sent_at is None:
             return
-        if await self._is_live(session, order.broker_link_id):
-            await self._live_sent(session, order, bo, None, matched=True)
-        if not await self._adopt(session, order, bo):
+        if not await self._adopt(session, order, bo, matched=True):
             return
         log.warning("order %s matched broker order %s", order.id, bo.broker_order_id)
         if order.status in _SYNCED:

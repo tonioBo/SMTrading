@@ -23,7 +23,7 @@ uses unrounded values (valuation *_raw fields, Ruling R8).
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import ROUND_UP, Decimal, localcontext
+from decimal import Decimal, localcontext
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,7 +33,7 @@ from smtrading.common.money import decimal_to_str, quantize_money
 from smtrading.engine.models import OrderSide, OrderType
 from smtrading.engine.pricing import QuoteView, fill_price, notional_to_qty
 from smtrading.engine.quotesource import QuoteSource
-from smtrading.fees.calculator import compute_fx_fee, compute_trade_fee
+from smtrading.fees.calculator import compute_trade_fee
 from smtrading.fees.resolver import FeeQuote, load_rules, resolve_rule
 from smtrading.instruments.models import Instrument
 from smtrading.instruments.service import validate_price, validate_quantity
@@ -41,7 +41,7 @@ from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.models import ARCHIVED_MESSAGE, Portfolio, PortfolioStatus
 from smtrading.risk.halts import covering_halt, halt_message
-from smtrading.risk.live_checks import live_link_of, live_pre_trade, to_currency
+from smtrading.risk.live_checks import fx_fee_eur, live_link_of, live_pre_trade, to_currency
 from smtrading.risk.models import RiskProfile, TradingHalt
 from smtrading.risk.profiles import effective_risk_profile
 from smtrading.risk.settings import get_default_spread_bps, get_stale_threshold, is_kill_switch_on
@@ -255,29 +255,20 @@ async def _run(
         ctx.prec = _PREC
         fee = compute_trade_fee(rule, order_notional * to_rule_ccy)
         fee_eur = fee * rule_to_eur
-    fx_fee_eur = Decimal(0)
-    if side == OrderSide.buy and ccy != base:
-        fee_in_ccy = fee if rule.currency == ccy else Decimal(0)  # paid from cash[ccy] too
-        with localcontext() as ctx:
-            ctx.prec = _PREC
-            shortfall = order_notional + fee_in_ccy - valuation.cash.get(ccy, Decimal(0))
-        if shortfall > 0:
-            base_to_ccy = await qs.get_fx_rate(base, ccy)
-            base_to_eur = await qs.get_fx_rate(base, EUR)
-            with localcontext() as ctx:
-                ctx.prec = _PREC
-                paid = quantize_money(shortfall / base_to_ccy, base, rounding=ROUND_UP)
-                fx_fee_eur = compute_fx_fee(rule, paid, base) * base_to_eur
+    fx_fee = Decimal(0)
+    if side == OrderSide.buy:  # the formula the live cash cap uses too
+        fx_fee = await fx_fee_eur(qs, rule, base=base, ccy=ccy, notional=order_notional,
+                                  fee=fee, cash_in_ccy=valuation.cash.get(ccy, Decimal(0)))
     with localcontext() as ctx:
         ctx.prec = _PREC
-        costs = fee_eur + fx_fee_eur
+        costs = fee_eur + fx_fee
         bp_after = valuation.buying_power_raw - costs
         if increases:
             bp_after -= notional_eur
 
     if live_link is not None:  # real money: before the position and buying power limits
         est_fees = await to_currency(qs, fee, rule.currency, base) + await to_currency(
-            qs, fx_fee_eur, EUR, base)
+            qs, fx_fee, EUR, base)
         await live_pre_trade(
             session, qs, portfolio=portfolio, link=live_link, instrument=instrument,
             side=side, qty=qty, notional=notional,
@@ -306,7 +297,7 @@ async def _run(
     return CheckResult(
         ok=True, estimated_price=price, estimated_notional_eur=notional_eur,
         estimated_fee=FeeQuote(rule.id, fee, rule.currency),
-        estimated_fx_fee_eur=fx_fee_eur, buying_power_after_eur=bp_after,
+        estimated_fx_fee_eur=fx_fee, buying_power_after_eur=bp_after,
     )
 
 

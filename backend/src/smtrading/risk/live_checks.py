@@ -8,23 +8,33 @@ repeats the cash cap and the fuse right before sending (with a fresh broker snap
 - kill switch on -> KILL_SWITCH_ACTIVE for every order, also a reducing one (stricter
   than Ruling R25), except the `live_flatten` orders of «Chiudi tutte le posizioni reali»
   (Ruling R8.2);
-- a sell beyond the position -> SHORT_NOT_ALLOWED (a reduce-only order is clamped);
+- a sell that is not reduce-only: its remaining quantity plus the remaining quantity of
+  the portfolio's other open sells on the symbol ahead of it (`open_sells_ahead`) must not
+  exceed the position -> SHORT_NOT_ALLOWED (a reduce-only order is clamped);
 - a buy: `live_cash_needed(estimate, fees)` must not exceed min(the portfolio's cash, the
-  broker's cash in the portfolio currency); the broker's cash only from a snapshot read in
-  the last SNAPSHOT_MAX_AGE_S (an older one: the portfolio's cash only, BrokerSync checks
-  again with fresh data) -> LIVE_CASH_LIMIT;
+  broker's cash in the portfolio currency), both less what the portfolio's other open
+  buys ahead of it may still cost (`committed_buys`: value + trade fee + FX fee, the same
+  `estimate_buy` for every order); the broker's cash only from a snapshot read in the
+  last SNAPSHOT_MAX_AGE_S and not marked stale by a send since (an older one: the
+  portfolio's cash only, BrokerSync checks again with fresh data) -> LIVE_CASH_LIMIT;
 - fuse (Ruling R8.1): `profile.max_live_orders_per_hour` (default 30) orders already sent
   to the broker by the portfolio in the last 3600 s -> RISK_LIMIT_EXCEEDED and the
   portfolio goes reduce-only (`trip_reduce_only(cause="fuse")`). A reduce-only order is
   not refused by the fuse (an exit must never be blocked; it still trips it); a
   live-flatten order neither (the admin's emergency close, counted only).
 
+"Ahead of" an order (aggregate checks): every other open order of the portfolio already
+claimed or sent to the broker, and the never-sent ones created before it (BrokerSync
+sends in that order; a new order is behind every existing one). Held bracket children
+are not counted (not active); OCO legs are alternatives: a group counts once, with its
+largest leg, and the legs of the order's own group are not counted.
+
 Amounts are compared in the portfolio's base currency, converted through EUR with the
 rates a MemoQuoteSource prefetched for the portfolio (prefetch_portfolio).
 """
 
 from datetime import datetime, timedelta
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import ROUND_UP, Decimal, InvalidOperation, localcontext
 from typing import Any
 from uuid import UUID
 
@@ -35,10 +45,17 @@ from smtrading.brokers.live import LIVE_KINDS
 from smtrading.brokers.live.models import LiveState
 from smtrading.brokers.models import BrokerLink
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.common.money import decimal_to_str
-from smtrading.engine.models import Order, OrderSide, OrderType
+from smtrading.common.money import decimal_to_str, quantize_money
+from smtrading.engine.models import (
+    OPEN_STATUSES,
+    BrokerState,
+    Order,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+)
 from smtrading.engine.quotesource import QuoteSource
-from smtrading.fees.calculator import compute_trade_fee
+from smtrading.fees.calculator import FeeRuleData, compute_fx_fee, compute_trade_fee
 from smtrading.fees.resolver import load_rules, resolve_rule
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
@@ -121,13 +138,25 @@ def _dec(value: Any) -> Decimal | None:
     return d if d.is_finite() else None
 
 
+STALE_KEY = "stale_at"  # in last_account_snapshot: a send happened after this read
+
+
 def snapshot_fresh(link: BrokerLink, now: datetime) -> bool:
-    """The link's last account snapshot was read at most SNAPSHOT_MAX_AGE_S ago."""
+    """The link's last account snapshot was read at most SNAPSHOT_MAX_AGE_S ago and no
+    real buy was sent since (`mark_snapshot_stale`)."""
     at = link.last_snapshot_at
+    snap = link.last_account_snapshot
     return (
-        at is not None and isinstance(link.last_account_snapshot, dict)
+        at is not None and isinstance(snap, dict) and not snap.get(STALE_KEY)
         and (now - at).total_seconds() <= SNAPSHOT_MAX_AGE_S
     )
+
+
+def mark_snapshot_stale(link: BrokerLink, at: datetime) -> None:
+    """After a real buy was sent: the broker cash of the snapshot no longer counts it, so
+    the next buy reads the account again (BrokerSync, at most every 5 s)."""
+    if isinstance(link.last_account_snapshot, dict):
+        link.last_account_snapshot = {**link.last_account_snapshot, STALE_KEY: at.isoformat()}
 
 
 def snapshot_cash(link: BrokerLink, now: datetime) -> tuple[Decimal, str] | None:
@@ -141,38 +170,166 @@ def snapshot_cash(link: BrokerLink, now: datetime) -> tuple[Decimal, str] | None
     return cash, str(ccy)
 
 
-async def estimate_buy(session: AsyncSession, qs: QuoteSource, *, portfolio: Portfolio,
-                       instrument: Instrument, order: Order) -> tuple[Decimal, Decimal]:
-    """(value, trade fee) of what is left of a buy order, in the portfolio's base currency:
-    at its limit (or stop) price, else at the ask (or last) quote. PROVIDER_UNAVAILABLE
-    when no price is known (the cash cap cannot be checked: nothing is sent)."""
-    ccy, base = instrument.currency, portfolio.base_currency
+async def fx_fee_eur(qs: QuoteSource, rule: FeeRuleData, *, base: str, ccy: str,
+                     notional: Decimal, fee: Decimal, cash_in_ccy: Decimal) -> Decimal:
+    """The estimated FX fee (EUR) of a buy of `notional` in `ccy` for a portfolio in
+    `base`: the part not covered by the cash already in `ccy` (with the trade fee when
+    the rule charges it in `ccy`) is bought with base currency. The pre-trade estimate
+    (risk.checks) and the live cash cap use this one formula."""
+    if ccy.upper() == base.upper():
+        return Decimal(0)
+    fee_in_ccy = fee if rule.currency == ccy else Decimal(0)  # paid from cash[ccy] too
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        shortfall = notional + fee_in_ccy - cash_in_ccy
+    if shortfall <= 0:
+        return Decimal(0)
+    base_to_ccy = await qs.get_fx_rate(base, ccy)
+    base_to_eur = await qs.get_fx_rate(base, EUR)
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        paid = quantize_money(shortfall / base_to_ccy, base, rounding=ROUND_UP)
+        return compute_fx_fee(rule, paid, base) * base_to_eur
+
+
+async def _cash_in(session: AsyncSession, portfolio_id: UUID, ccy: str) -> Decimal:
+    balance = await session.scalar(
+        select(AccountBalance.balance)
+        .join(Account, Account.id == AccountBalance.account_id)
+        .where(Account.portfolio_id == portfolio_id, Account.kind == AccountKind.cash,
+               Account.asset == ccy)
+    )
+    return balance if balance is not None else Decimal(0)
+
+
+async def remaining_buy_value(qs: QuoteSource, instrument: Instrument, order: Order) -> Decimal:
+    """What is left of a buy order, in the instrument currency: a notional order's amount
+    less what filled; otherwise the open quantity at its limit (or stop) price, else at
+    the ask (or last) quote. PROVIDER_UNAVAILABLE when no price is known."""
+    filled = order.filled_qty or Decimal(0)
     if order.notional is not None:
-        value = order.notional
-    else:
-        if order.type in (OrderType.limit, OrderType.stop_limit):
-            price = order.limit_price
-        elif order.type == OrderType.stop:
-            price = order.stop_price
-        else:
-            try:
-                quote = (await qs.get_quotes([instrument.symbol])).get(instrument.symbol)
-            except SMTError:
-                quote = None
-            price = None if quote is None else (quote.ask or quote.last)
-        if price is None:
-            raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE,
-                           "quotazione non disponibile per il controllo della liquidità")
         with localcontext() as ctx:
             ctx.prec = _PREC
-            value = (order.qty - (order.filled_qty or Decimal(0))) * price
+            done = filled * (order.avg_fill_price or Decimal(0))
+        return max(order.notional - done, Decimal(0))
+    if order.type in (OrderType.limit, OrderType.stop_limit):
+        price = order.limit_price
+    elif order.type == OrderType.stop:
+        price = order.stop_price
+    else:
+        try:
+            quote = (await qs.get_quotes([instrument.symbol])).get(instrument.symbol)
+        except SMTError:
+            quote = None
+        price = None if quote is None else (quote.ask or quote.last)
+    if price is None:
+        raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE,
+                       "quotazione non disponibile per il controllo della liquidità",
+                       {"symbol": instrument.symbol})
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        return max(order.qty - filled, Decimal(0)) * price
+
+
+async def estimate_buy(session: AsyncSession, qs: QuoteSource, *, portfolio: Portfolio,
+                       instrument: Instrument, order: Order) -> tuple[Decimal, Decimal]:
+    """(value, fees) of what is left of a buy order, in the portfolio's base currency;
+    fees = trade fee + FX fee (`fx_fee_eur`), as the pre-trade estimate. PROVIDER_UNAVAILABLE
+    when no price is known (the cash cap cannot be checked: nothing is sent)."""
+    ccy, base = instrument.currency, portfolio.base_currency
+    value = quantize_money(await remaining_buy_value(qs, instrument, order), ccy)
     rule = resolve_rule(await load_rules(session), portfolio_id=portfolio.id,
-                        asset_class=instrument.asset_class, side=str(order.side))
+                        asset_class=instrument.asset_class, side=str(OrderSide.buy))
     with localcontext() as ctx:
         ctx.prec = _PREC
         fee = compute_trade_fee(rule, value * await qs.get_fx_rate(ccy, rule.currency))
+    fx = await fx_fee_eur(qs, rule, base=base, ccy=ccy, notional=value, fee=fee,
+                          cash_in_ccy=await _cash_in(session, portfolio.id, ccy))
     return (await to_currency(qs, value, ccy, base),
-            await to_currency(qs, fee, rule.currency, base))
+            await to_currency(qs, fee, rule.currency, base) + await to_currency(qs, fx, EUR, base))
+
+
+def _ahead(other: Order, order: Order | None) -> bool:
+    """`other` counts before `order` (module docstring): claimed or sent, or created
+    earlier. Every existing order is ahead of a new one (`order` None)."""
+    if order is None:
+        return True
+    if (other.broker_order_id is not None or other.broker_sent_at is not None
+            or other.broker_status not in (None, BrokerState.TO_SEND)):
+        return True
+    return (other.created_at, str(other.id)) < (order.created_at, str(order.id))
+
+
+async def _open_others(session: AsyncSession, portfolio_id: UUID, side: OrderSide, *,
+                       symbol: str | None, exclude: UUID | None,
+                       order: Order | None) -> list[Order]:
+    query = select(Order).where(
+        Order.portfolio_id == portfolio_id, Order.side == side,
+        Order.status.in_(OPEN_STATUSES - {OrderStatus.held}),
+        Order.broker_link_id.is_not(None),
+    ).order_by(Order.created_at, Order.id)
+    if symbol is not None:
+        query = query.where(Order.symbol == symbol)
+    for oid in (exclude, order.id if order is not None else None):
+        if oid is not None:
+            query = query.where(Order.id != oid)
+    return [o for o in await session.scalars(query) if _ahead(o, order)]
+
+
+async def committed_buys(session: AsyncSession, qs: QuoteSource, *, portfolio: Portfolio,
+                         exclude: UUID | None = None, order: Order | None = None) -> Decimal:
+    """What the portfolio's other open buys ahead of `order` may still cost (value +
+    fees, base currency, `estimate_buy`); `exclude` (a modify) is never counted."""
+    total = Decimal(0)
+    others = await _open_others(session, portfolio.id, OrderSide.buy, symbol=None,
+                                exclude=exclude, order=order)
+    for other in others:
+        instrument = await session.get(Instrument, other.symbol)
+        value, fees = await estimate_buy(session, qs, portfolio=portfolio,
+                                         instrument=instrument, order=other)
+        total += value + fees
+    return total
+
+
+def _open_qty(order: Order) -> Decimal | None:
+    if order.qty is None:
+        return None
+    return max(order.qty - (order.filled_qty or Decimal(0)), Decimal(0))
+
+
+async def open_sells_ahead(session: AsyncSession, portfolio_id: UUID, symbol: str, *,
+                           exclude: UUID | None = None, order: Order | None = None
+                           ) -> Decimal | None:
+    """The open quantity of the portfolio's other sells on `symbol` ahead of `order` (an
+    OCO group once, its largest leg; `order`'s own group not at all). None when one of
+    them has no quantity (a notional sell: the position cannot be compared)."""
+    groups: dict[UUID, Decimal] = {}
+    total = Decimal(0)
+    own = order.oco_group_id if order is not None else None
+    for other in await _open_others(session, portfolio_id, OrderSide.sell, symbol=symbol,
+                                    exclude=exclude, order=order):
+        qty = _open_qty(other)
+        if qty is None:
+            return None
+        if other.oco_group_id is None:
+            total += qty
+        elif other.oco_group_id != own:
+            groups[other.oco_group_id] = max(groups.get(other.oco_group_id, Decimal(0)), qty)
+    return total + sum(groups.values(), Decimal(0))
+
+
+async def check_no_short(session: AsyncSession, *, portfolio: Portfolio, symbol: str,
+                         qty: Decimal | None, exclude: UUID | None = None,
+                         order: Order | None = None) -> None:
+    """A real sell (not reduce-only) of `qty` with the other open sells ahead of it must
+    stay within the position -> SHORT_NOT_ALLOWED otherwise."""
+    held = await held_qty(session, portfolio.id, symbol)
+    others = await open_sells_ahead(session, portfolio.id, symbol, exclude=exclude,
+                                    order=order)
+    if qty is None or others is None or qty + others > held:
+        raise SMTError(ErrorCode.SHORT_NOT_ALLOWED, SHORT_MESSAGE, {
+            "held": str(held), "qty": None if qty is None else str(qty),
+            "open_sells": None if others is None else str(others)})
 
 
 async def max_live_orders_per_hour(session: AsyncSession, portfolio: Portfolio) -> int:
@@ -215,18 +372,23 @@ async def check_live_fuse(session: AsyncSession, *, portfolio: Portfolio, now: d
 
 async def check_live_cash(session: AsyncSession, qs: QuoteSource, *, portfolio: Portfolio,
                           link: BrokerLink, est_value: Decimal, est_fees: Decimal,
-                          now: datetime) -> None:
-    """The cash cap of a real buy (amounts in the portfolio's base currency)."""
+                          now: datetime, exclude: UUID | None = None,
+                          order: Order | None = None) -> None:
+    """The cash cap of a real buy (amounts in the portfolio's base currency): the other
+    open buys ahead of it (`committed_buys`) are taken off both cash amounts."""
     needed = live_cash_needed(est_value, est_fees)
+    committed = await committed_buys(session, qs, portfolio=portfolio, exclude=exclude,
+                                     order=order)
     ours = await portfolio_cash(session, qs, portfolio)
     broker = None
     snap = snapshot_cash(link, now)
     if snap is not None:
         broker = await to_currency(qs, snap[0], snap[1], portfolio.base_currency)
-    available = ours if broker is None else min(ours, broker)
+    available = (ours if broker is None else min(ours, broker)) - committed
     if needed > available:
         ccy = portfolio.base_currency
-        details = {"needed": needed, "portfolio_cash": ours, "broker_cash": broker}
+        details = {"needed": needed, "portfolio_cash": ours, "broker_cash": broker,
+                   "committed": committed}
         raise SMTError(
             ErrorCode.LIVE_CASH_LIMIT,
             f"liquidità insufficiente per l'ordine reale: servono "
@@ -257,12 +419,11 @@ async def live_pre_trade(
     puts the portfolio in reduce-only; `exclude_order` is not counted by the fuse."""
     await check_live_state(session, link, live_flatten=live_flatten)
     if side == OrderSide.sell and not reduce_only:
-        held = await held_qty(session, portfolio.id, instrument.symbol)
-        if qty is None or qty > held:
-            raise SMTError(ErrorCode.SHORT_NOT_ALLOWED, SHORT_MESSAGE,
-                           {"held": str(held), "qty": None if qty is None else str(qty)})
+        await check_no_short(session, portfolio=portfolio, symbol=instrument.symbol, qty=qty,
+                             exclude=exclude_order)
     if side == OrderSide.buy:
         await check_live_cash(session, qs, portfolio=portfolio, link=link,
-                              est_value=est_value, est_fees=est_fees, now=now)
+                              est_value=est_value, est_fees=est_fees, now=now,
+                              exclude=exclude_order)
     await check_live_fuse(session, portfolio=portfolio, now=now, reduce_only=reduce_only,
                           live_flatten=live_flatten, trip=trip, exclude=exclude_order)

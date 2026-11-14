@@ -264,3 +264,69 @@ async def test_fuse_rejection_is_stored_with_the_trip(maker, qs):
         assert e.value.code == ErrorCode.RISK_LIMIT_EXCEEDED and e.value.persisted
         await s.commit()
     assert await _status(maker, pid) == (PortfolioStatus.reduce_only, "live_fuse")
+
+
+# -- fix round T5-T7: aggregate checks, one estimate ------------------------------------
+
+async def _open_order(maker, pid, link_id, *, side=OrderSide.buy, qty=D(8), price=D(100),
+                      status=OrderStatus.pending, oco=None, reduce_only=False):
+    async with maker() as s:
+        o = Order(portfolio_id=pid, symbol="AAPL", side=side, type=OrderType.limit,
+                  qty=qty, limit_price=price, status=status, broker_link_id=link_id,
+                  broker_status="to_send", oco_group_id=oco, reduce_only=reduce_only)
+        s.add(o)
+        await s.commit()
+        return o.id
+
+
+async def test_cash_cap_counts_other_open_buys(maker, qs):
+    """C1: an open buy of 8 AAPL at 100 USD (640 EUR + fees) is taken off the 1000 EUR."""
+    pid, link_id = await _portfolio(maker, qs)
+    await _check(maker, qs, pid, est_value=D(400))  # alone: fine
+    await _open_order(maker, pid, link_id)
+    await _open_order(maker, pid, link_id, status=OrderStatus.held)  # not active: ignored
+    await _open_order(maker, pid, link_id, status=OrderStatus.canceled)  # closed: ignored
+    await _check(maker, qs, pid, est_value=D(300))  # 306 <= 1000 - ~642
+    with pytest.raises(SMTError) as e:
+        await _check(maker, qs, pid, est_value=D(400))  # 408 > 1000 - ~642
+    assert e.value.code == ErrorCode.LIVE_CASH_LIMIT
+    assert D(640) < D(e.value.details["committed"]) < D(660)
+
+
+async def test_no_short_counts_other_open_sells(maker, qs):
+    """I1: position 5; an open sell of 3: a new sell of 3 would sell 6 -> refused; an
+    OCO pair counts once (its largest leg); a reduce-only order is clamped (not checked)."""
+    pid, link_id = await _portfolio(maker, qs, held=5)
+    await _open_order(maker, pid, link_id, side=OrderSide.sell, qty=D(3))
+    await _check(maker, qs, pid, side=OrderSide.sell, qty=D(2))
+    with pytest.raises(SMTError) as e:
+        await _check(maker, qs, pid, side=OrderSide.sell, qty=D(3))
+    assert e.value.code == ErrorCode.SHORT_NOT_ALLOWED and D(e.value.details["open_sells"]) == 3
+    await _check(maker, qs, pid, side=OrderSide.sell, qty=D(3), reduce_only=True)
+    group = uuid.uuid4()
+    pid2, link2 = await _portfolio(maker, qs, held=5)
+    await _open_order(maker, pid2, link2, side=OrderSide.sell, qty=D(3), oco=group)
+    await _open_order(maker, pid2, link2, side=OrderSide.sell, qty=D(2), oco=group)
+    await _check(maker, qs, pid2, side=OrderSide.sell, qty=D(2))  # 3 + 2 <= 5
+    with pytest.raises(SMTError):
+        await _check(maker, qs, pid2, side=OrderSide.sell, qty=D(3))  # 3 + 3 > 5
+
+
+async def test_estimate_buy_is_the_pre_trade_estimate(maker, qs):
+    """M7: BrokerSync's estimate (value + trade fee + FX fee) is the placement's one."""
+    from smtrading.risk.live_checks import estimate_buy, to_currency
+
+    pid, _ = await _portfolio(maker, qs, state="dry_run", cash=5000)
+    result = await _pre_trade(maker, qs, pid, side=OrderSide.buy, qty=D(10))
+    assert result.ok and result.estimated_fx_fee_eur > 0
+    async with maker() as s:
+        portfolio = await s.get(Portfolio, pid)
+        order = Order(portfolio_id=pid, symbol="AAPL", side=OrderSide.buy,
+                      type=OrderType.market, qty=D(10), filled_qty=D(0))
+        value, fees = await estimate_buy(s, qs, portfolio=portfolio,
+                                         instrument=await s.get(Instrument, "AAPL"),
+                                         order=order)
+        expected = await to_currency(qs, result.estimated_fee.amount,
+                                     result.estimated_fee.currency, "EUR")
+    assert value == D(800)
+    assert fees == expected + result.estimated_fx_fee_eur

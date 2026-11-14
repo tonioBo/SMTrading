@@ -44,6 +44,7 @@ checked at placement; it is checked again at execution.
 """
 
 import dataclasses
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
@@ -61,6 +62,8 @@ from smtrading.brokers.service import open_adapter
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.execution import broker_live, execute_fill, hand_to_broker
 from smtrading.engine.models import (
+    BROKER_LIQUIDATION_REASON,
+    LIQUIDATION_ROLE,
     OPEN_STATUSES,
     BrokerState,
     Order,
@@ -73,17 +76,24 @@ from smtrading.engine.prefetch import prefetch_portfolio
 from smtrading.engine.pricing import QuoteView, effective_bid_ask
 from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.engine.triggers import OrderView, TriggerAction, evaluate
-from smtrading.events import POST_COMMIT_KEY, queue_event, queue_track, queue_untrack
+from smtrading.events import POST_COMMIT_KEY, notify, queue_event, queue_track, queue_untrack
 from smtrading.instruments.market_hours import MarketStatus, market_status
 from smtrading.instruments.models import Instrument
 from smtrading.instruments.service import get_instrument, validate_price, validate_quantity
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.locks import lock_live_portfolio, lock_portfolio
-from smtrading.portfolios.models import Portfolio, ensure_not_archived, live_portfolio_ids
+from smtrading.portfolios.models import (
+    Portfolio,
+    PortfolioStatus,
+    ensure_not_archived,
+    live_portfolio_ids,
+)
 from smtrading.risk.checks import CheckResult, pre_trade_check
 from smtrading.risk.daily_loss import check_daily_loss_safely
 from smtrading.risk.settings import get_default_spread_bps, set_kill_switch
+
+log = logging.getLogger("smtrading.engine.service")
 
 MODIFIABLE = frozenset({OrderStatus.pending, OrderStatus.queued, OrderStatus.held})
 _SELF_EXPIRING_MARKETS = ("CRYPTO", "FX")  # DAY orders expire at local midnight
@@ -694,6 +704,52 @@ async def cancel_held_children(session: AsyncSession, order: Order, *, by: str) 
     if children:
         await _cancel(session, children, by)
     return children
+
+
+async def order_closed(session: AsyncSession, order: Order) -> None:
+    """After a broker-managed order became final: untrack its symbol when idle; unlock
+    a portfolio whose broker liquidation is over (Ruling R10 b)."""
+    await session.flush()
+    await _untrack_if_idle(session, {order.symbol})
+    if order.role != LIQUIDATION_ROLE:
+        return
+    still = await session.scalar(
+        select(Order.id).where(
+            Order.portfolio_id == order.portfolio_id, Order.role == LIQUIDATION_ROLE,
+            Order.status.in_(OPEN_STATUSES), Order.id != order.id,
+        ).limit(1)
+    )
+    portfolio = await session.get(Portfolio, order.portfolio_id)
+    if (
+        still is None and portfolio.status == PortfolioStatus.locked
+        and portfolio.reduce_only_reason == BROKER_LIQUIDATION_REASON
+    ):
+        portfolio.status = PortfolioStatus.active
+        portfolio.reduce_only_reason = None
+        log.warning("portfolio %s unlocked: broker liquidation done", portfolio.id)
+
+
+async def reject_broker_order(session: AsyncSession, order: Order, code: ErrorCode | str,
+                              message: str | None) -> None:
+    """The one finalisation of a broker-managed order rejected locally or by the broker
+    (BrokerSync, the real-money disarm): rejected with `code`/`message`, its held bracket
+    children canceled (Ruling R17), `order.rejected` notified, then `order_closed`. The
+    caller holds the portfolio and order locks (in that order)."""
+    order.status = OrderStatus.rejected
+    order.reject_code = str(code)
+    # a NUL from the broker would make the order UPDATE fail (Postgres text)
+    order.reject_message = (message or "").replace("\x00", "")[:512]
+    order.updated_at = datetime.now(UTC)
+    await cancel_held_children(session, order, by="system")
+    await notify(
+        session, portfolio_id=order.portfolio_id, agent_id=order.agent_id,
+        kind="order.rejected",
+        payload={
+            "order_id": order.id, "symbol": order.symbol, "code": str(code),
+            "message": message, "broker": True,
+        },
+    )
+    await order_closed(session, order)
 
 
 async def _untrack_if_idle(session: AsyncSession, symbols: set[str]) -> None:

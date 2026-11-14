@@ -421,3 +421,240 @@ async def test_broker_sync_closes_its_live_clients_when_stopped(maker, redis, qs
         await task
     assert client.is_closed
     assert sync._live_clients == {}
+
+
+# -- fix round T5-T7 (plan 8): aggregate checks, frozen memo, waits, unknown outcomes -----
+
+def _account_routes(mock, cash="7000"):
+    account = mock.get(f"{ALPACA}/v2/account").mock(return_value=httpx.Response(200, json={
+        "id": "acct-1", "cash": cash, "buying_power": cash, "currency": "USD",
+        "multiplier": "1"}))
+    mock.get(f"{ALPACA}/v2/positions").mock(return_value=httpx.Response(200, json=[]))
+    mock.get(f"{ALPACA}/v2/orders").mock(return_value=httpx.Response(200, json=[]))
+    return account
+
+
+async def _snapshot(maker, link_id, *, cash: str, at: datetime) -> None:
+    async with maker() as s:
+        link = await s.get(BrokerLink, link_id)
+        link.last_account_snapshot = {"currency": "USD", "cash_available": cash}
+        link.last_snapshot_at = at
+        await s.commit()
+
+
+async def test_two_buys_in_one_tick_second_rejected_cash_limit(maker, redis, qs):
+    """C1: 40 AAPL = 4000 USD = 3200 EUR each (+ fees + 2 %: 3276,20 EUR needed); the
+    broker has 7000 USD = 5600 EUR. Both fit alone; the first is sent, the snapshot is
+    marked stale, the second reads the account again and counts the first: rejected."""
+    pid, link_id = await _live(maker, cash="7000", snapshot_at=OPEN - timedelta(minutes=2))
+    first = await _place(maker, redis, qs, pid, qty=D(40))
+    second = await _place(maker, redis, qs, pid, qty=D(40))  # placement: portfolio cash
+    await _snapshot(maker, link_id, cash="7000", at=OPEN)
+    with _mock() as mock:
+        post = mock.post(f"{ALPACA}/v2/orders").mock(
+            return_value=httpx.Response(200, json=_alpaca_order()))
+        account = _account_routes(mock)
+        await _sync(maker, redis, qs).tick()
+    assert post.call_count == 1 and account.call_count == 1
+    assert (await _order(maker, first)).broker_order_id == "bo-1"
+    o = await _order(maker, second)
+    assert o.status == OrderStatus.rejected and o.reject_code == ErrorCode.LIVE_CASH_LIMIT
+    assert await _types(maker, second) == ["live.order.rejected"]
+
+
+async def test_placement_counts_the_open_buys(maker, redis, qs):
+    """C1 at placement: the open buy (TO_SEND) is taken off the portfolio's cash."""
+    pid, _ = await _live(maker, snapshot_at=OPEN - timedelta(minutes=2))
+    await _place(maker, redis, qs, pid, qty=D(70))  # 5600 EUR of 10000
+    with pytest.raises(SMTError) as e:
+        await _place(maker, redis, qs, pid, qty=D(70))
+    assert e.value.code == ErrorCode.LIVE_CASH_LIMIT
+    assert "liquidità insufficiente" in e.value.message
+
+
+async def _held_live(maker, redis, qs, qty: Decimal) -> tuple[uuid.UUID, uuid.UUID]:
+    """A live portfolio holding `qty` AAPL (bought on the simulator before linking)."""
+    pid, link_id = await _live(maker)
+    async with maker() as s:
+        (await s.get(Portfolio, pid)).broker_link_id = None
+        await s.commit()
+    await _place(maker, redis, qs, pid, qty=qty)
+    async with maker() as s:
+        (await s.get(Portfolio, pid)).broker_link_id = link_id
+        await s.commit()
+    return pid, link_id
+
+
+async def test_aggregate_no_short_before_send(maker, redis, qs):
+    """I1: two sells of 6 on a position of 10 (both stored as TO_SEND): the first is
+    sent, the second would sell 12 > 10 at the broker: rejected SHORT_NOT_ALLOWED."""
+    pid, link_id = await _held_live(maker, redis, qs, TEN)
+    ids = []
+    for _ in range(2):  # two transactions: two creation times
+        async with maker() as s:
+            o = Order(portfolio_id=pid, symbol="AAPL", side=OrderSide.sell,
+                      type=OrderType.market, qty=D(6), status=OrderStatus.pending,
+                      broker_link_id=link_id, broker_status=BrokerState.TO_SEND)
+            s.add(o)
+            await s.commit()
+            ids.append(o.id)
+    with _mock() as mock:
+        post = mock.post(f"{ALPACA}/v2/orders").mock(
+            return_value=httpx.Response(200, json={**_alpaca_order(), "side": "sell"}))
+        await _sync(maker, redis, qs).tick()
+    assert post.call_count == 1
+    o = await _order(maker, ids[1])
+    assert o.status == OrderStatus.rejected and o.reject_code == ErrorCode.SHORT_NOT_ALLOWED
+    with pytest.raises(SMTError) as e:  # placement: 6 + 6 > 10 too
+        await _place(maker, redis, qs, pid, side=OrderSide.sell, qty=D(6))
+    assert e.value.code == ErrorCode.SHORT_NOT_ALLOWED
+
+
+async def test_checks_run_on_a_frozen_memo_and_a_miss_waits(maker, redis, qs, monkeypatch):
+    """I2: no network I/O under the order lock: the live checks get a frozen memo; an FX
+    rate it lacks (here the snapshot currency GBP) makes the order wait, not rejected."""
+    pid, link_id = await _live(maker)
+    oid = await _place(maker, redis, qs, pid)
+    async with maker() as s:
+        link = await s.get(BrokerLink, link_id)
+        link.last_account_snapshot = {"currency": "GBP", "cash_available": "100000"}
+        await s.commit()
+    seen = []
+    real = BrokerSync._live_refusal
+
+    async def spy(self, session, memo, *a, **kw):
+        seen.append(memo.frozen)
+        return await real(self, session, memo, *a, **kw)
+
+    monkeypatch.setattr(BrokerSync, "_live_refusal", spy)
+    with _mock(called=False) as mock:
+        await _sync(maker, redis, qs).tick()
+    assert seen == [True] and mock.calls.call_count == 0
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.pending and o.broker_status == BrokerState.TO_SEND
+    assert await _types(maker, oid) == []
+    qs.set_fx("GBP", "EUR", D("1.15"))
+    with _mock() as mock:
+        mock.post(f"{ALPACA}/v2/orders").mock(
+            return_value=httpx.Response(200, json=_alpaca_order()))
+        await _sync(maker, redis, qs).tick()
+    assert (await _order(maker, oid)).broker_order_id == "bo-1"
+
+
+async def test_quote_outage_on_market_buy_waits(maker, redis, qs):
+    """M4: no quote for the market buy's estimate: it waits (not a permanent reject)."""
+    pid, _ = await _live(maker)
+    oid = await _place(maker, redis, qs, pid)
+    quote = qs._quotes.pop("AAPL")
+    with _mock(called=False):
+        await _sync(maker, redis, qs).tick()
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.pending and o.broker_status == BrokerState.TO_SEND
+    qs._quotes["AAPL"] = quote
+    with _mock() as mock:
+        mock.post(f"{ALPACA}/v2/orders").mock(
+            return_value=httpx.Response(200, json=_alpaca_order()))
+        await _sync(maker, redis, qs).tick()
+    assert (await _order(maker, oid)).broker_order_id == "bo-1"
+
+
+async def test_order_waiting_over_30_min_for_account_is_rejected(maker, redis, qs):
+    """M5: the account cannot be read (stale snapshot): the buy waits, then after 30 min
+    it is rejected with its live.order.rejected activity."""
+    pid, _ = await _live(maker, snapshot_at=OPEN - timedelta(minutes=5))
+    oid = await _place(maker, redis, qs, pid)
+    clock = Clock(OPEN)
+    sync = _sync(maker, redis, qs, clock)
+    with _mock() as mock:
+        mock.get(f"{ALPACA}/v2/account").mock(return_value=httpx.Response(500))
+        await sync.tick()
+        assert (await _order(maker, oid)).status == OrderStatus.pending
+        clock.now = OPEN + timedelta(minutes=20)
+        await sync.tick()
+        assert (await _order(maker, oid)).status == OrderStatus.pending
+        clock.now = OPEN + timedelta(minutes=31)
+        await sync.tick()
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.rejected and o.reject_code == ErrorCode.PROVIDER_UNAVAILABLE
+    assert "30 minuti" in o.reject_message
+    assert await _types(maker, oid) == ["live.order.rejected"]
+
+
+async def test_not_sent_with_replace_requested_is_canceled(maker, redis, qs, monkeypatch):
+    """M2: a modify requested while the order was claimed, then the gate closes: the
+    order is canceled (nothing at the broker), not left `replace_requested` forever."""
+    pid, link_id = await _live(maker)
+    oid = await _place(maker, redis, qs, pid)
+
+    async def flip(self, instruments=()):
+        async with maker() as s:
+            (await s.get(Order, oid)).broker_status = BrokerState.REPLACE_REQUESTED
+            (await s.get(BrokerLink, link_id)).live_state = "configured"
+            await s.commit()
+
+    monkeypatch.setattr(AlpacaLiveAdapter, "prepare", flip)
+    with _mock(called=False):
+        await _sync(maker, redis, qs).tick()
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.canceled and o.broker_sent_at is None
+
+
+async def test_live_sent_recorded_only_after_adopt(maker, redis, qs):
+    """M3: a broker order id already linked to another order is not adopted: no
+    live.order.sent for this order."""
+    pid, link_id = await _live(maker)
+    oid = await _place(maker, redis, qs, pid)
+    async with maker() as s:
+        s.add(Order(portfolio_id=pid, symbol="AAPL", side=OrderSide.buy,
+                    type=OrderType.market, qty=D(1), status=OrderStatus.filled,
+                    broker_link_id=link_id, broker_order_id="bo-1"))
+        await s.commit()
+    with _mock() as mock:
+        mock.post(f"{ALPACA}/v2/orders").mock(
+            return_value=httpx.Response(200, json=_alpaca_order()))
+        await _sync(maker, redis, qs).tick()
+    assert (await _order(maker, oid)).broker_order_id is None
+    assert "live.order.sent" not in await _types(maker, oid)
+
+
+async def test_fee_override_converts_earlier_fees(maker, redis, qs):
+    """M6: a first fill without a broker fee takes the rule fee (EUR); the broker's
+    cumulative fee (USD) then counts that fee converted to USD."""
+    pid, _ = await _live(maker)
+    oid = await _place(maker, redis, qs, pid)
+    with _mock() as mock:
+        mock.post(f"{ALPACA}/v2/orders").mock(
+            return_value=httpx.Response(200, json=_alpaca_order()))
+        mock.get(f"{ALPACA}/v2/orders/bo-1").mock(side_effect=[
+            httpx.Response(200, json=_alpaca_order("partially_filled", "4", "100.00")),
+            httpx.Response(200, json=_alpaca_order("filled", "10", "100.00", "5.00")),
+        ])
+        sync = _sync(maker, redis, qs)
+        for _ in range(3):
+            await sync.tick()
+    async with maker() as s:
+        fills = list(await s.scalars(select(Fill).where(Fill.order_id == oid)
+                                     .order_by(Fill.qty)))
+    first, second = sorted(fills, key=lambda f: f.created_at)
+    assert first.fee_currency == "EUR" and first.fee_amount > 0
+    assert second.fee_currency == "USD"
+    assert second.fee_amount == (D("5.00") - first.fee_amount * D("1.25")).quantize(
+        D("0.01"))
+
+
+async def test_unknown_outcome_trips_reduce_only_at_once(maker, redis, qs):
+    """M8: a T212 send whose outcome is unknown puts the portfolio in reduce-only right
+    away (not only at the give-up, minutes later), with the critical alert."""
+    pid, _ = await _live(maker, kind="t212_live", ccy="EUR")
+    await _place(maker, redis, qs, pid)
+    with _mock() as mock:
+        mock.get(f"{T212}/metadata/instruments").mock(
+            return_value=httpx.Response(200, json=INSTRUMENTS))
+        mock.post(f"{T212}/orders/market").mock(side_effect=httpx.ReadTimeout("t"))
+        await _sync(maker, redis, qs).tick()
+    async with maker() as s:
+        p = await s.get(Portfolio, pid)
+        assert (p.status, p.reduce_only_reason) == (PortfolioStatus.reduce_only,
+                                                    "live_order_unknown")
+        assert await s.scalar(select(Activity.id).where(
+            Activity.type == "live.reduce_only", Activity.portfolio_id == pid)) is not None
