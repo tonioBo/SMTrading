@@ -11,6 +11,10 @@
     agent create NAME [--portfolio Demo --permission read|trade]
     agent rotate NAME        (prints the new token once; the old one stops working)
     agent deactivate NAME
+    agent notify NAME on|off (the `notify` permission: send_telegram)
+    telegram set --chat-id ID [--token-stdin] [--no-verify] [--enable]
+                 (the bot token is read only from stdin, never from argv; verified with
+                 getMe/getChat like the admin API; the output never contains it)
 
 A token is printed only by `agent create` / `agent rotate`, once: it is never stored in
 clear. Quotes come from the real MarketDataRouter. Each command runs in one transaction
@@ -34,6 +38,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import smtrading.models  # noqa: F401  (complete mapper registry, e.g. broker_links FK)
+from smtrading.admin.routes_telegram import apply_config
 from smtrading.agents import service as agents
 from smtrading.agents.models import Agent, AgentPortfolio
 from smtrading.common.config import get_settings
@@ -57,6 +62,7 @@ from smtrading.positions.service import get_positions
 from smtrading.valuation.service import value_portfolio
 
 SOURCE = "admin"
+SOURCE_CLI = "cli"
 _ORDER_TYPES = (OrderType.market.value, OrderType.limit.value)
 
 
@@ -108,6 +114,19 @@ def build_parser() -> argparse.ArgumentParser:
         ("deactivate", "disable an agent: its token stops working"),
     ):
         agent_sub.add_parser(name, help=help).add_argument("name")
+    notify = agent_sub.add_parser("notify", help="grant/revoke the notify permission")
+    notify.add_argument("name")
+    notify.add_argument("state", choices=["on", "off"])
+
+    telegram = sub.add_parser("telegram", help="Telegram notifications")
+    telegram_sub = telegram.add_subparsers(dest="telegram_command", required=True)
+    tg_set = telegram_sub.add_parser("set", help="set the group (and the bot token from stdin)")
+    tg_set.add_argument("--chat-id", required=True)
+    tg_set.add_argument("--token-stdin", action="store_true",
+                        help="read the bot token from stdin (never pass it as an argument)")
+    tg_set.add_argument("--no-verify", action="store_true",
+                        help="skip the getMe/getChat check with Telegram")
+    tg_set.add_argument("--enable", action="store_true", help="also enable the notifications")
     return parser
 
 
@@ -176,13 +195,51 @@ async def execute_agent(args: argparse.Namespace, session: AsyncSession) -> obje
                 session, (await _agent(session, args.name)).id, False
             )
             return {"id": agent.id, "name": agent.name, "active": agent.active}
+        case "notify":
+            on = args.state == "on"
+            agent = await agents.set_agent_can_notify(
+                session, (await _agent(session, args.name)).id, on
+            )
+            await agents.write_audit(
+                session, agent_id=None, method="admin:agent.notify",
+                params={"agent_id": str(agent.id), "agent": agent.name, "can_notify": on,
+                        "by": SOURCE_CLI},
+                outcome="ok", latency_ms=0,
+            )
+            return {"id": agent.id, "name": agent.name, "can_notify": agent.can_notify}
     raise AssertionError(args.agent_command)  # pragma: no cover
+
+
+def _read_token_stdin() -> str:
+    return sys.stdin.read()
+
+
+async def execute_telegram(args: argparse.Namespace, session: AsyncSession) -> object:
+    """`telegram set`: the same validation and verification as PUT /api/telegram/config."""
+    fields = {"chat_id"}
+    token = None
+    if args.token_stdin:
+        token, fields = _read_token_stdin(), fields | {"bot_token"}
+    if args.enable:
+        fields.add("enabled")
+    async with httpx.AsyncClient() as http:
+        cfg = await apply_config(
+            session, http, fields=fields, bot_token=token, chat_id=args.chat_id,
+            enabled=True if args.enable else None, verify=not args.no_verify, by=SOURCE_CLI,
+        )
+    return {
+        "bot_username": f"@{cfg.bot_username}" if cfg.bot_username else None,
+        "chat_id": cfg.chat_id, "chat_title": cfg.chat_title, "enabled": cfg.enabled,
+        "paused": cfg.paused,
+    }
 
 
 async def execute(
     args: argparse.Namespace, session: AsyncSession, qs: QuoteSource, redis=None
 ) -> object:
     match args.command:
+        case "telegram":
+            return await execute_telegram(args, session)
         case "agent":
             return await execute_agent(args, session)
         case "order":

@@ -12,7 +12,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from smtrading.admin.auth import DbSession, RedisClient, require_admin
+from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
 from smtrading.admin.common import _invalid, _transaction
 from smtrading.admin.schemas import (
     AgentCreateIn,
@@ -21,6 +21,7 @@ from smtrading.admin.schemas import (
 )
 from smtrading.agents import service as agents
 from smtrading.agents.models import Agent, AgentPortfolio
+from smtrading.agents.service import write_audit
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.mcp.dto import parse_ts, to_jsonable
 from smtrading.portfolios.mode import portfolio_mode
@@ -31,7 +32,7 @@ router = APIRouter(prefix="/api", tags=["agents"], dependencies=[Depends(require
 MAX_NAME_LEN = 128
 DEFAULT_AUDIT_LIMIT, MAX_AUDIT_LIMIT = 100, 500
 _PERMISSIONS = ("read", "trade")
-AGENT_FIELDS = ("id", "name", "active", "created_at", "last_seen_at")
+AGENT_FIELDS = ("id", "name", "active", "can_notify", "created_at", "last_seen_at")
 
 
 def _clean_name(name: str) -> str:
@@ -114,11 +115,26 @@ async def rotate_agent_token(agent_id: UUID, session: DbSession, redis: RedisCli
 
 @router.patch("/agents/{agent_id}")
 async def patch_agent(
-    agent_id: UUID, body: AgentPatchIn, session: DbSession, redis: RedisClient
+    agent_id: UUID, body: AgentPatchIn, admin: CurrentAdmin, session: DbSession,
+    redis: RedisClient,
 ) -> dict:
-    await _agent(session, agent_id)
+    """Only the fields present are changed; a change of `can_notify` is audited."""
+    fields = body.model_fields_set
+    for name in ("active", "can_notify"):
+        if name in fields and getattr(body, name) is None:
+            raise _invalid(name, f"{name} non può essere nullo")
+    agent = await _agent(session, agent_id)
     async with _transaction(session, redis):
-        agent = await agents.set_agent_active(session, agent_id, body.active)
+        if "active" in fields:
+            agent = await agents.set_agent_active(session, agent_id, body.active)
+        if "can_notify" in fields:
+            agent = await agents.set_agent_can_notify(session, agent_id, body.can_notify)
+            await write_audit(
+                session, agent_id=None, method="admin:agent.notify",
+                params={"agent_id": str(agent_id), "agent": agent.name,
+                        "can_notify": body.can_notify, "by": admin.email},
+                outcome="ok", latency_ms=0,
+            )
     return await _agent_dto(session, agent)
 
 

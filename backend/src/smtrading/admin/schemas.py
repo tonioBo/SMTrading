@@ -85,7 +85,10 @@ class AgentCreateIn(BaseModel):
 
 
 class AgentPatchIn(BaseModel):
-    active: bool
+    """Only the fields present in the request are changed (`model_fields_set`)."""
+
+    active: bool | None = None
+    can_notify: bool | None = None
 
 
 class AgentPortfolioIn(BaseModel):

@@ -22,6 +22,7 @@ from smtrading.admin.routes_markets import router as markets_router
 from smtrading.admin.routes_portfolios import router as portfolios_router
 from smtrading.admin.routes_risk import router as risk_router
 from smtrading.admin.routes_system import router as system_router
+from smtrading.admin.routes_telegram import router as telegram_router
 from smtrading.admin.routes_watch import router as watch_router
 from smtrading.admin.ws import router as ws_router
 from smtrading.common.config import get_settings
@@ -149,6 +150,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(system_router)
     app.include_router(dashboard_router)
     app.include_router(watch_router)
+    app.include_router(telegram_router)
     app.include_router(ws_router)
 
     @app.get("/health")
