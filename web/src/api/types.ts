@@ -489,6 +489,7 @@ export interface AppSettings {
   stale_quote_s: Record<string, number>;
   default_spread_bps: Record<string, number>;
   timezone: string;
+  mcp_hide_mode: boolean;
 }
 
 export interface Connector {

@@ -27,13 +27,13 @@ from smtrading.mcp.dto import (
 )
 from smtrading.mcp.runtime import ToolCtx, run_tool
 from smtrading.performance import service as performance
-from smtrading.portfolios.mode import portfolio_mode
+from smtrading.portfolios.mode import PortfolioMode, portfolio_mode
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.queries import day_pnl, list_portfolio_journals, today_day_open
 from smtrading.risk.daily_loss import net_cash_flows_eur
 from smtrading.risk.models import RiskProfile
 from smtrading.risk.profiles import effective_risk_profile
-from smtrading.risk.settings import is_kill_switch_on
+from smtrading.risk.settings import get_mcp_hide_mode, is_kill_switch_on
 from smtrading.valuation.service import PortfolioValuation, value_portfolio
 
 MAX_TRANSACTIONS = 500
@@ -68,6 +68,15 @@ async def _valuation(ctx: ToolCtx, portfolio: Portfolio) -> PortfolioValuation:
     return await value_portfolio(ctx.session, ctx.qs, portfolio.id, redis=ctx.redis)
 
 
+async def _mode_field(ctx: ToolCtx, portfolio: Portfolio) -> dict[str, Any]:
+    """`{"mode": ...}`, or nothing for a non-live portfolio while the admin setting
+    `mcp_hide_mode` is on (agents must not learn that a portfolio is simulated/paper)."""
+    mode = portfolio_mode(portfolio)
+    if mode != PortfolioMode.reale and await get_mcp_hide_mode(ctx.session):
+        return {}
+    return {"mode": mode}
+
+
 async def _list_portfolios(ctx: ToolCtx) -> list[dict]:
     rows = await ctx.session.execute(
         select(Portfolio, AgentPortfolio.permission)
@@ -84,10 +93,10 @@ async def _list_portfolios(ctx: ToolCtx) -> list[dict]:
             "name": p.name,
             "base_currency": p.base_currency,
             "status": p.status,
-            "mode": portfolio_mode(p),
+            **await _mode_field(ctx, p),
             "permission": permission,
         }
-        for p, permission in rows
+        for p, permission in rows.all()
     ]
 
 
@@ -101,7 +110,7 @@ async def portfolio_snapshot(ctx: ToolCtx, portfolio_id: str | None) -> dict:
     return {
         **valuation_dto(valuation),
         "status": portfolio.status,
-        "mode": portfolio_mode(portfolio),
+        **await _mode_field(ctx, portfolio),
         "reduce_only_reason": portfolio.reduce_only_reason,
         "leverage": portfolio.leverage,
         "day_pnl_eur": pnl,

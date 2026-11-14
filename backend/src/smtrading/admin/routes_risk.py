@@ -229,6 +229,10 @@ async def put_interest_rates(
 # --- app settings --------------------------------------------------------------------
 
 
+def _hide_mode(value: Any) -> bool:
+    return bool(value.get("on", True)) if isinstance(value, dict) else True
+
+
 async def _app_settings(session: AsyncSession) -> dict[str, Any]:
     stored = dict((await session.execute(select(AppSetting.key, AppSetting.value))).all())
     stale = {**DEFAULT_STALE_QUOTE_S, **(stored.get("stale_quote_s") or {})}
@@ -237,6 +241,7 @@ async def _app_settings(session: AsyncSession) -> dict[str, Any]:
         "stale_quote_s": stale,
         "default_spread_bps": spread,
         "timezone": stored.get("timezone") or DEFAULT_TIMEZONE,
+        "mcp_hide_mode": _hide_mode(stored.get("mcp_hide_mode")),
     }
 
 
@@ -274,6 +279,8 @@ async def put_app_settings(body: AppSettingsIn, session: DbSession, redis: Redis
         except (ZoneInfoNotFoundError, ValueError):
             raise _invalid("timezone", "fuso orario non valido") from None
         updates["timezone"] = body.timezone
+    if body.mcp_hide_mode is not None:
+        updates["mcp_hide_mode"] = {"on": body.mcp_hide_mode}
     async with _transaction(session, redis):
         for key, value in updates.items():
             await _store_setting(session, key, value)

@@ -28,6 +28,15 @@ export function useSaveTimezone() {
   });
 }
 
+export function useSaveMcpHideMode() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (mcp_hide_mode: boolean) =>
+      apiFetch<AppSettings>("/api/settings/app", { method: "PUT", body: { mcp_hide_mode } }),
+    onSuccess: (data) => qc.setQueryData(appSettingsKey, data),
+  });
+}
+
 /** POST /api/system/backup: a fresh pg_dump, saved as a file (429 while another runs). */
 export function useDownloadBackup() {
   return useMutation({

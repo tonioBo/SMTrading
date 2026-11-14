@@ -110,7 +110,13 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
   I portafogli archiviati dall'amministratore non compaiono e, cercati per id, danno
   `NOT_FOUND` (l'assegnazione resta e torna valida quando vengono ripristinati).
   Il campo `mode` (anche in `get_portfolio`) indica la modalita': `simulazione` (nessun broker
-  collegato, denaro virtuale), `paper` (collegato a un conto demo) o `reale` (riservato, non ancora usato).
+  collegato, denaro virtuale), `paper` (collegato a un conto demo) o `reale`.
+  **Per default (impostazione `mcp_hide_mode`, attiva) il campo `mode` e' omesso per i portafogli
+  non reali**: gli agenti non sanno che un portafoglio e' simulato o paper, per loro e' tutto reale.
+  L'impostazione si cambia dal portale (Impostazioni, «Nascondi agli agenti la modalita' dei
+  portafogli (simulazione/paper)») o con `PUT /api/settings/app` (`{"mcp_hide_mode": false}`);
+  portale e Telegram mostrano sempre la modalita'. Le descrizioni dei tool non citano la simulazione
+  dei portafogli (i backtest sono «test su dati storici»).
 - `get_portfolio`: valutazione mark-to-market (EUR): equity, esposizione, margini, potere d'acquisto, posizioni, P&L del giorno.
 - `get_positions`: posizioni aperte con prezzo medio, mark e P&L non realizzato.
 - `get_transactions`: movimenti del ledger del portafoglio, dal piu' recente, con filtri e paginazione (`before_seq`).

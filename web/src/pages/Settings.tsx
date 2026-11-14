@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { useAppSettings } from "@/api/hooks/risk";
-import { useBackups, useDownloadBackup, useSaveTimezone, useVerifyIntegrity } from "@/api/hooks/system";
+import { useBackups, useDownloadBackup, useSaveMcpHideMode, useSaveTimezone, useVerifyIntegrity } from "@/api/hooks/system";
 import type { BackupFile } from "@/api/types";
 import { ChangePasswordSection } from "@/components/ChangePasswordSection";
 import { SessionsSection } from "@/components/SessionsSection";
@@ -40,6 +40,37 @@ function TimezoneEditor({ initial }: { initial: string }) {
         </p>
       )}
     </div>
+  );
+}
+
+function McpHideModeSection({ initial }: { initial: boolean }) {
+  const save = useSaveMcpHideMode();
+  return (
+    <Card className="mt-6">
+      <CardHeader>
+        <CardTitle>Agenti</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={initial}
+            disabled={save.isPending}
+            onChange={(e) => save.mutate(e.target.checked, { onSuccess: () => toast.success("Impostazione salvata") })}
+            className="h-4 w-4 accent-[rgb(var(--accent))]"
+          />
+          Nascondi agli agenti la modalità dei portafogli (simulazione/paper)
+        </label>
+        <p className="text-muted">
+          Se attivo, gli agenti Paperclip non vedono mai la modalità dei portafogli non reali (simulazione, paper): per loro è tutto reale. Nel portale e su Telegram la modalità resta sempre visibile.
+        </p>
+        {save.error && (
+          <p role="alert" className="text-loss">
+            {errorMessage(save.error)}
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -121,6 +152,7 @@ export default function Settings() {
           {data && <TimezoneEditor initial={data.timezone} />}
         </CardContent>
       </Card>
+      {data && <McpHideModeSection initial={data.mcp_hide_mode} />}
       <ChangePasswordSection />
       <TotpSection />
       <SessionsSection />

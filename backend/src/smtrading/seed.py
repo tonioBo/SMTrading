@@ -46,6 +46,7 @@ _INTEREST_RATES = [
 _APP_SETTINGS = {
     "stale_quote_s": dict(DEFAULT_STALE_QUOTE_S),
     "default_spread_bps": dict(DEFAULT_SPREAD_BPS),
+    "mcp_hide_mode": {"on": True},
 }
 _SYSTEM_STATE = {"kill_switch": {"on": False}}
 

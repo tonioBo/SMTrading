@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from pydantic import BaseModel, Field, StrictInt
+from pydantic import BaseModel, Field, StrictBool, StrictInt
 
 ShortStr = Annotated[str, Field(max_length=256)]
 TotpCode = Annotated[str, Field(max_length=16)]
@@ -196,6 +196,7 @@ class AppSettingsIn(BaseModel):
     stale_quote_s: dict[str, StrictInt] | None = None
     default_spread_bps: dict[str, StrictInt] | None = None
     timezone: str | None = None
+    mcp_hide_mode: StrictBool | None = None
 
 
 class KillSwitchIn(BaseModel):

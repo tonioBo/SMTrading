@@ -519,7 +519,12 @@ async def test_app_settings(admin):
     c = admin.client
     got = (await c.get("/api/settings/app")).json()
     assert got["stale_quote_s"]["crypto"] == 60 and got["default_spread_bps"]["forex"] == 1
-    assert got["timezone"] == "Europe/Rome"
+    assert got["timezone"] == "Europe/Rome" and got["mcp_hide_mode"] is True
+
+    r = await c.put("/api/settings/app", json={"mcp_hide_mode": False})
+    assert r.status_code == 200 and r.json()["mcp_hide_mode"] is False
+    assert (await c.put("/api/settings/app", json={"mcp_hide_mode": "no"})).status_code in (400, 422)
+    await c.put("/api/settings/app", json={"mcp_hide_mode": True})
 
     r = await c.put("/api/settings/app", json={
         "stale_quote_s": {"crypto": 30}, "default_spread_bps": {"eu_equity": 8},

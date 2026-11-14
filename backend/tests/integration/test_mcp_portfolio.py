@@ -103,7 +103,7 @@ async def test_get_portfolio_exact_values(mcp_server, mcp_call, book):
     assert p["margin_level"] == "ok"
     assert p["stale_symbols"] == []
     assert p["status"] == "active"
-    assert p["mode"] == "simulazione"  # M4: no broker link
+    assert "mode" not in p  # mcp_hide_mode defaults to on
     assert p["reduce_only_reason"] is None
     assert D(p["leverage"]) == D(1)
     assert p["day_pnl_eur"] == "97.5"
@@ -409,7 +409,7 @@ async def test_archived_portfolio_is_invisible_to_agents(mcp_server, mcp_call, b
     url, token = mcp_server.url, mcp_server.token
     is_error, listed = await mcp_call(url, token, "list_portfolios")
     assert not is_error and [p["name"] for p in listed] == ["Other"]
-    assert [p["mode"] for p in listed] == ["simulazione"]  # no broker link
+    assert all("mode" not in p for p in listed)  # mcp_hide_mode defaults to on
     demo = {"portfolio_id": str(mcp_server.demo_id)}
     for tool, args in (
         ("get_portfolio", demo), ("get_positions", demo),
@@ -423,3 +423,38 @@ async def test_archived_portfolio_is_invisible_to_agents(mcp_server, mcp_call, b
         assert await s.scalar(select(func.count()).select_from(Order).where(
             Order.portfolio_id == mcp_server.demo_id, Order.status == OrderStatus.rejected
         )) == 0
+
+
+async def _set_hide_mode(db_url, on):
+    from sqlalchemy.dialects.postgresql import insert
+
+    from smtrading.risk.models import AppSetting
+
+    async with _Db(db_url) as s:
+        await s.execute(insert(AppSetting).values(key="mcp_hide_mode", value={"on": on})
+                        .on_conflict_do_update(index_elements=["key"], set_={"value": {"on": on}}))
+        await s.commit()
+
+
+async def test_mcp_hide_mode_setting(mcp_server, mcp_call, book):
+    """On (default): no agent-visible payload mentions simulazione/paper/demo; off: mode shows."""
+    import json
+
+    url, token = mcp_server.url, mcp_server.token
+    async with _Db(mcp_server.db_url) as s:  # the seeded name "Demo" would be a false positive
+        (await s.get(Portfolio, mcp_server.demo_id)).name = "Principale"
+        await s.commit()
+    args = {"portfolio_id": str(mcp_server.demo_id)}
+    calls = (("list_portfolios", None), ("get_portfolio", args), ("get_positions", args),
+             ("get_risk_limits", args), ("get_transactions", args))
+    for tool, a in calls:
+        is_error, out = await mcp_call(url, token, tool, a)
+        assert not is_error, out
+        low = json.dumps(out).lower()
+        assert not any(w in low for w in ("simulaz", "paper", "demo")), (tool, out)
+
+    await _set_hide_mode(mcp_server.db_url, False)
+    _, listed = await mcp_call(url, token, "list_portfolios")
+    assert {p["mode"] for p in listed} == {"simulazione"}
+    _, got = await mcp_call(url, token, "get_portfolio", args)
+    assert got["mode"] == "simulazione"

@@ -10,6 +10,7 @@ from smtrading.risk.models import AppSetting, SystemState
 DEFAULT_STALE_QUOTE_S = {"us_equity": 120, "eu_equity": 1200, "crypto": 60, "forex": 600}
 DEFAULT_SPREAD_BPS = {"us_equity": 2, "eu_equity": 5, "crypto": 5, "forex": 1}
 KILL_SWITCH_KEY = "kill_switch"
+MCP_HIDE_MODE_KEY = "mcp_hide_mode"
 
 
 async def _per_class(
@@ -45,3 +46,10 @@ async def set_kill_switch(session: AsyncSession, on: bool) -> None:
             index_elements=["key"], set_={"value": value, "updated_at": func.now()}
         )
     )
+
+
+async def get_mcp_hide_mode(session: AsyncSession) -> bool:
+    """Admin setting: hide from the MCP agents the simulation/paper mode of the portfolios
+    (default on). Stored as {"on": bool} in app_settings."""
+    value = await session.scalar(select(AppSetting.value).where(AppSetting.key == MCP_HIDE_MODE_KEY))
+    return bool(value.get("on", True)) if isinstance(value, dict) else True

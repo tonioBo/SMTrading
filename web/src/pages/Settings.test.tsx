@@ -42,7 +42,7 @@ const server = setupServer(
     return HttpResponse.json({ ok: true });
   }),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
-  http.get("*/api/settings/app", () => HttpResponse.json({ stale_quote_s: {}, default_spread_bps: {}, timezone: "Europe/Rome" })),
+  http.get("*/api/settings/app", () => HttpResponse.json({ stale_quote_s: {}, default_spread_bps: {}, timezone: "Europe/Rome", mcp_hide_mode: true })),
   http.put("*/api/settings/app", async ({ request }) => {
     const body = await request.json();
     tzPuts.push(body);
@@ -129,6 +129,15 @@ describe("Settings", () => {
     await user.selectOptions(select, "Asia/Tokyo");
     await user.click(screen.getByRole("button", { name: "Salva" }));
     await waitFor(() => expect(tzPuts).toEqual([{ timezone: "Asia/Tokyo" }]));
+  });
+
+  it("toggles the MCP hide-mode setting", async () => {
+    const user = userEvent.setup();
+    renderApp("/impostazioni");
+    const box = await screen.findByLabelText(/Nascondi agli agenti la modalità dei portafogli/);
+    expect(box).toBeChecked();
+    await user.click(box);
+    await waitFor(() => expect(tzPuts).toEqual([{ mcp_hide_mode: false }]));
   });
 
   it("validates the new password client-side", async () => {
