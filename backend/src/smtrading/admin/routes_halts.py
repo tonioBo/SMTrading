@@ -45,7 +45,7 @@ async def set_halt(
     body: HaltIn, admin: CurrentAdmin, session: DbSession, redis: RedisClient
 ) -> dict:
     async with _transaction(session, redis):
-        halt, changed = await halts.set_halt(
+        halt, changed, canceled = await halts.set_halt(
             session, scope=body.scope, portfolio_id=body.portfolio_id, reason=body.reason,
             by=f"admin:{admin.email}",
         )
@@ -54,11 +54,11 @@ async def set_halt(
                 session, agent_id=None, method="admin:halt.set",
                 params={"halt_id": halt.id, "scope": halt.scope,
                         "portfolio_id": str(halt.portfolio_id) if halt.portfolio_id else None,
-                        "reason": halt.reason, "by": admin.email},
+                        "reason": halt.reason, "by": admin.email, "canceled": canceled},
                 outcome="ok", latency_ms=0,
             )
         dto = await _dto(session, halt)
-    return {"halt": dto, "changed": changed}
+    return {"halt": dto, "changed": changed, "canceled": canceled}
 
 
 @router.post("/halts/{halt_id}/clear")

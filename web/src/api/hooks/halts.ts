@@ -27,7 +27,7 @@ export function useSetHalt() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: TradingHaltInput) =>
-      apiFetch<{ halt: TradingHalt; changed: boolean }>("/api/halts", { method: "POST", body: input }),
+      apiFetch<{ halt: TradingHalt; changed: boolean; canceled: number }>("/api/halts", { method: "POST", body: input }),
     onSettled: () => void qc.invalidateQueries({ queryKey: haltsKey }),
   });
 }

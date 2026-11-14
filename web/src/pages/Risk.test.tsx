@@ -2,6 +2,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
+import { toast } from "sonner";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
@@ -168,6 +169,7 @@ describe("Risk", () => {
 describe("Risk «Blocco aperture»", () => {
   it("sets a halt on one portfolio and shows active halts and history", async () => {
     const user = userEvent.setup();
+    const success = vi.spyOn(toast, "success");
     const posts: unknown[] = [];
     server.use(
       http.get("*/api/halts", () =>
@@ -183,8 +185,16 @@ describe("Risk «Blocco aperture»", () => {
       ),
       http.post("*/api/halts", async ({ request }) => {
         posts.push(await request.json());
-        return HttpResponse.json({ halt: haltFixture({ id: 8 }), changed: true });
+        return HttpResponse.json({ halt: haltFixture({ id: 8 }), changed: true, canceled: 2 });
       }),
+    );
+    server.use(
+      http.get("*/api/portfolios", () =>
+        HttpResponse.json([
+          { id: "p1", name: "Alfa", status: "active" },
+          { id: "p9", name: "Vecchio", status: "archived" },
+        ]),
+      ),
     );
     renderApp("/rischio");
     const active = await screen.findByRole("list", { name: "Blocchi attivi" });
@@ -198,9 +208,14 @@ describe("Risk «Blocco aperture»", () => {
     expect(await screen.findByText("Il motivo è obbligatorio")).toBeInTheDocument();
     expect(posts).toEqual([]);
 
-    await user.selectOptions(screen.getByLabelText("Ambito"), "p1");
+    const scope = screen.getByLabelText("Ambito");
+    await waitFor(() => expect(within(scope).getByRole("option", { name: "Alfa" })).toBeInTheDocument());
+    expect(within(scope).queryByRole("option", { name: "Vecchio" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Motivo")).toHaveAttribute("maxlength", "500");
+    await user.selectOptions(scope, "p1");
     await user.type(screen.getByLabelText("Motivo"), "  Earnings  ");
     await user.click(screen.getByRole("button", { name: "Sospendi aperture" }));
     await waitFor(() => expect(posts).toEqual([{ scope: "portfolio", portfolio_id: "p1", reason: "Earnings" }]));
+    await waitFor(() => expect(success).toHaveBeenCalledWith("Blocco aperture attivato (2 ordini annullati)"));
   });
 });

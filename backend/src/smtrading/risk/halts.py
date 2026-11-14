@@ -6,15 +6,22 @@ an order that would increase exposure there is refused with TRADING_HALTED, at p
 switch's exposure test: only orders that strictly reduce the position pass (closes,
 bracket exits, reduce_only orders). Broker fills, liquidations and cancels are untouched.
 
+When a halt starts (or a global one widens a portfolio one) the open orders of the covered
+portfolios that would increase exposure are canceled (`cancel_openings`, the engine's cancel
+path: a broker order becomes cancel_requested and BrokerSync cancels it at the broker).
+
 At most one active halt per target (partial unique indexes); setting one again with the
 same reason changes nothing, with another reason it replaces it (the old row is cleared by
-the same author). Rows are never deleted: the cleared ones are the history. Every change
-records a direct critical activity (`halt.set` / `halt.cleared`) that SMTrading sends to
-Telegram itself. Set/clear serialise on a transaction-level advisory lock.
+the same author; the new row's `halt.set` carries `replaces`, never a `halt.cleared`). A
+halt set by an admin is cleared or reworded only by an admin (FORBIDDEN for an agent).
+Rows are never deleted: the cleared ones are the history. Every change records a direct
+critical activity (`halt.set` / `halt.cleared`) that SMTrading sends to Telegram itself.
+Set/clear serialise on a transaction-level advisory lock.
 """
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, or_, select
@@ -22,12 +29,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.events import queue_event
-from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
 from smtrading.risk.models import HaltScope, TradingHalt
 from smtrading.telegram.render import clean_text
 
 MAX_REASON = 500
 MESSAGE_PREFIX = "Aperture sospese dal CEO: "
+ADMIN_ONLY_CLEAR = "Blocco impostato dagli amministratori: solo loro possono revocarlo"
+ADMIN_ONLY_REPLACE = "Blocco impostato dagli amministratori: solo loro possono modificarlo"
 SCOPES = tuple(s.value for s in HaltScope)
 _LOCK_KEY = "smtrading.trading_halts"
 
@@ -84,17 +93,88 @@ async def _lock(session: AsyncSession) -> None:
 async def _active_for(session: AsyncSession, scope: str, portfolio_id) -> TradingHalt | None:
     return await session.scalar(
         select(TradingHalt).where(TradingHalt.active, _target_filter(scope, portfolio_id))
+        .execution_options(populate_existing=True)
     )
 
 
+def _is_admin(who: str | None) -> bool:
+    return bool(who) and who.startswith("admin:")
+
+
+def _admin_only(halt: TradingHalt, by: str, message: str) -> None:
+    """R-H2: an admin's halt belongs to the admins."""
+    if _is_admin(halt.set_by) and not _is_admin(by):
+        raise SMTError(ErrorCode.FORBIDDEN, message, {"halt_id": halt.id})
+
+
 def _event(session: AsyncSession, type_: str, halt: TradingHalt, by: str,
-           agent_id: uuid.UUID | None, reason: str | None) -> None:
+           agent_id: uuid.UUID | None, reason: str | None, **extra: Any) -> None:
     queue_event(session, type_, {
         "halt_id": halt.id, "scope": halt.scope, "portfolio_id": halt.portfolio_id,
         # the activity data reaches agents (feed): an admin is named without the email
         "agent_id": agent_id, "reason": reason,
-        "by": "admin" if by.startswith("admin:") else by,
+        "by": "admin" if _is_admin(by) else by, **extra,
     })
+
+
+def _reduces(order: Any, held: Decimal) -> bool:
+    """The order strictly reduces the current position (closing side, no more than it)."""
+    closing = held != 0 and (held > 0) != (order.side == "buy")
+    if not closing:
+        return False
+    if order.qty is None:  # notional
+        return bool(order.reduce_only)
+    return order.qty - (order.filled_qty or Decimal(0)) <= abs(held)
+
+
+async def cancel_openings(
+    session: AsyncSession, portfolio_ids: list[uuid.UUID], *, by: str
+) -> int:
+    """I1 (R-H1): cancel the open orders of these portfolios that would increase exposure;
+    returns how many (bracket legs of a canceled entry included). Kept: reduce_only,
+    live_flatten and liquidation orders, bracket exits (a child of an entry that is not
+    canceled) and any order that strictly reduces the position (OCO exits, plain closes).
+    Portfolio by portfolio in id order, the row locked first and its open orders read
+    again under the lock (a placement that committed meanwhile is caught)."""
+    from smtrading.engine.models import LIQUIDATION_ROLE, OPEN_STATUSES, Order
+    from smtrading.engine.service import _cancel
+    from smtrading.ledger.models import Account, AccountBalance, AccountKind
+    from smtrading.portfolios.locks import lock_portfolio
+
+    canceled = 0
+    for pid in sorted(set(portfolio_ids)):
+        if (await lock_portfolio(session, pid)).status == PortfolioStatus.archived:
+            continue  # archived meanwhile: read-only, no open orders
+        orders = list(await session.scalars(
+            select(Order).where(Order.portfolio_id == pid, Order.status.in_(OPEN_STATUSES))
+            .order_by(Order.created_at, Order.id).with_for_update()
+            .execution_options(populate_existing=True)
+        ))
+        if not orders:
+            continue
+        held = dict((await session.execute(
+            select(Account.asset, AccountBalance.balance)
+            .join(AccountBalance, AccountBalance.account_id == Account.id)
+            .where(Account.portfolio_id == pid, Account.kind == AccountKind.position)
+        )).all())
+        doomed = [
+            o for o in orders
+            if o.parent_id is None and not (o.reduce_only or o.live_flatten
+                                            or o.role == LIQUIDATION_ROLE)
+            and not _reduces(o, held.get(o.symbol) or Decimal(0))
+        ]
+        ids = {o.id for o in doomed}
+        doomed += [o for o in orders if o.parent_id in ids]  # the legs go with their entry
+        if doomed:
+            await _cancel(session, doomed, by)
+            canceled += len(doomed)
+    return canceled
+
+
+async def _covered_ids(session: AsyncSession, halt: TradingHalt) -> list[uuid.UUID]:
+    if halt.scope == HaltScope.global_:
+        return list(await session.scalars(live_portfolio_ids().order_by(Portfolio.id)))
+    return [halt.portfolio_id]
 
 
 def _close(halt: TradingHalt, by: str) -> None:
@@ -106,23 +186,27 @@ def _close(halt: TradingHalt, by: str) -> None:
 async def set_halt(
     session: AsyncSession, *, scope: Any, portfolio_id: uuid.UUID | None, reason: Any,
     by: str, agent_id: uuid.UUID | None = None,
-) -> tuple[TradingHalt, bool]:
-    """Activate a halt; returns (the active halt, whether anything changed)."""
+) -> tuple[TradingHalt, bool, int]:
+    """Activate a halt; returns (the active halt, whether anything changed, how many open
+    orders were canceled: see cancel_openings)."""
     reason_ = clean_reason(reason)
     scope_, pid = await _target(session, scope, portfolio_id)
     await _lock(session)
     current = await _active_for(session, scope_, pid)
     if current is not None and current.reason == reason_:
-        return current, False
+        return current, False, 0
     if current is not None:
+        _admin_only(current, by, ADMIN_ONLY_REPLACE)
         _close(current, by)
         await session.flush()
     halt = TradingHalt(scope=scope_, portfolio_id=pid, active=True, reason=reason_, set_by=by)
     session.add(halt)
     await session.flush()
     await session.refresh(halt, ["set_at"])
-    _event(session, "halt.set", halt, by, agent_id, reason_)
-    return halt, True
+    canceled = await cancel_openings(session, await _covered_ids(session, halt), by="system")
+    _event(session, "halt.set", halt, by, agent_id, reason_,
+           replaces=current.id if current is not None else None, canceled=canceled)
+    return halt, True, canceled
 
 
 async def clear_halt(
@@ -136,6 +220,7 @@ async def clear_halt(
     halt = await _active_for(session, scope_, pid)
     if halt is None:
         return None
+    _admin_only(halt, by, ADMIN_ONLY_CLEAR)
     return await _clear(session, halt, by, agent_id, note)
 
 

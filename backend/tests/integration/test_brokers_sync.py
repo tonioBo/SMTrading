@@ -52,8 +52,9 @@ from smtrading.ledger.models import (
 )
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
+from smtrading.risk import halts
 from smtrading.risk.margin import check_portfolio_margin
-from smtrading.risk.models import Notification
+from smtrading.risk.models import Notification, TradingHalt
 from smtrading.risk.settings import set_kill_switch
 from smtrading.seed import run_seed
 
@@ -363,6 +364,41 @@ async def test_kill_switch_and_lock_checked_again_before_sending(maker, redis, q
     o = await _order(maker, oid)
     assert o.status == OrderStatus.rejected and o.reject_code == ErrorCode.PORTFOLIO_LOCKED
     assert BROKER.placed == []
+
+
+async def test_trading_halt_checked_again_before_sending(maker, redis, qs):
+    """M6: an opening that is still waiting to be sent when a halt starts (written
+    directly: the halt's cancel pass did not see it) is refused before the send."""
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid)
+    async with maker() as s:
+        s.add(TradingHalt(scope="portfolio", portfolio_id=pid, reason="Stop",
+                          set_by="admin:admin@example.com"))
+        await s.commit()
+    await _sync(maker, redis, qs).tick()
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.rejected and o.reject_code == ErrorCode.TRADING_HALTED
+    assert BROKER.placed == []
+
+
+async def test_halt_cancels_a_resting_opening_at_the_broker(maker, redis, qs):
+    """I1: a broker-linked resting opening becomes cancel_requested; BrokerSync cancels it."""
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"))
+    sync = _sync(maker, redis, qs)
+    await sync.tick()
+    assert (await _order(maker, oid)).broker_order_id == "b1"
+    async with maker() as s:
+        _, changed, canceled = await halts.set_halt(
+            s, scope="global", portfolio_id=None, reason="Stop", by="admin:admin@example.com"
+        )
+        await s.commit()
+    assert changed and canceled == 1
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.pending and o.broker_status == BrokerState.CANCEL_REQUESTED
+    await sync.tick()
+    assert BROKER.canceled == ["b1"]
+    assert (await _order(maker, oid)).status == OrderStatus.canceled
 
 
 async def test_trailing_trigger_is_simulated_then_sent_to_the_broker(maker, redis, qs):

@@ -75,8 +75,9 @@ async def _set_trading_halt(
     if scope == HaltScope.portfolio and pid is not None:
         await require_permission(ctx.session, ctx.agent_id, pid, "read")
     by = f"agent:{ctx.agent_id}"
+    canceled = None
     if on:
-        halt, changed = await halts.set_halt(
+        halt, changed, canceled = await halts.set_halt(
             ctx.session, scope=scope, portfolio_id=pid, reason=reason, by=by,
             agent_id=ctx.agent_id,
         )
@@ -87,7 +88,10 @@ async def _set_trading_halt(
         )
         changed = halt is not None
     view = (await _agent_view(ctx, [halt]))[0] if halt is not None else None
-    return {"active": on, "changed": changed, "halt": view}
+    out = {"active": on, "changed": changed, "halt": view}
+    if canceled is not None:
+        out["canceled"] = canceled
+    return out
 
 
 async def _get_trading_halt(ctx: ToolCtx, portfolio_id: Any) -> dict:
@@ -109,12 +113,14 @@ def register(mcp: MCPServer) -> None:
     ) -> CallToolResult:
         """Block (active=true) or allow again (active=false) new openings: while a halt is
         active, every order that would increase exposure (new positions, adds, short
-        opens, bracket/OCO entries) is refused with TRADING_HALTED; closes, reductions,
-        stop loss/take profit of existing positions and cancels still work. Needs the
+        opens, bracket/OCO entries) is refused with TRADING_HALTED, and activating it
+        cancels the resting orders that would open exposure (returned as `canceled`);
+        closes, reductions, stop loss/take profit of existing positions and cancels still
+        work. A halt set by an admin can be cleared only by an admin (FORBIDDEN). Needs the
         halt permission (FORBIDDEN otherwise). scope: global (every portfolio, default)
         or portfolio (portfolio_id required, needs read on it). reason: 1-500 characters,
         required to activate. Returns {active, changed, halt: {id, scope, portfolio_id,
-        portfolio, reason, set_by, since, ...} or null}; the same reason again changes
+        portfolio, reason, set_by, since, ...} or null, canceled (activation only)}; the same reason again changes
         nothing, another reason replaces the halt. SMTrading sends the change to Telegram
         itself (halt.set / halt.cleared)."""
         params = audit_params({"active": active, "reason": reason, "scope": scope,

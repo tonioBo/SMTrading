@@ -73,7 +73,11 @@ def _halt(p: dict) -> str:
     reason = p.get("reason")
     if p.get("cleared"):
         return f"Aperture riattivate{where}" + (f": {reason}" if reason else "")
-    return f"Aperture sospese{where}: {_v(p, 'reason')}"
+    if p.get("replaces"):  # a new reason for the same halt: never a revocation (M3)
+        return f"Motivo aggiornato{where}: {_v(p, 'reason')}"
+    canceled = p.get("canceled") or 0
+    tail = f" ({canceled} ordini annullati)" if canceled else ""
+    return f"Aperture sospese{where}: {_v(p, 'reason')}{tail}"
 
 
 # event type -> (level, direct, summary)

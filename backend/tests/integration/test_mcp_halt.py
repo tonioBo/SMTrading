@@ -165,3 +165,29 @@ async def test_can_halt_defaults_false_and_toggles(env):
         assert agent.can_halt is False
         assert (await agents.set_agent_can_halt(s, agent.id, True)).can_halt is True
         await s.commit()
+
+
+async def test_agent_cannot_clear_an_admin_halt(env):
+    """R-H2: a halt set by an admin is revoked only by an admin."""
+    await _grant(env)
+    async with await env["db"]() as s:
+        await halts.set_halt(s, scope="global", portfolio_id=None, reason="manuale",
+                             by="admin:boss@example.com")
+        await s.commit()
+    err, res = await env["call"]("set_trading_halt", {"active": False})
+    assert err and res["code"] == "FORBIDDEN"
+    assert res["message"] == "Blocco impostato dagli amministratori: solo loro possono revocarlo"
+    assert [r.active for r in await _rows(env)] == [True]
+
+    # the agent's own halt: an admin revokes it as well
+    async with await env["db"]() as s:
+        admin_halt = (await _rows(env))[0]
+        await halts.clear_halt_by_id(s, admin_halt.id, by="admin:boss@example.com")
+        await s.commit()
+    err, res = await env["call"]("set_trading_halt", {"active": True, "reason": "CEO"})
+    assert not err and res["canceled"] == 0
+    async with await env["db"]() as s:
+        _, changed = await halts.clear_halt_by_id(s, res["halt"]["id"],
+                                                  by="admin:boss@example.com")
+        await s.commit()
+    assert changed

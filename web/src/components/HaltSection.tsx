@@ -19,6 +19,7 @@ function where(h: TradingHalt): string {
 
 function HaltForm() {
   const { data: portfolios } = usePortfolios();
+  const targets = portfolios?.filter((p) => p.status !== "archived");
   const [target, setTarget] = useState(GLOBAL);
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -35,9 +36,9 @@ function HaltForm() {
     save.mutate(
       target === GLOBAL ? { scope: "global", reason: text } : { scope: "portfolio", portfolio_id: target, reason: text },
       {
-        onSuccess: () => {
+        onSuccess: (res) => {
           setReason("");
-          toast.success("Blocco aperture attivato");
+          toast.success(res.canceled ? `Blocco aperture attivato (${res.canceled} ordini annullati)` : "Blocco aperture attivato");
         },
       },
     );
@@ -48,7 +49,7 @@ function HaltForm() {
       <FormField label="Ambito">
         <select className={selectClass} value={target} onChange={(e) => setTarget(e.target.value)}>
           <option value={GLOBAL}>Tutti i portafogli</option>
-          {portfolios?.map((p) => (
+          {targets?.map((p) => (
             <option key={p.id} value={p.id}>
               {p.name}
             </option>
@@ -56,7 +57,7 @@ function HaltForm() {
         </select>
       </FormField>
       <FormField label="Motivo" error={reasonError}>
-        <input className={selectClass} value={reason} maxLength={REASON_MAX + 50} onChange={(e) => setReason(e.target.value)} />
+        <input className={selectClass} value={reason} maxLength={REASON_MAX} onChange={(e) => setReason(e.target.value)} />
       </FormField>
       <Button type="submit" variant="destructive" disabled={save.isPending}>
         Sospendi aperture

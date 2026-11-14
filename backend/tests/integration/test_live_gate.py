@@ -340,3 +340,38 @@ async def test_live_client_never_follows_redirects(sm):
                                  follow_redirects=True) as r:
             assert r.status_code == 302
     assert len(calls) == 3
+
+
+@pytest.mark.parametrize("kind,passes", [
+    ("opening", False), ("reduce_only", True), ("flatten", True), ("liquidation", True),
+])
+async def test_trading_halt_lets_only_reducing_orders_through(sm, kind, passes):
+    """M2: a halt covering the portfolio closes the gate to every write but the
+    reduce-only, live-flatten and liquidation orders; reads and cancels still pass."""
+    from smtrading.engine.models import LIQUIDATION_ROLE
+    from smtrading.risk.models import TradingHalt
+
+    link_id, order_id = await _setup(sm, state="armed", reduce_only=kind == "reduce_only",
+                                     flatten=kind == "flatten")
+    async with sm() as s:
+        order = await s.get(Order, order_id)
+        if kind == "liquidation":
+            order.role = LIQUIDATION_ROLE
+        s.add(TradingHalt(scope="portfolio", portfolio_id=order.portfolio_id,
+                          reason="Stop", set_by="admin:admin@example.com"))
+        await s.commit()
+    inner = Counting()
+    async with make_live_client(sm, link_id, inner=inner.transport()) as client:
+        if passes:
+            assert (await _send(client, "POST", order_id)).status_code == 200
+        else:
+            with pytest.raises(LiveGateClosed) as e:
+                await _send(client, "POST", order_id)
+            assert e.value.code == ErrorCode.TRADING_HALTED
+            assert e.value.message == "Aperture sospese dal CEO: Stop"
+        with pytest.raises(LiveGateClosed) as e:  # a write that is not an order
+            await _send(client, "POST", None)
+        assert e.value.code == ErrorCode.TRADING_HALTED
+        for method in ("GET", "DELETE"):
+            assert (await _send(client, method, order_id)).status_code == 200
+    assert len(inner.requests) == (3 if passes else 2)

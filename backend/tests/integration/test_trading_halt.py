@@ -22,6 +22,7 @@ from smtrading.engine.quotesource import FakeQuoteSource
 from smtrading.engine.service import (
     PlaceOrderRequest,
     close_position,
+    modify_order,
     place_bracket_order,
     place_oco_order,
     place_order,
@@ -93,11 +94,21 @@ async def _tick(session, qs, order, bid, ask):
 
 
 async def _halt(session, portfolio=None, reason="Drawdown oltre soglia"):
-    halt, changed = await halts.set_halt(
+    halt, changed, _ = await halts.set_halt(
         session, scope="portfolio" if portfolio else "global",
         portfolio_id=portfolio.id if portfolio else None, reason=reason, by=ADMIN,
     )
     assert changed
+    return halt
+
+
+async def _raw_halt(session, portfolio, reason="Stop"):
+    """A halt row written directly: an order placed before it is still open (as if the
+    placement committed between the halt's cancel pass and its commit)."""
+    halt = TradingHalt(scope="portfolio", portfolio_id=portfolio.id, reason=reason,
+                       set_by=ADMIN)
+    session.add(halt)
+    await session.flush()
     return halt
 
 
@@ -118,17 +129,17 @@ async def test_set_clear_keeps_history_and_records_critical_activity(db_session,
     assert halt.reason == "Mercato instabile" and halt.set_by == ADMIN
     assert (await halts.covering_halt(db_session, p.id)).id == halt.id
 
-    same, changed = await halts.set_halt(
+    same, changed, _ = await halts.set_halt(
         db_session, scope="global", portfolio_id=None, reason="Mercato instabile", by=ADMIN
     )
     assert same.id == halt.id and changed is False  # a retry: nothing new
 
-    new, changed = await halts.set_halt(
-        db_session, scope="global", portfolio_id=None, reason="Nuovo motivo", by="agent:x"
+    new, changed, _ = await halts.set_halt(
+        db_session, scope="global", portfolio_id=None, reason="Nuovo motivo", by=ADMIN
     )
     assert changed and new.id != halt.id and new.reason == "Nuovo motivo"
     await db_session.refresh(halt)
-    assert halt.active is False and halt.cleared_by == "agent:x" and halt.cleared_at
+    assert halt.active is False and halt.cleared_by == ADMIN and halt.cleared_at
 
     cleared = await halts.clear_halt(db_session, scope="global", portfolio_id=None, by=ADMIN)
     assert cleared.id == new.id and cleared.active is False and cleared.cleared_by == ADMIN
@@ -146,7 +157,33 @@ async def test_set_clear_keeps_history_and_records_critical_activity(db_session,
         ("halt.cleared", "critical", "pending"),
     ]
     assert acts[0].portfolio_id is None and "Mercato instabile" in acts[0].summary
-    assert acts[0].data["by"] == "admin" and acts[1].data["by"] == "agent:x"  # no email
+    assert acts[0].data["by"] == "admin"  # no email
+    # a new reason is a replacement, never announced as a revocation (M3)
+    assert acts[1].data["replaces"] == halt.id and acts[0].data["replaces"] is None
+    assert acts[1].summary == "Motivo aggiornato su tutti i portafogli: Nuovo motivo"
+
+
+async def test_agent_cannot_clear_or_replace_an_admin_halt(db_session, p):
+    """R-H2: an admin's halt is revoked (or reworded) only by an admin."""
+    await _halt(db_session, p, reason="Deciso dagli admin")
+    with pytest.raises(SMTError) as exc:
+        await halts.clear_halt(db_session, scope="portfolio", portfolio_id=p.id, by="agent:x")
+    assert exc.value.code == ErrorCode.FORBIDDEN
+    assert exc.value.message == (
+        "Blocco impostato dagli amministratori: solo loro possono revocarlo"
+    )
+    with pytest.raises(SMTError) as exc:
+        await halts.set_halt(db_session, scope="portfolio", portfolio_id=p.id,
+                             reason="Altro", by="agent:x")
+    assert exc.value.code == ErrorCode.FORBIDDEN
+    assert (await halts.covering_halt(db_session, p.id)).reason == "Deciso dagli admin"
+
+    # an agent's halt: cleared by the agent, or by an admin
+    await halts.clear_halt(db_session, scope="portfolio", portfolio_id=p.id, by=ADMIN)
+    await halts.set_halt(db_session, scope="global", portfolio_id=None, reason="CEO",
+                         by="agent:x")
+    assert await halts.clear_halt(db_session, scope="global", portfolio_id=None,
+                                  by="agent:x") is not None
 
 
 async def test_reason_is_required_and_bounded(db_session, p):
@@ -254,7 +291,7 @@ async def test_resting_opening_order_refused_at_fill(db_session, p, qs):
         db_session, qs, _req(p, type=OrderType.limit, limit_price=D("195.00")), now=OPEN
     )
     assert order.status == OrderStatus.pending
-    await _halt(db_session, p, reason="Stop")
+    await _raw_halt(db_session, p, reason="Stop")  # the opening survived (a race)
     with pytest.raises(SMTError) as exc:
         await _tick(db_session, qs, order, "194.90", "195.00")
     assert exc.value.code == ErrorCode.TRADING_HALTED
@@ -277,3 +314,70 @@ async def test_kill_switch_wins_over_halt(db_session, p, qs):
     with pytest.raises(SMTError) as exc:
         await place_order(db_session, qs, _req(p), now=OPEN)
     assert exc.value.code == ErrorCode.KILL_SWITCH_ACTIVE
+
+
+# --- resting openings canceled when a halt starts (I1 / R-H1) ------------------------------
+
+
+async def test_halt_cancels_resting_openings_and_keeps_exits(db_session, p, qs):
+    entry, tp, sl = await place_bracket_order(
+        db_session, qs, _req(p), take_profit=D("220.00"), stop_loss=D("180.00"), now=OPEN,
+    )
+    assert entry.status == OrderStatus.filled  # long 10, its exits rest
+    oco_a, oco_b = await place_oco_order(
+        db_session, qs, _req(p, side=OrderSide.sell, type=OrderType.limit,
+                             limit_price=D("230.00")),
+        _req(p, side=OrderSide.sell, type=OrderType.stop, stop_price=D("170.00")), now=OPEN,
+    )
+    closing = await place_order(db_session, qs, _req(
+        p, side=OrderSide.sell, type=OrderType.limit, limit_price=D("240.00"), qty=D(5)),
+        now=OPEN)
+    buy = await place_order(
+        db_session, qs, _req(p, type=OrderType.limit, limit_price=D("195.00")), now=OPEN
+    )
+    short = await place_order(db_session, qs, _req(
+        p, side=OrderSide.sell, type=OrderType.limit, limit_price=D("250.00"), qty=D(30)),
+        now=OPEN)  # would flip the position to short
+    b_entry, b_tp, b_sl = await place_bracket_order(
+        db_session, qs, _req(p, type=OrderType.limit, limit_price=D("190.00")),
+        take_profit=D("210.00"), stop_loss=D("185.00"), now=OPEN,
+    )
+    other = await _p(db_session)
+    elsewhere = await place_order(
+        db_session, qs, _req(other, type=OrderType.limit, limit_price=D("195.00")), now=OPEN
+    )
+
+    _, changed, canceled = await halts.set_halt(
+        db_session, scope="portfolio", portfolio_id=p.id, reason="Earnings", by=ADMIN
+    )
+    assert changed and canceled == 5  # buy, short, the pending bracket entry + its 2 legs
+    for o in (buy, short, b_entry, b_tp, b_sl):
+        await db_session.refresh(o)
+        assert o.status == OrderStatus.canceled, o.role
+    for o in (tp, sl, oco_a, oco_b, closing, elsewhere):  # exits and other portfolios stay
+        await db_session.refresh(o)
+        assert o.status in (OrderStatus.pending, OrderStatus.held), o.role
+    await db_session.flush()
+    act = await db_session.scalar(select(Activity).where(Activity.type == "halt.set"))
+    assert act.data["canceled"] == 5
+    assert act.summary == "Aperture sospese: Earnings (5 ordini annullati)"
+
+    # widening to every portfolio cancels the other portfolio's opening too
+    _, changed, canceled = await halts.set_halt(
+        db_session, scope="global", portfolio_id=None, reason="Tutto fermo", by=ADMIN
+    )
+    assert changed and canceled == 1
+    await db_session.refresh(elsewhere)
+    assert elsewhere.status == OrderStatus.canceled
+
+
+async def test_modify_of_a_resting_opening_refused_under_halt(db_session, p, qs):
+    order = await place_order(
+        db_session, qs, _req(p, type=OrderType.limit, limit_price=D("195.00")), now=OPEN
+    )
+    await _raw_halt(db_session, p, reason="Stop")
+    with pytest.raises(SMTError) as exc:
+        await modify_order(db_session, qs, order.id, limit_price=D("196.00"), now=OPEN)
+    assert exc.value.code == ErrorCode.TRADING_HALTED
+    await db_session.refresh(order)
+    assert order.limit_price == D("195.00") and order.status == OrderStatus.pending
