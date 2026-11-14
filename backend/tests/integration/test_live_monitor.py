@@ -174,11 +174,17 @@ async def test_matching_account_is_ok_and_snapshot_saved(maker, qs, fake):
 
 
 async def test_position_diff_trips_reduce_only_and_alert(maker, qs, fake):
+    """R8.7: recorded on the first pass, reduce-only when the next pass finds it again."""
     pid, link_id = await _live(maker)
     fake.alpaca.positions["AAPL"] = D(2)
     row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
     assert not row.ok
     assert {"symbol": "AAPL", "ours": "0", "broker": "2"} in row.diffs
+    assert (await _get(maker, Portfolio, pid)).status == PortfolioStatus.active
+    assert await _activities(maker, "live.reduce_only") == []
+    assert [r.ok for r in await _reconciliations(maker, link_id)] == [False]
+    row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    assert not row.ok
     p = await _get(maker, Portfolio, pid)
     assert p.status == PortfolioStatus.reduce_only
     assert p.reduce_only_reason == "live_reconcile_diff"
@@ -196,9 +202,11 @@ async def test_cash_shortfall_beyond_tolerance(maker, qs, fake):
     assert row.ok, row.diffs
     assert (await _get(maker, Portfolio, pid)).status == PortfolioStatus.active
 
-    fake.t212.cash = D("99.49")  # 0,51 below: reduce-only
+    fake.t212.cash = D("99.49")  # 0,51 below: reduce-only (on the second pass)
     row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
     assert not row.ok
+    assert (await _get(maker, Portfolio, pid)).status == PortfolioStatus.active
+    row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
     assert row.diffs == [{"cash": {"ours": "100", "broker": "99.49", "currency": "EUR",
                                    "tolerance": "0.5"}}]
     p = await _get(maker, Portfolio, pid)
@@ -215,18 +223,22 @@ async def test_broker_cash_surplus_is_ok(maker, qs, fake):
 
 
 async def test_cash_converted_with_fx_for_alpaca(maker, qs, fake):
-    # 100 EUR = 125 USD; tolerance max(0,50 € = 0,625 USD, 0,125) = 0,625
+    # 100 EUR = 125 USD; tolerance max(0,50 € = 0,625 USD, 0,125) = 0,625, plus the FX
+    # band (R8.5): 1 % of the EUR cash, 1,25 USD -> 1,875
     pid, link_id = await _live(maker, cash="100", ccy="EUR")
-    fake.alpaca.cash = D("124.40")
+    fake.alpaca.cash = D("123.20")
     assert (await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)).ok
-    fake.alpaca.cash = D("124.30")
+    fake.alpaca.cash = D("123.10")
     row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
-    assert not row.ok
+    assert not row.ok and row.diffs[0]["cash"]["tolerance"] == "1.875"
+    row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
     assert row.diffs[0]["cash"]["currency"] == "USD"
     assert (await _get(maker, Portfolio, pid)).reduce_only_reason == "live_cash_shortfall"
 
 
-async def test_inflight_symbol_skipped_no_false_alarm(maker, qs, fake):
+async def test_inflight_buy_explained_by_the_band_no_false_alarm(maker, qs, fake):
+    """R8.8: a buy of 2 at the broker (filled there, not yet synced): ours 0 is within
+    [2 - 2, 2]; the cash band counts what the open buy may cost (2 x 90 + 2 %)."""
     pid, link_id = await _live(maker)
     async with maker() as s:
         s.add(Order(portfolio_id=pid, symbol="AAPL", side=OrderSide.buy,
@@ -235,11 +247,14 @@ async def test_inflight_symbol_skipped_no_false_alarm(maker, qs, fake):
                     broker_order_id="fake-9", broker_sent_at=T0))
         await s.commit()
     fake.alpaca.positions["AAPL"] = D(2)  # filled at the broker, not yet synced
-    fake.alpaca.cash = D("800")
+    fake.alpaca.cash = D("820")
     row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
     assert row.ok
-    assert {"symbol": "AAPL", "skipped": "ordine in corso"} in row.diffs
-    assert {"cash": {"skipped": "ordine in corso"}} in row.diffs
+    (entry,) = row.diffs
+    assert {k: entry[k] for k in ("symbol", "ours", "broker", "explained")} == {
+        "symbol": "AAPL", "ours": "0", "broker": "2", "explained": "ordine in corso"}
+    row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    assert row.ok
     assert (await _get(maker, Portfolio, pid)).status == PortfolioStatus.active
     assert await _activities(maker, "live.reduce_only") == []
 
@@ -273,6 +288,9 @@ async def test_fingerprint_change_detected_by_monitor(maker, qs, fake):
     assert (p.status, p.reduce_only_reason) == (PortfolioStatus.reduce_only,
                                                 "live_fingerprint_changed")
     assert len(await _activities(maker, "live.account_changed")) == 1
+    # M4: one critical alert, not a disarm or a reduce-only one besides it
+    assert await _activities(maker, "live.disarmed") == []
+    assert await _activities(maker, "live.reduce_only") == []
     rows = await _reconciliations(maker, link_id)
     assert [r.ok for r in rows] == [False]
     assert rows[0].diffs == [{"account": "cambiato"}]
@@ -283,12 +301,11 @@ async def test_fingerprint_change_detected_by_monitor(maker, qs, fake):
         audit = list(await s.scalars(select(LiveAudit).where(
             LiveAudit.link_id == link_id, LiveAudit.action == "disarmed")))
     assert [(a.actor, a.details["reason"]) for a in audit] == [("system", "conto cambiato")]
-    assert len(await _activities(maker, "live.disarmed")) == 1
     # the next pass: already configured, no second disarm nor alert
     monitor._clock.advance(60)
     assert await monitor.tick() == 1
     assert len(await _activities(maker, "live.account_changed")) == 1
-    assert len(await _activities(maker, "live.disarmed")) == 1
+    assert len(await _reconciliations(maker, link_id)) == 1
 
 
 # -- monitor -------------------------------------------------------------------------
@@ -302,7 +319,7 @@ async def test_monitor_reconciles_every_60s(maker, qs, fake):
     assert await monitor.tick() == 0
     clock.advance(30)
     assert await monitor.tick() == 1
-    assert len(await _reconciliations(maker, link_id)) == 2
+    assert len(await _reconciliations(maker, link_id)) == 1  # unchanged: one row
 
 
 async def test_reconcile_after_fill_without_waiting_60s(maker, qs, fake):
@@ -317,7 +334,7 @@ async def test_reconcile_after_fill_without_waiting_60s(maker, qs, fake):
     clock.advance(5)
     assert await monitor.tick() == 1
     rows = await _reconciliations(maker, link_id)
-    assert [r.ok for r in rows] == [True, True]
+    assert [r.ok for r in rows] == [True]  # still consistent: no new row
     clock.advance(5)
     assert await monitor.tick() == 0  # that fill was already reconciled
 
@@ -445,3 +462,251 @@ async def test_reconcile_of_a_live_link_closes_the_client_it_builds(maker, qs, f
         assert not http.is_closed  # the caller's client is the caller's
     assert [r.portfolio_id for r in rows] == [pid]
     assert len(built) == 1 and built[0].is_closed
+
+
+# -- fix round T5-T7 (plan 8) -------------------------------------------------------------
+
+async def _sent(maker, pid, link_id, *, side=OrderSide.buy, qty="2", price="90"):
+    async with maker() as s:
+        s.add(Order(portfolio_id=pid, symbol="AAPL", side=side, type=OrderType.limit,
+                    limit_price=D(price), qty=D(qty), status=OrderStatus.pending,
+                    broker_link_id=link_id, broker_order_id=f"fake-{uuid.uuid4().hex[:6]}",
+                    broker_sent_at=T0))
+        await s.commit()
+
+
+async def test_quantity_epsilon(maker, qs, fake):
+    """R8.7: a difference of at most 1e-8 is no difference."""
+    pid, link_id = await _live(maker)
+    await _fill(maker, qs, pid, link_id)
+    fake.alpaca.positions["AAPL"] = D("1.000000005")
+    fake.alpaca.cash = D("900")
+    row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    assert row.ok and row.diffs == []
+
+
+async def test_band_with_an_open_sell_and_beyond_it(maker, qs, fake):
+    """R8.8: holding 1 with a sell of 1 at the broker: 0 there is explained; 3 there is
+    outside [3 - 0, 3 + 1] for ours 1: a diff (reduce-only on the second pass)."""
+    pid, link_id = await _live(maker)
+    await _fill(maker, qs, pid, link_id)
+    await _sent(maker, pid, link_id, side=OrderSide.sell, qty="1", price="110")
+    fake.alpaca.cash = D("900")
+    row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)  # broker 0
+    assert row.ok and row.diffs[0]["explained"] == "ordine in corso"
+    fake.alpaca.positions["AAPL"] = D(3)
+    for _ in range(2):
+        row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    assert not row.ok and {"symbol": "AAPL", "ours": "1", "broker": "3"} in row.diffs
+    assert (await _get(maker, Portfolio, pid)).reduce_only_reason == "live_reconcile_diff"
+
+
+async def test_open_sell_never_skips_the_cash_check(maker, qs, fake):
+    """R8.8: an open sell at the broker does not hide a cash shortfall."""
+    pid, link_id = await _live(maker)
+    await _fill(maker, qs, pid, link_id)
+    await _sent(maker, pid, link_id, side=OrderSide.sell, qty="1", price="110")
+    fake.alpaca.positions["AAPL"] = D(1)
+    fake.alpaca.cash = D("850")  # ours 900
+    for _ in range(2):
+        row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    assert not row.ok and row.diffs[-1]["cash"]["broker"] == "850"
+    assert (await _get(maker, Portfolio, pid)).reduce_only_reason == "live_cash_shortfall"
+
+
+async def test_unexplained_for_over_30_min_alerts_once(maker, qs, fake):
+    """R8.8: an explained difference (or a skipped check) lasting > 30 min: one critical
+    alert per episode; its `since` is carried across passes."""
+    pid, link_id = await _live(maker)
+    await _sent(maker, pid, link_id)
+    fake.alpaca.positions["AAPL"] = D(2)
+    fake.alpaca.cash = D("820")
+    row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    since = row.diffs[0]["since"]
+    row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    assert row.diffs[0]["since"] == since
+    assert await _activities(maker, "live.reconcile_unexplained") == []
+    old = (datetime.fromisoformat(since) - timedelta(minutes=31)).isoformat()
+    async with maker() as s:  # as if the first pass had been 31 minutes ago
+        (stored,) = await s.scalars(select(Reconciliation).where(
+            Reconciliation.broker_link_id == link_id))
+        stored.diffs = [{**stored.diffs[0], "since": old}]
+        await s.commit()
+    for _ in range(2):
+        await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    (alert,) = await _activities(maker, "live.reconcile_unexplained")
+    assert alert.level == "critical" and alert.data["key"] == "symbol:AAPL"
+    assert alert.portfolio_id == pid
+
+
+async def test_missing_fx_rate_skips_cash_then_alerts_after_30_min(maker, fake):
+    """Minor: no EUR rate for a EUR portfolio on a USD account: the cash is skipped, and
+    an alert follows after 30 minutes of it."""
+    pid, link_id = await _live(maker, cash="100", ccy="EUR")
+    row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=FakeQuoteSource())
+    assert row.ok and row.diffs[0]["cash"] == {"skipped": "cambio non disponibile"}
+    async with maker() as s:
+        (stored,) = await s.scalars(select(Reconciliation).where(
+            Reconciliation.broker_link_id == link_id))
+        since = datetime.fromisoformat(stored.diffs[0]["since"]) - timedelta(minutes=31)
+        stored.diffs = [{**stored.diffs[0], "since": since.isoformat()}]
+        await s.commit()
+    await reconcile_live(maker, link_id, _factory(maker, fake), qs=FakeQuoteSource())
+    (alert,) = await _activities(maker, "live.reconcile_unexplained")
+    assert alert.data["key"] == "cash"
+
+
+async def test_rows_only_on_change_plus_hourly_heartbeat(maker, qs, fake):
+    _, link_id = await _live(maker)
+    for _ in range(3):
+        await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    rows = await _reconciliations(maker, link_id)
+    assert len(rows) == 1
+    async with maker() as s:
+        row = await s.get(Reconciliation, rows[0].id)
+        row.ts = row.ts - timedelta(minutes=61)
+        await s.commit()
+    await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    assert len(await _reconciliations(maker, link_id)) == 2  # the heartbeat
+    fake.alpaca.positions["AAPL"] = D(1)  # a change: a row at once
+    await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    assert len(await _reconciliations(maker, link_id)) == 3
+
+
+class _MarginFake(FakeLiveBroker):
+    def _alpaca(self, method, path, params, body):
+        resp = super()._alpaca(method, path, params, body)
+        if (method, path) == ("GET", "/v2/account"):
+            return httpx.Response(200, json={**resp.json(), "multiplier": "2"})
+        return resp
+
+
+async def test_alpaca_margin_account_trips_reduce_only(maker, qs):
+    """R8.10: the account became a margin account: reduce-only with a critical alert."""
+    pid, link_id = await _live(maker)
+    await reconcile_live(maker, link_id, _factory(maker, _MarginFake()), qs=qs)
+    p = await _get(maker, Portfolio, pid)
+    assert (p.status, p.reduce_only_reason) == (PortfolioStatus.reduce_only,
+                                                "live_margin_account")
+    assert [a.data["cause"] for a in await _activities(maker, "live.reduce_only")] == [
+        "margin_account"]
+
+
+def _status_factory(maker, status: int):
+    def handler(request):
+        return httpx.Response(status, json={"message": "no"})
+
+    return lambda link_id: make_live_client(maker, link_id, inner=httpx.MockTransport(handler))
+
+
+async def test_credentials_rejected_has_its_own_alert(maker, qs):
+    """Minor: HTTP 401: «credenziali rifiutate» at the first failure, once; no
+    `unreachable` alert for it."""
+    _, link_id = await _live(maker)
+    clock = Clock(T0)
+    monitor = LiveMonitor(maker, http_factory=_status_factory(maker, 401), qs=qs, clock=clock)
+    for _ in range(HEALTH_FAILURES_ALERT + 1):
+        await monitor.tick()
+        clock.advance(60)
+    (alert,) = await _activities(maker, "live.credentials_rejected")
+    assert "credenziali rifiutate" in alert.summary
+    assert await _activities(maker, "live.unreachable") == []
+    assert (await _get(maker, BrokerLink, link_id)).health_failures == HEALTH_FAILURES_ALERT + 1
+
+
+async def test_rate_limit_is_not_a_health_failure(maker, qs):
+    _, link_id = await _live(maker)
+    clock = Clock(T0)
+    monitor = LiveMonitor(maker, http_factory=_status_factory(maker, 429), qs=qs, clock=clock)
+    for _ in range(HEALTH_FAILURES_ALERT + 1):
+        await monitor.tick()
+        clock.advance(60)
+    assert (await _get(maker, BrokerLink, link_id)).health_failures == 0
+    assert await _activities(maker, "live.unreachable") == []
+
+
+async def test_internal_failures_alert_after_three(maker, qs, fake, monkeypatch):
+    """Minor: a failure of the monitor itself (not the broker): the link waits its next
+    turn (`_last`), and the third one in a row sends a critical alert."""
+    from smtrading.brokers.live import monitor as monitor_module
+
+    _, link_id = await _live(maker)
+    calls = []
+
+    async def broken(*a, **kw):
+        calls.append(1)
+        raise ValueError("bug")
+
+    monkeypatch.setattr(monitor_module, "reconcile_live", broken)
+    clock = Clock(T0)
+    monitor = LiveMonitor(maker, http_factory=_factory(maker, fake), qs=qs, clock=clock)
+    await monitor.tick()
+    clock.advance(10)
+    await monitor.tick()  # not due again yet
+    assert len(calls) == 1
+    for _ in range(HEALTH_FAILURES_ALERT):
+        clock.advance(60)
+        await monitor.tick()
+    (alert,) = await _activities(maker, "live.monitor_failed")
+    assert alert.level == "critical"
+
+
+async def test_t212_positions_read_once_per_pass(maker, qs):
+    class Counting(FakeLiveBroker):
+        positions_reads = 0
+
+        def _t212(self, method, path, body):
+            if (method, path) == ("GET", "/api/v0/equity/positions"):
+                Counting.positions_reads += 1
+            return super()._t212(method, path, body)
+
+    fake = Counting()
+    _, link_id = await _live(maker, kind="t212_live")
+    assert (await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)).ok
+    assert Counting.positions_reads == 1
+
+
+async def test_a_send_after_the_read_keeps_the_snapshot_stale(maker, qs, fake):
+    """C1: a buy sent after the monitor read the account (snapshot marked stale) is not
+    hidden by the monitor's older answer: the stale mark stays."""
+    from smtrading.risk.live_checks import STALE_KEY
+
+    _, link_id = await _live(maker)
+    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    async with maker() as s:
+        link = await s.get(BrokerLink, link_id)
+        link.last_account_snapshot = {"currency": "USD", "cash_available": "1", STALE_KEY: future}
+        await s.commit()
+    await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    assert (await _get(maker, BrokerLink, link_id)).last_account_snapshot[STALE_KEY] == future
+    past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    async with maker() as s:
+        link = await s.get(BrokerLink, link_id)
+        link.last_account_snapshot = {**link.last_account_snapshot, STALE_KEY: past}
+        await s.commit()
+    await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    assert STALE_KEY not in (await _get(maker, BrokerLink, link_id)).last_account_snapshot
+
+
+async def test_reconcile_locks_the_link_before_the_portfolio(maker, qs, fake):
+    """R8.9: link FOR NO KEY UPDATE, then the portfolio (trip_reduce_only)."""
+    from sqlalchemy import event
+
+    _, link_id = await _live(maker)
+    fake.alpaca.positions["AAPL"] = D(2)
+    await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    seen: list[str] = []
+
+    def record(conn, cursor, statement, *args):
+        if "FOR NO KEY UPDATE" in statement and "broker_links" in statement:
+            seen.append("link")
+        elif "FOR UPDATE" in statement and "FROM portfolios" in statement:
+            seen.append("portfolio")
+
+    engine = maker.kw["bind"].sync_engine
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)  # trips now
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert seen[:2] == ["link", "portfolio"], seen

@@ -114,5 +114,10 @@ class BrokerAdapter:
         """The account snapshot, read with GET requests only."""
         raise NotImplementedError
 
+    async def positions_after_account(self) -> dict[str, Decimal]:
+        """The positions, right after `get_account` (an adapter whose account read
+        already fetched them reuses that answer: one positions read per pass)."""
+        return await self.get_positions()
+
     async def health_check(self) -> None:
         raise NotImplementedError

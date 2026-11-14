@@ -531,7 +531,18 @@ class _T212Protocol(BrokerAdapter):
         resp = await self._request("GET", f"{_API}/positions")
         if resp.status_code >= 300:
             raise self._fail(resp)
-        data = self._parse(resp)
+        return self._positions(self._parse(resp))
+
+    async def positions_after_account(self) -> dict[str, Decimal]:
+        """The positions `get_account` just read (Trading 212 rate limits every read)."""
+        data = getattr(self, "_account_positions", None)
+        if data is None:
+            return await self.get_positions()
+        self._account_positions = None
+        await self._load_instruments()
+        return self._positions(data)
+
+    def _positions(self, data) -> dict[str, Decimal]:
         if not isinstance(data, list):
             raise RuntimeError(f"{self.kind}: unexpected positions response")  # noqa: TRY004
         out: dict[str, Decimal] = {}
@@ -569,6 +580,7 @@ class _T212Protocol(BrokerAdapter):
         orders = self._parse(resp)
         if not isinstance(positions, list) or not isinstance(orders, list):
             raise RuntimeError(f"{self.kind}: unexpected account response")  # noqa: TRY004
+        self._account_positions = positions  # for positions_after_account
         return AccountSnapshot(
             account_id=str(acct["id"]),
             account_type=None,

@@ -7,7 +7,13 @@ T212_ACCOUNT_MIN_INTERVAL_S (the BrokerSync cash recheck reads it too: `last_sna
 
 Health: a failed broker call increments `health_failures`, a success resets it; at the
 HEALTH_FAILURES_ALERT-th consecutive failure a critical `live.unreachable` is sent, once
-until the broker is reachable again. The link's live_state never changes for health.
+until the broker is reachable again. Credentials refused (HTTP 401/403) count as failures
+too, with their own critical `live.credentials_rejected` («credenziali rifiutate») at the
+first one, once until a success. A broker rate limit (HTTP 429) is not a failure: the
+link is tried again at its next turn. A failure of the monitor itself (not the broker:
+the database, a bug) is logged, the link waits its next turn, and at the
+HEALTH_FAILURES_ALERT-th in a row a critical `live.monitor_failed` is sent (once until a
+success). The link's live_state never changes for health.
 
 Single writer: `run` holds a Postgres advisory lock on a dedicated connection (as
 BrokerSync); a worker that cannot take it skips its ticks. Broker I/O never happens
@@ -28,12 +34,14 @@ from smtrading.brokers.live.gate import make_live_client
 from smtrading.brokers.live.protect import live_alert
 from smtrading.brokers.live.reconcile import (
     LIVE_RECONCILE_INTERVAL_S,
+    LiveBrokerRateLimited,
     LiveBrokerUnreachable,
     reconcile_live,
 )
 from smtrading.brokers.models import BrokerLink
 from smtrading.engine.models import Fill
 from smtrading.engine.quotesource import QuoteSource
+from smtrading.portfolios.locks import lock_broker_link
 from smtrading.portfolios.models import Portfolio
 
 log = logging.getLogger(__name__)
@@ -43,6 +51,8 @@ HEALTH_FAILURES_ALERT = 3
 T212_ACCOUNT_MIN_INTERVAL_S = 5
 ADVISORY_LOCK_KEY = 0x534D544C564D  # "SMTLVM"
 UNREACHABLE_SUMMARY = "broker non raggiungibile"
+CREDENTIALS_SUMMARY = "credenziali rifiutate dal broker: controlla le chiavi"
+MONITOR_FAILED_SUMMARY = "controllo del conto reale non riuscito (errore interno)"
 
 
 class LiveMonitor:
@@ -59,6 +69,8 @@ class LiveMonitor:
         self._clock = clock
         self._sleep = sleep
         self._last: dict[UUID, tuple[datetime, datetime]] = {}  # link -> (clock, db time)
+        self._internal: dict[UUID, int] = {}  # consecutive monitor (non-broker) failures
+        self._auth_alerted: set[UUID] = set()
 
     async def run(self) -> None:
         engine = self._sm.kw["bind"]
@@ -118,18 +130,45 @@ class LiveMonitor:
                 continue
             try:
                 row = await reconcile_live(self._sm, link_id, self._http_factory, qs=self._qs)
+            except LiveBrokerRateLimited as e:  # not a health failure: next turn
+                self._last[link_id] = (now, db_now)
+                log.warning("live link %s: broker rate limit: %s", link_id, e)
+                continue
             except LiveBrokerUnreachable as e:
                 self._last[link_id] = (now, db_now)
-                await self._health(link_id, error=str(e))
+                self._internal.pop(link_id, None)
+                await self._health(link_id, error=str(e), auth=e.auth)
                 continue
             except Exception:
                 log.exception("live reconciliation of link %s failed", link_id)
+                self._last[link_id] = (now, db_now)  # its next turn, not every tick
+                await self._internal_failure(link_id)
                 continue
             self._last[link_id] = (now, db_now)
+            self._internal.pop(link_id, None)
             if row is not None:
                 done += 1
                 await self._health(link_id, error=None)
         return done
+
+    async def _internal_failure(self, link_id: UUID) -> None:
+        count = self._internal[link_id] = self._internal.get(link_id, 0) + 1
+        if count != HEALTH_FAILURES_ALERT:
+            return
+        try:
+            async with self._sm() as session:
+                await live_alert(session, kind="monitor_failed", summary=MONITOR_FAILED_SUMMARY,
+                                 portfolio_id=await self._portfolio_of(session, link_id),
+                                 link_id=link_id, data={"failures": count})
+                await session.commit()
+        except Exception:
+            log.exception("live monitor: alert for link %s failed", link_id)
+
+    @staticmethod
+    async def _portfolio_of(session: AsyncSession, link_id: UUID) -> UUID | None:
+        return await session.scalar(
+            select(Portfolio.id).where(Portfolio.broker_link_id == link_id)
+            .order_by(Portfolio.id).limit(1))
 
     def _due(self, link_id: UUID, kind: str, now: datetime, db_now: datetime,
              snapshot_at: datetime | None, fill_at: datetime | None) -> bool:
@@ -144,23 +183,27 @@ class LiveMonitor:
             return True
         return fill_at is not None and fill_at > last_db
 
-    async def _health(self, link_id: UUID, *, error: str | None) -> None:
+    async def _health(self, link_id: UUID, *, error: str | None, auth: bool = False) -> None:
         async with self._sm() as session:
-            link = await session.get(BrokerLink, link_id, with_for_update=True)
+            link = await lock_broker_link(session, link_id)  # FOR NO KEY UPDATE (R8.9)
             if link is None:
                 return
             if error is None:
                 link.health_failures, link.status, link.last_error = 0, "ok", None
+                self._auth_alerted.discard(link_id)
             else:
                 link.health_failures = (link.health_failures or 0) + 1
                 link.status, link.last_error = "error", error[:500]
                 log.warning("live link %s unreachable (%s in a row): %s", link_id,
                             link.health_failures, error)
-                if link.health_failures == HEALTH_FAILURES_ALERT:
-                    portfolio_id = await session.scalar(
-                        select(Portfolio.id).where(Portfolio.broker_link_id == link_id)
-                        .order_by(Portfolio.id).limit(1))
+                if auth and link_id not in self._auth_alerted:
+                    self._auth_alerted.add(link_id)
+                    await live_alert(session, kind="credentials_rejected",
+                                     summary=CREDENTIALS_SUMMARY,
+                                     portfolio_id=await self._portfolio_of(session, link_id),
+                                     link_id=link_id, data={"error": error[:300]})
+                elif not auth and link.health_failures == HEALTH_FAILURES_ALERT:
                     await live_alert(session, kind="unreachable", summary=UNREACHABLE_SUMMARY,
-                                     portfolio_id=portfolio_id, link_id=link_id,
-                                     data={"failures": link.health_failures})
+                                     portfolio_id=await self._portfolio_of(session, link_id),
+                                     link_id=link_id, data={"failures": link.health_failures})
             await session.commit()

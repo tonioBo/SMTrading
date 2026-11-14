@@ -473,3 +473,32 @@ async def test_scheduler_does_not_catch_up_a_job_that_never_ran(sm, qs, monkeypa
     await scheduler._daily("interest", time(0), datetime(2026, 11, 13, 1, tzinfo=UTC),
                            date(2026, 11, 12), run)
     assert ran == [date(2026, 11, 12)]
+
+
+async def test_corporate_actions_skip_real_money_portfolios(db_session, seeded, qs):
+    """R8.6 (plan 8): a portfolio linked to a real-money link follows the broker: no local
+    dividend, split or split cancel; a paper portfolio still gets them."""
+    from smtrading.brokers.models import BrokerLink
+    from smtrading.portfolios.models import Portfolio
+
+    paper = await _portfolio(db_session, "USD")
+    await _trade(db_session, qs, paper, OrderSide.buy, 10)
+    live = await _portfolio(db_session, "USD")
+    await _trade(db_session, qs, live, OrderSide.buy, 10)
+    live_order = await _open_order(db_session, live)
+    link = BrokerLink(name=f"R-{uuid.uuid4().hex[:6]}", kind="alpaca_live", live_state="armed")
+    db_session.add(link)
+    await db_session.flush()
+    (await db_session.get(Portfolio, live)).broker_link_id = link.id
+    await db_session.flush()
+    live_cash = await _balance(db_session, live, "USD", AccountKind.cash)
+    qs.set_calendar([CalendarEvent("AAPL", "dividend", DAY, {"amount": "0.25", "currency": "USD"}),
+                     CalendarEvent("AAPL", "split", DAY, {"ratio": "4"})])
+
+    assert await run_corporate_actions(db_session, qs, DAY) == 2  # the paper one only
+    assert await _balance(db_session, paper, "AAPL", AccountKind.position) == D(40)
+    assert await _balance(db_session, live, "AAPL", AccountKind.position) == D(10)
+    assert await _balance(db_session, live, "USD", AccountKind.cash) == live_cash
+    assert (await db_session.get(Order, live_order, populate_existing=True)).status \
+        == OrderStatus.pending
+    assert await _notification_kinds(db_session, live) == []

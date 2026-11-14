@@ -9,6 +9,10 @@ Ruling R21 (I5): the calendar is read for held symbols and symbols with open ord
 a split every open order on the symbol is canceled, in every portfolio, and each
 portfolio is notified (`split_orders_canceled`). Orders are not rescaled. Redis effects
 of the cancels are dispatched after each commit when `redis` is given.
+
+R8.6 (plan 8): a portfolio linked to a real-money link is skipped (no local dividends,
+splits or split cancels): the broker is the source of truth; a split it applies shows in
+the live reconciliation as a position diff for the admin to resolve.
 """
 
 import logging
@@ -21,6 +25,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from smtrading.brokers.live import LIVE_KINDS
+from smtrading.brokers.models import BrokerLink
 from smtrading.common.money import quantize_money
 from smtrading.corporate.interest import account_id, debit_lines
 from smtrading.engine.models import OPEN_STATUSES, Order
@@ -33,7 +39,7 @@ from smtrading.ledger.models import Account, AccountBalance, AccountKind, Journa
 from smtrading.ledger.service import LineSpec, get_balance, post_journal
 from smtrading.marketdata.types import CalendarEvent
 from smtrading.portfolios.locks import lock_portfolio
-from smtrading.portfolios.models import PortfolioStatus, live_portfolio_ids
+from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
 from smtrading.positions.models import Position
 
 log = logging.getLogger("smtrading.corporate.actions")
@@ -44,6 +50,18 @@ AUTHOR = "corporate"
 KINDS = ("dividend", "split")  # dividends first: they are paid on the pre-split quantity
 _PREC = 60
 _Q18 = Decimal(1).scaleb(-18)
+
+
+def _real_money_portfolios():
+    """The ids of the portfolios linked to a real-money link (R8.6: skipped)."""
+    return (select(Portfolio.id)
+            .join(BrokerLink, BrokerLink.id == Portfolio.broker_link_id)
+            .where(BrokerLink.kind.in_(LIVE_KINDS)))
+
+
+def _local_portfolios():
+    """Live (not archived) portfolios whose corporate actions are applied here."""
+    return live_portfolio_ids().where(Portfolio.id.not_in(_real_money_portfolios()))
 
 
 @dataclass(frozen=True)
@@ -190,6 +208,8 @@ async def catch_up_portfolio(
     symbols = sorted({s for events in events_by_day.values() for s in events})
     if not symbols:
         return 0
+    if await session.scalar(_real_money_portfolios().where(Portfolio.id == portfolio_id)):
+        return 0  # R8.6: the broker applies them
     instruments = {
         symbol: _Inst(symbol, ccy) for symbol, ccy in (await session.execute(
             select(Instrument.symbol, Instrument.currency).where(Instrument.symbol.in_(symbols))
@@ -220,8 +240,9 @@ async def run_corporate_actions(
         select(Account.portfolio_id, Account.asset)
         .join(AccountBalance, AccountBalance.account_id == Account.id)
         .where(
-            # archived portfolios are frozen (Task 13): no dividends, no splits
-            Account.portfolio_id.in_(live_portfolio_ids()),
+            # archived portfolios are frozen (Task 13): no dividends, no splits;
+            # real-money ones follow the broker (R8.6)
+            Account.portfolio_id.in_(_local_portfolios()),
             Account.kind == AccountKind.position, AccountBalance.balance != 0,
         )
         .order_by(Account.portfolio_id, Account.asset)
@@ -233,7 +254,7 @@ async def run_corporate_actions(
     for portfolio_id, symbol in (await session.execute(
         select(Order.portfolio_id, Order.symbol).distinct()
         .where(
-            Order.status.in_(OPEN_STATUSES), Order.portfolio_id.in_(live_portfolio_ids())
+            Order.status.in_(OPEN_STATUSES), Order.portfolio_id.in_(_local_portfolios())
         )
     )).all():
         open_orders[portfolio_id].add(symbol)
