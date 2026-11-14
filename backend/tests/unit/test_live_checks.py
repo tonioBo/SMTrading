@@ -333,18 +333,126 @@ async def test_estimate_buy_is_the_pre_trade_estimate(maker, qs):
     assert fees == expected + result.estimated_fx_fee_eur
 
 
+async def _fills_of_the_link(maker, pid, link_id, *, created_at=None) -> Decimal:
+    """The portfolio's fills become the link's (their orders routed to it), optionally
+    dated `created_at`; returns the last fill price."""
+    from sqlalchemy import select, update
+
+    from smtrading.engine.models import Fill
+
+    async with maker() as s:
+        await s.execute(update(Order).where(Order.portfolio_id == pid)
+                        .values(broker_link_id=link_id))
+        if created_at is not None:
+            await s.execute(update(Fill).where(Fill.portfolio_id == pid)
+                            .values(created_at=created_at))
+        price = await s.scalar(select(Fill.price).where(Fill.portfolio_id == pid))
+        await s.commit()
+    return price
+
+
+async def _market_buy(maker, pid, link_id, *, qty=5, claimed=False):
+    async with maker() as s:
+        o = Order(portfolio_id=pid, symbol="AAPL", side=OrderSide.buy, type=OrderType.market,
+                  qty=D(qty), status=OrderStatus.new if claimed else OrderStatus.pending,
+                  broker_link_id=link_id,
+                  broker_status="sending" if claimed else "to_send",
+                  broker_sent_at=NOW if claimed else None)
+        s.add(o)
+        await s.commit()
+        return o.id
+
+
+async def _committed(maker, qs) -> Decimal:
+    from sqlalchemy import select
+
+    from smtrading.risk.live_checks import committed_buys
+
+    async with maker() as s:
+        portfolio = (await s.scalars(select(Portfolio).where(
+            Portfolio.broker_link_id.is_not(None)))).one()
+        return await committed_buys(s, qs, portfolio=portfolio, now=NOW)
+
+
 async def test_another_orders_missing_quote_never_refuses_this_one(maker, qs):
     """M-e: an open market buy whose quote is missing is priced at the symbol's last fill
-    x 1,02; the new order is checked, not refused PROVIDER_UNAVAILABLE."""
-    pid, link_id = await _portfolio(maker, qs, held=1)  # a fill of AAPL at 100 USD
-    async with maker() as s:
-        s.add(Order(portfolio_id=pid, symbol="AAPL", side=OrderSide.buy, type=OrderType.market,
-                    qty=D(5), status=OrderStatus.pending, broker_link_id=link_id,
-                    broker_status="to_send"))
-        await s.commit()
-    qs._quotes.pop("AAPL")
+    (of this link, recent); the new order is checked, not refused PROVIDER_UNAVAILABLE.
+    The 2 % margin is applied once (live_cash_needed), not on the price too."""
+    from smtrading.risk.live_checks import estimate_buy
+
+    pid, link_id = await _portfolio(maker, qs, held=1)  # a fill of AAPL at ~100 USD
+    last = await _fills_of_the_link(maker, pid, link_id)
+    other = await _market_buy(maker, pid, link_id)
+    quote = qs._quotes.pop("AAPL")
     await _check(maker, qs, pid, est_value=D(300))
     with pytest.raises(SMTError) as e:
         await _check(maker, qs, pid, est_value=D(600))  # fits alone, not with the other
     assert e.value.code == ErrorCode.LIVE_CASH_LIMIT
-    assert D(e.value.details["committed"]) > D(5) * D(100) * D("1.02") * D("0.8")
+    priced = FakeQuoteSource()  # the expected value: the other at the last fill price
+    priced._fx = qs._fx
+    priced.set_quote("AAPL", last, last, last)
+    async with maker() as s:
+        value, fees = await estimate_buy(s, priced, portfolio=await s.get(Portfolio, pid),
+                                         instrument=await s.get(Instrument, "AAPL"),
+                                         order=await s.get(Order, other))
+    assert value == D(5) * last * D("0.8")
+    assert D(e.value.details["committed"]) == live_cash_needed(value, fees)
+    qs._quotes["AAPL"] = quote
+
+
+async def test_last_fill_fallback_ignores_paper_and_old_fills(maker, qs, caplog):
+    """FR2: the fallback price is a fill of this link's orders no older than one trading
+    day (24 h; 72 h on Saturday, Sunday and Monday). A paper fill (before linking) or an
+    older one is not used: at placement the other order is skipped, with a warning."""
+    import logging
+
+    pid, link_id = await _portfolio(maker, qs, held=1)  # the fill's order is not the link's
+    await _market_buy(maker, pid, link_id)
+    qs._quotes.pop("AAPL")
+    with caplog.at_level(logging.WARNING, logger="smtrading.risk.live_checks"):
+        assert await _committed(maker, qs) == 0
+    assert "no price for the cash cap estimate" in caplog.text
+    await _check(maker, qs, pid, est_value=D(900))  # the other not counted
+    await _fills_of_the_link(maker, pid, link_id, created_at=NOW - timedelta(hours=25))
+    assert await _committed(maker, qs) == 0  # Tuesday: older than 24 h
+    await _fills_of_the_link(maker, pid, link_id, created_at=NOW - timedelta(hours=23))
+    assert await _committed(maker, qs) > 0
+
+
+async def test_last_fill_fallback_spans_the_weekend(maker, qs):
+    """FR2: on a Monday a Friday-afternoon fill (65 h old) still prices the other buy."""
+    from smtrading.risk.live_checks import committed_buys
+
+    monday = datetime(2026, 11, 16, 15, 0, tzinfo=UTC)
+    pid, link_id = await _portfolio(maker, qs, held=1)
+    await _fills_of_the_link(maker, pid, link_id, created_at=monday - timedelta(hours=65))
+    await _market_buy(maker, pid, link_id)
+    qs._quotes.pop("AAPL")
+    async with maker() as s:
+        portfolio = await s.get(Portfolio, pid)
+        assert await committed_buys(s, qs, portfolio=portfolio, now=monday) > 0
+        assert await committed_buys(s, qs, portfolio=portfolio,
+                                    now=monday + timedelta(hours=8)) == 0  # 73 h
+
+
+async def test_claimed_other_buy_without_quote_has_no_fallback(maker, qs, caplog):
+    """FR2: another buy already claimed/sent to the broker with no quote is not priced at
+    the last fill: skipped (with a warning) at placement, and on a frozen memo (BrokerSync
+    before sending) it raises PROVIDER_UNAVAILABLE: the new order waits."""
+    import logging
+
+    from smtrading.engine.quotesource import MemoQuoteSource
+
+    pid, link_id = await _portfolio(maker, qs, held=1)
+    await _fills_of_the_link(maker, pid, link_id)  # a recent fill of the link exists
+    await _market_buy(maker, pid, link_id, claimed=True)
+    qs._quotes.pop("AAPL")
+    with caplog.at_level(logging.WARNING, logger="smtrading.risk.live_checks"):
+        assert await _committed(maker, qs) == 0
+    assert "no price for the cash cap estimate" in caplog.text
+    memo = MemoQuoteSource.wrap(qs)
+    await memo.prefetch(["AAPL"], {("USD", "EUR"), ("EUR", "USD")})
+    memo.freeze()
+    with pytest.raises(SMTError) as e:
+        await _committed(maker, memo)
+    assert e.value.code == ErrorCode.PROVIDER_UNAVAILABLE

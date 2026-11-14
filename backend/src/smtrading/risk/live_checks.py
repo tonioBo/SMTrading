@@ -257,8 +257,7 @@ def _ahead(other: Order, order: Order | None) -> bool:
     earlier. Every existing order is ahead of a new one (`order` None)."""
     if order is None:
         return True
-    if (other.broker_order_id is not None or other.broker_sent_at is not None
-            or other.broker_status not in (None, BrokerState.TO_SEND)):
+    if _at_broker(other):
         return True
     return (other.created_at, str(other.id)) < (order.created_at, str(order.id))
 
@@ -281,7 +280,9 @@ async def _open_others(session: AsyncSession, portfolio_id: UUID, side: OrderSid
 
 class _LastPrice:
     """A QuoteSource view for another order's estimate when its quote is missing: the
-    last known price of the symbol (its latest fill) as the ask, x (1 + margin)."""
+    last known price of the symbol (a recent fill of the link, `_last_price`) as the ask.
+    No margin here: `live_cash_needed` adds the LIVE_CASH_MARGIN_PCT once, as for every
+    other estimate."""
 
     def __init__(self, qs: QuoteSource, symbol: str, price: Decimal) -> None:
         self._qs, self._symbol, self._price = qs, symbol, price
@@ -291,9 +292,9 @@ class _LastPrice:
 
         from smtrading.marketdata.types import Quote
 
-        price = self._price * (1 + LIVE_CASH_MARGIN_PCT / 100)
-        return {self._symbol: Quote(symbol=self._symbol, bid=None, ask=price, last=price,
-                                    ts=datetime.now(UTC), provider="last_fill")}
+        return {self._symbol: Quote(symbol=self._symbol, bid=None, ask=self._price,
+                                    last=self._price, ts=datetime.now(UTC),
+                                    provider="last_fill")}
 
     async def get_fx_rate(self, base: str, quote: str) -> Decimal:
         return await self._qs.get_fx_rate(base, quote)
@@ -302,21 +303,54 @@ class _LastPrice:
         return await self._qs.get_calendar(symbols, start, end)
 
 
-async def _last_price(session: AsyncSession, symbol: str) -> Decimal | None:
+LAST_FILL_MAX_AGE = timedelta(hours=24)
+LAST_FILL_MAX_AGE_WEEKEND = timedelta(hours=72)  # on Saturday, Sunday and Monday
+
+
+def last_fill_max_age(now: datetime) -> timedelta:
+    """«One trading day» for the last-fill fallback: 24 h, 72 h when `now` is a Saturday,
+    a Sunday or a Monday (UTC), so a Friday fill still counts over the weekend."""
+    return LAST_FILL_MAX_AGE_WEEKEND if now.weekday() in (5, 6, 0) else LAST_FILL_MAX_AGE
+
+
+async def _last_price(session: AsyncSession, portfolio: Portfolio, symbol: str,
+                      now: datetime) -> Decimal | None:
+    """The price of the portfolio's latest fill of `symbol` on an order routed to its
+    (real-money) link, no older than `last_fill_max_age`; paper fills (simulator, or
+    another link) never count."""
     from smtrading.engine.models import Fill
 
-    return await session.scalar(select(Fill.price).where(Fill.symbol == symbol)
-                                .order_by(Fill.created_at.desc()).limit(1))
+    if portfolio.broker_link_id is None:
+        return None
+    return await session.scalar(
+        select(Fill.price).join(Order, Order.id == Fill.order_id)
+        .where(Fill.portfolio_id == portfolio.id, Fill.symbol == symbol,
+               Order.broker_link_id == portfolio.broker_link_id,
+               Fill.created_at >= now - last_fill_max_age(now))
+        .order_by(Fill.created_at.desc()).limit(1))
+
+
+def _at_broker(order: Order) -> bool:
+    """Claimed by BrokerSync or sent to the broker (it may fill at any price there)."""
+    return (order.broker_order_id is not None or order.broker_sent_at is not None
+            or order.broker_status not in (None, BrokerState.TO_SEND))
 
 
 async def committed_buys(session: AsyncSession, qs: QuoteSource, *, portfolio: Portfolio,
-                         exclude: UUID | None = None, order: Order | None = None) -> Decimal:
+                         exclude: UUID | None = None, order: Order | None = None,
+                         now: datetime | None = None) -> Decimal:
     """What the portfolio's other open buys ahead of `order` may still cost
-    (`live_cash_needed` of `estimate_buy`: value + fees + the 2 % margin, base currency);
-    `exclude` (a modify) is never counted. Another order's missing quote never refuses
-    this one: it is priced at the symbol's last fill price x 1.02; with no price at all
-    it raises PROVIDER_UNAVAILABLE only on BrokerSync's frozen memo (the order waits),
-    and at placement it is left to BrokerSync's check before sending (logged)."""
+    (`live_cash_needed` of `estimate_buy`: value + fees + the 2 % margin, once, base
+    currency); `exclude` (a modify) is never counted. Another order's missing quote never
+    refuses this one at placement:
+    - a never-sent one is priced at the symbol's last fill on this link no older than one
+      trading day (`_last_price`);
+    - one already claimed/sent to the broker, or with no such fill: on BrokerSync's frozen
+      memo PROVIDER_UNAVAILABLE is raised (the new order waits, `_WAIT`); at placement it
+      is skipped with a warning (BrokerSync checks again before sending)."""
+    from datetime import UTC
+
+    now = now or datetime.now(UTC)
     total = Decimal(0)
     others = await _open_others(session, portfolio.id, OrderSide.buy, symbol=None,
                                 exclude=exclude, order=order)
@@ -328,7 +362,8 @@ async def committed_buys(session: AsyncSession, qs: QuoteSource, *, portfolio: P
         except SMTError as e:
             if e.code != ErrorCode.PROVIDER_UNAVAILABLE:
                 raise
-            last = await _last_price(session, other.symbol)
+            last = None if _at_broker(other) else await _last_price(
+                session, portfolio, other.symbol, now)
             if last is None:
                 if getattr(qs, "frozen", False):
                     raise
@@ -428,7 +463,7 @@ async def check_live_cash(session: AsyncSession, qs: QuoteSource, *, portfolio: 
     open buys ahead of it (`committed_buys`) are taken off both cash amounts."""
     needed = live_cash_needed(est_value, est_fees)
     committed = await committed_buys(session, qs, portfolio=portfolio, exclude=exclude,
-                                     order=order)
+                                     order=order, now=now)
     ours = await portfolio_cash(session, qs, portfolio)
     broker = None
     snap = snapshot_cash(link, now)

@@ -786,3 +786,90 @@ async def test_t212_account_positions_are_consumed_not_reused(maker, monkeypatch
         monkeypatch.setattr(t212_core, "_ACCOUNT_POSITIONS_MAX_AGE_S", -1)
         await adapter.positions_after_account()
         assert Counting.reads == 4  # too old: read again
+
+
+# -- follow-up FR2 ---------------------------------------------------------------------
+
+async def test_reconcile_survives_an_account_change(maker, qs, fake):
+    """FR2 I1: after an account change (row diffs [{"account": "cambiato"}]) and a new
+    test (the fingerprint now matches), the next passes reconcile normally: that row is
+    not a previous diff (no debounce against it), a normal row is written each time."""
+    pid, link_id = await _live(maker, account="another-account")
+    monitor = LiveMonitor(maker, http_factory=_factory(maker, fake), qs=qs, clock=Clock(T0))
+    assert await monitor.tick() == 1
+    assert [r.diffs for r in await _reconciliations(maker, link_id)] == [
+        [{"account": "cambiato"}]]
+    async with maker() as s:  # a new test of the keys stores the new fingerprint
+        link = await s.get(BrokerLink, link_id)
+        link.account_fingerprint = account_fingerprint("alpaca_live", ALPACA_ACCOUNT)
+        await s.commit()
+    fake.alpaca.positions["AAPL"] = D(2)
+    row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    assert not row.ok and {"symbol": "AAPL", "ours": "0", "broker": "2"} in row.diffs
+    assert await _activities(maker, "live.reduce_only") == []  # a first pass only
+    fake.alpaca.positions.pop("AAPL")
+    row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    assert row.ok and row.diffs == []
+    rows = await _reconciliations(maker, link_id)
+    assert [r.ok for r in rows] == [False, False, True]
+    assert len(await _activities(maker, "live.account_changed")) == 1
+    assert (await _get(maker, Portfolio, pid)).status == PortfolioStatus.reduce_only
+
+
+async def test_reconcile_after_account_change_debounces_from_scratch(maker, qs, fake):
+    """FR2 I1: a diff found right after the account-changed row is a first pass (R8.7):
+    the second pass with the same diff confirms it."""
+    pid, link_id = await _live(maker, account="another-account")
+    await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    async with maker() as s:
+        link = await s.get(BrokerLink, link_id)
+        link.account_fingerprint = account_fingerprint("alpaca_live", ALPACA_ACCOUNT)
+        from smtrading.portfolios.service import set_portfolio_status
+
+        # the admin resolved the account change (as resume_live_portfolio does)
+        set_portfolio_status(s, await s.get(Portfolio, pid), PortfolioStatus.active,
+                             allow_live=True)
+        await s.commit()
+    fake.alpaca.positions["AAPL"] = D(2)
+    await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    assert (await _get(maker, Portfolio, pid)).status == PortfolioStatus.active
+    await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    assert (await _get(maker, Portfolio, pid)).reduce_only_reason == "live_reconcile_diff"
+
+
+async def test_monitor_prunes_the_state_of_links_no_longer_live(maker, qs, fake):
+    """FR2 M5: the per-link maps (rate limit episode, internal failures, auth alert, last
+    pass) only keep links still live and enabled."""
+    _, link_id = await _live(maker)
+    clock = Clock(T0)
+    monitor = LiveMonitor(maker, http_factory=_status_factory(maker, 429), qs=qs, clock=clock)
+    await monitor.tick()
+    assert link_id in monitor._rate_limited and link_id in monitor._last
+    monitor._internal[link_id] = 2
+    monitor._auth_alerted.add(link_id)
+    async with maker() as s:
+        (await s.get(BrokerLink, link_id)).live_state = None  # unlinked from real money
+        await s.commit()
+    clock.advance(60)
+    await monitor.tick()
+    assert link_id not in monitor._rate_limited
+    assert link_id not in monitor._internal
+    assert link_id not in monitor._auth_alerted
+    assert link_id not in monitor._last
+
+
+async def test_monitor_forgets_the_link_state_when_no_portfolio_is_linked(maker, qs, fake):
+    """FR2 M5: a live link whose portfolio was unlinked (no broker call): its failure and
+    alert state is dropped too (a new episode starts if it is linked again)."""
+    pid, link_id = await _live(maker)
+    monitor = LiveMonitor(maker, http_factory=_factory(maker, fake), qs=qs, clock=Clock(T0))
+    monitor._internal[link_id] = 2
+    monitor._auth_alerted.add(link_id)
+    monitor._rate_limited[link_id] = (T0, False)
+    async with maker() as s:
+        (await s.get(Portfolio, pid)).broker_link_id = None
+        await s.commit()
+    assert await monitor.tick() == 0
+    assert link_id not in monitor._internal
+    assert link_id not in monitor._auth_alerted
+    assert link_id not in monitor._rate_limited

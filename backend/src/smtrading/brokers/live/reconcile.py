@@ -26,7 +26,8 @@ FOR NO KEY UPDATE, then the portfolio through `trip_reduce_only`):
   row per HEARTBEAT; the returned row is the current outcome either way;
 - another account behind the same keys (fingerprint) -> the activation service's
   `account_changed` (disarmed, reduce-only, one critical `live.account_changed`); the
-  stored fingerprint changes only with a new test;
+  stored fingerprint changes only with a new test; the account-changed row is not a
+  diff: the next normal pass is a first pass (as with no previous row);
 - an Alpaca account that is not (or no longer) a cash account (multiplier > 1, or no
   multiplier reported, R8.10) -> reduce-only (`margin_account`, critical alert);
 - broker failures raise LiveBrokerUnreachable (`auth` for HTTP 401/403), a broker rate
@@ -346,12 +347,20 @@ def _compare(before: _State, after: _State, broker: dict[str, Decimal],
 
 # -- recording: debounce, changes only, unexplained for too long ---------------------------
 
+def _is_account(entry: dict) -> bool:
+    """The marker row of an account change (`_account_changed`), not a position or cash
+    entry."""
+    return "account" in entry
+
+
 def _key(entry: dict) -> str:
     return f"symbol:{entry['symbol']}" if "symbol" in entry else "cash"
 
 
 def _pending(entry: dict) -> str | None:
     """'skipped' / 'explained' for an entry that is not (yet) a diff, else None."""
+    if _is_account(entry):
+        return None
     if "symbol" in entry:
         return "skipped" if "skipped" in entry else "explained" if "explained" in entry else None
     return "skipped" if "skipped" in entry["cash"] else None
@@ -363,7 +372,7 @@ def _actionable(diffs: list[dict]) -> list:
     cash is short."""
     out: list = []
     for d in diffs:
-        if _pending(d) is not None:
+        if _is_account(d) or _pending(d) is not None:
             continue
         if "cash" in d:
             out.append(["cash"])
@@ -377,7 +386,9 @@ def _signature(diffs: list[dict]) -> list:
     """The outcome without the cash amounts (which move with every FX tick)."""
     out: list = []
     for d in diffs:
-        if "cash" in d:
+        if _is_account(d):
+            out.append(["account"])
+        elif "cash" in d:
             out.append(["cash", d["cash"].get("skipped", "short"), d.get("since")])
         else:
             out.append([d["symbol"], d.get("ours"), d.get("broker"), _pending(d), d.get("since")])
@@ -396,8 +407,13 @@ async def _record(session: AsyncSession, link: BrokerLink, pid: UUID, diffs: lis
     previous = await _previous(session, link.id, pid)
     prev_diffs = previous.diffs if previous is not None and isinstance(previous.diffs, list) \
         else []
-    since = {(_key(d), _pending(d)): d.get("since") for d in prev_diffs if "account" not in d
-             and _pending(d) is not None}
+    if any(_is_account(d) for d in prev_diffs):
+        # the last row is an account change: this is the first pass on the account the
+        # new test approved, as with no previous row (R8.7: nothing to confirm against,
+        # no `since` carried over; the row is always written, ending that episode)
+        previous, prev_diffs = None, []
+    since = {(_key(d), _pending(d)): d.get("since") for d in prev_diffs
+             if _pending(d) is not None}
     entries = []
     for d in diffs:
         state = _pending(d)

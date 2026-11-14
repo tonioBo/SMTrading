@@ -694,3 +694,90 @@ async def test_wait_clock_resets_when_the_market_closes(maker, redis, qs):
         await sync.tick()
     o = await _order(maker, oid)
     assert o.broker_order_id == "bo-1" and o.status != OrderStatus.rejected
+
+
+# -- follow-up FR2 ----------------------------------------------------------------------
+
+async def test_claimed_other_buy_without_quote_makes_the_new_order_wait(maker, redis, qs):
+    """FR2 M-e: another open buy already claimed at the broker (MSFT, market) has no
+    quote: it is not priced at its last fill (even a recent one of the link); on
+    BrokerSync's frozen memo the new buy waits instead of being sent, then goes once the
+    quote is back."""
+    from smtrading.engine.execution import execute_fill
+    from smtrading.marketdata.types import Quote
+
+    pid, link_id = await _live(maker)
+    async with maker() as s:  # a recent fill of MSFT on the link
+        done = Order(portfolio_id=pid, symbol="MSFT", side=OrderSide.buy,
+                     type=OrderType.market, qty=D(1), status=OrderStatus.new,
+                     broker_link_id=link_id)
+        s.add(done)
+        await s.flush()
+        quote = Quote(symbol="MSFT", bid=D(400), ask=D(400), last=D(400), ts=OPEN,
+                      provider="test")
+        await execute_fill(s, qs, done.id, quote=quote, source="broker", fill_qty=D(1),
+                           fill_price=D(400), final=True)
+        s.add(Order(portfolio_id=pid, symbol="MSFT", side=OrderSide.buy,
+                    type=OrderType.market, qty=D(5), status=OrderStatus.new,
+                    broker_link_id=link_id, broker_status=BrokerState.SENDING,
+                    broker_sent_at=OPEN - timedelta(minutes=1)))
+        await s.commit()
+    qs.set_quote("MSFT", D(400), D(400), D(400))  # placement values the MSFT position
+    async with maker() as s:
+        order = await place_order(s, qs, PlaceOrderRequest(
+            portfolio_id=pid, symbol="AAPL", side=OrderSide.buy, type=OrderType.limit,
+            qty=TEN, limit_price=D(100), agent_id="agent-1"), now=OPEN)
+        await s.commit()
+        oid = order.id
+    qs._quotes.pop("MSFT")  # then the MSFT quote goes missing
+    sync = _sync(maker, redis, qs)
+    with _mock(called=False) as mock:
+        post = mock.post(f"{ALPACA}/v2/orders").mock(
+            return_value=httpx.Response(200, json=_alpaca_order()))
+        await sync.tick()
+    assert post.call_count == 0
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.pending and o.broker_status == BrokerState.TO_SEND
+    assert oid in sync._waiting and await _types(maker, oid) == []
+    qs.set_quote("MSFT", D(400), D(400), D(400))
+    with _mock() as mock:
+        mock.post(f"{ALPACA}/v2/orders").mock(
+            return_value=httpx.Response(200, json=_alpaca_order()))
+        await sync.tick()
+    assert (await _order(maker, oid)).broker_order_id == "bo-1"
+
+
+async def test_errors_do_not_reset_the_wait_clock(maker, redis, qs, monkeypatch):
+    """FR2 N1: a pass that raises before reaching the wait (here the memo prefetch) keeps
+    the wait clock: an order alternating waits and failures still expires after 30 min
+    (also on a failing pass)."""
+    pid, _ = await _live(maker, snapshot_at=OPEN - timedelta(minutes=5))
+    oid = await _place(maker, redis, qs, pid)
+    clock = Clock(OPEN)
+    sync = _sync(maker, redis, qs, clock)
+    real = BrokerSync._live_memo
+
+    async def broken(self, order_id):
+        raise RuntimeError("database hiccup")
+
+    with _mock(called=False) as mock:
+        mock.get(f"{ALPACA}/v2/account").mock(return_value=httpx.Response(500))
+        await sync.tick()  # waits: the clock starts
+        assert sync._waiting.get(oid) == OPEN
+        monkeypatch.setattr(BrokerSync, "_live_memo", broken)
+        clock.now = OPEN + timedelta(minutes=20)
+        await sync.tick()  # fails: the clock is kept
+        assert sync._waiting.get(oid) == OPEN
+        monkeypatch.setattr(BrokerSync, "_live_memo", real)
+        clock.now = OPEN + timedelta(minutes=25)
+        await sync.tick()  # waits again, same clock
+        assert sync._waiting.get(oid) == OPEN
+        assert (await _order(maker, oid)).status == OrderStatus.pending
+        monkeypatch.setattr(BrokerSync, "_live_memo", broken)
+        clock.now = OPEN + timedelta(minutes=31)
+        await sync.tick()  # fails after 30 min of waiting: rejected
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.rejected and o.reject_code == ErrorCode.PROVIDER_UNAVAILABLE
+    assert "30 minuti" in o.reject_message
+    assert await _types(maker, oid) == ["live.order.rejected"]
+    assert oid not in sync._waiting

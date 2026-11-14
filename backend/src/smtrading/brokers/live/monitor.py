@@ -14,7 +14,10 @@ link is tried again at its next turn; one lasting RATE_LIMIT_ALERT_AFTER sends o
 critical `live.unreachable` («limite di frequenza del broker…») per episode. A failure of the monitor itself (not the broker:
 the database, a bug) is logged, the link waits its next turn, and at the
 HEALTH_FAILURES_ALERT-th in a row a critical `live.monitor_failed` is sent (once until a
-success). The link's live_state never changes for health.
+success); it neither starts nor ends a rate-limit episode (no broker answer was
+seen). The link's live_state never changes for health. The per-link state (last pass,
+failure counts, alert flags) is dropped for links no longer live and enabled, and the
+failure/alert state also when no portfolio is linked any more.
 
 Single writer: `run` holds a Postgres advisory lock on a dedicated connection (as
 BrokerSync); a worker that cannot take it skips its ticks. Broker I/O never happens
@@ -128,6 +131,7 @@ class LiveMonitor:
                 .where(BrokerLink.live_state.is_not(None), BrokerLink.enabled.is_(True))
                 .order_by(BrokerLink.name)
             )).all()
+        self._prune({row[0] for row in links})
         done = 0
         for link_id, kind, snapshot_at, fill_at in links:
             if not self._due(link_id, kind, now, db_now, snapshot_at, fill_at):
@@ -156,7 +160,16 @@ class LiveMonitor:
             if row is not None:
                 done += 1
                 await self._health(link_id, error=None)
+            else:  # no portfolio linked (no broker call): a new episode if linked again
+                self._auth_alerted.discard(link_id)
         return done
+
+    def _prune(self, live: set[UUID]) -> None:
+        """Forget the links no longer live and enabled (unlinked, disabled, deleted)."""
+        for state in (self._last, self._internal, self._rate_limited):
+            for link_id in [k for k in state if k not in live]:
+                del state[link_id]
+        self._auth_alerted &= live
 
     async def _rate_limit(self, link_id: UUID, now: datetime) -> None:
         since, alerted = self._rate_limited.setdefault(link_id, (now, False))

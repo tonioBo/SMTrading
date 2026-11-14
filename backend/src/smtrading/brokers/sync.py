@@ -587,13 +587,29 @@ class BrokerSync:
         A real-money buy whose broker snapshot is too old waits for a fresh one (read
         here, with no lock held, then the order is checked again: `refreshed`). The wait
         clock (`_waiting`) runs only over consecutive waiting passes: any other outcome
-        (sent, rejected, market closed, a liquidation waiting...) resets it."""
+        (sent, rejected, market closed, a liquidation waiting...) resets it. A pass that
+        raises is not an outcome: the clock is kept, and an order that has been waiting
+        longer than LIVE_WAIT_MAX is expired there too (one failing every pass still
+        ends)."""
         waiting = [False]
         try:
             await self._send_once(order_id, retry=retry, refreshed=refreshed, waiting=waiting)
-        finally:
-            if not waiting[0]:
-                self._waiting.pop(order_id, None)
+        except Exception:
+            await self._expire_after_error(order_id)
+            raise
+        if not waiting[0]:
+            self._waiting.pop(order_id, None)
+
+    async def _expire_after_error(self, order_id: UUID) -> None:
+        since = self._waiting.get(order_id)
+        if since is None or self._clock() - since <= LIVE_WAIT_MAX:
+            return
+        try:
+            await self._update(order_id, self._wait_expired)
+        except Exception:
+            log.exception("order %s: expiring the wait failed", order_id)
+            return
+        self._waiting.pop(order_id, None)
 
     async def _send_once(self, order_id: UUID, *, retry: bool, refreshed: bool,
                          waiting: list[bool]) -> None:
