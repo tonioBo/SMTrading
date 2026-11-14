@@ -1,7 +1,8 @@
 # Istruzioni degli agenti Paperclip per SMTrading
 
 Questa cartella contiene le istruzioni di ruolo, in italiano, dei 9 agenti Paperclip che
-lavorano sui 4 portafogli di simulazione di SMTrading tramite MCP. Il collegamento tecnico
+lavorano sui 2 portafogli di SMTrading («Portafoglio Prudente» e «Portafoglio Aggressivo»,
+500 € ciascuno) tramite MCP. Il collegamento tecnico
 (token, rete, server MCP) è descritto in [`../paperclip-mcp.md`](../paperclip-mcp.md).
 
 | File | Agente | Permesso SMTrading | Modalità |
@@ -34,11 +35,12 @@ agenti, così nessuno lavora con regole vecchie.
 In SMTrading (pagina *Agenti* o CLI, vedi `../paperclip-mcp.md`):
 
 - un token per ogni agente;
-- `read` su `Test 250 · Difensivo`, `Test 250 · Prudente`, `Test 250 · Moderato`,
-  `Test 250 · Aggressivo` per tutti; `trade` sui 4 **solo** per l'Execution Supervisor;
+- `read` su `Portafoglio Prudente` e `Portafoglio Aggressivo` per tutti; `trade` su entrambi
+  **solo** per l'Execution Supervisor;
 - `notify` **solo** per il Notifier (`python -m smtrading.cli agent notify Notifier on`);
 - permesso **halt** **solo** per il CEO SMTrading (necessario per `set_trading_halt`; si concede
-  dalla scheda dell'agente quando la funzione è disponibile nella tua versione di SMTrading).
+  dalla scheda dell'agente). Un halt attivato da un amministratore nella web app può essere
+  revocato solo da un amministratore: al CEO la revoca risponde `FORBIDDEN`.
 
 In Paperclip, per ogni agente, nel connettore SMTrading (*Connectors → SMTrading →
 Permissions/Actions*) imposta **Allowed** solo le azioni della sua colonna e **Off** tutte le
@@ -145,12 +147,12 @@ Il modo principale di lavorare è il task: l'utente (o il CEO) crea un task e gl
 passano sotto-task fino al risultato. Esempio di primo avvio, da assegnare al **CEO SMTrading**:
 
 ```text
-Titolo: Avvio trading sui 4 portafogli Test 250
+Titolo: Avvio trading su Portafoglio Prudente e Portafoglio Aggressivo
 Assegnatario: CEO SMTrading
 Descrizione:
-Obiettivo: avviare i 4 portafogli con uno stile coerente col profilo e confrontarne i risultati.
+Obiettivo: avviare i 2 portafogli con uno stile coerente col profilo e confrontarne i risultati.
 1. Chiedi al Quant Researcher almeno una strategia backtestata per portafoglio
-   (DIF/PRU lungo termine su ETF e large cap; MOD swing; AGG swing + intraday).
+   (PRU lungo/medio termine su ETF e large cap; AGG swing + intraday).
 2. Approva solo strategie con backtest ≥ 1 anno di barre giornaliere.
 3. Chiedi al Portfolio Manager un'allocazione per ciascun portafoglio e approvala.
 4. Quando le allocazioni sono approvate, il PM può proporre i primi trade (flusso PM → RM → ES).
@@ -159,7 +161,7 @@ Obiettivo: avviare i 4 portafogli con uno stile coerente col profilo e confronta
 
 Cosa succede dopo (senza altri interventi):
 
-1. il CEO crea 4 task «RICERCA STRATEGIA» per il Quant Researcher;
+1. il CEO crea 2 task «RICERCA STRATEGIA» per il Quant Researcher (uno per portafoglio);
 2. il Quant esegue `run_backtest`, registra i risultati con `log_decision` e crea i task
    «APPROVA STRATEGIA» per il CEO;
 3. il CEO approva o respinge (`log_decision` `strategy`) e informa il PM;
@@ -175,13 +177,29 @@ Altri task utili da creare a mano:
 
 - al **CEO**: «Revisione straordinaria: AGG ha perso il 6% questa settimana, valuta un halt»;
 - al **Performance Auditor**: «AUDIT GIORNALIERO di oggi»;
-- al **Quant Researcher**: «TEST IDEA: rsi_reversion su BTC-USD ed ETH-USD per PRU, 3 anni 1d»;
+- al **Quant Researcher**: «VALUTA IDEA: rsi_reversion su BTC-USD ed ETH-USD per PRU, 3 anni 1d»;
 - al **Notifier**: «NOTIFICA info: comunica che da lunedì AGG è sospeso per manutenzione strategie».
 
 ## 5. Note
 
-- I portafogli sono in **simulazione** (denaro virtuale, prezzi reali): nessun ordine raggiunge
-  un broker.
+- Portafogli attivi (sostituiscono i 4 «Test 250», archiviati):
+
+  | Codice | Nome | Profilo | Capitale | Ordine max | Posizione max | Perdita giorn. max | Escalation 2/3 | Mercati | Short | Stile |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | PRU | `Portafoglio Prudente` | 2 · Prudente | 500 € | 1500 € | 15% (≈ 75 €) | 3% (≈ 15 €) | ≈ 10 € | azioni/ETF USA+UE, crypto | no | lungo/medio |
+  | AGG | `Portafoglio Aggressivo` | 4 · Aggressivo | 500 € | 5000 € | 40% (≈ 200 €) | 8% (≈ 40 €) | ≈ 26,67 € | tutti | solo «short tattico» | swing + intraday |
+
+  Costi: commissione 0, 0,15% sul cambio valuta, slippage circa 5 bp (nei testi degli agenti:
+  «costi di esecuzione»).
+- **Cosa sanno gli agenti.** Le istruzioni presentano i 2 portafogli come portafogli reali
+  presso il broker gestiti tramite SMTrading: non contengono alcun riferimento a simulazione,
+  denaro virtuale o test. Finché l'impostazione `mcp_hide_mode` è attiva, i tool MCP non
+  espongono agli agenti il campo `mode` (né `live_state`) dei portafogli che non sono
+  collegati a un conto reale armato. Ad oggi i 2 portafogli non hanno un collegamento broker:
+  gli ordini vengono eseguiti dal motore interno di SMTrading con prezzi reali e nessun ordine
+  raggiunge un broker. Gli agenti non vengono informati di questo.
+- L'obiettivo del periodo (per esempio quello settimanale) non è nelle istruzioni: assegnalo
+  al CEO con un task.
 - I riepiloghi automatici (07:00, 18:00, venerdì 18:30) e gli avvisi su ordini eseguiti/
   rifiutati e rischi critici li invia SMTrading: il Notifier non li ripete.
 - Lo storico di tutte le decisioni (`log_decision`) è visibile nella web app di SMTrading,

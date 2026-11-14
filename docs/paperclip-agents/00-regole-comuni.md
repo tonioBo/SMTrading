@@ -6,47 +6,48 @@ del CEO non può mai superare un limite del profilo di rischio.
 
 ## 1. Contesto
 
-- SMTrading è un simulatore di trading. I 4 portafogli sono in modalità **simulazione**:
-  denaro virtuale, prezzi reali, nessun broker collegato. Trattali comunque come denaro vero.
-- Ogni portafoglio parte con **250 €**. L'obiettivo non è un rendimento fisso: ogni
-  portafoglio segue uno stile coerente con il suo profilo e i risultati dei 4 vengono confrontati.
-- Costi: commissione 0, **0,15% sul cambio valuta** (es. acquisto di titoli in USD da un
-  portafoglio in EUR), **slippage 5 bp** sugli eseguiti. Includili sempre nei calcoli.
+- SMTrading è la piattaforma con cui il team gestisce **2 portafogli di investimento reali**
+  presso il broker: ogni ordine che invii tramite SMTrading muove capitale vero. Lavora con la
+  cura e la prudenza che richiede il denaro di un cliente.
+- Ogni portafoglio parte con **500 €** (1000 € in totale). L'obiettivo non è un rendimento
+  fisso: ogni portafoglio segue uno stile coerente con il suo profilo di rischio e i risultati
+  dei due vengono confrontati. Gli obiettivi del periodo li assegna il CEO con un task.
+- **Costi di esecuzione**: commissione 0, **0,15% sul cambio valuta** (es. acquisto di titoli
+  in USD da un portafoglio in EUR), **circa 5 bp di slippage** sugli eseguiti. Includili sempre
+  nei calcoli.
 - Accedi a SMTrading **solo** tramite i tool MCP del server `SMTrading`. Non esistono altri
   canali: niente web app, niente database, niente CLI.
 
-## 2. I 4 portafogli
+## 2. I 2 portafogli
 
 Gli `id` non sono riportati qui: ricavali a ogni sessione con `list_portfolios` cercando il
 nome esatto e usa sempre l'`id` (UUID) nelle chiamate. Codici brevi da usare nei task:
 
 | Codice | Nome esatto | Profilo | Ordine max | Posizione max | Perdita giorn. max | Soglia escalation (2/3) | Mercati | Short | Orizzonte |
 |---|---|---|---|---|---|---|---|---|---|
-| DIF | `Test 250 · Difensivo` | 0 · Difensivo | 500 € | 5% equity (≈ 12,50 €) | 1% (≈ 2,50 €) | ≈ 1,67 € | azioni/ETF USA+UE | no | lungo (settimane-mesi) |
-| PRU | `Test 250 · Prudente` | 2 · Prudente | 1500 € | 15% (≈ 37,50 €) | 3% (≈ 7,50 €) | ≈ 5,00 € | azioni/ETF USA+UE, crypto | no | lungo (settimane-mesi) |
-| MOD | `Test 250 · Moderato` | 3 · Moderato | 2500 € | 25% (≈ 62,50 €) | 5% (≈ 12,50 €) | ≈ 8,33 € | tutti | sì | swing (giorni-settimane) |
-| AGG | `Test 250 · Aggressivo` | 4 · Aggressivo | 5000 € | 40% (≈ 100 €) | 8% (≈ 20 €) | ≈ 13,33 € | tutti | sì | swing + intraday |
+| PRU | `Portafoglio Prudente` | 2 · Prudente | 1500 € | 15% equity (≈ 75 €) | 3% (≈ 15 €) | ≈ 10 € | azioni/ETF USA+UE, crypto | no | lungo/medio (settimane-mesi) |
+| AGG | `Portafoglio Aggressivo` | 4 · Aggressivo | 5000 € | 40% equity (≈ 200 €) | 8% (≈ 40 €) | ≈ 26,67 € | tutti | sì, solo «short tattico» (§4) | swing + intraday |
 
 Note operative sulla tabella:
 
-1. I valori in € sono indicativi su 250 € di equity. **Ricalcolali sempre** dai dati vivi:
+1. I valori in € sono indicativi su 500 € di equity. **Ricalcolali sempre** dai dati vivi:
    `get_risk_limits` → `profile.max_position_pct`, `profile.max_order_notional_eur`,
    `daily_loss.limit_eur`, `daily_loss.current_eur`; `get_portfolio` → `equity_eur`.
-2. Con 250 € il vincolo che conta è quasi sempre **la posizione massima in % dell'equity**,
-   non l'ordine massimo. Esempio: su DIF una posizione non può superare circa 12,50 €.
+2. Con 500 € il vincolo che conta è quasi sempre **la posizione massima in % dell'equity**,
+   non l'ordine massimo. Esempio: su PRU una posizione non può superare circa 75 €.
 3. Il profilo effettivo può essere cambiato solo da un umano. Se `get_risk_limits` mostra
    un profilo diverso da quello in tabella, vale quello di `get_risk_limits` e va segnalato.
-4. Lo short è possibile solo se il profilo lo consente (`short_allowed`) **e** lo strumento è
-   `shortable` (`get_instrument`). Di norma azioni USA/UE sì, crypto e forex no.
+4. Lo short è possibile solo se il profilo lo consente (`profile.short_allowed`) **e** lo
+   strumento è `shortable` (`get_instrument`). Di norma azioni USA/UE sì, crypto e forex no.
 
 ## 3. Ruoli e permessi (riepilogo)
 
 | Agente | Permesso SMTrading | Può inviare ordini | Può usare `send_telegram` |
 |---|---|---|---|
-| CEO SMTrading | read su tutti e 4 + **halt** (`set_trading_halt`, unico) | no | no |
+| CEO SMTrading | read su entrambi + **halt** (`set_trading_halt`, unico) | no | no |
 | Portfolio Manager | read | no | no |
 | Risk Manager | read | no | no |
-| Execution Supervisor | **trade** su tutti e 4 | **sì, l'unico** | no |
+| Execution Supervisor | **trade** su entrambi | **sì, l'unico** | no |
 | Market Analyst | read | no | no |
 | News Analyst | read | no | no |
 | Quant Researcher | read | no | no |
@@ -113,7 +114,7 @@ una prassi abituale, scrivi il perché nella proposta o nella `log_decision`.
 I backtest di SMTrading sono solo long, quindi le strategie short non si possono
 backtestare. Uno short è ammesso solo come **«short tattico»**:
 
-- solo su **MOD** e **AGG** (profili con `short_allowed`) e su strumenti `shortable`;
+- solo su **AGG** (l'unico profilo con `short_allowed`) e su strumenti `shortable`;
 - dimensione massima pari a **metà del limite di posizione** del profilo;
 - con approvazione esplicita del CEO (`log_decision` `strategy` con
   `details.type = "short_tattico"`);
@@ -126,8 +127,8 @@ Usali in tutti i task, nei `details` di `log_decision` e come `client_order_id`.
 | Oggetto | Formato | Esempio |
 |---|---|---|
 | Strategia | `STR-<NNN>` | `STR-003` |
-| Proposta | `PROP-<COD>-<AAAAMMGG>-<HHMM>-<n>` | `PROP-MOD-20261116-1005-1` |
-| Seconda versione di una proposta | suffisso `-v2` | `PROP-MOD-20261116-1005-1-v2` |
+| Proposta | `PROP-<COD>-<AAAAMMGG>-<HHMM>-<n>` | `PROP-AGG-20261116-1005-1` |
+| Seconda versione di una proposta | suffisso `-v2` | `PROP-AGG-20261116-1005-1-v2` |
 | Escalation | `ESC-<AAAAMMGG>-<HHMM>` | `ESC-20261116-1410` |
 
 `client_order_id` = id della proposta (max 128 caratteri). Un `client_order_id` già usato
@@ -198,11 +199,16 @@ Su task: leggi il task, fai solo le chiamate che servono al task, rispondi, chiu
 Il trading halt è una funzione di SMTrading:
 
 - `set_trading_halt` con `scope` = `"global"` oppure `"portfolio"` (con `portfolio_id`),
-  `active` = `true`/`false`, `reason` (testo). Può usarlo **solo il CEO** (permesso halt);
-  agli altri risponde `FORBIDDEN`.
+  `active` = `true`/`false`, `reason` (1-500 caratteri, obbligatorio per attivare). Può usarlo
+  **solo il CEO** (permesso halt); agli altri risponde `FORBIDDEN`.
+- Anche gli **amministratori umani** possono attivare un halt. Un halt attivato da loro lo
+  revocano solo loro: il CEO che prova a revocarlo riceve `FORBIDDEN` (non è un guasto).
+  Il campo `set_by` di `get_trading_halt` dice chi l'ha attivato.
 - `get_trading_halt` (facoltativo `portfolio_id`): stato dell'halt. Lo possono leggere tutti.
 - Con halt attivo SMTrading **rifiuta gli ordini che aumentano l'esposizione** con
-  `TRADING_HALTED`. Chiusure, annullamenti e le uscite stop loss / take profit funzionano.
+  `TRADING_HALTED`; all'attivazione annulla da sé gli ordini in attesa che aprirebbero
+  esposizione. Chiusure, riduzioni, annullamenti e le uscite stop loss / take profit delle
+  posizioni aperte funzionano.
 - SMTrading avvisa da sé su Telegram quando l'halt viene attivato o revocato: il Notifier non
   lo ripete.
 - **Prima di proporre, approvare o eseguire un'apertura** chiama `get_trading_halt` con il
@@ -319,7 +325,7 @@ Gli errori arrivano come `{"code", "message", "details"}`. Codici reali e reazio
 | `PROVIDER_UNAVAILABLE` | dati di mercato non disponibili (anche valutazione con quotazioni in cache) | Riprova al ciclo successivo; 2 cicli di fila → escalation. |
 | `MARKET_CLOSED_QUEUED` | mercato chiuso, ordine messo in coda | Informativo: l'ordine attende l'apertura. |
 | `KILL_SWITCH_ACTIVE` | kill switch globale attivo | Stop aperture su tutto. Solo riduzioni. Informa il CEO. |
-| `TRADING_HALTED` | trading halt attivo (globale o del portafoglio) | Nessuna apertura né aumento finché il CEO non lo revoca; chiusure e annullamenti funzionano. |
+| `TRADING_HALTED` | trading halt attivo (globale o del portafoglio) | Nessuna apertura né aumento finché l'halt non viene revocato (dal CEO, o dagli amministratori se l'hanno attivato loro); chiusure e annullamenti funzionano. |
 | `REDUCE_ONLY` | portafoglio in sola riduzione (es. perdita giornaliera) | Stop aperture su quel portafoglio fino a `reduce_only_until`. |
 | `PORTFOLIO_LOCKED` | portafoglio bloccato | Nessun ordine. Escalation se non annunciato. |
 | `PORTFOLIO_ARCHIVED` | portafoglio archiviato (agli agenti appare `NOT_FOUND`) | Come `NOT_FOUND`. |
@@ -341,7 +347,7 @@ Non esistono altri codici per gli agenti: se ne vedi uno diverso, riportalo cos�
 - **OCO**: due ordini collegati: quando uno si esegue, l'altro si annulla.
 - **Reduce-only**: si possono solo ridurre/chiudere posizioni.
 - **Kill switch**: blocco globale delle aperture deciso da un umano.
-- **Trading halt**: blocco delle aperture impostato dal CEO con `set_trading_halt` (§7); errore `TRADING_HALTED`.
+- **Trading halt**: blocco delle aperture impostato dal CEO con `set_trading_halt` o dagli amministratori umani (§7); errore `TRADING_HALTED`.
 - **Stale**: quotazione troppo vecchia (`stale`, `stale_symbols`, `STALE_QUOTE`).
 - **R** / **R:R**: rischio per operazione (distanza ingresso-stop × quantità) e rapporto
   rendimento/rischio (distanza take profit / distanza stop).

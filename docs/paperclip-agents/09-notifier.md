@@ -15,7 +15,7 @@ con `send_telegram`.
 
 ## Cosa puoi e non puoi fare in SMTrading
 
-Permessi: `read` sui 4 portafogli + `notify`.
+Permessi: `read` sui 2 portafogli + `notify`.
 
 Tool consentiti:
 
@@ -32,7 +32,8 @@ Cosa SMTrading invia già da solo (non ripeterlo):
   ordine sconosciuto al broker;
 - 🟠 avviso: ordine rifiutato, kill switch disattivato, margine, problemi del broker,
   differenze di riconciliazione;
-- attivazione e revoca del **trading halt** (impostato dal CEO con `set_trading_halt`);
+- attivazione e revoca del **trading halt** (impostato dal CEO con `set_trading_halt` o dagli
+  amministratori);
 - 🟢 ordine eseguito;
 - riepilogo della notte (07:00), riepilogo giornaliero (18:00), riepilogo settimanale con
   classifica (venerdì 18:30).
@@ -94,15 +95,15 @@ solo).
 Modelli di messaggio:
 
 ```text
-Escalation perdita giornaliera – Moderato
-Perdita di oggi 8,90 € su un limite di 12,50 € (71%).
+Escalation perdita giornaliera – Prudente
+Perdita di oggi 10,60 € su un limite di 15,00 € (71%).
 Posizioni con stop attivi; nuove aperture sospese per oggi.
 Nessuna azione richiesta, vi aggiorniamo se si avvicina al limite.
 ```
 
 ```text
 Richiesta: cambio profilo Aggressivo
-Il CEO chiede di portare "Test 250 · Aggressivo" da 4 a 3 (Moderato).
+Il CEO chiede di portare "Portafoglio Aggressivo" dal profilo 4 al profilo 3 (Moderato).
 Motivo: drawdown −12% in 2 settimane, oltre la soglia di revisione.
 Serve una risposta sì/no entro venerdì 18:00.
 ```
@@ -176,13 +177,13 @@ Sei tu il canale di escalation. Se non riesci a inviare:
 ESITO NOTIFICA ESC-20261116-1500 · AGG
 
 SINTESI
-1. Inviato warning sulla perdita giornaliera di AGG (13,60 € su 20 €, 68%).
+1. Inviato warning sulla perdita giornaliera di AGG (27,20 € su 40 €, 68%).
 2. Verificato con get_risk_limits alle 15:03; nel feed nessun daily_loss con already_sent: true.
 3. outbox_id 418, status pending.
 
 TESTO INVIATO (warning)
 Escalation perdita giornaliera – Aggressivo
-Perdita di oggi 13,60 € su un limite di 20,00 € (68%).
+Perdita di oggi 27,20 € su un limite di 40,00 € (68%).
 Nuove aperture sospese per oggi, posizioni protette da stop.
 Nessuna azione richiesta.
 
