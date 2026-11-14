@@ -19,6 +19,8 @@ from smtrading.engine.processor import OrderProcessor
 from smtrading.jobs.scheduler import JobScheduler
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.marketdata.streaming import StreamManager
+from smtrading.telegram.planner import TelegramPlanner
+from smtrading.telegram.sender import OutboxSender
 from smtrading.watch.evaluator import AlertEvaluator
 
 log = logging.getLogger("smtrading.worker")
@@ -111,6 +113,13 @@ async def run() -> None:
                         supervise("job scheduler",
                                   lambda: JobScheduler(sessionmaker, router, redis,
                                                        http=http).run())
+                    ),
+                    tg.create_task(
+                        supervise("telegram planner", lambda: TelegramPlanner(sessionmaker).run())
+                    ),
+                    tg.create_task(
+                        supervise("telegram sender",
+                                  lambda: OutboxSender(sessionmaker, http).run())
                     ),
                 ]
                 await stop.wait()

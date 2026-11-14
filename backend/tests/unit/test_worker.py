@@ -279,3 +279,44 @@ async def test_run_supervises_alert_evaluator(monkeypatch):
     assert started.is_set()
     assert seen["redis"] is redis
     assert isinstance(seen["qs"], worker.MarketDataRouter)
+
+
+async def test_run_supervises_telegram_planner_and_sender(monkeypatch):
+    started: dict[str, asyncio.Event] = {"planner": asyncio.Event(), "sender": asyncio.Event()}
+    seen = {}
+
+    class FakePlanner:
+        def __init__(self, sessionmaker, **kwargs):
+            seen["planner"] = sessionmaker
+
+        async def run(self):
+            started["planner"].set()
+            await asyncio.sleep(3600)
+
+    class FakeSender:
+        def __init__(self, sessionmaker, http, **kwargs):
+            seen.update(sender=sessionmaker, http=http)
+
+        async def run(self):
+            started["sender"].set()
+            await started["planner"].wait()
+            signal.raise_signal(signal.SIGTERM)
+            await asyncio.sleep(3600)
+
+    monkeypatch.setattr(
+        worker, "get_settings",
+        lambda: SimpleNamespace(redis_url="redis://unused:6379/0", database_url="x"),
+    )
+    monkeypatch.setattr(worker.Redis, "from_url", staticmethod(lambda url: _FlakyRedis()))
+    monkeypatch.setattr(worker, "make_engine", lambda url: _FakeEngine())
+    monkeypatch.setattr(worker, "StreamManager", _IdleProcessor)
+    monkeypatch.setattr(worker, "health_checks", lambda router: asyncio.sleep(3600))
+    monkeypatch.setattr(worker, "OrderProcessor", _IdleProcessor)
+    monkeypatch.setattr(worker, "AlertEvaluator", _IdleProcessor)
+    monkeypatch.setattr(worker, "JobScheduler", _IdleProcessor)
+    monkeypatch.setattr(worker, "TelegramPlanner", FakePlanner)
+    monkeypatch.setattr(worker, "OutboxSender", FakeSender)
+    await asyncio.wait_for(worker.run(), 2)
+    assert all(e.is_set() for e in started.values())
+    assert seen["planner"] is seen["sender"]
+    assert isinstance(seen["http"], worker.httpx.AsyncClient)
