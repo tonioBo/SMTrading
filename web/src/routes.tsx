@@ -10,6 +10,7 @@ import Fees from "@/pages/Fees";
 import Login from "@/pages/Login";
 import Markets from "@/pages/Markets";
 import McpLog from "@/pages/McpLog";
+import Notifications from "@/pages/Notifications";
 import PortfolioDetail from "@/pages/PortfolioDetail";
 import Portfolios from "@/pages/Portfolios";
 import Risk from "@/pages/Risk";
@@ -35,6 +36,7 @@ export const routes: RouteObject[] = [
           { path: "rischio", element: <Risk /> },
           { path: "connettori", element: <Connectors /> },
           { path: "broker", element: <Brokers /> },
+          { path: "notifiche", element: <Notifications /> },
           { path: "mercati", element: <Markets /> },
           { path: "log-mcp", element: <McpLog /> },
           { path: "impostazioni", element: <Settings /> },

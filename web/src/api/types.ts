@@ -329,6 +329,8 @@ export interface Agent {
   active: boolean;
   created_at: string;
   last_seen_at: string | null;
+  /** the `notify` permission: may send messages to the Telegram group */
+  can_notify: boolean;
   portfolios: AgentPortfolioLink[];
 }
 
@@ -644,4 +646,75 @@ export interface Reconciliation {
   ts: string;
   ok: boolean;
   diffs: ReconciliationDiff[];
+}
+
+// --- Telegram notifications (GET /api/telegram, outbox, decisions) -------------------
+
+export type OutboxStatus = "pending" | "sent" | "failed" | "paused";
+
+export interface TelegramSettings {
+  configured: boolean;
+  enabled: boolean;
+  paused: boolean;
+  /** "••••" when a token is stored; the token itself never leaves the server */
+  bot_token_masked: string | null;
+  bot_username: string | null;
+  chat_id: string | null;
+  chat_title: string | null;
+  /** set when the stored token cannot be read: it must be entered again */
+  error: string | null;
+  outbox: { pending: number; paused: number; failed: number };
+}
+
+/** PUT /api/telegram/config: only the fields being changed. */
+export interface TelegramConfigPatch {
+  bot_token?: string;
+  chat_id?: string;
+  enabled?: boolean;
+}
+
+export interface TelegramChat {
+  id: string | number;
+  type: string;
+  title: string | null;
+}
+
+export interface TelegramTestResult {
+  ok: boolean;
+  error?: string | null;
+}
+
+export interface OutboxItem {
+  id: number;
+  source: string;
+  agent: string | null;
+  category: string;
+  level: string;
+  text: string;
+  status: OutboxStatus;
+  attempts: number;
+  last_error: string | null;
+  created_at: string;
+  sent_at: string | null;
+}
+
+export type DecisionKind = "proposal" | "approval" | "veto" | "allocation" | "strategy" | "risk_rule" | "other";
+
+export interface Decision {
+  id: number;
+  agent: string | null;
+  agent_id: string;
+  portfolio: string | null;
+  portfolio_id: string | null;
+  kind: DecisionKind;
+  summary: string;
+  symbols: string[];
+  details: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface DecisionFilters {
+  agent_id: string;
+  portfolio_id: string;
+  kind: string;
 }

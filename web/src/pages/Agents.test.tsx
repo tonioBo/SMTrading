@@ -19,6 +19,7 @@ const agent: Agent = {
   active: true,
   created_at: "2026-11-01T10:00:00Z",
   last_seen_at: null,
+  can_notify: false,
   portfolios: [{ portfolio_id: "p1", portfolio_name: "Alfa", permission: "trade" }],
 };
 const portfolios = [

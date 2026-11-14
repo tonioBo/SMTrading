@@ -47,6 +47,16 @@ export function useSetAgentActive() {
   });
 }
 
+/** The `notify` permission: the agent may send messages to the Telegram group. */
+export function useSetAgentNotify() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, can_notify }: { id: string; can_notify: boolean }) =>
+      apiFetch<Agent>(`/api/agents/${id}`, { method: "PATCH", body: { can_notify } }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: agentsKey }),
+  });
+}
+
 /** Replaces the agent's whole set of portfolio assignments. */
 export function useSetAgentPortfolios(agentId: string) {
   const qc = useQueryClient();

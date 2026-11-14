@@ -1,12 +1,46 @@
 import { ArrowLeft } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
-import { useAgents } from "@/api/hooks/agents";
+import { useAgents, useSetAgentNotify } from "@/api/hooks/agents";
+import type { Agent } from "@/api/types";
 import { AgentWatchSection } from "@/components/AgentWatchSection";
 import { PageHeader } from "@/components/PageHeader";
 import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { errorMessage } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
+
+/** The `notify` permission (PATCH can_notify): the agent may write to the Telegram group. */
+function NotifyPermission({ agent }: { agent: Agent }) {
+  const setNotify = useSetAgentNotify();
+  const id = `notify-${agent.id}`;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Notifiche Telegram</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        <div className="flex items-center gap-3">
+          <Switch
+            id={id}
+            checked={agent.can_notify}
+            disabled={setNotify.isPending}
+            onCheckedChange={(can_notify) => setNotify.mutate({ id: agent.id, can_notify })}
+          />
+          <Label htmlFor={id}>Può inviare su Telegram (notify)</Label>
+        </div>
+        <p className="text-xs text-muted">I messaggi dell&apos;agente passano dalla coda della pagina Notifiche (al massimo 20 al minuto).</p>
+        {setNotify.error && (
+          <p role="alert" className="text-loss">
+            {errorMessage(setNotify.error)}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 /** One agent: state, every portfolio assignment (archived included) and its watch data. */
 export default function AgentDetail() {
@@ -60,6 +94,7 @@ export default function AgentDetail() {
           )}
         </CardContent>
       </Card>
+      <NotifyPermission agent={agent} />
       <AgentWatchSection agentId={agent.id} />
     </div>
   );
