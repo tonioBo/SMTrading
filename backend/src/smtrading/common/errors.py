@@ -29,6 +29,7 @@ class ErrorCode(StrEnum):
     LIVE_NOT_ARMED = "LIVE_NOT_ARMED"
     LIVE_DRY_RUN = "LIVE_DRY_RUN"
     LIVE_CASH_LIMIT = "LIVE_CASH_LIMIT"
+    VERSION_CONFLICT = "VERSION_CONFLICT"  # a stale base version (admin editors, HTTP 409)
 
 
 class SMTError(Exception):

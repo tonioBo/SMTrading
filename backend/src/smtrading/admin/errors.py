@@ -6,7 +6,8 @@ from fastapi.responses import JSONResponse
 
 from smtrading.common.errors import ErrorCode, SMTError
 
-_STATUS = {ErrorCode.NOT_FOUND: 404, ErrorCode.FORBIDDEN: 403, ErrorCode.RATE_LIMITED: 429}
+_STATUS = {ErrorCode.NOT_FOUND: 404, ErrorCode.FORBIDDEN: 403, ErrorCode.RATE_LIMITED: 429,
+           ErrorCode.VERSION_CONFLICT: 409}
 
 
 class NotAuthenticated(Exception):
@@ -25,9 +26,15 @@ async def _not_authenticated(request: Request, exc: NotAuthenticated) -> JSONRes
     return JSONResponse(_body(str(ErrorCode.FORBIDDEN), "login richiesto"), status_code=401)
 
 
+def _field_loc(loc) -> tuple:
+    loc = tuple(loc)
+    return loc[1:] if loc[:1] == ("body",) else loc
+
+
 async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
     # only field locations: the rejected input (maybe a password) is never echoed back
-    fields = sorted({".".join(str(p) for p in e.get("loc", ()) if p != "body") for e in exc.errors()})
+    # (the leading "body" is the request part, not a field: a field named body stays)
+    fields = sorted({".".join(str(p) for p in _field_loc(e.get("loc", ()))) for e in exc.errors()})
     return JSONResponse(
         _body(str(ErrorCode.INVALID_ORDER), "richiesta non valida", {"fields": fields}),
         status_code=400,

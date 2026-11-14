@@ -9,13 +9,15 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
 from smtrading.admin.common import _transaction
 from smtrading.admin.idempotency import Idempotency, idempotent
 from smtrading.agentdocs import export, service
+from smtrading.agentdocs.models import MAX_BODY_BYTES, MAX_NOTE_LEN
 from smtrading.agents.service import write_audit
+from smtrading.common.errors import ErrorCode
 
 router = APIRouter(prefix="/api/agent-docs", tags=["agent-docs"],
                    dependencies=[Depends(require_admin)])
@@ -23,15 +25,21 @@ router = APIRouter(prefix="/api/agent-docs", tags=["agent-docs"],
 DocIdem = Annotated[Idempotency, Depends(idempotent("agent-docs"))]
 
 
+# hard bounds of the request model, far above the limits the service checks with its
+# own messages (200 kB of UTF-8, a 200-character note): a huge text is never processed
+MAX_BODY_CHARS = 4 * MAX_BODY_BYTES
+MAX_NOTE_CHARS = 4 * MAX_NOTE_LEN
+
+
 class AgentDocIn(BaseModel):
-    body: str
-    note: str | None = None
+    body: str = Field(max_length=MAX_BODY_CHARS)
+    note: str | None = Field(default=None, max_length=MAX_NOTE_CHARS)
     base_version: int
 
 
 def _conflict(exc: service.VersionConflict) -> JSONResponse:
     return JSONResponse(
-        {"code": "VERSION_CONFLICT", "message": str(exc),
+        {"code": str(ErrorCode.VERSION_CONFLICT), "message": str(exc),
          "details": {"current_version": exc.current_version}},
         status_code=409,
     )

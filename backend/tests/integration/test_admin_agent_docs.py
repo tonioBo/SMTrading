@@ -208,6 +208,31 @@ async def test_save_with_a_stale_base_version_is_a_conflict(admin):
     assert (await c.get("/api/agent-docs/notifier")).json()["body"] == "primo"
 
 
+async def test_conflict_code_is_an_error_code(admin):
+    from smtrading.common.errors import ErrorCode
+
+    c = admin.client
+    await c.put("/api/agent-docs/notifier", json={"body": "primo", "base_version": 1})
+    r = await c.put("/api/agent-docs/notifier", json={"body": "secondo", "base_version": 1})
+    assert r.status_code == 409
+    assert r.json()["code"] == ErrorCode.VERSION_CONFLICT == "VERSION_CONFLICT"
+
+
+async def test_huge_bodies_are_refused_by_the_schema(admin):
+    """A hard length bound on the request model (far above the 200 kB byte limit the
+    service checks with its own message): the text is never processed."""
+    from smtrading.admin.routes_agent_docs import MAX_BODY_CHARS, AgentDocIn
+
+    assert AgentDocIn.model_fields["body"].metadata  # max_length set
+    r = await admin.client.put("/api/agent-docs/ceo",
+                               json={"body": "x" * (MAX_BODY_CHARS + 1), "base_version": 1})
+    assert r.status_code == 400 and r.json()["details"]["fields"] == ["body"]
+    r = await admin.client.put("/api/agent-docs/ceo",
+                               json={"body": "x", "note": "n" * 5000, "base_version": 1})
+    assert r.status_code == 400 and r.json()["details"]["fields"] == ["note"]
+    assert (await admin.client.get("/api/agent-docs/ceo")).json()["current_version"] == 1
+
+
 @pytest.mark.parametrize("body,field", [
     ({"body": "   ", "base_version": 1}, "body"),
     ({"body": "x" * (200 * 1024 + 1), "base_version": 1}, "body"),
