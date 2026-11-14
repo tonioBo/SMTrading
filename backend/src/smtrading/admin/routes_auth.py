@@ -33,8 +33,10 @@ async def _reissue_session(
     request: Request, response: Response, redis: Redis, user: AdminUser
 ) -> None:
     """After a credential change (already committed): every older session, this one
-    included, no longer matches the fingerprint; give the caller a fresh one."""
+    included, is destroyed right away (not only invalidated by the fingerprint, which a
+    later change back could match again); give the caller a fresh one."""
     await auth.destroy_session(redis, request.state.admin_session_id, user.id)
+    await auth.revoke_other_sessions(redis, user.id, keep_session_id="")
     session_id, csrf = await auth.create_session(redis, user)
     _set_session_cookies(request, response, session_id, csrf)
 

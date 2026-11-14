@@ -360,6 +360,34 @@ async def test_totp_disable_revokes_other_sessions(admin_app, admin_user):
         assert (await other.get("/api/auth/me")).status_code == 401
 
 
+async def test_totp_re_enable_does_not_revive_old_sessions(admin_app, admin_user):
+    """A session revoked by TOTP disable must stay dead when TOTP is enabled again
+    (same password, totp_enabled back to True): revocation is immediate, not only a
+    fingerprint mismatch."""
+    changer, _ = admin_app
+    await _login(changer, admin_user.email)
+    secret = (await changer.post("/api/auth/totp/setup", headers=_csrf(changer))).json()["secret"]
+    totp = pyotp.TOTP(secret)
+    assert (await changer.post(
+        "/api/auth/totp/enable", json={"code": totp.now()}, headers=_csrf(changer)
+    )).status_code == 200
+    await _forget_used_codes(admin_app.redis_url, admin_user.id)
+    async with admin_app.new_client() as other:
+        assert (await _login(other, admin_user.email, totp=totp.now())).status_code == 200
+        await _forget_used_codes(admin_app.redis_url, admin_user.id)
+        assert (await changer.post(
+            "/api/auth/totp/disable", json={"code": totp.now()}, headers=_csrf(changer)
+        )).status_code == 200
+        secret2 = (await changer.post(
+            "/api/auth/totp/setup", headers=_csrf(changer))).json()["secret"]
+        totp2 = pyotp.TOTP(secret2)
+        assert (await changer.post(
+            "/api/auth/totp/enable", json={"code": totp2.now()}, headers=_csrf(changer)
+        )).status_code == 200
+        assert (await changer.get("/api/auth/me")).status_code == 200
+        assert (await other.get("/api/auth/me")).status_code == 401
+
+
 async def test_totp_code_cannot_be_replayed(admin_app, admin_user):
     client, _ = admin_app
     await _login(client, admin_user.email)
