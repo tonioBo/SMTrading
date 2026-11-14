@@ -63,7 +63,13 @@ from smtrading.portfolios.locks import lock_live_portfolio
 from smtrading.portfolios.mode import portfolio_mode
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.queries import day_pnl, list_portfolio_journals
-from smtrading.portfolios.service import create_portfolio, deposit, get_cash_balances, withdraw
+from smtrading.portfolios.service import (
+    create_portfolio,
+    deposit,
+    get_cash_balances,
+    set_portfolio_status,
+    withdraw,
+)
 from smtrading.risk.models import RiskProfile
 from smtrading.valuation.service import value_portfolio
 
@@ -284,10 +290,8 @@ async def patch_portfolio(
                         ErrorCode.INVALID_ORDER, "status deve essere active o locked",
                         {"field": "status", "allowed": list(_PATCH_STATUSES)},
                     )
-                p.status = status
-                if status == PortfolioStatus.active:
-                    p.reduce_only_reason = None
-                    p.reduce_only_until = None
+                # a live anomaly's reduce-only is cleared only with the TOTP resume
+                set_portfolio_status(session, p, status)
             await session.flush()
     except IntegrityError:
         if "name" in fields and await _name_taken(session, _clean_name(body.name), portfolio_id):

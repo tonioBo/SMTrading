@@ -2,8 +2,9 @@ import re
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import event, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import quantize_money
@@ -11,11 +12,74 @@ from smtrading.events import queue_event
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, Journal, JournalType
 from smtrading.ledger.service import LineSpec, get_or_create_account, post_journal
 from smtrading.portfolios.locks import lock_portfolio
-from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.risk.models import RiskProfile
 from smtrading.risk.profiles import DEFAULT_RISK_PROFILE_NAME
 
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
+
+# -- live reduce-only guard --------------------------------------------------------------
+# A real-money portfolio put in reduce-only by an anomaly (brokers.live.protect) has a
+# `reduce_only_reason` starting with LIVE_REASON_PREFIX. Only resume_live_portfolio (TOTP)
+# may make it active again: every other path (the admin PATCH, the midnight reset of the
+# daily loss, an unarchive, a broker unlock) is refused, by `set_portfolio_status` and, for
+# the paths that assign the attributes directly, by the before_flush check below.
+LIVE_REASON_PREFIX = "live_"
+LIVE_RESUME_MESSAGE = "riprendi il portafoglio reale con «Ho verificato, riprendi» (TOTP)"
+_LIVE_RESUME_KEY = "smt_live_resume_ok"
+
+
+def is_live_reason(reason: str | None) -> bool:
+    return bool(reason) and reason.startswith(LIVE_REASON_PREFIX)
+
+
+def _live_resume_refused(portfolio_id) -> SMTError:
+    return SMTError(ErrorCode.FORBIDDEN, LIVE_RESUME_MESSAGE,
+                    {"field": "status", "portfolio_id": str(portfolio_id)})
+
+
+def set_portfolio_status(
+    session: AsyncSession, portfolio: Portfolio, status: PortfolioStatus, *,
+    allow_live: bool = False,
+) -> None:
+    """Sets the status; `active` also clears the reduce-only reason and end. Making active a
+    portfolio blocked for a live anomaly is FORBIDDEN unless `allow_live` (only
+    brokers.live.service.resume_live_portfolio passes it, after the TOTP)."""
+    if (status == PortfolioStatus.active and portfolio.status != PortfolioStatus.active
+            and is_live_reason(portfolio.reduce_only_reason)):
+        if not allow_live:
+            raise _live_resume_refused(portfolio.id)
+        session.sync_session.info.setdefault(_LIVE_RESUME_KEY, set()).add(portfolio.id)
+    portfolio.status = status
+    if status == PortfolioStatus.active:
+        portfolio.reduce_only_reason = None
+        portfolio.reduce_only_until = None
+
+
+def _before(attr) -> tuple[bool, object]:
+    """(changed, value before the change) of a loaded attribute."""
+    hist = attr.history
+    if not hist.has_changes():
+        return False, attr.value
+    return True, hist.deleted[0] if hist.deleted else None
+
+
+@event.listens_for(Session, "before_flush")
+def _guard_live_reduce_only(session: Session, flush_context, instances) -> None:
+    allowed: set = session.info.get(_LIVE_RESUME_KEY, set())
+    for obj in session.dirty:
+        if not isinstance(obj, Portfolio):
+            continue
+        state = inspect(obj)
+        changed, old_status = _before(state.attrs.status)
+        if not changed or obj.status != PortfolioStatus.active:
+            continue
+        if old_status == PortfolioStatus.active:
+            continue
+        _, old_reason = _before(state.attrs.reduce_only_reason)
+        if is_live_reason(old_reason) and obj.id not in allowed:
+            raise _live_resume_refused(obj.id)
+    session.info.pop(_LIVE_RESUME_KEY, None)
 
 
 def clean_currency(currency: str) -> str:
