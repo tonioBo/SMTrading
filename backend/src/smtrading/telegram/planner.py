@@ -1,26 +1,37 @@
 """TelegramPlanner: turns the activity rows marked `telegram='pending'` into outbox
-messages (now), digest entries (quiet hours, non-critical) or `skipped` (Telegram not
-ready). Quiet hours are evaluated when the row is planned; the sender evaluates them
-again when it sends (silent or not)."""
+messages (now), digest entries (quiet hours, non-critical) or `skipped`.
+
+- Telegram never configured (no token or no group) or disabled: `skipped`.
+- Configuration unreadable (the stored token cannot be decrypted, e.g. a new master key):
+  nothing is planned, the rows stay `pending` until the token is entered again; then they
+  are planned in id order. Non-critical rows older than STALE_AFTER are `skipped` then
+  (old news); critical rows are always sent.
+- Quiet hours are evaluated when the row is planned; the sender evaluates them again
+  when it sends (silent or not).
+- Each row is planned in its own savepoint: a row that cannot be planned is marked
+  `failed` (and logged) instead of blocking the batch forever.
+"""
 
 import asyncio
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.activity.models import Activity, ActivityLevel, TelegramState
 from smtrading.agents.models import Agent
 from smtrading.common.config import get_settings
 from smtrading.portfolios.models import Portfolio
-from smtrading.telegram.config import is_ready, load_config
+from smtrading.telegram.config import TelegramConfig, is_ready, load_config
 from smtrading.telegram.outbox import enqueue
 from smtrading.telegram.quiet import is_quiet
 from smtrading.telegram.render import Names, render_activity
 
 BATCH = 100
+STALE_AFTER = timedelta(hours=24)
+FAILED = "failed"  # a row the planner could not turn into a message (see the log)
 log = logging.getLogger(__name__)
 
 
@@ -69,18 +80,35 @@ class TelegramPlanner:
             if not rows:
                 return 0
             cfg = await load_config(session)
+            if cfg.unreadable:
+                return 0  # wait for the token to be entered again: nothing is lost
             if not is_ready(cfg):
                 for a in rows:
                     a.telegram = TelegramState.skipped
                 return len(rows)
             quiet = is_quiet(self._clock(), self._tz)
+            # ts comes from the database clock: compare it with the same clock
+            stale_before = await session.scalar(select(func.now())) - STALE_AFTER
             names = await _names(session, rows)
             for a in rows:
-                if quiet and a.level != ActivityLevel.critical:
-                    a.telegram = TelegramState.digest
-                    continue
-                msg = await enqueue(session, source="system", category="event",
-                                    level=a.level, text=render_activity(a, names, self._tz))
-                a.telegram = TelegramState.queued
-                a.outbox_id = msg.id
+                activity_id = a.id  # read before a rollback can expire the row
+                try:
+                    async with session.begin_nested():
+                        await self._plan(session, cfg, a, names, quiet, stale_before)
+                except Exception:
+                    log.exception("telegram planner: activity %s cannot be planned",
+                                  activity_id)
+                    a.telegram = FAILED
             return len(rows)
+
+    async def _plan(self, session: AsyncSession, cfg: TelegramConfig, a: Activity, names: Names,
+                    quiet: bool, stale_before: datetime) -> None:
+        if a.level != ActivityLevel.critical and a.ts is not None and a.ts < stale_before:
+            a.telegram = TelegramState.skipped
+        elif quiet and a.level != ActivityLevel.critical:
+            a.telegram = TelegramState.digest
+        else:
+            msg = await enqueue(session, source="system", category="event", level=a.level,
+                                text=render_activity(a, names, self._tz), cfg=cfg)
+            a.telegram = TelegramState.queued
+            a.outbox_id = msg.id

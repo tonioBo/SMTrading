@@ -19,14 +19,50 @@ _TOKEN_RE = re.compile(r"\d+:[A-Za-z0-9_-]+")
 log = logging.getLogger(__name__)
 
 
+# What an error concerns (TelegramError.kind):
+TRANSIENT = "transient"  # the whole chat, temporarily: no response, 5xx, 429
+CHAT = "chat"  # the whole chat, until the configuration is fixed: token, bot, group, rights
+MESSAGE = "message"  # this message only (any other error)
+
+MSG_UNREACHABLE = "Telegram non raggiungibile"
+MSG_BAD_TOKEN = "Token del bot non valido"
+MSG_CHAT_NOT_FOUND = "Gruppo non trovato: controlla l'ID e che il bot sia nel gruppo"
+MSG_NOT_MEMBER = "Il bot non è membro del gruppo o è stato rimosso"
+MSG_NO_RIGHTS = "Il bot non ha i permessi per scrivere nel gruppo"
+MSG_WAIT = "Telegram chiede di attendere"
+MSG_GENERIC = "Errore Telegram (codice {code})"
+_CHAT_MESSAGES = (MSG_BAD_TOKEN, MSG_CHAT_NOT_FOUND, MSG_NOT_MEMBER, MSG_NO_RIGHTS)
+
+
 class TelegramError(Exception):
     def __init__(self, message: str, *, status: int | None = None,
-                 retry_after: int | None = None, migrate_to_chat_id: int | None = None):
+                 retry_after: int | None = None, migrate_to_chat_id: int | None = None,
+                 kind: str = MESSAGE):
         super().__init__(message)
         self.message = message
         self.status = status
         self.retry_after = retry_after
         self.migrate_to_chat_id = migrate_to_chat_id
+        self.kind = kind
+
+    @property
+    def chat_wide(self) -> bool:
+        return self.kind != MESSAGE
+
+
+def kind_of_message(message: str | None) -> str:
+    """The kind of a stored error message (`last_error`) written from a TelegramError of
+    this module: lets a restarted sender recognise a chat-wide error."""
+    if not message:
+        return MESSAGE
+    if message.startswith(_CHAT_MESSAGES):
+        return CHAT
+    if message.startswith((MSG_UNREACHABLE, MSG_WAIT)):
+        return TRANSIENT
+    prefix = MSG_GENERIC.split("{", 1)[0]
+    if message.startswith(prefix + "5"):
+        return TRANSIENT
+    return MESSAGE
 
 
 def _int_or_none(v: Any) -> int | None:
@@ -39,7 +75,7 @@ class TelegramClient:
         newline, `#`, `/`, a control character) would change the request URL."""
         token = token.strip() if isinstance(token, str) else ""
         if not _TOKEN_RE.fullmatch(token):
-            raise TelegramError("Token del bot non valido") from None
+            raise TelegramError(MSG_BAD_TOKEN, kind=CHAT) from None
         self._token = token
         self._http = http
         self._timeout = timeout
@@ -55,7 +91,7 @@ class TelegramClient:
         except (httpx.HTTPError, httpx.InvalidURL):
             pass  # raised below, outside the handler: no __context__ holding the URL
         if resp is None:
-            raise TelegramError("Telegram non raggiungibile") from None
+            raise TelegramError(MSG_UNREACHABLE, kind=TRANSIENT) from None
         try:
             body = resp.json()
         except ValueError:
@@ -72,22 +108,29 @@ class TelegramClient:
         params = body.get("parameters") if isinstance(body.get("parameters"), dict) else {}
         retry_after = _int_or_none(params.get("retry_after"))
         migrate = _int_or_none(params.get("migrate_to_chat_id"))
+        low = description.lower()
+        kind = MESSAGE
         if migrate is not None:
             msg = f"Il gruppo è diventato un supergruppo (nuovo ID {migrate})"
-        elif code == 401:
-            msg = "Token del bot non valido"
-        elif code == 400 and "chat not found" in description.lower():
-            msg = "Gruppo non trovato: controlla l'ID e che il bot sia nel gruppo"
+        elif code in (401, 404):  # 404: Telegram's answer to an unknown bot token
+            msg, kind = MSG_BAD_TOKEN, CHAT
+        elif code == 400 and "chat not found" in low:
+            msg, kind = MSG_CHAT_NOT_FOUND, CHAT
+        elif code == 400 and "not enough rights" in low:
+            msg, kind = MSG_NO_RIGHTS, CHAT
         elif code == 403:
-            msg = "Il bot non è membro del gruppo o è stato rimosso"
+            msg, kind = MSG_NOT_MEMBER, CHAT
         elif code == 409 and method == "getUpdates":
             msg = "Il bot ha un webhook attivo: rimuovilo con deleteWebhook"
         elif code == 429:
-            msg = f"Telegram chiede di attendere {retry_after if retry_after is not None else '?'} s"
+            msg = f"{MSG_WAIT} {retry_after if retry_after is not None else '?'} s"
+            kind = TRANSIENT
         else:
-            msg = f"Errore Telegram (codice {code}): {description or 'nessuna descrizione'}"
+            msg = f"{MSG_GENERIC.format(code=code)}: {description or 'nessuna descrizione'}"
+            if code >= 500:
+                kind = TRANSIENT
         return TelegramError(msg, status=code, retry_after=retry_after,
-                             migrate_to_chat_id=migrate)
+                             migrate_to_chat_id=migrate, kind=kind)
 
     async def _call_dict(self, method: str, payload: dict[str, Any] | None = None
                          ) -> dict[str, Any]:

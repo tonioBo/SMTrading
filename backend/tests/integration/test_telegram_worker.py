@@ -1,6 +1,8 @@
 """Worker side of Telegram: the activity planner and the outbox sender (respx only: the
 real Telegram API is never called)."""
 
+import asyncio
+import contextlib
 import itertools
 import json
 import uuid
@@ -10,7 +12,7 @@ from decimal import Decimal
 import httpx
 import pytest
 import respx
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from smtrading.activity.models import Activity
@@ -21,7 +23,10 @@ from smtrading.portfolios.service import create_portfolio
 from smtrading.risk.models import AppSetting
 from smtrading.seed import run_seed
 from smtrading.telegram import config as tg_config
-from smtrading.telegram.client import API_URL
+from smtrading.telegram import outbox as outbox_mod
+from smtrading.telegram import planner as planner_mod
+from smtrading.telegram import sender as sender_mod
+from smtrading.telegram.client import API_URL, TelegramClient, TelegramError, kind_of_message
 from smtrading.telegram.config import TelegramConfig, load_config, save_config
 from smtrading.telegram.models import TelegramOutbox
 from smtrading.telegram.outbox import enqueue, resume_paused, retry_outbox
@@ -314,16 +319,18 @@ async def test_429_hold_survives_a_restart(maker, http):
     await _configure(maker)
     await _queue_texts(maker, "uno", "due")
     route = respx.post(SEND_URL).mock(side_effect=[
-        _err(429, "Too Many Requests", retry_after=60), _ok(1), _ok(2)])
+        _err(429, "Too Many Requests", retry_after=60)])
     clock = Clock(DAY)
     sender, _ = _sender(maker, http, clock)
     await sender.tick()
     restarted, _ = _sender(maker, http, clock)
+    await _queue_texts(maker, "tre")  # queued after the restart: not pushed by the hold
+    route.side_effect = [_ok(1), _ok(2), _ok(3)]
     clock.advance(10)
-    assert await restarted.tick() == 0  # "due" must not overtake "uno"
+    assert await restarted.tick() == 0  # "due"/"tre" must not overtake "uno"
     clock.advance(50)
-    await _drain(restarted, 3)
-    assert [b["text"] for b in _sent(route)] == ["uno", "uno", "due"]
+    await _drain(restarted, 4)
+    assert [b["text"] for b in _sent(route)] == ["uno", "uno", "due", "tre"]
 
 
 @respx.mock
@@ -347,7 +354,8 @@ async def test_outage_then_recovery_keeps_order(maker, http):
 async def test_ten_failures_mark_failed(maker, http):
     await _configure(maker)
     [oid] = await _queue_texts(maker, "uno")
-    route = respx.post(SEND_URL).mock(return_value=_err(500, "Internal Server Error"))
+    route = respx.post(SEND_URL).mock(
+        return_value=_err(400, "Bad Request: can't parse entities"))
     clock = Clock(DAY)
     sender, _ = _sender(maker, http, clock)
     delays = []
@@ -365,7 +373,7 @@ async def test_ten_failures_mark_failed(maker, http):
     [row] = await _outbox(maker)
     assert (row.status, row.attempts) == ("failed", MAX_ATTEMPTS)
     assert route.call_count == MAX_ATTEMPTS
-    assert row.last_error.startswith("Errore Telegram (codice 500)")
+    assert row.last_error.startswith("Errore Telegram (codice 400)")
     async with maker() as s:  # a failed message can be retried
         await retry_outbox(s, oid)
         await s.commit()
@@ -490,3 +498,195 @@ async def test_sent_without_message_id_is_not_retried(maker, http):
     assert route.call_count == 1
     [row] = await _outbox(maker)
     assert (row.status, row.telegram_message_id) == ("sent", None)
+
+
+@respx.mock
+async def test_three_hour_outage_then_recovery_none_failed(maker, http):
+    await _configure(maker)
+    await _queue_texts(maker, "uno", "due", "tre")
+    clock = Clock(DAY)
+    end = DAY + timedelta(hours=3)
+
+    def answer(request):
+        if clock() < end:
+            return httpx.Response(502, text="bad gateway")
+        return _ok()
+
+    route = respx.post(SEND_URL).mock(side_effect=answer)
+    sender, _ = _sender(maker, http, clock)
+    while clock() < end + timedelta(minutes=20):
+        await sender.tick()
+        clock.advance(30)
+    texts = [b["text"] for b in _sent(route)]
+    assert texts[-3:] == ["uno", "due", "tre"]
+    assert set(texts[:-3]) == {"uno"}  # only the head was retried during the outage
+    rows = await _outbox(maker)
+    assert [r.status for r in rows] == ["sent"] * 3
+    assert rows[0].attempts > MAX_ATTEMPTS  # counted, never failed
+    assert [r.attempts for r in rows[1:]] == [0, 0]
+
+
+@respx.mock
+@pytest.mark.parametrize("response", [
+    _err(403, "Forbidden: bot was kicked from the group chat"),
+    _err(400, "Bad Request: not enough rights to send text messages to the chat"),
+    _err(400, "Bad Request: chat not found"),
+])
+async def test_config_error_holds_everything_then_fails_head(maker, http, response):
+    await _configure(maker)
+    await _queue_texts(maker, "uno", "due")
+    route = respx.post(SEND_URL).mock(return_value=response)
+    clock = Clock(DAY)
+    sender, _ = _sender(maker, http, clock)
+    for _ in range(MAX_ATTEMPTS):
+        assert await sender.tick() == 1
+        first, second = await _outbox(maker)
+        assert second.attempts == 0  # held, not tried
+        clock.t = max(first.next_attempt_at, second.next_attempt_at)
+    first, second = await _outbox(maker)
+    assert (first.status, first.attempts) == ("failed", MAX_ATTEMPTS)
+    assert route.call_count == MAX_ATTEMPTS
+    assert {b["text"] for b in _sent(route)} == {"uno"}
+    clock.advance(-1)
+    assert await sender.tick() == 0  # the hold stays after the head failed
+    clock.advance(1)
+    route.return_value = _ok()
+    assert await sender.tick() == 1
+    assert _sent(route)[-1]["text"] == "due"
+
+
+@respx.mock
+async def test_migration_to_same_id_writes_no_audit(maker, http):
+    await _configure(maker)
+    await _queue_texts(maker, "uno")
+    route = respx.post(SEND_URL).mock(side_effect=[
+        _err(400, "Bad Request: group chat was upgraded", migrate_to_chat_id=int(CHAT)),
+        _ok(3)])
+    sender, _ = _sender(maker, http, Clock(DAY))
+    assert await sender.tick() == 1
+    assert route.call_count == 2
+    async with maker() as s:
+        audit = list(await s.scalars(select(McpAuditLog).where(
+            McpAuditLog.method == "admin:telegram.chat_migrated")))
+    assert audit == []
+
+
+@respx.mock
+async def test_unreadable_config_keeps_pending_until_token_reentered(maker, http):
+    await _configure(maker)
+    await _fill(maker)
+    async with maker() as s:
+        await s.execute(update(AppSetting).where(AppSetting.key == "telegram").values(
+            value={"token_enc": "AAAA", "chat_id": CHAT, "enabled": True}))
+        await s.commit()
+    clock = Clock(DAY)
+    planner = TelegramPlanner(maker, clock=clock, tz=TZ)
+    assert await planner.tick() == 0
+    assert [a.telegram for a in await _activity(maker)] == ["pending"]
+    await _configure(maker)  # token entered again
+    assert await planner.tick() == 1
+    assert [a.telegram for a in await _activity(maker)] == ["queued"]
+    route = respx.post(SEND_URL).mock(return_value=_ok())
+    sender, _ = _sender(maker, http, clock)
+    assert await sender.tick() == 1
+    assert _sent(route)[0]["text"].startswith("🟢 Ordine eseguito")
+
+
+async def test_stale_noncritical_skipped_critical_sent(maker):
+    await _configure(maker)
+    await _fill(maker)
+    await _kill_switch(maker)
+    async with maker() as s:
+        await s.execute(text("update activity set ts = now() - interval '25 hours'"))
+        await s.commit()
+    await _fill(maker)  # recent
+    await TelegramPlanner(maker, clock=Clock(DAY), tz=TZ).tick()
+    assert [(a.level, a.telegram) for a in await _activity(maker)] == [
+        ("executed", "skipped"), ("critical", "queued"), ("executed", "queued")]
+
+
+async def test_bad_row_does_not_poison_the_batch(maker, monkeypatch, caplog):
+    await _configure(maker)
+    await _fill(maker)
+    await _kill_switch(maker)
+    await _fill(maker)
+    real = planner_mod.render_activity
+
+    def render(a, names, tz):
+        if a.level == "critical":
+            raise RuntimeError("boom")
+        return real(a, names, tz)
+
+    monkeypatch.setattr(planner_mod, "render_activity", render)
+    assert await TelegramPlanner(maker, clock=Clock(DAY), tz=TZ).tick() == 3
+    assert [a.telegram for a in await _activity(maker)] == ["queued", "failed", "queued"]
+    assert len(await _outbox(maker)) == 2
+    assert any("cannot be planned" in r.getMessage() for r in caplog.records)
+
+
+async def test_planner_loads_config_once_per_batch(maker, monkeypatch):
+    await _configure(maker)
+    for _ in range(3):
+        await _fill(maker)
+    calls = []
+    real = outbox_mod.load_config
+
+    async def counting(session):
+        calls.append(1)
+        return await real(session)
+
+    monkeypatch.setattr(outbox_mod, "load_config", counting)
+    assert await TelegramPlanner(maker, clock=Clock(DAY), tz=TZ).tick() == 3
+    assert calls == []
+
+
+@respx.mock
+async def test_single_sender_holds_advisory_lock(maker, http):
+    await _configure(maker)
+    await _queue_texts(maker, "uno")
+    route = respx.post(SEND_URL).mock(return_value=_ok())
+    engine = maker.kw["bind"]
+    async with engine.connect() as other:
+        assert await other.scalar(text("select pg_try_advisory_lock(:k)"),
+                                  {"k": sender_mod.ADVISORY_LOCK_KEY})
+        await other.commit()
+        task = asyncio.create_task(OutboxSender(maker, http, interval_s=0.05).run())
+        try:
+            await asyncio.sleep(0.5)
+            assert not route.called  # another sender holds the lock
+            await other.execute(text("select pg_advisory_unlock(:k)"),
+                                {"k": sender_mod.ADVISORY_LOCK_KEY})
+            await other.commit()
+            for _ in range(100):
+                if route.called:
+                    break
+                await asyncio.sleep(0.05)
+            assert route.call_count == 1
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+@respx.mock
+@pytest.mark.parametrize(("response", "kind"), [
+    (httpx.ConnectError("down"), "transient"),
+    (httpx.Response(502, text="bad gateway"), "transient"),
+    (_err(429, "Too Many Requests", retry_after=3), "transient"),
+    (_err(401, "Unauthorized"), "chat"),
+    (_err(404, "Not Found"), "chat"),
+    (_err(403, "Forbidden: bot was kicked"), "chat"),
+    (_err(400, "Bad Request: chat not found"), "chat"),
+    (_err(400, "Bad Request: not enough rights to send text messages to the chat"), "chat"),
+    (_err(400, "Bad Request: can't parse entities"), "message"),
+])
+async def test_error_kinds(http, response, kind):
+    if isinstance(response, Exception):
+        respx.post(SEND_URL).mock(side_effect=response)
+    else:
+        respx.post(SEND_URL).mock(return_value=response)
+    with pytest.raises(TelegramError) as info:
+        await TelegramClient(TOKEN, http).send_message(CHAT, "x")
+    assert info.value.kind == kind
+    assert info.value.chat_wide is (kind != "message")
+    assert kind_of_message(info.value.message) == kind
