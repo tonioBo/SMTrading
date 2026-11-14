@@ -172,10 +172,94 @@ Simulazione pura di una strategia solo long su barre storiche: non tocca portafo
 
 ### Decisioni, feed delle attivita' e Telegram
 
-- `log_decision`: registra una decisione nello storico permanente (visibile nella web app): `kind` (`proposal`, `approval`, `veto`, `allocation`, `strategy`, `risk_rule`, `other`), `summary` (1-500 caratteri), `portfolio_id` facoltativo (serve `read`), `symbols` (al massimo 50), `details` (oggetto, al massimo 8 KB). Risponde `{decision_id, created_at}`; non invia messaggi Telegram.
-- `get_decisions`: le decisioni visibili all'agente, dalla piu' recente, filtrabili per `portfolio_id` (serve `read`, altrimenti `FORBIDDEN`), `agent` (nome o id), `kind`, `since`; `limit` 1-200 (default 50).
-- `get_activity_feed`: il feed delle attivita' (ordini, fill, eventi di rischio, alert, decisioni) dei portafogli dell'agente e globali: `{items, next_after_id}`, come `get_triggered_alerts`; gli elementi possono ripetersi (deduplicare per `id`); `already_sent: true` indica che SMTrading li ha gia' inviati su Telegram; `limit` 1-200.
-- `send_telegram`: invia un messaggio al gruppo Telegram (serve il permesso `notify`, altrimenti `FORBIDDEN`): `text` inviato cosi' com'e', senza formattazione, al massimo 4096 caratteri prefisso incluso; `level` `info` (nessun prefisso), `warning` (🟠) o `critical` (🔴). Al massimo 20 messaggi in 60 s (`RATE_LIMITED`, `details.retry_after_s`); con Telegram non configurato o disattivato `PROVIDER_UNAVAILABLE`. Risponde `{outbox_id, status}` (`paused` se le notifiche sono in pausa).
+- `log_decision`: registra una decisione nello storico permanente (visibile nella web app): `kind` (`proposal`, `approval`, `veto`, `allocation`, `strategy`, `risk_rule`, `other`), `summary` (1-500 caratteri), `portfolio_id` facoltativo (serve `read`), `symbols` (al massimo 50, max 32 caratteri l'uno, portati in maiuscolo e senza duplicati), `details` (oggetto, al massimo 8 KB). Risponde `{decision_id, created_at}`; non invia messaggi Telegram.
+- `get_decisions`: le decisioni visibili all'agente, dalla piu' recente, filtrabili per `portfolio_id` (serve `read`, altrimenti `FORBIDDEN`), `agent` (nome o id; un agente sconosciuto da' `[]`), `kind`, `since`; `limit` 1-200 (default 50).
+- `get_activity_feed`: il feed delle attivita' (ordini, fill, eventi di rischio, alert, decisioni) dei portafogli dell'agente e globali: `{items, next_after_id}`; `limit` 1-200. Vedi sotto il contratto del cursore.
+- `send_telegram`: invia un messaggio al gruppo Telegram (serve il permesso `notify`, altrimenti `FORBIDDEN`): `text` inviato cosi' com'e', senza formattazione; `level` `info` (nessun prefisso), `warning` (🟠) o `critical` (🔴). Limiti e errori nella sezione «Notifiche Telegram».
+
+#### Decisioni
+
+Ogni agente registra con `log_decision` ogni decisione presa in Paperclip (proposte,
+approvazioni, veti, allocazioni, strategie, regole di rischio, altro) e poi coinvolge il
+Notifier con un task o una menzione: il Notifier non fa polling. Le decisioni restano nello
+storico (web app, *Notifiche*) e compaiono nel feed e nei riepiloghi. `portfolio_id`
+facoltativo: senza, la decisione e' globale e visibile a tutti gli agenti; con, serve il
+permesso `read` su quel portafoglio. Violazioni dei limiti (tipo, lunghezza, simboli,
+dimensione di `details`) danno `INVALID_ORDER` con `details.field`.
+
+#### Feed delle attivita'
+
+Tipi: `order.accepted`, `order.filled`, `order.partially_filled`, `order.rejected`,
+`order.canceled`, `order.expired`, `kill_switch`, `portfolio.reset`, `portfolio.cash`, gli
+avvisi di rischio e del broker (`liquidation`, `daily_loss`, `margin_warning`,
+`broker.order_unknown`, `broker.liquidation_waiting`, `broker.fill_price_missing`,
+`broker.reconciliation_diff`, `order.replace_failed`), `price_alert` e `decision.<kind>`.
+Livelli: `critical`, `warning`, `executed`, `info`. Ogni elemento:
+`{id, ts, type, level, agent, agent_id, portfolio, portfolio_id, summary, data, already_sent}`.
+
+Contratto del cursore (come «Polling degli alert»):
+
+1. Prima chiamata senza `since`/`after_id`: gli ultimi `limit` elementi, dal piu' recente, e
+   `next_after_id` = id del piu' recente tra quelli assestati (`null` se non ce ne sono).
+2. Chiamate successive con `after_id = next_after_id`: solo gli elementi piu' nuovi, in
+   ordine crescente di id; `next_after_id` e' l'ultimo id restituito oppure lo stesso cursore.
+   Con `since` si parte dal piu' vecchio dopo quella data. Un `after_id` sconosciuto da'
+   `INVALID_ORDER` (`details.field = after_id`).
+3. **Finestra di assestamento di 3 s**: un elemento e' visibile (e il cursore lo supera)
+   solo quando ha almeno 3 secondi, cosi' una transazione ancora aperta non viene saltata.
+   Un elemento appena creato compare quindi alla chiamata successiva.
+4. Se una pagina contiene `limit` elementi richiamare subito. Gli elementi possono ripetersi
+   (per esempio alla ripartenza da `since`): **deduplicare per `id`**.
+5. `already_sent: true`: SMTrading ha gia' inviato (o sta per inviare, o mettera' nel
+   riepilogo della notte) quell'evento su Telegram. **SMTrading lo invia gia' da se': non
+   ripeterlo.**
+
+#### Notifiche Telegram
+
+SMTrading invia da se', senza Paperclip: 🔴 critico (kill switch attivato, liquidazione,
+perdita giornaliera, ordine sconosciuto al broker), 🟠 avviso (ordine rifiutato, kill
+switch disattivato, margine, problemi del broker, differenze di riconciliazione), 🟢 ordine
+eseguito. Dalle 23:00 alle 07:00 solo i critici arrivano (senza suono); il resto e' nel
+riepilogo delle 07:00. Riepiloghi automatici alle 18:00 e il venerdi' alle 18:30 con la
+classifica dei portafogli. Configurazione e interruzioni: README, «Notifiche Telegram».
+
+Limiti di `send_telegram`:
+
+- serve il permesso `notify` dell'agente (si concede dalla scheda dell'agente o con
+  `python -m smtrading.cli agent notify NOME on`); senza: `FORBIDDEN`;
+- al massimo 20 messaggi in 60 secondi per agente: oltre `RATE_LIMITED` con
+  `details.retry_after_s`;
+- la lunghezza e' contata in unita' UTF-16 (un'emoji vale 2) e comprende il prefisso del
+  livello: massimo 4096; il testo (senza spazi iniziali e finali, caratteri di controllo
+  tolti) vuoto o troppo lungo da' `INVALID_ORDER` (`details.field`);
+- Telegram non configurato o disattivato: `PROVIDER_UNAVAILABLE`;
+- notifiche in pausa: il messaggio e' accettato e resta in coda (`status: "paused"`),
+  partira' alla ripresa; altrimenti `status: "pending"` e risponde `{outbox_id, status}`.
+
+#### Prompt suggerito per il Notifier
+
+Da incollare nelle istruzioni dell'agente Notifier in Paperclip (permesso `notify`,
+accesso `read` ai portafogli):
+
+```text
+Sei il Notifier di SMTrading. Lavori solo su richiesta, senza polling: ti attivi quando un
+altro agente ti assegna un task o ti menziona dopo aver registrato una decisione con
+log_decision.
+
+Per ogni richiesta:
+1. Leggi get_activity_feed a partire dal tuo ultimo cursore (after_id) e get_decisions per
+   le decisioni recenti; deduplica per id e aggiorna il cursore.
+2. Non ripetere gli elementi con already_sent: true: SMTrading li ha gia' inviati da solo.
+3. Scrivi messaggi brevi in italiano: al massimo 10 righe, testo semplice senza markup,
+   numeri con la virgola decimale. Raggruppa piu' decisioni in un solo messaggio.
+4. Invia con send_telegram. Usa level=critical solo per rischi reali, warning per avvisi
+   che richiedono attenzione, info per il resto.
+5. I riepiloghi delle 18:00 e del venerdi' alle 18:30 li invia SMTrading da solo: se vuoi
+   puoi aggiungere dopo un breve commento alle decisioni del giorno, mai una copia del
+   riepilogo.
+6. Rispetta il limite di 20 messaggi al minuto (con RATE_LIMITED attendi retry_after_s) e
+   non inviare mai token, ID interni o dati personali.
+```
 
 ### Polling degli alert
 

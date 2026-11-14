@@ -150,6 +150,71 @@ avvenuti mentre era archiviato (se il calendario non è leggibile il ripristino 
 riprova più tardi). Non si possono inserire o modificare ordini su un portafoglio
 archiviato.
 
+### Notifiche Telegram (pagina *Notifiche*)
+
+SMTrading scrive da solo in un gruppo Telegram, senza passare da Paperclip.
+
+**Collegamento.**
+
+1. Su Telegram apri @BotFather, `/newbot`, scegli nome e username e copia il token.
+2. Crea un gruppo, aggiungi il bot e scrivi un messaggio nel gruppo (senza almeno un
+   messaggio recente il bot non lo vede).
+3. *Notifiche → Collegamento*: incolla il token (resta cifrato e non viene mai mostrato:
+   solo `••••` e `@nome_bot`), poi **Rileva gruppi** elenca i gruppi in cui il bot ha
+   ricevuto messaggi; sceglilo (o inserisci l'ID a mano). Ogni modifica è verificata con
+   Telegram (`getMe`/`getChat`) e salvata solo se valida.
+4. Attiva le notifiche e premi **Invia messaggio di prova**.
+
+Da riga di comando (il token si legge solo da stdin, mai dagli argomenti, e non viene stampato):
+
+```bash
+docker compose exec -T api python -m smtrading.cli telegram set --chat-id <id> --token-stdin --enable < token.txt
+docker compose exec api python -m smtrading.cli agent notify NOME on   # oppure off
+```
+
+`telegram set` accetta anche `--no-verify`; senza `--token-stdin` cambia solo il gruppo.
+`agent notify` concede o toglie all'agente (di solito il Notifier) il permesso di usare
+`send_telegram` (vedi `docs/paperclip-mcp.md`); si cambia anche dalla scheda dell'agente.
+
+**Cosa invia SMTrading direttamente** (messaggi in testo semplice):
+
+| Livello | Eventi |
+|---|---|
+| 🔴 critico | kill switch attivato, liquidazione, perdita giornaliera, ordine sconosciuto al broker |
+| 🟠 avviso | ordine rifiutato, kill switch disattivato, avviso di margine, liquidazione in attesa del broker, prezzo di esecuzione mancante, modifica ordine non riuscita, differenze di riconciliazione broker |
+| 🟢 eseguito | ordine eseguito |
+
+Il resto (ordini accettati o annullati, alert di prezzo, decisioni) compare solo nel feed
+delle attività e nei riepiloghi.
+
+**Ore silenziose e riepiloghi** (fuso orario del server):
+
+- dalle 23:00 alle 07:00 i messaggi critici arrivano comunque, senza suono; gli altri sono
+  raccolti e inviati alle **07:00** in un unico *Riepilogo della notte*;
+- **18:00** riepilogo giornaliero e **venerdì 18:30** riepilogo settimanale, con la
+  classifica dei portafogli (rendimento, drawdown massimo, numero di operazioni) e le
+  decisioni del periodo. Sono costruiti da SMTrading e arrivano anche se Paperclip è fermo;
+  un riepilogo mancato per un riavvio è inviato al ritorno del worker, ma solo prima delle
+  23:00 dello stesso giorno.
+
+**Pausa, coda e ritentativi.** Ogni messaggio passa dalla coda `outbox` (*Notifiche →
+Coda*): `pending`, `sent`, `paused`, `failed`. *Metti in pausa* ferma gli invii (i messaggi
+restano in coda e all'uscita dalla pausa partono in ordine); la pausa non blocca il
+messaggio di prova. Un messaggio `failed` si rimanda con *Riprova*.
+
+**Interruzioni di Telegram.** Gli invii sono uno alla volta, in ordine, a distanza di
+almeno 3 secondi. Errori transitori del servizio (rete, 5xx, 429) non fanno mai fallire
+un messaggio: si riprova con attesa crescente (5, 10, 20 … al massimo 900 s; con 429 si
+attende `retry_after`) e, tornato Telegram, i messaggi arrivano nell'ordine originale.
+Se il token salvato non è più leggibile (per esempio con una nuova `SMT_MASTER_KEY`) gli
+eventi restano in attesa finché non lo reinserisci; gli eventi non critici più vecchi di
+24 ore sono scartati, quelli critici partono comunque. Errori che dipendono dalla
+configurazione (token non valido, bot rimosso, gruppo non trovato) bloccano la coda e,
+dopo 10 tentativi, la testa passa a `failed` finché non si corregge e si preme *Riprova*;
+un errore specifico di un messaggio (es. 400) lo fa fallire da solo senza fermare gli altri.
+Se il gruppo diventa supergruppo l'ID viene aggiornato da solo. Con Telegram non
+configurato o disattivato planner e invio restano inattivi.
+
 ### Agenti e Paperclip
 
 Token e permessi si gestiscono in *Agenti* (il token è mostrato una sola volta; *Rigenera
