@@ -156,6 +156,48 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
 - `list_alerts`: gli alert dell'agente, filtrabili per stato (`active`/`triggered`).
 - `delete_alert`: elimina un alert dell'agente.
 
+### 🔴 Portafogli reali: un portafoglio `reale` usa denaro vero
+
+*Questa sezione e' per gli operatori umani: gli agenti hanno le loro istruzioni (pagina
+«Istruzioni agenti», `docs/paperclip-agents`).* Al momento **non esiste nessun
+collegamento live**: tutto quanto segue e' pronto ma non attivato (vedi «Denaro reale» nel
+README).
+
+- Un portafoglio collegato a un conto reale (Alpaca live, Trading 212 Invest) con il denaro
+  reale attivo invia gli ordini degli agenti al **conto vero**, senza alcuna conferma per
+  ordine, entro i limiti del portafoglio. Ogni ordine reale produce una notifica Telegram.
+  L'esecuzione e' asincrona come per i portafogli paper (`place_order` risponde con
+  l'ordine aperto; fill o rifiuto arrivano dopo, da controllare con `get_order`).
+- Stato del collegamento, `live_state`: `configured` (sospeso, nessun invio), `dry_run`
+  (prova a secco: gli ordini passano da rischio e invio ma si fermano prima del broker),
+  `armed` (denaro reale). In `list_portfolios`/`get_portfolio`:
+  - con `mcp_hide_mode` attivo (default) l'agente vede `mode: "reale"` e
+    `live_state: "armed"` **solo** per un collegamento attivo; per `dry_run` e
+    `configured` i due campi sono omessi e il portafoglio appare come qualsiasi altro;
+  - con `mcp_hide_mode` spento vede sempre `mode` (`reale` solo se `armed`, altrimenti
+    `paper`) e `live_state`.
+- **Prova a secco e modalita' nascosta:** con `mcp_hide_mode` attivo gli agenti non vedono
+  mai `LIVE_DRY_RUN` ne' gli stati `dry_run`/`configured`: un ordine fermato dalla prova a
+  secco appare all'agente come un normale rifiuto del broker (`INVALID_ORDER`). Il portale
+  (ordine rifiutato con il payload salvato) e Telegram mostrano invece la prova a secco.
+  Con `mcp_hide_mode` spento l'agente riceve `LIVE_DRY_RUN`.
+- **Nessun metodo MCP attiva, collega, scollega o disattiva conti reali**, ne' toglie un
+  reduce-only automatico del denaro reale o chiude tutte le posizioni reali: lo fa solo
+  l'admin dal portale (attivazione, collegamento, ripresa e chiusura con TOTP) o, per la
+  sola disattivazione, con `smtrading live disarm`. I token degli agenti non hanno alcun
+  permesso in piu' per i portafogli reali.
+- **Il kill switch blocca anche le chiusure**: su un portafoglio reale ogni invio e'
+  rifiutato con `KILL_SWITCH_ACTIVE`, compresi `close_position`, `close_all_positions` e gli
+  ordini reduce-only; passano solo le cancellazioni (`cancel_order`, `cancel_all_orders`) e
+  gli ordini di «Chiudi tutte le posizioni reali» dell'admin.
+- Controlli in piu' prima dell'invio: niente vendite allo scoperto (`SHORT_NOT_ALLOWED`);
+  tetto di liquidita' (`LIVE_CASH_LIMIT`, vedi sotto); fusibile di frequenza (al massimo
+  `max_live_orders_per_hour` ordini inviati per portafoglio in un'ora, default 30): superato
+  → `RISK_LIMIT_EXCEEDED` e il portafoglio passa in reduce-only.
+- Un'anomalia della sorveglianza (conto cambiato, differenze di riconciliazione, esito
+  sconosciuto di un ordine, fusibile) mette il portafoglio in reduce-only: l'agente riceve
+  `REDUCE_ONLY` sulle aperture finche' l'admin non riprende con il TOTP.
+
 ### Strumenti: catalogo e aggiunta automatica
 
 Il catalogo contiene circa 400 strumenti verificati: azioni ed ETF USA (Nasdaq-100, S&P 100, principali ETF), Europa (FTSE MIB `.MI`, DAX `.DE`, CAC 40 `.PA`, ETF UCITS su Xetra in EUR), le principali crypto in USD (`BTC-USD`, ...) e le coppie forex maggiori e incrociate (`EURUSD`, ...). Mercati: `NASDAQ`, `NYSE`, `MTA`, `XETRA`, `EURONEXT_PARIS`, `CRYPTO`, `FX`.
@@ -324,6 +366,14 @@ Un errore e' restituito con `isError: true` e un testo JSON
 - `FORBIDDEN`: token non valido, portafoglio non assegnato o permesso insufficiente (`notify`, `halt`: `details.needed`).
 - `RATE_LIMITED`: troppe richieste.
 - `PROVIDER_UNAVAILABLE`: dati di mercato non disponibili.
+- `LIVE_NOT_ARMED`: portafoglio reale con il denaro reale non attivo (collegamento
+  disattivato o sospeso, anche tra il controllo e l'invio): l'ordine non e' stato inviato.
+- `LIVE_DRY_RUN`: ordine fermato dalla prova a secco, non inviato al broker. Solo con
+  `mcp_hide_mode` spento: con la modalita' nascosta (default) l'agente vede un normale
+  rifiuto del broker (`INVALID_ORDER`).
+- `LIVE_CASH_LIMIT`: acquisto su un portafoglio reale oltre il tetto di liquidita': stima +
+  commissioni + margine del 2% devono stare entro la liquidita' del portafoglio e quella
+  disponibile al broker (convertita nella valuta del portafoglio), meno gli acquisti aperti.
 - `INTERNAL`: errore interno inatteso. Non fa parte dei codici della spec: il messaggio e'
   sempre generico (`"internal error"`), il dettaglio e' solo nei log del server e la chiamata
   e' registrata nell'audit con esito `INTERNAL`. Ripetere piu' tardi o segnalarlo.

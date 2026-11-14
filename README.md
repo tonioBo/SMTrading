@@ -91,8 +91,9 @@ ordini sono rifiutati con `STALE_QUOTE`.
 ### Broker paper/demo (pagina *Broker*)
 
 Un portafoglio può replicare gli ordini su un conto **paper/demo** (Alpaca Paper,
-Trading 212 Demo). Gli adattatori accettano solo gli indirizzi paper/demo: non esiste
-alcun collegamento a conti reali.
+Trading 212 Demo). Gli adattatori paper/demo accettano solo gli indirizzi paper/demo e
+rifiutano quelli di produzione; i conti con denaro vero hanno una procedura separata
+(sezione *Denaro reale* qui sotto).
 
 1. *Broker → Nuovo collegamento*: scegli il tipo e inserisci le chiavi del conto
    paper/demo; *Verifica* controlla la connessione.
@@ -122,6 +123,124 @@ Funzionamento:
   prima); gli annullamenti richiesti vengono mantenuti.
 - *Riconciliazione* (*Riconcilia ora*, e periodica): confronta le posizioni del broker con
   le nostre e registra le differenze; non corregge nulla.
+
+### Denaro reale (pagina *Broker*, sezione «Denaro reale»)
+
+> **Stato: costruito, non attivato.** Il codice per operare con denaro vero su Alpaca
+> (live) e Trading 212 (Invest) è pronto e testato solo contro un broker finto; **non
+> esiste nessun collegamento live** e nessuna chiave reale è salvata. L'attivazione è
+> un'azione futura dell'utente, con la checklist qui sotto.
+
+Un portafoglio collegato a un conto reale mostra il badge rosso **🔴 REALE** (🔴 REALE ·
+PROVA durante la prova a secco, 🔴 REALE · SOSPESO quando il collegamento è disattivato) e,
+finché un collegamento è attivo, tutte le pagine hanno la barra rossa «Denaro reale attivo
+su N portafogli». Gli ordini reali sono **autonomi** (nessuna approvazione per ordine): le
+difese sono i limiti del profilo di rischio, il tetto di liquidità, il fusibile di
+frequenza (`max_live_orders_per_hour`, default 30 ordini/ora per portafoglio, poi
+reduce-only), il kill switch e una notifica Telegram per ogni ordine reale (sempre in coda,
+mai nel riepilogo, silenziosa di notte).
+
+Stati di un collegamento: `configured` (chiavi salvate, nessun invio) → `dry_run` (prova a
+secco: gli ordini passano da rischio e invio ma si fermano prima del broker, le letture
+sono vere) → `armed` (denaro reale). Chiavi sostituite o conto diverso al test → di nuovo
+`configured` (serve un nuovo TOTP).
+
+#### Cosa deve fare l'utente al momento dell'attivazione
+
+1. **Aprire il conto.** Alpaca: domanda live da non residente (W-8BEN, KYC; verificare che
+   l'Italia sia accettata ed eventualmente la cripto). Trading 212: conto Invest. Serve un
+   conto **dedicato** a SMTrading, senza posizioni né ordini aperti (test, attivazione e
+   collegamento rifiutano un conto non vuoto); per Alpaca un conto *cash* (niente margine).
+2. **Versare** l'importo desiderato dall'app del broker.
+3. **Creare le chiavi API live.** Trading 212: permessi minimi (dati del conto, metadati,
+   portafoglio, ordini lettura ed esecuzione, storico; **niente «Pies - Write»**) e, se
+   possibile, la restrizione all'IP pubblico del server. Alpaca: le chiavi live, distinte
+   da quelle paper.
+4. In SMTrading: attivare il **TOTP** dell'admin (*Impostazioni*) e verificare che
+   **Telegram** sia attivo, inviando un messaggio di prova (l'attivazione richiede una prova
+   riuscita nelle ultime 24 ore).
+5. **Broker → Denaro reale → Nuovo collegamento reale**: incollare le chiavi e lanciare il
+   **test in sola lettura** (valido 15 minuti). Controllare conto (mascherato), valuta,
+   liquidità, zero posizioni e zero ordini aperti.
+6. Creare o scegliere un **portafoglio vuoto** con: profilo di rischio con limite per
+   ordine e perdita giornaliera massima, short non consentito; leva 1; **valuta uguale a
+   quella del conto** (anche per Alpaca, in USD); deposito nel ledger pari al budget e non
+   superiore alla liquidità del broker.
+7. Facoltativo ma consigliato: la **prova a secco** per qualche giorno (collegando il
+   portafoglio con il TOTP), per vedere su Telegram cosa avrebbero fatto gli agenti.
+8. **«Attiva denaro reale»**: leggere l'avviso, spuntare le tre conferme, scrivere il nome
+   del collegamento e inserire il TOTP. Poi **collegare il portafoglio** (TOTP), se non è
+   già collegato.
+9. **Primo collaudo** con un budget piccolo: un acquisto minimo a mercato in orario
+   regolare. Verificare il messaggio Telegram, l'eseguito nel ledger, la posizione al
+   broker e una riconciliazione «ok».
+10. Tenere a mente i comandi di emergenza (sotto).
+
+#### Comandi di emergenza
+
+- **«Disattiva denaro reale»**: un clic, senza conferma né TOTP, in cima alla scheda del
+  collegamento (dalla barra rossa: *Disattiva*). Il collegamento torna `configured` (da quel
+  momento il cancello rifiuta ogni nuovo invio), gli ordini mai inviati sono rifiutati e
+  per quelli già al broker parte la richiesta di annullamento. Se la sistemazione
+  degli ordini non riesce, la scheda lo dice e il pulsante diventa «Ripeti disattivazione /
+  sistema ordini».
+- **Kill switch** (intestazione): sui portafogli reali blocca **ogni** invio, anche le
+  chiusure; passano solo le cancellazioni e gli ordini di «Chiudi tutte le posizioni reali».
+- **Da riga di comando**, anche senza interfaccia web:
+  `docker compose exec -T api smtrading live disarm "<nome collegamento>" --reason "<motivo>"`
+  (nessun TOTP); `docker compose exec -T api smtrading live status` elenca i collegamenti.
+- **«Chiudi tutte le posizioni reali»** (dettaglio del portafoglio, TOTP): ordini a mercato
+  reduce-only, ammessi anche con il kill switch acceso.
+- L'**app del broker** resta sempre l'ultima risorsa.
+
+#### Sorveglianza e reduce-only automatico
+
+Il worker riconcilia posizioni e liquidità ogni 60 s e dopo ogni eseguito (non corregge mai
+nulla), controlla l'impronta del conto e la salute del collegamento. Conto cambiato dietro
+le stesse chiavi (il collegamento torna anche `configured`), differenze di posizioni o
+liquidità confermate da due passaggi consecutivi, conto a margine, esito sconosciuto di un
+ordine e fusibile portano il portafoglio in **reduce-only** con un avviso 🔴; broker
+irraggiungibile o credenziali rifiutate danno un avviso 🔴. Un reduce-only
+con motivo `live_*` si toglie solo con «Ho verificato, riprendi» (TOTP): né l'azzeramento
+di fine giornata né la modifica dello stato del portafoglio lo tolgono.
+
+#### Registro denaro reale
+
+La pagina *Registro denaro reale* (`/registro-denaro-reale`, esportabile in CSV) elenca ogni
+azione sui collegamenti reali (chiavi salvate, test, prova a secco, attivazione,
+disattivazione, collegamento, ripresa, chiusura). La tabella `live_audit` è **append-only**
+grazie a un trigger del database che rifiuta `UPDATE`, `DELETE` e `TRUNCATE`. Limiti: il
+trigger non protegge da chi ha i diritti di proprietario della tabella o di superutente
+PostgreSQL (può disattivare o eliminare il trigger, impostare
+`session_replication_role = replica`, eliminare la tabella o fare il downgrade della
+migrazione), né da un ripristino di un backup più vecchio; non impedisce l'inserimento di
+righe nuove da parte di chi ha accesso al database. È una protezione contro errori e
+codice applicativo, non contro chi controlla il server.
+
+#### Limiti noti
+
+- **Conferma degli ordini reali dall'interfaccia:** il componente `LiveOrderConfirm`
+  («Ordine con denaro reale», un clic) esiste ma non è collegato a nulla: il portale non ha
+  ancora un modulo per inserire ordini a mano; oggi gli ordini reali arrivano solo dagli
+  agenti (e da «Chiudi tutte le posizioni reali»).
+- **Prezzo di riserva del tetto di liquidità:** senza quotazione si usa l'ultimo eseguito
+  del portafoglio sullo stesso simbolo (×1,02) se non è più vecchio di «un giorno di
+  borsa»: 24 ore, 72 ore di sabato, domenica e lunedì (UTC). La regola **non conosce le
+  festività**: dopo un giorno festivo l'eseguito può risultare scaduto e l'ordine viene
+  rifiutato finché non c'è una quotazione.
+- **Broker finto solo per i test:** l'impostazione `SMT_LIVE_FAKE_BROKER` (spenta di
+  default) sostituisce i broker reali con un broker in memoria; la usa solo lo stack e2e
+  (`scripts/e2e.sh`). Quando è accesa, API e worker scrivono all'avvio un avviso nei log:
+  non va mai attivata nello stack principale. Il seed e2e
+  (`python -m smtrading.devtools.live_e2e_seed`) si rifiuta di partire se è spenta.
+- Trailing stop simulati (dipendono dal worker), dividendi e corporate action reali non
+  importati (differenze di liquidità → reduce-only), API Trading 212 in beta: vedi
+  «Rischi aperti» nello spec `docs/superpowers/specs/2026-11-14-real-trading-design.md`.
+
+**Nota fiscale:** con Alpaca e Trading 212 si applica di norma il regime dichiarativo (quadri
+RT, RM, RW): SMTrading conserva lo storico ma non calcola imposte. Vedi la «Nota fiscale»
+dello spec `docs/superpowers/specs/2026-11-14-real-trading-design.md` e verificare con un
+commercialista.
 
 ### Watchlist, alert e backtest
 
@@ -275,4 +394,7 @@ l'immagine web usa l'ora della build).
 - Web: `cd web && npm test -- --run && npm run lint && npm run build`
 - End-to-end: `bash scripts/e2e.sh` avvia uno stack separato (progetto
   `smtrading-e2e`, con volumi, rete e credenziali proprie, web su `127.0.0.1:3190`), esegue
-  Playwright e lo elimina alla fine; lo stack principale non viene toccato.
+  Playwright e lo elimina alla fine; lo stack principale non viene toccato. Solo quello
+  stack gira con `SMT_LIVE_FAKE_BROKER=1`: dopo le altre spec lo script esegue il seed e2e
+  del denaro reale e `web/e2e/live.spec.ts` (procedura completa contro il broker finto,
+  chiavi «canarino», TOTP di test generato a ogni esecuzione).

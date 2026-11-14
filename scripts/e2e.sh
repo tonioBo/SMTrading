@@ -4,6 +4,11 @@
 # admin e2e@example.com with a random 20-character password, passed to Playwright).
 # The stack is torn down with its volumes at the end, whatever happens. The main
 # `smtrading` stack (and any other container) is never touched.
+#
+# «Denaro reale»: only this stack runs with SMT_LIVE_FAKE_BROKER=1 (live adapters talk to
+# the in-memory FakeLiveBroker, the live gate stays on). Playwright runs twice: first every
+# spec but `@live`, then `python -m smtrading.devtools.live_e2e_seed` (admin TOTP with a
+# throwaway secret, Telegram «ready», an empty EUR portfolio) and the `@live` spec.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -22,10 +27,10 @@ unquote() {
   printf '%s' "$v"
 }
 
-random() { # $1 characters from [A-Za-z0-9]
-  local out=""
+random() { # $1 characters from [A-Za-z0-9] (or from the set $2)
+  local out="" set="${2:-A-Za-z0-9}"
   while [ ${#out} -lt "$1" ]; do
-    out+="$(head -c 64 /dev/urandom | tr -dc 'A-Za-z0-9')"
+    out+="$(head -c 64 /dev/urandom | tr -dc "$set")"
   done
   printf '%s' "${out:0:$1}"
 }
@@ -41,6 +46,8 @@ fi
 
 tmpdir="$(mktemp -d)"
 export SMT_E2E_ENV_FILE="$tmpdir/.env.e2e"
+# Playwright's /work (node_modules installed once for both runs)
+PW_VOLUME="smtrading-e2e-pw-work-$$"
 compose() {
   docker compose -p "$PROJECT" --env-file "$SMT_E2E_ENV_FILE" \
     -f docker-compose.yml -f docker-compose.e2e.yml "$@"
@@ -49,6 +56,7 @@ cleanup() {
   local code=$?
   echo "smantello lo stack e2e..."
   compose down -v --remove-orphans >/dev/null 2>&1 || true
+  docker volume rm -f "$PW_VOLUME" >/dev/null 2>&1 || true
   rm -rf "$tmpdir"
   exit "$code"
 }
@@ -57,6 +65,8 @@ trap 'exit 130' INT TERM
 
 SMT_ADMIN_EMAIL="e2e@example.com"
 SMT_ADMIN_PASSWORD="$(random 20)"
+# throwaway TOTP secret for the live seed and the @live spec (base32)
+SMT_E2E_TOTP_SECRET="$(random 32 'A-Z2-7')"
 umask 077
 cat > "$SMT_E2E_ENV_FILE" <<ENV
 SMT_MASTER_KEY=$(random 48)
@@ -64,8 +74,9 @@ SMT_ADMIN_EMAIL=$SMT_ADMIN_EMAIL
 SMT_ADMIN_PASSWORD=$SMT_ADMIN_PASSWORD
 POSTGRES_PASSWORD=$(random 32)
 SMT_TZ=Europe/Rome
+SMT_LIVE_FAKE_BROKER=1
 ENV
-export SMT_ADMIN_EMAIL SMT_ADMIN_PASSWORD
+export SMT_ADMIN_EMAIL SMT_ADMIN_PASSWORD SMT_E2E_TOTP_SECRET
 
 compose up -d --build --quiet-pull
 
@@ -87,13 +98,26 @@ done
 [ "$ready" = 1 ] || { echo "stack e2e non pronto" >&2; compose logs --tail 50 >&2; exit 1; }
 
 # On the e2e network against the web container's local entry (web:8080). Specs are
-# mounted read-only; the pinned @playwright/test is installed in the container's /work.
-docker run --rm --network "$NETWORK" --ipc=host \
-  -e BASE_URL=http://web:8080 -e SMT_ADMIN_EMAIL -e SMT_ADMIN_PASSWORD -e PW_VERSION="$PW_VERSION" \
-  -v "$PWD/web/e2e:/spec/e2e:ro" -v "$PWD/web/playwright.config.ts:/spec/playwright.config.ts:ro" \
-  "$IMAGE" bash -c '
-    set -e
-    mkdir -p /work && cd /work && cp -r /spec/e2e /spec/playwright.config.ts .
-    npm init -y >/dev/null && npm i --no-audit --no-fund --silent "@playwright/test@${PW_VERSION}"
-    npx playwright test
-  '
+# mounted read-only; the pinned @playwright/test is installed once in the volume's /work.
+playwright() { # $1: arguments of `npx playwright test`; the rest: extra `docker run` options
+  docker run --rm --network "$NETWORK" --ipc=host \
+    -e BASE_URL=http://web:8080 -e SMT_ADMIN_EMAIL -e SMT_ADMIN_PASSWORD -e PW_VERSION="$PW_VERSION" \
+    "${@:2}" \
+    -v "$PWD/web/e2e:/spec/e2e:ro" -v "$PWD/web/playwright.config.ts:/spec/playwright.config.ts:ro" \
+    -v "$PW_VOLUME:/work" \
+    "$IMAGE" bash -c '
+      set -e
+      cd /work && rm -rf e2e playwright.config.ts && cp -r /spec/e2e /spec/playwright.config.ts .
+      if [ ! -d node_modules/@playwright/test ]; then
+        npm init -y >/dev/null && npm i --no-audit --no-fund --silent "@playwright/test@${PW_VERSION}"
+      fi
+      npx playwright test '"$1"'
+    '
+}
+
+playwright "--grep-invert @live"
+
+echo "seed e2e del denaro reale (FakeLiveBroker)..."
+compose exec -T -e SMT_E2E_TOTP_SECRET api python -m smtrading.devtools.live_e2e_seed
+
+playwright "--grep @live" -e SMT_E2E_TOTP_SECRET
