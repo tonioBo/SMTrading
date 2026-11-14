@@ -542,13 +542,15 @@ async def test_feed_visibility(db_session, seeded):
 
 async def test_feed_already_sent_flag(db_session):
     p, agent = await _feed_setup(db_session)
-    for amount in (1, 2, 3, 4):
+    states = ("pending", "queued", "digest", "skipped", "failed", None)
+    for amount in range(1, len(states) + 1):
         _deposit(db_session, p, amount)
     await _settle(db_session)
     rows = await _rows(db_session, portfolio_id=p.id)
-    for row, state in zip(rows, ("pending", "queued", "digest", None), strict=True):
+    for row, state in zip(rows, states, strict=True):
         row.telegram = state
     await db_session.flush()
     items, _ = await list_feed(db_session, agent.id, after_id=None, since=None, limit=10)
     flags = {i["id"]: i["already_sent"] for i in items}
-    assert [flags[r.id] for r in rows] == [False, True, True, False]
+    # direct events are SMTrading's job (sent, queued or still to plan): never repeat them
+    assert [flags[r.id] for r in rows] == [True, True, True, False, False, False]

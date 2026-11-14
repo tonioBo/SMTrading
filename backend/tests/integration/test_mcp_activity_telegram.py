@@ -161,11 +161,14 @@ async def test_feed_via_mcp_pages_like_alerts(env):
 async def test_feed_already_sent_for_fill(env):
     [sent] = await _add_activities(env, 1, type="order.filled", telegram="queued")
     [other] = await _add_activities(env, 1, type="order.filled", telegram="skipped")
+    # no planner run yet (e.g. the worker is down): SMTrading will still send it
+    [unplanned] = await _add_activities(env, 1, type="order.filled", telegram="pending")
     err, res = await env["call"]("get_activity_feed", {"after_id": sent - 1})
     assert not err, res
     by_id = {i["id"]: i for i in res["items"]}
     assert by_id[sent]["already_sent"] is True
     assert by_id[other]["already_sent"] is False
+    assert by_id[unplanned]["already_sent"] is True
 
 
 # --- send_telegram --------------------------------------------------------------------

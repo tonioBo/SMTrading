@@ -32,6 +32,7 @@ class TelegramState(enum.StrEnum):
     queued = "queued"
     digest = "digest"
     skipped = "skipped"
+    failed = "failed"  # the planner could not turn the row into a message (see the log)
 
 
 class DecisionKind(enum.StrEnum):

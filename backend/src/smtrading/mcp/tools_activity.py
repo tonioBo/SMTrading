@@ -133,7 +133,8 @@ def register(mcp: MCPServer) -> None:
         """SMTrading's activity feed (orders, fills, risk events, alerts, decisions) for
         the agent's portfolios and the global events: {items: [{id, ts, type, level, agent,
         agent_id, portfolio, portfolio_id, summary, data, already_sent}], next_after_id}.
-        already_sent: SMTrading already sent it to Telegram itself (do not repeat it).
+        already_sent: SMTrading sends it to Telegram itself (sent, queued, in the night
+        digest or about to be planned): do not repeat it.
         Without after_id/since: the newest, newest first. With after_id (pass the previous
         next_after_id) and/or since (ISO 8601): later items, oldest first. Items may come
         twice: dedupe by id. limit: 1-200 (default 100)."""

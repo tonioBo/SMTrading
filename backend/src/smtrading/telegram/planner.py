@@ -31,7 +31,6 @@ from smtrading.telegram.render import Names, render_activity
 
 BATCH = 100
 STALE_AFTER = timedelta(hours=24)
-FAILED = "failed"  # a row the planner could not turn into a message (see the log)
 log = logging.getLogger(__name__)
 
 
@@ -98,7 +97,7 @@ class TelegramPlanner:
                 except Exception:
                     log.exception("telegram planner: activity %s cannot be planned",
                                   activity_id)
-                    a.telegram = FAILED
+                    a.telegram = TelegramState.failed
             return len(rows)
 
     async def _plan(self, session: AsyncSession, cfg: TelegramConfig, a: Activity, names: Names,

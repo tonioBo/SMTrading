@@ -45,7 +45,13 @@ MAX_SYMBOL_LEN = 32
 MAX_DETAILS_BYTES = 8192
 MAX_TYPE = 64
 MAX_LEVEL = 16
-_SENT = (TelegramState.queued.value, TelegramState.digest.value)
+# direct events (telegram not NULL) are SMTrading's job: sent, queued, in the night digest or
+# still to plan. Only the ones it will never send (skipped, failed) may be repeated.
+_NOT_SENT = (TelegramState.skipped.value, TelegramState.failed.value)
+
+
+def _already_sent(telegram: str | None) -> bool:
+    return telegram is not None and telegram not in _NOT_SENT
 
 
 def _uuid(value: Any) -> uuid.UUID | None:
@@ -285,7 +291,7 @@ async def list_feed(
             "id": a.id, "ts": a.ts, "type": a.type, "level": a.level,
             "agent": agent_name, "agent_id": a.agent_id,
             "portfolio": portfolio_name, "portfolio_id": a.portfolio_id,
-            "summary": a.summary, "data": a.data, "already_sent": a.telegram in _SENT,
+            "summary": a.summary, "data": a.data, "already_sent": _already_sent(a.telegram),
         }
         for a, agent_name, portfolio_name in rows
     ]
