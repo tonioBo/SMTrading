@@ -59,6 +59,10 @@ INSTRUMENT_FIELDS = (
     "shortable", "active",
 )
 NOTIFICATION_FIELDS = ("id", "portfolio_id", "kind", "payload", "created_at")
+DECISION_FIELDS = (
+    "id", "agent", "agent_id", "portfolio", "portfolio_id", "kind", "summary", "symbols",
+    "details", "created_at",
+)
 ALERT_FIELDS = (
     "id", "symbol", "condition", "value", "ref_price", "status", "note", "created_at",
     "triggered_at", "triggered_price",
@@ -119,6 +123,12 @@ def notification_dto(n: Notification) -> dict[str, Any]:
 
 def alert_dto(a: Alert) -> dict[str, Any]:
     return _pick(a, ALERT_FIELDS)
+
+
+def decision_dto(d: Any, agent: str | None, portfolio: str | None) -> dict[str, Any]:
+    """A `Decision` row with the names of its agent and portfolio (DECISION_FIELDS)."""
+    names = {"agent": agent, "portfolio": portfolio}
+    return {f: to_jsonable(names[f] if f in names else getattr(d, f)) for f in DECISION_FIELDS}
 
 
 _CONVERTERS: dict[type, Any] = {

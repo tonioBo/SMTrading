@@ -170,6 +170,13 @@ Simulazione pura di una strategia solo long su barre storiche: non tocca portafo
 - `get_backtest`: stato e risultato di un backtest dell'agente (di un altro agente: `FORBIDDEN`). Il `result` contiene `metrics` (`total_return_pct`, `cagr_pct`, `max_drawdown_pct`, `sharpe`, `win_rate_pct`, `trades`, `exposure_pct`), `equity` (al massimo 1000 punti) e `trades`; un backtest fallito ha `error`.
 - `list_backtests`: i backtest dell'agente, dal piu' recente, senza curva e operazioni; filtro `status`, `limit` 1-100.
 
+### Decisioni, feed delle attivita' e Telegram
+
+- `log_decision`: registra una decisione nello storico permanente (visibile nella web app): `kind` (`proposal`, `approval`, `veto`, `allocation`, `strategy`, `risk_rule`, `other`), `summary` (1-500 caratteri), `portfolio_id` facoltativo (serve `read`), `symbols` (al massimo 50), `details` (oggetto, al massimo 8 KB). Risponde `{decision_id, created_at}`; non invia messaggi Telegram.
+- `get_decisions`: le decisioni visibili all'agente, dalla piu' recente, filtrabili per `portfolio_id` (serve `read`, altrimenti `FORBIDDEN`), `agent` (nome o id), `kind`, `since`; `limit` 1-200 (default 50).
+- `get_activity_feed`: il feed delle attivita' (ordini, fill, eventi di rischio, alert, decisioni) dei portafogli dell'agente e globali: `{items, next_after_id}`, come `get_triggered_alerts`; gli elementi possono ripetersi (deduplicare per `id`); `already_sent: true` indica che SMTrading li ha gia' inviati su Telegram; `limit` 1-200.
+- `send_telegram`: invia un messaggio al gruppo Telegram (serve il permesso `notify`, altrimenti `FORBIDDEN`): `text` inviato cosi' com'e', senza formattazione, al massimo 4096 caratteri prefisso incluso; `level` `info` (nessun prefisso), `warning` (🟠) o `critical` (🔴). Al massimo 20 messaggi in 60 s (`RATE_LIMITED`, `details.retry_after_s`); con Telegram non configurato o disattivato `PROVIDER_UNAVAILABLE`. Risponde `{outbox_id, status}` (`paused` se le notifiche sono in pausa).
+
 ### Polling degli alert
 
 1. Prima chiamata senza `since`/`after_id`: le notifiche piu' recenti (dalla piu' recente) e

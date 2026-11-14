@@ -35,6 +35,8 @@ ALL_TOOLS = {
     "delete_watchlist", "create_alert", "list_alerts", "delete_alert",
     # backtests
     "run_backtest", "get_backtest", "list_backtests",
+    # decisions, activity feed, Telegram
+    "log_decision", "get_decisions", "get_activity_feed", "send_telegram",
 }
 
 

@@ -10,11 +10,13 @@ from pydantic import ValidationError
 
 from smtrading.mcp import (
     resources,
+    tools_activity,
     tools_alerts,
     tools_backtest,
     tools_market,
     tools_orders,
     tools_portfolio,
+    tools_telegram,
     tools_watch,
 )
 from smtrading.mcp.runtime import reject_arguments
@@ -22,8 +24,10 @@ from smtrading.mcp.runtime import reject_arguments
 SERVER_NAME = "SMTrading"
 _TOOL_MODULES = (
     tools_portfolio, tools_orders, tools_market, tools_alerts, tools_watch, tools_backtest,
-    resources,
+    tools_activity, tools_telegram, resources,
 )
+# tools whose audit row must not keep the raw arguments (also when the schema rejects them)
+_AUDIT_PARAMS = {"send_telegram": tools_telegram.audit_params}
 
 
 class SMTradingServer(MCPServer):
@@ -36,7 +40,9 @@ class SMTradingServer(MCPServer):
         except ToolError as e:
             if isinstance(e, UnexpectedToolError) or not isinstance(e.__cause__, ValidationError):
                 raise
-            return await reject_arguments(name, arguments, e.__cause__)
+            reduce = _AUDIT_PARAMS.get(name)
+            params = reduce(arguments) if reduce else arguments
+            return await reject_arguments(name, params, e.__cause__)
 
 
 def build_mcp() -> MCPServer:
