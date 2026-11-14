@@ -97,7 +97,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from smtrading.activity.mapping import ActivityDraft
 from smtrading.activity.models import ActivityLevel
 from smtrading.activity.service import record_activity
-from smtrading.brokers.base import BrokerAdapter, BrokerOrder, RateLimited
+from smtrading.brokers.base import (
+    BROKER_REJECTED_MESSAGE,
+    BrokerAdapter,
+    BrokerOrder,
+    RateLimited,
+)
 from smtrading.brokers.live import LIVE_KINDS
 from smtrading.brokers.live.account import account_fingerprint, snapshot_record
 from smtrading.brokers.live.audit import record_live_audit
@@ -586,10 +591,11 @@ class BrokerSync:
         this pass, so their fills are applied) and is then clamped to the position.
         A real-money buy whose broker snapshot is too old waits for a fresh one (read
         here, with no lock held, then the order is checked again: `refreshed`). The wait
-        clock (`_waiting`) runs only over consecutive waiting passes: any other outcome
-        (sent, rejected, market closed, a liquidation waiting...) resets it. A pass that
-        raises is not an outcome: the clock is kept, and an order that has been waiting
-        longer than LIVE_WAIT_MAX is expired there too (one failing every pass still
+        clock (`_waiting`) runs only over consecutive waiting or failing passes: any other
+        outcome (sent, rejected, market closed, a liquidation waiting...) resets it. A
+        pass that raises is not an outcome: the clock is kept (or started, on the first
+        failing pass), and a real order never sent that has been waiting longer than
+        LIVE_WAIT_MAX is expired there too (one failing every pass from the start still
         ends)."""
         waiting = [False]
         try:
@@ -601,8 +607,9 @@ class BrokerSync:
             self._waiting.pop(order_id, None)
 
     async def _expire_after_error(self, order_id: UUID) -> None:
-        since = self._waiting.get(order_id)
-        if since is None or self._clock() - since <= LIVE_WAIT_MAX:
+        now = self._clock()
+        since = self._waiting.setdefault(order_id, now)  # a first failing pass starts it
+        if now - since <= LIVE_WAIT_MAX:
             return
         try:
             await self._update(order_id, self._wait_expired)
@@ -848,9 +855,10 @@ class BrokerSync:
 
     async def _wait_expired(self, session: AsyncSession, order: Order) -> None:
         """A real order waited LIVE_WAIT_MAX for account data / quotes: rejected (only if
-        still never sent)."""
+        still never sent; paper/demo orders are never expired by the clock)."""
         if (order.broker_status == BrokerState.TO_SEND and order.broker_sent_at is None
-                and order.broker_order_id is None):
+                and order.broker_order_id is None
+                and await self._is_live(session, order.broker_link_id)):
             await self._reject(session, order, ErrorCode.PROVIDER_UNAVAILABLE,
                                WAIT_TOO_LONG_MESSAGE)
 
@@ -999,7 +1007,7 @@ class BrokerSync:
         if bo.status == "rejected":
             await self._reject(
                 session, order, ErrorCode.PROVIDER_UNAVAILABLE,
-                bo.message or "rejected by the broker",
+                bo.message or BROKER_REJECTED_MESSAGE,
             )
             return
         await self._adopt(session, order, bo, live_payload=payload)
@@ -1267,7 +1275,7 @@ class BrokerSync:
         if bo.status == "rejected":
             await self._reject(
                 session, order, ErrorCode.PROVIDER_UNAVAILABLE,
-                bo.message or "rejected by the broker",
+                bo.message or BROKER_REJECTED_MESSAGE,
             )
             return
         if replacing:

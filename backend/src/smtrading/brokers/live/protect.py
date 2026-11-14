@@ -226,13 +226,13 @@ async def record_live_order_activity(
         session,
         ActivityDraft(f"live.order.{phase}",
                       ActivityLevel.warning if phase == "rejected" else ActivityLevel.info,
-                      True, _order_summary(data, phase), data),
+                      True, order_summary(data, phase), data),
         portfolio_id=order.portfolio_id, agent_id=order.agent_id,
     )
     await session.flush()
 
 
-def _order_summary(data: dict, phase: str) -> str:
+def order_summary(data: dict, phase: str) -> str:
     head = PHASE_HEAD.get(phase, phase).split(" · ")[-1]
     return f"Ordine reale {head}: {_order_line(data)}"
 

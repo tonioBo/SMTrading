@@ -19,6 +19,10 @@ seen). The link's live_state never changes for health. The per-link state (last 
 failure counts, alert flags) is dropped for links no longer live and enabled, and the
 failure/alert state also when no portfolio is linked any more.
 
+Every tick first retries the settlement of a disarm whose phase 2 failed
+(service.settle_disarm_leftovers: a `configured` link whose portfolios still have orders
+from the armed period), alerted once per link until nothing is left on it.
+
 Single writer: `run` holds a Postgres advisory lock on a dedicated connection (as
 BrokerSync); a worker that cannot take it skips its ticks. Broker I/O never happens
 with a transaction open.
@@ -42,6 +46,7 @@ from smtrading.brokers.live.reconcile import (
     LiveBrokerUnreachable,
     reconcile_live,
 )
+from smtrading.brokers.live.service import settle_disarm_leftovers
 from smtrading.brokers.models import BrokerLink
 from smtrading.engine.models import Fill
 from smtrading.engine.quotesource import QuoteSource
@@ -78,6 +83,7 @@ class LiveMonitor:
         self._internal: dict[UUID, int] = {}  # consecutive monitor (non-broker) failures
         self._auth_alerted: set[UUID] = set()
         self._rate_limited: dict[UUID, tuple[datetime, bool]] = {}  # since, alerted
+        self._settle_alerted: set[UUID] = set()  # auto-settled disarms, alerted once
 
     async def run(self) -> None:
         engine = self._sm.kw["bind"]
@@ -116,7 +122,9 @@ class LiveMonitor:
                 await self._sleep(LIVE_MONITOR_TICK_S)
 
     async def tick(self) -> int:
-        """Reconcile the due live links; returns how many were reconciled."""
+        """Settle the leftovers of failed disarms, then reconcile the due live links;
+        returns how many were reconciled."""
+        await self._settle_disarms()
         now = self._clock()
         async with self._sm() as session:
             db_now = await session.scalar(select(func.now()))
@@ -163,6 +171,22 @@ class LiveMonitor:
             else:  # no portfolio linked (no broker call): a new episode if linked again
                 self._auth_alerted.discard(link_id)
         return done
+
+    async def _settle_disarms(self) -> None:
+        """Automatic retry of a failed disarm settlement (service.settle_disarm_leftovers):
+        one alert per link until a pass finds nothing left to settle on it."""
+        def first_time(link_id: UUID) -> bool:
+            if link_id in self._settle_alerted:
+                return False
+            self._settle_alerted.add(link_id)
+            return True
+
+        try:
+            settled = await settle_disarm_leftovers(self._sm, alert=first_time)
+        except Exception:
+            log.exception("live monitor: disarm settlement check failed")
+            return
+        self._settle_alerted &= set(settled)
 
     def _prune(self, live: set[UUID]) -> None:
         """Forget the links no longer live and enabled (unlinked, disabled, deleted)."""

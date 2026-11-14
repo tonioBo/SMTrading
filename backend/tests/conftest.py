@@ -55,6 +55,24 @@ def _clear_settings_cache():
     get_sessionmaker.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _reset_t212_caches():
+    """The Trading 212 instrument caches and rate-limit blocks are process-wide: reset in
+    place (modules alias the cache objects) around every test, so what one test loaded
+    (e.g. the fake's US-only tickers) never decides another's routability."""
+    from smtrading.brokers import t212_core
+
+    def reset():
+        for cache in t212_core._instrument_caches.values():
+            cache.data.update(at=0.0, items=None, failed_at=None)
+            cache.reverse.clear()
+        t212_core._rate_blocked_until.clear()
+
+    reset()
+    yield
+    reset()
+
+
 @pytest.fixture(scope="session")
 def pg_url():
     with PostgresContainer("postgres:16") as pg:

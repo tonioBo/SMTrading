@@ -719,6 +719,47 @@ async def test_resume_requires_totp_and_live_reason(sm, redis, fake):
                                             totp="1", actor=WHO), ErrorCode.FORBIDDEN, "totp")
 
 
+async def test_resume_unlocks_a_locked_portfolio_with_a_live_reason(sm, redis, fake):
+    """R8.13: trip_reduce_only writes live_* onto a locked portfolio («unlocking it now
+    needs the TOTP resume»): the resume accepts it (TOTP, audited); the plain status
+    change keeps refusing it."""
+    from smtrading.portfolios.service import set_portfolio_status
+
+    link_id, pid, admin, totp = await _armed_with_portfolio(sm, redis, fake)
+
+    async def resume(code):
+        async with sm() as s:
+            out = await resume_live_portfolio(s, redis, pid,
+                                              admin=await s.get(AdminUser, admin.id),
+                                              totp=code, actor=WHO)
+            await s.commit()
+            return out
+
+    async with sm() as s:
+        p = await s.get(Portfolio, pid)
+        p.status, p.reduce_only_reason = PortfolioStatus.locked, "admin"
+        await s.commit()
+    await _expect(resume(BAD), ErrorCode.INVALID_ORDER, "status")  # locked, not live
+    async with sm() as s:
+        await s.execute(update(Portfolio).where(Portfolio.id == pid)
+                        .values(reduce_only_reason="live_fuse"))
+        await s.commit()
+    async with sm() as s:  # the plain unlock is still refused
+        p = await s.get(Portfolio, pid)
+        with pytest.raises(SMTError) as info:
+            set_portfolio_status(s, p, PortfolioStatus.active)
+        assert info.value.code == ErrorCode.FORBIDDEN
+        await s.rollback()
+    await _expect(resume(None), ErrorCode.FORBIDDEN, "totp")
+    await _expect(resume("000000"), ErrorCode.FORBIDDEN, "totp")
+    async with sm() as s:
+        assert (await s.get(Portfolio, pid)).status == PortfolioStatus.locked
+    p = await resume(totp.code())
+    assert p.status == PortfolioStatus.active and p.reduce_only_reason is None
+    row = (await _audit(sm, link_id))[-1]
+    assert row.action == "resumed" and row.details["reason"] == "live_fuse"
+
+
 async def test_flatten_creates_reduce_only_market_flagged_orders(sm, redis, fake):
     link_id, pid, admin, totp = await _armed_with_portfolio(sm, redis, fake)
     qs = _qs()

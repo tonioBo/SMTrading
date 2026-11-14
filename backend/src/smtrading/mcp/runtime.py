@@ -107,16 +107,25 @@ async def _execute(
     async with runtime.sessionmaker() as session:
         ctx = ToolCtx(session, agent_id, MemoQuoteSource(runtime.qs), runtime.redis,
                       runtime.router)
+        hide: list[bool] = []  # mcp_hide_mode, read at most once per call
+
+        async def hidden() -> bool:
+            if not hide:
+                hide.append(await get_mcp_hide_mode(session))
+            return hide[0]
+
         try:
             # serialised inside the transaction: a result that cannot be rendered
             # rolls the call back instead of reporting an error for committed work
             result = to_jsonable(await fn(ctx))
-            if mentions_dry_run(result) and await get_mcp_hide_mode(session):
+            # hide mode first: with it off the json.dumps pre-check never runs
+            if await hidden() and mentions_dry_run(result):
                 result = agent_safe(result)  # R8.11
         except SMTError as e:
             err = e
-            if e.code == ErrorCode.LIVE_DRY_RUN and await get_mcp_hide_mode(session):
-                err = SMTError(AGENT_REJECT_CODE, AGENT_REJECT_MESSAGE,  # R8.11
+            if e.code == ErrorCode.LIVE_DRY_RUN and await hidden():
+                # R8.11: exactly a real broker refusal (code, message, details)
+                err = SMTError(AGENT_REJECT_CODE, AGENT_REJECT_MESSAGE,
                                agent_safe(e.details or {}), persisted=e.persisted)
             if commit_on_error and e.persisted:
                 await session.commit()

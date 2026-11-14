@@ -1,6 +1,7 @@
 """The live gate transport: state read again at every non-GET request; a closed gate never
 calls the inner transport (an httpx.MockTransport counting the requests)."""
 
+import os
 import uuid
 from decimal import Decimal
 
@@ -253,10 +254,29 @@ async def test_live_client_only_from_make_live_client(sm):
     await client.aclose()
 
 
-async def test_default_inner_transport_is_http(sm):
-    client = make_live_client(sm, uuid.uuid4())
-    assert isinstance(client.gate._inner, httpx.AsyncHTTPTransport)
-    await client.aclose()
+@pytest.mark.parametrize("loadable", [True, False])
+async def test_default_inner_transport_is_http(sm, monkeypatch, tmp_path, loadable):
+    """Deterministic: the result used to depend on the ambient SMT_ environment (an
+    exported SMT_LIVE_FAKE_BROKER, or a .env in the working directory). The setting off
+    (or settings that cannot be loaded) means the real HTTP transport."""
+    from smtrading.common.config import get_settings
+
+    monkeypatch.chdir(tmp_path)  # no .env file
+    for name in [k for k in os.environ if k.startswith("SMT_")]:
+        monkeypatch.delenv(name)
+    if loadable:
+        for name, value in (("SMT_DATABASE_URL", "postgresql+asyncpg://u@h/db"),
+                            ("SMT_REDIS_URL", "redis://h:6379/0"),
+                            ("SMT_MASTER_KEY", "k"), ("SMT_ADMIN_EMAIL", "a@example.com"),
+                            ("SMT_ADMIN_PASSWORD", "p")):
+            monkeypatch.setenv(name, value)
+    get_settings.cache_clear()
+    try:
+        client = make_live_client(sm, uuid.uuid4())
+        assert isinstance(client.gate._inner, httpx.AsyncHTTPTransport)
+        await client.aclose()
+    finally:
+        get_settings.cache_clear()
 
 
 async def _flatten(sm) -> tuple[uuid.UUID, uuid.UUID]:

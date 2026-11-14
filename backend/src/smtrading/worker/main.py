@@ -12,6 +12,7 @@ import smtrading.models  # noqa: F401  (complete mapper registry before any sess
 from smtrading.backtest.runner import BacktestRunner
 from smtrading.brokers.live.account import register_live_secrets
 from smtrading.brokers.live.monitor import LiveMonitor
+from smtrading.brokers.live.startup import warn_if_fake_broker
 from smtrading.brokers.sync import BrokerSync
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
@@ -101,6 +102,7 @@ async def run() -> None:
             loop.add_signal_handler(sig, stop.set)
     try:
         await register_live_keys(sessionmaker)
+        await warn_if_fake_broker(sessionmaker, process="worker")
         async with httpx.AsyncClient() as http:
             router = MarketDataRouter(sessionmaker, redis, http)
             async with asyncio.TaskGroup() as tg:

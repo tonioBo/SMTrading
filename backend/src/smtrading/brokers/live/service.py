@@ -28,8 +28,10 @@ reale» (`armed`, TOTP) -> one-click disarm (back to `configured`, no TOTP).
 - Every step is recorded in the append-only `live_audit`.
 """
 
+import asyncio
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -578,21 +580,99 @@ async def disarm_live_link_now(sessionmaker: async_sessionmaker, link_id: uuid.U
             await session.commit()
             await _dispatch(session, redis)
         return touched
+    except asyncio.CancelledError:  # the link is disarmed: record it, then stop
+        log.warning("live link %s disarmed, settling its orders was cancelled", link_id)
+        await _settle_failed(sessionmaker, link_id, actor=actor, reason=reason,
+                             previous=previous, name=name, redis=redis)
+        raise
     except Exception:
         log.exception("live link %s disarmed, but settling its orders failed", link_id)
-    async with sessionmaker() as session:
-        await record_live_audit(session, action="disarmed", link_id=link_id, **_who(actor),
-                                details={"reason": reason, "from": previous,
-                                         "settle_failed": True})
-        await live_alert(
-            session, kind="disarmed",
-            summary=(f"Denaro reale disattivato su {name}: {reason}. Sistemazione degli"
-                     " ordini non riuscita: ripeti «Disattiva denaro reale»"),
-            portfolio_id=None, link_id=link_id,
-            data={"link_name": name, "reason": reason, "settle_failed": True})
-        await session.commit()
-        await _dispatch(session, redis)
+    await _settle_failed(sessionmaker, link_id, actor=actor, reason=reason,
+                         previous=previous, name=name, redis=redis)
     return None
+
+
+async def _settle_failed(sessionmaker: async_sessionmaker, link_id: uuid.UUID, *,
+                         actor: Actor | str, reason: str, previous: str | None, name: str,
+                         redis) -> None:
+    """Phase 2 of a disarm failed: the `settle_failed` audit row and alert. A failure here
+    is only logged (the link is disarmed anyway; the live monitor retries the settlement,
+    `settle_disarm_leftovers`)."""
+    try:
+        async with sessionmaker() as session:
+            await record_live_audit(session, action="disarmed", link_id=link_id,
+                                    **_who(actor),
+                                    details={"reason": reason, "from": previous,
+                                             "settle_failed": True})
+            await live_alert(
+                session, kind="disarmed",
+                summary=(f"Denaro reale disattivato su {name}: {reason}. Sistemazione"
+                         " degli ordini non riuscita: ripeti «Disattiva denaro reale»"),
+                portfolio_id=None, link_id=link_id,
+                data={"link_name": name, "reason": reason, "settle_failed": True})
+            await session.commit()
+            await _dispatch(session, redis)
+    except Exception:
+        log.exception("live link %s: recording the failed settlement failed", link_id)
+
+
+def _leftover_filter(link_id: uuid.UUID):
+    """Open orders of a disarmed link's portfolios that a settled disarm would not leave
+    as they are: never sent (rejected by the settlement) or at the broker without a
+    cancellation request."""
+    return (
+        Order.broker_link_id == link_id,
+        Order.status.in_(OPEN_STATUSES - {OrderStatus.held}),
+        Order.broker_status.is_distinct_from(BrokerState.CANCEL_REQUESTED),
+        Order.portfolio_id.in_(
+            select(Portfolio.id).where(Portfolio.broker_link_id == link_id)),
+    )
+
+
+AUTO_SETTLE_REASON = "sistemazione automatica dopo la disattivazione"
+
+
+async def settle_disarm_leftovers(sessionmaker: async_sessionmaker, *, redis=None,
+                                  alert: Callable[[uuid.UUID], bool] | None = None,
+                                  ) -> list[uuid.UUID]:
+    """Automatic retry of a failed disarm settlement (R8.12): every `configured` link
+    whose portfolios still have orders from the armed period (claimed, sent or never
+    sent, `_leftover_filter`) is settled through `_settle_disarm`, as a second «Disattiva
+    denaro reale» would (idempotent: checked again under the link lock). One alert per
+    settlement when `alert(link_id)` is true (the caller keeps it to one per episode).
+    A failure is logged and left for the next pass. Returns the links settled."""
+    async with sessionmaker() as session:
+        candidates = list(await session.scalars(
+            select(BrokerLink.id).where(
+                BrokerLink.live_state == LiveState.configured,
+                select(Order.id).where(*_leftover_filter(BrokerLink.id)).exists(),
+            ).order_by(BrokerLink.name)))
+        await session.commit()
+    settled: list[uuid.UUID] = []
+    for link_id in candidates:
+        try:
+            async with sessionmaker() as session:
+                link = await _live_link(session, link_id)
+                if link.live_state != LiveState.configured or await session.scalar(
+                        select(Order.id).where(*_leftover_filter(link_id)).limit(1)) is None:
+                    await session.commit()
+                    continue
+                touched = await _settle_disarm(session, link, actor="system",
+                                               reason=AUTO_SETTLE_REASON,
+                                               previous=link.live_state, alert=False)
+                if alert is None or alert(link_id):
+                    await live_alert(
+                        session, kind="disarmed",
+                        summary=(f"Denaro reale disattivato su {link.name}: ordini"
+                                 f" sistemati automaticamente ({touched})"),
+                        portfolio_id=None, link_id=link_id,
+                        data={"link_name": link.name, "orders": touched, "auto": True})
+                await session.commit()
+                await _dispatch(session, redis)
+            settled.append(link_id)
+        except Exception:
+            log.exception("live link %s: automatic disarm settlement failed", link_id)
+    return settled
 
 
 async def _dispatch(session: AsyncSession, redis) -> None:
@@ -681,11 +761,13 @@ async def resume_live_portfolio(
     session: AsyncSession, redis: Redis, portfolio_id: uuid.UUID, *, admin: AdminUser,
     totp: str | None, actor: Actor,
 ) -> Portfolio:
-    """«Ho verificato, riprendi»: a portfolio put in reduce-only by a live anomaly goes
-    back to `active` (TOTP). The only path that may (set_portfolio_status allow_live)."""
+    """«Ho verificato, riprendi»: a portfolio put in reduce-only by a live anomaly, or a
+    locked one a live anomaly was recorded on (trip_reduce_only, R8.13), goes back to
+    `active` (TOTP). The only path that may (set_portfolio_status allow_live)."""
     _require_totp_enabled(admin)
     pf = await lock_live_portfolio(session, portfolio_id)
-    if pf.status != PortfolioStatus.reduce_only or not is_live_reason(pf.reduce_only_reason):
+    if (pf.status not in (PortfolioStatus.reduce_only, PortfolioStatus.locked)
+            or not is_live_reason(pf.reduce_only_reason)):
         raise _invalid("il portafoglio non è sospeso per un'anomalia del denaro reale",
                        "status")
     await _verify_totp(redis, admin, totp)

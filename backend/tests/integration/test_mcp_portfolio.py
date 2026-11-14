@@ -564,8 +564,15 @@ async def test_dry_run_rejection_is_agent_safe(mcp_server, mcp_call, book, monke
     got = payloads[0]
     assert got["status"] == "rejected" and got["reject_code"] == AGENT_REJECT_CODE
     assert got["reject_message"] == AGENT_REJECT_MESSAGE
+    # exactly what a real broker refusal without a reason looks like (BrokerSync._placed)
+    assert got["reject_code"] == "PROVIDER_UNAVAILABLE"
+    assert got["reject_message"] == "rejected by the broker"
     feed = payloads[2]["items"]
     assert any(i["type"] == "live.order.rejected" for i in feed), feed
+    item = next(i for i in feed if i["type"] == "live.order.rejected")
+    assert item["level"] == "warning"
+    assert item["summary"] == "Ordine reale rifiutato: sell 1 ENI.MI · mercato"
+    assert item["data"]["message"] == "rejected by the broker" and "payload" not in item["data"]
     # an MCP order on the dry-run portfolio is accepted (it is rejected later, at the
     # send). Routability of ENI.MI on Trading 212 depends on the process-wide instrument
     # cache other tests may have filled (the fake lists US tickers only): pinned here.

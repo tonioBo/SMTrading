@@ -14,6 +14,8 @@ from decimal import Decimal, InvalidOperation
 from enum import Enum
 from typing import Any
 
+from smtrading.brokers.base import BROKER_REJECTED_MESSAGE
+from smtrading.brokers.live.protect import order_summary
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import Fill, Order
@@ -172,12 +174,14 @@ def to_jsonable(obj: Any) -> Any:
     raise TypeError(f"not JSON-serialisable: {type(obj).__name__}")
 
 
-# --- agent-safe results (R8.11) -------------------------------------------------------
+# --- agent-safe results (R8.11, amended) -----------------------------------------------
 # With mcp_hide_mode on, agents must not learn that a real-money portfolio is in a dry
-# run: an order rejected by it reaches them as a generic broker rejection (humans, in the
-# portal and on Telegram, keep LIVE_DRY_RUN).
-AGENT_REJECT_CODE = "BROKER_REJECTED"
-AGENT_REJECT_MESSAGE = "ordine non eseguito dal broker"
+# run: an order rejected by it reaches them exactly like an order the broker refused
+# without a reason (BrokerSync._placed: PROVIDER_UNAVAILABLE «rejected by the broker»,
+# a `live.order.rejected` activity); humans, in the portal and on Telegram, keep
+# LIVE_DRY_RUN.
+AGENT_REJECT_CODE = ErrorCode.PROVIDER_UNAVAILABLE
+AGENT_REJECT_MESSAGE = BROKER_REJECTED_MESSAGE
 _DRY_CODE = str(ErrorCode.LIVE_DRY_RUN)
 _DRY_TYPE = "live.order.dry_run"
 _DRY_MARKERS = (_DRY_CODE, "dry_run", "prova a secco", "(prova)")
@@ -201,10 +205,11 @@ def _agent_text(text: str) -> str:
 
 
 def agent_safe(value: Any) -> Any:
-    """A JSON-safe result with every trace of a dry run replaced: reject codes
-    LIVE_DRY_RUN -> BROKER_REJECTED with the generic message, `live.order.dry_run`
-    activity items -> `live.order.rejected` (summary rebuilt, request payload dropped),
-    the dry-run texts in any string."""
+    """A JSON-safe result with every trace of a dry run replaced by what a real broker
+    refusal looks like: reject codes LIVE_DRY_RUN -> PROVIDER_UNAVAILABLE «rejected by the
+    broker», `live.order.dry_run` activity items -> `live.order.rejected` (level warning,
+    summary rebuilt as for a rejection, request payload dropped), the dry-run texts in any
+    string."""
     if isinstance(value, list):
         return [agent_safe(v) for v in value]
     if isinstance(value, str):
@@ -223,7 +228,7 @@ def agent_safe(value: Any) -> Any:
         return out
     for code_key, message_key in (("code", "message"), ("reject_code", "reject_message")):
         if out.get(code_key) == _DRY_CODE:
-            out[code_key] = AGENT_REJECT_CODE
+            out[code_key] = str(AGENT_REJECT_CODE)
             out[message_key] = AGENT_REJECT_MESSAGE
     if out.get("phase") == "dry_run":
         out["phase"] = "rejected"
@@ -231,10 +236,10 @@ def agent_safe(value: Any) -> Any:
             out["message"] = AGENT_REJECT_MESSAGE
     if dry_item:
         out["type"] = "live.order.rejected"
+        if "level" in out:
+            out["level"] = "warning"
         data = out.get("data") if isinstance(out.get("data"), dict) else {}
-        symbol = data.get("symbol") or ""
-        out["summary"] = f"Ordine rifiutato: {symbol}: {AGENT_REJECT_MESSAGE}".replace(
-            ": :", ":")
+        out["summary"] = order_summary(data, "rejected")
     return out
 
 

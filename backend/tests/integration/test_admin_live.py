@@ -707,6 +707,98 @@ async def test_two_phase_disarm_link_stays_disarmed_when_settling_fails(admin, m
         assert o.status == OrderStatus.rejected and o.reject_code == "LIVE_NOT_ARMED"
 
 
+async def test_disarm_answers_even_when_recording_the_failure_fails(admin, monkeypatch):
+    """The phase-2 fallback (audit + alert) failing too: logged, the route still answers
+    settled: false and the link stays disarmed."""
+    from smtrading.brokers.live import service
+
+    link, pf = await _wizard(admin)
+    await _unsent_order(admin, link, pf)
+
+    async def boom(*a, **kw):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(service, "_settle_disarm", boom)
+    monkeypatch.setattr(service, "record_live_audit", boom)
+    r = await admin.client.post(f"/api/live-links/{link['id']}/disarm", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["live_state"] == "configured" and r.json()["settled"] is False
+
+
+async def test_disarm_cancelled_in_phase_two_is_recorded_then_reraised(admin, monkeypatch):
+    from smtrading.brokers.live import service
+
+    link, pf = await _wizard(admin)
+    order_id = await _unsent_order(admin, link, pf)
+
+    async def cancelled(*a, **kw):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(service, "_settle_disarm", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await service.disarm_live_link_now(admin.sm, uuid.UUID(link["id"]), actor="cli",
+                                           reason="stop")
+    async with admin.sm() as s:
+        assert (await s.get(BrokerLink, uuid.UUID(link["id"]))).live_state == "configured"
+        assert (await s.get(Order, order_id)).status == OrderStatus.pending
+        audit = await s.scalar(select(LiveAudit).where(LiveAudit.action == "disarmed"))
+        assert audit is not None and audit.details.get("settle_failed") is True
+
+
+async def test_failed_disarm_settlement_is_retried_automatically(admin, monkeypatch):
+    """R8.12 carry: a configured link whose portfolios still have orders from the armed
+    period (never sent, or at the broker without a cancel request) is settled by the
+    automatic retry through the same _settle_disarm; idempotent, alerted once."""
+    from smtrading.activity.models import Activity
+    from smtrading.brokers.live import service
+
+    link, pf = await _wizard(admin)
+    link_id = uuid.UUID(link["id"])
+    unsent = await _unsent_order(admin, link, pf)
+    async with admin.sm() as s:
+        sent = Order(portfolio_id=uuid.UUID(pf["id"]), symbol="AAPL", side=OrderSide.buy,
+                     type=OrderType.limit, qty=D(1), limit_price=D(50),
+                     status=OrderStatus.pending, broker_status="new",
+                     broker_order_id="b-1", broker_sent_at=datetime.now(UTC),
+                     broker_link_id=link_id)
+        s.add(sent)
+        await s.commit()
+        sent_id = sent.id
+
+    assert await service.settle_disarm_leftovers(admin.sm) == []  # still armed
+
+    async def boom(*a, **kw):
+        raise RuntimeError("settle failed")
+
+    real = service._settle_disarm
+    monkeypatch.setattr(service, "_settle_disarm", boom)
+    r = await admin.client.post(f"/api/live-links/{link['id']}/disarm", json={})
+    assert r.json()["settled"] is False
+    assert await service.settle_disarm_leftovers(admin.sm) == []  # failing: logged
+    monkeypatch.setattr(service, "_settle_disarm", real)
+
+    calls = []
+    assert await service.settle_disarm_leftovers(
+        admin.sm, alert=lambda lid: calls.append(lid) or True) == [link_id]
+    assert calls == [link_id]
+    async with admin.sm() as s:
+        a, b = await s.get(Order, unsent), await s.get(Order, sent_id)
+        assert a.status == OrderStatus.rejected and a.reject_code == "LIVE_NOT_ARMED"
+        assert b.status == OrderStatus.pending
+        assert b.broker_status == BrokerState.CANCEL_REQUESTED
+        autos = [x for x in await s.scalars(select(Activity).where(
+            Activity.type == "live.disarmed")) if x.data.get("auto")]
+        assert len(autos) == 1 and "(2)" in autos[0].summary
+        rows = list(await s.scalars(select(LiveAudit).where(
+            LiveAudit.action == "disarmed").order_by(LiveAudit.id)))
+        assert rows[-1].details["orders"] == 2 and rows[-1].actor == "system"
+    # idempotent: nothing left, nothing written again
+    assert await service.settle_disarm_leftovers(admin.sm) == []
+    async with admin.sm() as s:
+        assert len(list(await s.scalars(select(LiveAudit).where(
+            LiveAudit.action == "disarmed")))) == len(rows)
+
+
 async def test_cli_disarm_is_two_phase(admin, monkeypatch):
     from smtrading.brokers.live import service
 

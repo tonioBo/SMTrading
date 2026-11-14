@@ -29,6 +29,7 @@ from smtrading.admin.routes_telegram import router as telegram_router
 from smtrading.admin.routes_watch import router as watch_router
 from smtrading.admin.ws import router as ws_router
 from smtrading.agentdocs import export as agent_docs_export
+from smtrading.brokers.live.startup import warn_if_fake_broker
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
 from smtrading.common.heartbeat import heartbeat_age_s
@@ -140,6 +141,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         sessionmaker = async_sessionmaker(resources.engine, expire_on_commit=False)
         await _register_live_secrets(sessionmaker)
+        await warn_if_fake_broker(sessionmaker, process="api")
         await _export_agent_docs(sessionmaker)
         try:
             async with httpx.AsyncClient() as http:

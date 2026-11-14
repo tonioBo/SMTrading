@@ -781,3 +781,30 @@ async def test_errors_do_not_reset_the_wait_clock(maker, redis, qs, monkeypatch)
     assert "30 minuti" in o.reject_message
     assert await _types(maker, oid) == ["live.order.rejected"]
     assert oid not in sync._waiting
+
+
+async def test_an_order_failing_every_pass_from_the_start_still_expires(
+        maker, redis, qs, monkeypatch):
+    """Final wave: the wait clock also starts on the first failing pass, so a never-sent
+    real order whose every pass raises still ends after 30 minutes."""
+    pid, _ = await _live(maker, snapshot_at=OPEN - timedelta(minutes=5))
+    oid = await _place(maker, redis, qs, pid)
+    clock = Clock(OPEN)
+    sync = _sync(maker, redis, qs, clock)
+
+    async def broken(self, order_id):
+        raise RuntimeError("database hiccup")
+
+    monkeypatch.setattr(BrokerSync, "_live_memo", broken)
+    with _mock(called=False):
+        await sync.tick()  # fails: the clock starts
+        assert sync._waiting.get(oid) == OPEN
+        clock.now = OPEN + timedelta(minutes=29)
+        await sync.tick()
+        assert (await _order(maker, oid)).status == OrderStatus.pending
+        clock.now = OPEN + timedelta(minutes=31)
+        await sync.tick()
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.rejected and o.reject_code == ErrorCode.PROVIDER_UNAVAILABLE
+    assert "30 minuti" in o.reject_message
+    assert oid not in sync._waiting

@@ -7,6 +7,9 @@ from typing import ClassVar, Literal
 from smtrading.engine.models import Order, OrderType
 from smtrading.instruments.models import AssetClass, Instrument
 
+# the reject message of an order the broker refused without saying why (BrokerSync)
+BROKER_REJECTED_MESSAGE = "rejected by the broker"
+
 BrokerStatus = Literal["accepted", "partially_filled", "filled", "canceled", "rejected", "expired"]
 
 
