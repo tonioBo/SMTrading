@@ -9,7 +9,10 @@ portfolio's status, the kill switch and the order being sent:
 - DELETE (a cancel): passed on in every live_state of a live link;
 - POST/PUT/PATCH: only with the link `armed`, the linked portfolio not `locked` and the
   kill switch off; with the kill switch on only an order created by «Chiudi tutte le
-  posizioni reali» (`live_flatten`, reduce-only, market) passes (Ruling R8.2);
+  posizioni reali» passes (Ruling R8.2): `live_flatten`, reduce-only, market, still open
+  and not acknowledged by the broker, and the request body is that order (same
+  instrument and side, no more than its quantity);
+- exactly one portfolio must be linked to the link (1 live link <-> 1 portfolio);
 - `dry_run`: an order POST raises `LiveDryRun` with the JSON payload (no headers), any
   other non-GET raises `LiveGateClosed`.
 
@@ -19,7 +22,9 @@ nothing reaches the broker. The order is identified by the request extension
 """
 
 import json
+import re
 import uuid
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
@@ -29,7 +34,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from smtrading.brokers.live.models import LiveState
 from smtrading.brokers.models import BrokerLink
 from smtrading.common.errors import ErrorCode
-from smtrading.engine.models import Order, OrderType
+from smtrading.engine.models import OPEN_STATUSES, Order, OrderSide, OrderType
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.risk.settings import is_kill_switch_on
 
@@ -83,6 +88,44 @@ def _order_id(request: httpx.Request) -> uuid.UUID | None:
         return None
 
 
+_NON_ALNUM = re.compile(r"[^A-Z0-9]")
+
+
+def _key(symbol: str) -> str:
+    return _NON_ALNUM.sub("", symbol.upper())
+
+
+def _dec(value: Any) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        d = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return d if d.is_finite() else None
+
+
+def _body_matches(body: dict, order: Any) -> bool:
+    """The request is the order's own closing request: same instrument and side, no more
+    than the order's quantity. Alpaca: `symbol`, `side`, `qty`; Trading 212: `ticker`
+    (`AAPL_US_EQ`) and a signed `quantity` (negative = sell). Anything else: no match."""
+    if order.qty is None:
+        return False
+    if "ticker" in body:
+        symbol = str(body["ticker"]).split("_")[0]
+        qty = _dec(body.get("quantity"))
+        side = None if qty is None or qty == 0 else (
+            OrderSide.sell if qty < 0 else OrderSide.buy)
+    else:
+        symbol = str(body.get("symbol") or "")
+        qty = _dec(body.get("qty"))
+        side = str(body.get("side") or "").lower() or None
+    ours = _key(order.symbol.split(".")[0])
+    theirs = _key(symbol)
+    return (bool(theirs) and bool(ours) and theirs.startswith(ours)
+            and qty is not None and side == order.side and 0 < abs(qty) <= order.qty)
+
+
 class LiveGateTransport(httpx.AsyncBaseTransport):
     def __init__(self, inner: httpx.AsyncBaseTransport, sessionmaker: async_sessionmaker,
                  link_id: uuid.UUID):
@@ -117,25 +160,30 @@ class LiveGateTransport(httpx.AsyncBaseTransport):
                 raise LiveGateClosed(ErrorCode.LIVE_NOT_ARMED, DRY_RUN_MESSAGE)
             if state != LiveState.armed:
                 raise LiveGateClosed(ErrorCode.LIVE_NOT_ARMED, NOT_ARMED_MESSAGE)
-            portfolio = (await session.execute(
+            portfolios = (await session.execute(
                 select(Portfolio.id, Portfolio.status)
-                .where(Portfolio.broker_link_id == self._link_id)
-            )).first()
-            if portfolio is None:
+                .where(Portfolio.broker_link_id == self._link_id).limit(2)
+            )).all()
+            if len(portfolios) != 1:  # none, or not a dedicated link (1 link <-> 1 portfolio)
                 raise LiveGateClosed(ErrorCode.LIVE_NOT_ARMED, NOT_ARMED_MESSAGE)
+            portfolio = portfolios[0]
             if portfolio.status in (PortfolioStatus.locked, PortfolioStatus.archived):
                 raise LiveGateClosed(ErrorCode.PORTFOLIO_LOCKED, LOCKED_MESSAGE)
             order: Any = None
             if order_id is not None:
                 order = (await session.execute(
                     select(Order.portfolio_id, Order.live_flatten, Order.reduce_only,
-                           Order.type).where(Order.id == order_id)
+                           Order.type, Order.symbol, Order.side, Order.qty, Order.status,
+                           Order.broker_order_id).where(Order.id == order_id)
                 )).first()
                 if order is not None and order.portfolio_id != portfolio.id:
                     raise LiveGateClosed(ErrorCode.LIVE_NOT_ARMED, OTHER_PORTFOLIO_MESSAGE)
             if await is_kill_switch_on(session):
                 flatten = (order is not None and order.live_flatten and order.reduce_only
-                           and order.type == OrderType.market)
+                           and order.type == OrderType.market
+                           and order.broker_order_id is None  # not acknowledged yet
+                           and order.status in OPEN_STATUSES
+                           and _body_matches(_payload(request), order))
                 if not flatten:
                     raise LiveGateClosed(ErrorCode.KILL_SWITCH_ACTIVE, KILL_SWITCH_MESSAGE)
 
@@ -157,6 +205,12 @@ class LiveClient(httpx.AsyncClient):
         super().__init__(transport=gate, timeout=timeout, trust_env=False,
                          follow_redirects=False)
         self._gate = gate
+
+    async def send(self, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        """Never follows a redirect, whatever the caller asks (request/stream go through
+        here too)."""
+        kwargs["follow_redirects"] = False
+        return await super().send(request, **kwargs)
 
     @property
     def gate(self) -> LiveGateTransport:

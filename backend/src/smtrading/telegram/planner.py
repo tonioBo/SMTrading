@@ -1,12 +1,14 @@
 """TelegramPlanner: turns the activity rows marked `telegram='pending'` into outbox
 messages (now), digest entries (quiet hours, non-critical) or `skipped`.
 
-- Real money first (plan 8): a `live.*` row is always queued at once, rendered by
-  `brokers.live.protect.render_live_activity`: also while Telegram is not ready (the
-  outbox keeps it until it is), unreadable or paused (a `paused` outbox row), at night
-  (sent at once, silent: the sender's quiet-hours rule) and however old; never digested,
-  never skipped. A direct `order.*` row of a portfolio linked to a live kind is
-  `skipped`: its `live.order.*` row carries the message.
+- Real money first (plan 8, Ruling R8.4 over R7.1): a `live.*` row is always queued at
+  once (outbox category `live`), rendered by `brokers.live.protect.render_live_activity`:
+  also while Telegram is disabled or not configured (the outbox keeps it until it is
+  ready), unreadable or paused (a `paused` outbox row, never stale-skipped on resume), at
+  night (sent at once, silent: the sender's quiet-hours rule) and however old; never
+  digested, never skipped. A direct `order.*` row of an order of a live-linked portfolio
+  that reached BrokerSync is `skipped`: its `live.order.*` row carries the message. A
+  pre-trade rejection (it never reached BrokerSync) keeps its own message.
 - Telegram never configured (no token or no group) or disabled: `skipped`.
 - Configuration unreadable (the stored token cannot be decrypted, e.g. a new master key)
   while enabled with a group: nothing is planned, the rows stay `pending` until the token is entered again; then they
@@ -20,10 +22,11 @@ messages (now), digest entries (quiet hours, non-critical) or `skipped`.
 
 import asyncio
 import logging
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.activity.models import Activity, ActivityLevel, TelegramState
@@ -32,9 +35,10 @@ from smtrading.brokers.live import LIVE_KINDS
 from smtrading.brokers.live.protect import render_live_activity
 from smtrading.brokers.models import BrokerLink
 from smtrading.common.config import get_settings
+from smtrading.engine.models import Order
 from smtrading.portfolios.models import Portfolio
 from smtrading.telegram.config import TelegramConfig, is_ready, load_config
-from smtrading.telegram.outbox import STALE_AFTER, enqueue
+from smtrading.telegram.outbox import LIVE_CATEGORY, STALE_AFTER, enqueue
 from smtrading.telegram.quiet import is_quiet
 from smtrading.telegram.render import Names, render_activity
 
@@ -62,16 +66,34 @@ async def _names(session: AsyncSession, rows: list[Activity]) -> Names:
     return names
 
 
-async def _live_portfolios(session: AsyncSession, rows: list[Activity]) -> set:
-    """The portfolios of the batch's `order.*` rows that are linked to a live kind."""
-    ids = {a.portfolio_id for a in rows if a.portfolio_id and a.type.startswith("order.")}
-    if not ids:
+def _order_uuid(a: Activity) -> uuid.UUID | None:
+    value = (a.data or {}).get("order_id") if isinstance(a.data, dict) else None
+    try:
+        return uuid.UUID(str(value)) if value is not None else None
+    except ValueError:
+        return None
+
+
+async def _covered_by_live(session: AsyncSession, rows: list[Activity]) -> set[int]:
+    """Ids of the batch's `order.*` rows told by a `live.order.*` row instead: the order
+    belongs to a portfolio linked to a live kind and reached BrokerSync (routed, sent or
+    acknowledged). A pre-trade rejection never reached it and keeps its own message."""
+    wanted = {a.id: oid for a in rows
+              if a.portfolio_id and a.type.startswith("order.")
+              and (oid := _order_uuid(a)) is not None}
+    if not wanted:
         return set()
-    return set(await session.scalars(
-        select(Portfolio.id)
+    synced = set(await session.scalars(
+        select(Order.id)
+        .join(Portfolio, Portfolio.id == Order.portfolio_id)
         .join(BrokerLink, BrokerLink.id == Portfolio.broker_link_id)
-        .where(Portfolio.id.in_(ids), BrokerLink.kind.in_(LIVE_KINDS))
+        .where(
+            Order.id.in_(set(wanted.values())), BrokerLink.kind.in_(LIVE_KINDS),
+            or_(Order.broker_status.is_not(None), Order.broker_sent_at.is_not(None),
+                Order.broker_order_id.is_not(None)),
+        )
     ))
+    return {aid for aid, oid in wanted.items() if oid in synced}
 
 
 class TelegramPlanner:
@@ -107,7 +129,7 @@ class TelegramPlanner:
             # ts comes from the database clock: compare it with the same clock
             stale_before = await session.scalar(select(func.now())) - STALE_AFTER
             names = await _names(session, rows)
-            live_portfolios = await _live_portfolios(session, rows)
+            covered = await _covered_by_live(session, rows)
             for a in rows:
                 activity_id = a.id  # read before a rollback can expire the row
                 try:
@@ -116,7 +138,7 @@ class TelegramPlanner:
                             await self._plan_live(session, cfg, a, names)
                         elif not ready:  # waiting (unreadable) selected live rows only
                             a.telegram = TelegramState.skipped
-                        elif a.type.startswith("order.") and a.portfolio_id in live_portfolios:
+                        elif a.id in covered:
                             a.telegram = TelegramState.skipped  # its live.order.* row says it
                         else:
                             await self._plan(session, cfg, a, names, quiet, stale_before)
@@ -128,7 +150,7 @@ class TelegramPlanner:
 
     async def _plan_live(self, session: AsyncSession, cfg: TelegramConfig, a: Activity,
                          names: Names) -> None:
-        msg = await enqueue(session, source="system", category="event", level=a.level,
+        msg = await enqueue(session, source="system", category=LIVE_CATEGORY, level=a.level,
                             text=render_live_activity(a, names, self._tz), cfg=cfg)
         a.telegram = TelegramState.queued
         a.outbox_id = msg.id

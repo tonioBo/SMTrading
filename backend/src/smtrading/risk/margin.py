@@ -262,8 +262,12 @@ async def _liquidate_at_broker(
     )
     session.add(order)
     if portfolio.status != PortfolioStatus.locked:
+        from smtrading.portfolios.service import is_live_reason  # cycle via the engine
+
         portfolio.status = PortfolioStatus.locked
-        portfolio.reduce_only_reason = BROKER_LIQUIDATION_REASON
+        if not is_live_reason(portfolio.reduce_only_reason):
+            # a live anomaly's reason stays: only the TOTP resume unlocks it
+            portfolio.reduce_only_reason = BROKER_LIQUIDATION_REASON
     await session.flush()
     payload = {
         "portfolio_id": portfolio.id, "before": _summary(valuation), "broker": True,

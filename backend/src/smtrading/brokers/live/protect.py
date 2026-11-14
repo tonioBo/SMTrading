@@ -179,7 +179,8 @@ def render_live_activity(a: Activity, names: Names, tz: str) -> str:
 # -- activities ----------------------------------------------------------------------
 
 async def live_alert(session: AsyncSession, *, kind: str, summary: str,
-                     portfolio_id: uuid.UUID | None, link_id: uuid.UUID, data: dict) -> None:
+                     portfolio_id: uuid.UUID | None, link_id: uuid.UUID | None,
+                     data: dict) -> None:
     """A critical `live.<kind>` activity, sent to Telegram at once (day or night)."""
     record_activity(
         session,

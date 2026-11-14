@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy import event, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.base import NO_VALUE
 
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import quantize_money
@@ -56,28 +57,53 @@ def set_portfolio_status(
         portfolio.reduce_only_until = None
 
 
+_UNKNOWN = object()
+
+
 def _before(attr) -> tuple[bool, object]:
-    """(changed, value before the change) of a loaded attribute."""
+    """(changed, value before the change) of an attribute; the value is _UNKNOWN when it
+    was changed without being loaded first (expired)."""
     hist = attr.history
     if not hist.has_changes():
-        return False, attr.value
-    return True, hist.deleted[0] if hist.deleted else None
+        return False, attr.loaded_value
+    return True, hist.deleted[0] if hist.deleted else _UNKNOWN
+
+
+def _stored(session: Session, portfolio_id) -> tuple[object, object]:
+    """(status, reduce_only_reason) as stored, read on the flush's connection (no autoflush)."""
+    row = session.connection().execute(
+        select(Portfolio.status, Portfolio.reduce_only_reason)
+        .where(Portfolio.id == portfolio_id)
+    ).first()
+    return (row.status, row.reduce_only_reason) if row is not None else (None, None)
 
 
 @event.listens_for(Session, "before_flush")
 def _guard_live_reduce_only(session: Session, flush_context, instances) -> None:
+    """Refuses a flush that makes active, or takes the live reason away from, a portfolio
+    blocked for a live anomaly (reason `live_*`), unless it went through
+    set_portfolio_status(..., allow_live=True). Replacing the reason with another one (a
+    margin lock, a daily loss) or clearing it in a first flush is refused too."""
     allowed: set = session.info.get(_LIVE_RESUME_KEY, set())
     for obj in session.dirty:
-        if not isinstance(obj, Portfolio):
+        if not isinstance(obj, Portfolio) or obj.id in allowed:
             continue
         state = inspect(obj)
-        changed, old_status = _before(state.attrs.status)
-        if not changed or obj.status != PortfolioStatus.active:
+        status_changed, old_status = _before(state.attrs.status)
+        reason_changed, old_reason = _before(state.attrs.reduce_only_reason)
+        if not status_changed and not reason_changed:
             continue
-        if old_status == PortfolioStatus.active:
+        if old_reason is _UNKNOWN or old_reason is NO_VALUE or (
+                status_changed and old_status in (_UNKNOWN, NO_VALUE)):
+            old_status, old_reason = _stored(session, obj.id)
+        if not is_live_reason(old_reason):
             continue
-        _, old_reason = _before(state.attrs.reduce_only_reason)
-        if is_live_reason(old_reason) and obj.id not in allowed:
+        new_reason = state.attrs.reduce_only_reason.loaded_value
+        new_status = state.attrs.status.loaded_value
+        if reason_changed and not is_live_reason(new_reason):
+            raise _live_resume_refused(obj.id)
+        if (status_changed and new_status == PortfolioStatus.active
+                and old_status != PortfolioStatus.active):
             raise _live_resume_refused(obj.id)
     session.info.pop(_LIVE_RESUME_KEY, None)
 

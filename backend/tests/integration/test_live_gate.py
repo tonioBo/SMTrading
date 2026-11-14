@@ -18,7 +18,7 @@ from smtrading.brokers.live.gate import (
 from smtrading.brokers.models import BrokerLink
 from smtrading.common.db import make_engine
 from smtrading.common.errors import ErrorCode
-from smtrading.engine.models import Order, OrderSide, OrderType
+from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.risk.settings import set_kill_switch
@@ -80,7 +80,7 @@ async def _setup(sm, *, state: str | None, locked: bool = False, kill: bool = Fa
 
 async def _send(client: httpx.AsyncClient, method: str, order_id: uuid.UUID | None):
     ext = {"smt_order_id": str(order_id)} if order_id else None
-    body = {"symbol": "ZZGATE", "qty": "1"} if method == "POST" else None
+    body = {"symbol": "ZZGATE", "side": "sell", "qty": "1"} if method == "POST" else None
     return await client.request(method, f"{BASE}/v2/orders", json=body,
                                 headers={"APCA-API-SECRET-KEY": "CANARYSECRET-do-not-use"},
                                 extensions=ext)
@@ -231,7 +231,7 @@ async def test_dry_run_returns_payload_without_headers(sm):
     async with make_live_client(sm, link_id, inner=inner.transport()) as client:
         with pytest.raises(LiveDryRun) as e:
             await _send(client, "POST", order_id)
-    assert e.value.payload == {"symbol": "ZZGATE", "qty": "1"}
+    assert e.value.payload == {"symbol": "ZZGATE", "side": "sell", "qty": "1"}
     assert e.value.method == "POST"
     assert e.value.path == "/v2/orders"
     assert "CANARY" not in repr(vars(e.value))
@@ -257,3 +257,86 @@ async def test_default_inner_transport_is_http(sm):
     client = make_live_client(sm, uuid.uuid4())
     assert isinstance(client.gate._inner, httpx.AsyncHTTPTransport)
     await client.aclose()
+
+
+async def _flatten(sm) -> tuple[uuid.UUID, uuid.UUID]:
+    return await _setup(sm, state="armed", kill=True, flatten=True, reduce_only=True)
+
+
+async def _post(client, order_id, body):
+    return await client.request("POST", f"{BASE}/v2/orders", json=body,
+                                extensions={"smt_order_id": str(order_id)})
+
+
+@pytest.mark.parametrize(("body", "passes"), [
+    ({"symbol": "ZZGATE", "side": "sell", "qty": "1"}, True),
+    ({"ticker": "ZZGATE_US_EQ", "quantity": -1}, True),  # Trading 212: sign is the side
+    ({"symbol": "OTHER", "side": "sell", "qty": "1"}, False),
+    ({"symbol": "ZZGATE", "side": "buy", "qty": "1"}, False),
+    ({"ticker": "ZZGATE_US_EQ", "quantity": 1}, False),
+    ({"symbol": "ZZGATE", "side": "sell", "qty": "2"}, False),  # more than the order
+    ({"side": "sell", "qty": "1"}, False),  # no symbol
+    ({"symbol": "ZZGATE", "side": "sell"}, False),  # no quantity
+])
+async def test_flatten_bypass_checks_the_body_matches_the_order(sm, body, passes):
+    link_id, order_id = await _flatten(sm)
+    inner = Counting()
+    async with make_live_client(sm, link_id, inner=inner.transport()) as client:
+        if passes:
+            assert (await _post(client, order_id, body)).status_code == 200
+        else:
+            with pytest.raises(LiveGateClosed) as e:
+                await _post(client, order_id, body)
+            assert e.value.code == ErrorCode.KILL_SWITCH_ACTIVE
+    assert len(inner.requests) == (1 if passes else 0)
+
+
+@pytest.mark.parametrize("change", ["acknowledged", "filled", "canceled"])
+async def test_flatten_bypass_only_for_an_unsent_order(sm, change):
+    link_id, order_id = await _flatten(sm)
+    async with sm() as s:
+        o = await s.get(Order, order_id)
+        if change == "acknowledged":
+            o.broker_order_id = "b-1"
+        else:
+            o.status = OrderStatus(change)
+        await s.commit()
+    inner = Counting()
+    async with make_live_client(sm, link_id, inner=inner.transport()) as client:
+        with pytest.raises(LiveGateClosed) as e:
+            await _send(client, "POST", order_id)
+    assert e.value.code == ErrorCode.KILL_SWITCH_ACTIVE
+    assert inner.requests == []
+
+
+async def test_two_linked_portfolios_close_the_gate(sm):
+    link_id, order_id = await _setup(sm, state="armed")
+    async with sm() as s:
+        s.add(Portfolio(name=f"P-{uuid.uuid4().hex[:8]}", broker_link_id=link_id))
+        await s.commit()
+    inner = Counting()
+    async with make_live_client(sm, link_id, inner=inner.transport()) as client:
+        with pytest.raises(LiveGateClosed) as e:
+            await _send(client, "POST", order_id)
+    assert e.value.code == ErrorCode.LIVE_NOT_ARMED
+    assert inner.requests == []
+
+
+async def test_live_client_never_follows_redirects(sm):
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(302, headers={"Location": "https://elsewhere.invalid/x"})
+
+    async with make_live_client(sm, uuid.uuid4(),
+                                inner=httpx.MockTransport(handler)) as client:
+        r = await client.get(f"{BASE}/v2/account", follow_redirects=True)
+        assert r.status_code == 302
+        r = await client.send(client.build_request("GET", f"{BASE}/v2/account"),
+                              follow_redirects=True)
+        assert r.status_code == 302
+        async with client.stream("GET", f"{BASE}/v2/account",
+                                 follow_redirects=True) as r:
+            assert r.status_code == 302
+    assert len(calls) == 3

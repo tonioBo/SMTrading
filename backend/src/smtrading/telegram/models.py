@@ -26,7 +26,7 @@ class TelegramOutbox(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     source: Mapped[str] = mapped_column(String(64))  # "system" | "agent:<uuid>"
-    category: Mapped[str] = mapped_column(String(16))  # event|digest|daily|weekly|agent|test
+    category: Mapped[str] = mapped_column(String(16))  # event|digest|daily|weekly|agent|test|live
     level: Mapped[str] = mapped_column(String(16))
     text: Mapped[str] = mapped_column(Text)
     entities: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)

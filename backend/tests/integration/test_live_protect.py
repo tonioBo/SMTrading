@@ -34,6 +34,7 @@ from smtrading.telegram import config as tg_config
 from smtrading.telegram.client import API_URL
 from smtrading.telegram.config import TelegramConfig, save_config
 from smtrading.telegram.models import TelegramOutbox
+from smtrading.telegram.outbox import enqueue, resume_paused
 from smtrading.telegram.planner import TelegramPlanner
 from smtrading.telegram.sender import OutboxSender
 
@@ -240,6 +241,73 @@ async def test_live_reduce_only_not_cleared_by_daily_reset_or_patch(maker):
         PortfolioStatus.active, None, None)
 
 
+async def _live_blocked(maker) -> uuid.UUID:
+    pid, _ = await _portfolio(maker)
+    await _trip(maker, pid, "reconcile_diff")
+    return pid
+
+
+@pytest.mark.parametrize("new_reason", [None, DAILY_LOSS_REASON, "broker_liquidation"])
+async def test_live_reason_cannot_be_replaced_or_cleared(maker, new_reason):
+    """I3: first flush changes only the reason (the second would set active)."""
+    pid = await _live_blocked(maker)
+    async with maker() as s:
+        p = await s.get(Portfolio, pid)
+        p.reduce_only_reason = new_reason
+        with pytest.raises(SMTError) as e:
+            await s.flush()
+        assert e.value.code == ErrorCode.FORBIDDEN
+        await s.rollback()
+    async with maker() as s:  # also when the old value was never loaded (expired)
+        p = await s.get(Portfolio, pid)
+        s.expire(p, ["reduce_only_reason", "status"])
+        p.reduce_only_reason = new_reason
+        with pytest.raises(SMTError):
+            await s.flush()
+        await s.rollback()
+    async with maker() as s:  # bulk-free two-step: status first, then the reason
+        p = await s.get(Portfolio, pid)
+        s.expire(p, ["reduce_only_reason", "status"])
+        p.status = PortfolioStatus.active
+        with pytest.raises(SMTError):
+            await s.flush()
+        await s.rollback()
+    p = await _get(maker, pid)
+    assert (p.status, p.reduce_only_reason) == (PortfolioStatus.reduce_only,
+                                                "live_reconcile_diff")
+
+
+async def test_margin_lock_keeps_the_live_reason(maker):
+    from types import SimpleNamespace
+
+    from smtrading.risk.margin import _liquidate_at_broker
+
+    pid = await _live_blocked(maker)
+    valuation = SimpleNamespace(
+        positions=[SimpleNamespace(symbol="AAPL", qty=Decimal(2),
+                                   unrealized_pnl_eur=Decimal(-5))],
+        equity_eur=Decimal(1), exposure_eur=Decimal(1), maint_req_eur=Decimal(1),
+        warn_req_eur=Decimal(1))
+    async with maker() as s:
+        p = await s.get(Portfolio, pid)
+        [order] = await _liquidate_at_broker(s, p, valuation)
+        discard_post_commit(s)
+        await s.commit()
+    p = await _get(maker, pid)
+    assert (p.status, p.reduce_only_reason) == (PortfolioStatus.locked,
+                                                "live_reconcile_diff")
+    assert order.reduce_only
+
+
+async def test_trip_without_a_link_still_alerts(maker):
+    pid, _ = await _portfolio(maker, kind=None)
+    assert await _trip(maker, pid, "health") is True
+    [alert] = await _activities(maker, "live.")
+    assert alert.data["link_id"] is None
+    async with maker() as s:
+        assert list(await s.scalars(select(LiveAudit))) == []
+
+
 async def test_patch_route_and_other_reasons_unchanged(maker):
     pid, _ = await _portfolio(maker, kind=None)
     async with maker() as s:
@@ -295,6 +363,7 @@ async def test_live_activity_enqueued_when_telegram_not_ready_and_at_night(maker
     assert "buy 0,5 AAPL · mercato" in outbox[0].text
     assert "Prezzo 200,1 USD · valore 100,05 USD · commissioni 0,02" in outbox[1].text
     assert outbox[2].level == "critical"
+    assert {r.category for r in outbox} == {"live"}
     assert paper is not None
 
 
@@ -327,27 +396,71 @@ async def test_live_rows_paused_unreadable_and_stale(maker):
     assert [r.status for r in await _outbox(maker)][-1] == "pending"
 
 
-async def test_order_events_of_live_portfolio_skipped(maker):
-    await _configure(maker)
-    live, _ = await _portfolio(maker)
-    demo, _ = await _portfolio(maker, kind="alpaca_paper", state=None)
+async def _event_order(maker, pid, link_id, *, synced: bool) -> uuid.UUID:
     async with maker() as s:
-        for pid in (live, demo):
+        o = Order(portfolio_id=pid, symbol="AAPL", side=OrderSide.buy,
+                  type=OrderType.market, qty=Decimal(1), broker_link_id=link_id)
+        if synced:
+            o.broker_status = "filled"
+            o.broker_sent_at = DAY
+            o.broker_order_id = f"b-{uuid.uuid4().hex[:6]}"
+        s.add(o)
+        await s.commit()
+        return o.id
+
+
+async def test_order_events_of_live_portfolio_skipped(maker):
+    """I1: only an order that reached BrokerSync is covered by its live.order.* twin; a
+    pre-trade rejection keeps its own direct message."""
+    await _configure(maker)
+    live, live_link = await _portfolio(maker)
+    demo, demo_link = await _portfolio(maker, kind="alpaca_paper", state=None)
+    synced = await _event_order(maker, live, live_link, synced=True)
+    refused = await _event_order(maker, live, live_link, synced=False)
+    demo_synced = await _event_order(maker, demo, demo_link, synced=True)
+    async with maker() as s:
+        for pid, oid in ((live, synced), (demo, demo_synced)):
             queue_event(s, "order.filled", {
-                "portfolio_id": pid, "order_id": uuid.uuid4(), "fill_id": uuid.uuid4(),
+                "portfolio_id": pid, "order_id": oid, "fill_id": uuid.uuid4(),
                 "side": "buy", "qty": Decimal(1), "symbol": "AAPL", "price": Decimal(10),
                 "currency": "USD"})
+        for oid in (refused, uuid.uuid4(), None):  # pre-trade, unknown order, no order id
             queue_event(s, "order.rejected", {
-                "portfolio_id": pid, "order_id": uuid.uuid4(), "symbol": "AAPL",
-                "message": "no"})
+                "portfolio_id": live, "order_id": oid, "symbol": "AAPL",
+                "message": "LIVE_CASH_LIMIT"})
         discard_post_commit(s)
         await s.commit()
-    assert await TelegramPlanner(maker, clock=Clock(DAY), tz=TZ).tick() == 4
-    got = {(a.portfolio_id, a.type): a.telegram for a in await _activities(maker)}
-    assert got == {
-        (live, "order.filled"): "skipped", (live, "order.rejected"): "skipped",
-        (demo, "order.filled"): "queued", (demo, "order.rejected"): "queued",
-    }
+    async with maker() as s:  # the live twin of the synced fill
+        await record_live_order_activity(s, await s.get(Order, synced), "filled")
+        await s.commit()
+    assert await TelegramPlanner(maker, clock=Clock(DAY), tz=TZ).tick() == 6
+    got = [(a.portfolio_id, a.type, a.telegram) for a in await _activities(maker)]
+    assert got == [
+        (live, "order.filled", "skipped"), (demo, "order.filled", "queued"),
+        (live, "order.rejected", "queued"), (live, "order.rejected", "queued"),
+        (live, "order.rejected", "queued"), (live, "live.order.filled", "queued"),
+    ]
+
+
+async def test_paused_live_rows_survive_resume_after_24h(maker):
+    """I2: live outbox rows (category live) are never stale-skipped by a resume."""
+    pid, link_id = await _portfolio(maker)
+    await _configure(maker, paused=True)
+    await _live_rows(maker, pid, link_id)
+    async with maker() as s:  # a non-live, non-critical paused message too
+        await enqueue(s, source="system", category="event", level="info", text="vecchia")
+        await s.commit()
+    assert await TelegramPlanner(maker, clock=Clock(DAY), tz=TZ).tick() == 3
+    async with maker() as s:
+        await s.execute(update(TelegramOutbox).values(
+            created_at=TelegramOutbox.created_at - timedelta(days=3)))
+        await s.commit()
+    async with maker() as s:
+        assert await resume_paused(s) == 3
+        await s.commit()
+    got = [(r.category, r.level, r.status) for r in await _outbox(maker)]
+    assert got == [("event", "info", "skipped"), ("live", "info", "pending"),
+                   ("live", "info", "pending"), ("live", "critical", "pending")]
 
 
 async def test_live_order_at_night_sent_silent(maker):
