@@ -3,7 +3,8 @@
 Redis side effects of a transaction (events, track/untrack) are queued on the session
 with `queue_*` and executed only after commit with `dispatch_post_commit`; on rollback
 the caller drops them with `discard_post_commit`. Notifications are DB rows and stay
-inside the transaction.
+inside the transaction. Both also record the fact in the activity feed
+(`activity.service.record_activity`), in the same transaction.
 """
 
 import json
@@ -16,6 +17,8 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from smtrading.activity.mapping import activity_for_event, activity_for_notification
+from smtrading.activity.service import clear_activity_keys, record_activity
 from smtrading.marketdata.streaming import track, untrack
 from smtrading.risk.models import Notification
 
@@ -61,6 +64,10 @@ async def notify(
         portfolio_id=portfolio_id, agent_id=agent_id, kind=kind, payload=json_safe(payload)
     )
     session.add(n)
+    record_activity(
+        session, activity_for_notification(kind, payload),
+        portfolio_id=portfolio_id, agent_id=agent_id,
+    )
     await session.flush()
     # the web app refreshes on it (alerts, broker, risk); the payload stays in the table
     queue_event(session, "notification",
@@ -74,6 +81,12 @@ def _queue(session: AsyncSession) -> list[tuple]:
 
 def queue_event(session: AsyncSession, type: str, payload: dict) -> None:
     _queue(session).append(("event", type, payload))
+    draft = activity_for_event(type, payload)
+    if draft is not None:
+        record_activity(
+            session, draft,
+            portfolio_id=payload.get("portfolio_id"), agent_id=payload.get("agent_id"),
+        )
 
 
 def queue_track(session: AsyncSession, symbol: str, source: str) -> None:
@@ -86,6 +99,7 @@ def queue_untrack(session: AsyncSession, symbol: str, source: str) -> None:
 
 def discard_post_commit(session: AsyncSession) -> None:
     session.info.pop(POST_COMMIT_KEY, None)
+    clear_activity_keys(session)
 
 
 async def dispatch_post_commit(session: AsyncSession, redis) -> int:
@@ -94,6 +108,7 @@ async def dispatch_post_commit(session: AsyncSession, redis) -> int:
     Errors are logged and skipped. With redis None the queue is dropped.
     """
     effects = session.info.pop(POST_COMMIT_KEY, [])
+    clear_activity_keys(session)
     if redis is None:
         return 0
     done = 0

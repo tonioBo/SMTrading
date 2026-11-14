@@ -40,7 +40,8 @@ the lock (startup recovery).
 - bracket exits at the broker are independent orders: when one fills, the cancel of
   its OCO sibling is requested and sent in the same pass.
 
-`reconcile` compares the broker's positions with ours; it never corrects anything.
+`reconcile` compares the broker's positions with ours; it never corrects anything (a
+difference is recorded in the activity feed and sent to Telegram).
 """
 
 import asyncio
@@ -54,6 +55,9 @@ from uuid import UUID
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from smtrading.activity.mapping import ActivityDraft
+from smtrading.activity.models import ActivityLevel
+from smtrading.activity.service import record_activity
 from smtrading.brokers.base import BrokerAdapter, BrokerOrder
 from smtrading.brokers.models import BrokerLink, Reconciliation
 from smtrading.brokers.service import get_adapter
@@ -943,6 +947,13 @@ async def reconcile(
     ]
     async with sessionmaker() as session:
         session.add_all(rows)
+        for row in rows:
+            if not row.ok:
+                record_activity(session, ActivityDraft(
+                    "broker.reconciliation_diff", ActivityLevel.warning, True,
+                    f"Riconciliazione broker con {len(diffs)} differenze",
+                    {"broker_link_id": link_id, "diffs": diffs},
+                ), portfolio_id=row.portfolio_id, agent_id=None)
         await session.commit()
     return rows
 
