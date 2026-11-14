@@ -1,13 +1,16 @@
 """Scheduled Telegram summaries: night digest, daily and weekly summary, ranking. Nothing is
 sent to Telegram here: the summaries only fill the outbox (the sender is tested apart)."""
 
+import json
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
+import respx
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -26,9 +29,12 @@ from smtrading.portfolios.service import create_portfolio
 from smtrading.risk.models import EquitySnapshot, SnapshotKind
 from smtrading.seed import run_seed
 from smtrading.telegram import config as tg_config
+from smtrading.telegram.client import API_URL
 from smtrading.telegram.config import TelegramConfig, save_config
 from smtrading.telegram.models import TelegramOutbox
+from smtrading.telegram.planner import TelegramPlanner
 from smtrading.telegram.render import MAX_LEN, utf16_len
+from smtrading.telegram.sender import OutboxSender
 from smtrading.telegram.summaries import (
     RankRow,
     SummaryScheduler,
@@ -300,6 +306,23 @@ async def test_summary_skipped_after_2300(maker, caplog):
     assert await _outbox(maker) == []
 
 
+async def test_not_ready_past_cutoff_warns_once(maker, caplog):
+    """Telegram not ready when the 23:00 cutoff passes: one WARNING per summary and day,
+    nothing claimed or sent."""
+    await _configure(maker, enabled=False)
+    scheduler = _scheduler(maker, Clock(rome(FRI, 23, 5)))
+    with caplog.at_level(logging.WARNING, logger="smtrading.telegram.summaries"):
+        await scheduler.tick()
+        await scheduler.tick()
+    messages = [r.getMessage() for r in caplog.records
+                if r.name == "smtrading.telegram.summaries"]
+    assert len(messages) == 3  # digest, daily and weekly, once each
+    assert any("telegram.daily of 2027-03-12" in m and "not ready" in m for m in messages)
+    assert await _outbox(maker) == []
+    async with maker() as s:
+        assert not await job_done(s, "telegram.daily", "2027-03-12")
+
+
 async def test_worker_down_at_1800_sends_once_when_back(maker):
     await _configure(maker)
     clock = Clock(rome(FRI, 21, 40))
@@ -407,6 +430,72 @@ async def test_digest_at_0700_collects_night_events(maker):
     clock.t = rome(FRI, 7, 30)
     await _scheduler(maker, clock).tick()
     assert len(await _outbox(maker)) == 1
+
+
+async def test_digest_archived_portfolio_rule(maker):
+    """One rule with the summaries: a portfolio archived during the night is left out of the
+    digest; its rows are marked `skipped` (never sent), not left as `digest`."""
+    await _configure(maker)
+    live = await _portfolio(maker, "Test 250 A")
+    gone = await _portfolio(maker, "Vecchio")
+    kept = await _activity(maker, summary="Ordine eseguito: vivo", ts=rome(THU, 23, 10),
+                           portfolio_id=live, telegram="digest")
+    dropped = await _activity(maker, summary="Ordine eseguito: archiviato",
+                              ts=rome(THU, 23, 20), portfolio_id=gone, telegram="digest")
+    global_row = await _activity(maker, type="kill_switch", level="warning",
+                                 summary="Kill switch disattivato", ts=rome(FRI, 1),
+                                 telegram="digest")
+    await _archive(maker, gone)
+    async with maker() as s:
+        [(text, _)] = await build_digest(s, rome(FRI, 7), tz=TZ)
+        await s.commit()
+    assert "vivo" in text and "Kill switch disattivato" in text
+    assert "archiviato" not in text and "Vecchio" not in text
+    async with maker() as s:
+        rows = {a.id: a.telegram for a in await s.scalars(select(Activity))}
+    assert (rows[kept], rows[dropped], rows[global_row]) == ("queued", "skipped", "queued")
+
+
+async def test_digest_only_archived_sends_nothing(maker):
+    await _configure(maker)
+    gone = await _portfolio(maker, "Vecchio")
+    row = await _activity(maker, ts=rome(THU, 23, 10), portfolio_id=gone, telegram="digest")
+    await _archive(maker, gone)
+    async with maker() as s:
+        assert await build_digest(s, rome(FRI, 7), tz=TZ) is None
+        await s.commit()
+    async with maker() as s:
+        assert (await s.get(Activity, row)).telegram == "skipped"
+    assert await _outbox(maker) == []
+
+
+@respx.mock
+async def test_night_fill_reaches_group_in_0700_digest(maker):
+    """Across the tasks: a fill at 23:30 → planner `digest` → SummaryScheduler at 07:00 →
+    OutboxSender sends it with sound (disable_notification false)."""
+    await _configure(maker)
+    pid = await _portfolio(maker, "Test 250 A", cash=10_000)
+    await _fill(maker, pid, rome(THU, 23, 30))
+    clock = Clock(rome(THU, 23, 30, 5))
+    assert await TelegramPlanner(maker, clock=clock, tz=TZ).tick() == 1
+    async with maker() as s:
+        [row] = list(await s.scalars(select(Activity).where(Activity.type == "order.filled")))
+    assert row.telegram == "digest"
+    assert await _outbox(maker) == []
+
+    route = respx.post(f"{API_URL}/bot{TOKEN}/sendMessage").mock(
+        return_value=httpx.Response(200, json={"ok": True, "result": {"message_id": 7}}))
+    clock.t = rome(FRI, 7, 0, 10)
+    await _scheduler(maker, clock).tick()
+    async with httpx.AsyncClient() as http:
+        sender = OutboxSender(maker, http, clock=clock, tz=TZ)
+        assert await sender.tick() == 1
+    [body] = [json.loads(c.request.content) for c in route.calls]
+    assert body["text"].startswith("🌙 Riepilogo della notte")
+    assert "23:30" in body["text"] and "Test 250 A" in body["text"]
+    assert body["disable_notification"] is False
+    [msg] = await _outbox(maker)
+    assert (msg.category, msg.status, msg.telegram_message_id) == ("digest", "sent", 7)
 
 
 async def test_digest_without_events_sends_nothing(maker):

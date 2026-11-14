@@ -6,7 +6,12 @@ Each is claimed once per local date in `job_runs` (jobs `telegram.digest`,
 `telegram.daily`, `telegram.weekly`), in the same transaction as its outbox rows, so a
 restart never sends twice. A summary is sent only while Telegram is ready; a worker that
 was down at the scheduled time sends it when it comes back, the same day before 23:00.
-Later it is skipped (WARNING, marked done): past days are never recovered.
+Later it is skipped (WARNING, marked done): past days are never recovered. When the 23:00
+cutoff passes while Telegram is not ready, one WARNING per summary and day is logged and
+nothing is claimed.
+
+One rule for archived portfolios: they are left out of the digest and of the summaries
+(their digest rows are marked `skipped`).
 
 The ranking uses `get_performance` (same return and drawdown as the API) over the
 portfolios that are not archived, plus the fills of the period.
@@ -31,7 +36,7 @@ from smtrading.common.config import get_settings
 from smtrading.engine.models import Fill
 from smtrading.jobs.runs import run_job_once
 from smtrading.performance.service import get_performance
-from smtrading.portfolios.models import Portfolio, live_portfolio_ids
+from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
 from smtrading.telegram.config import is_ready, load_config
 from smtrading.telegram.outbox import enqueue
 from smtrading.telegram.quiet import QUIET_START
@@ -170,13 +175,22 @@ def _section(title: str, lines: list[str], limit: int | None = SECTION_LINES) ->
 async def build_digest(session: AsyncSession, now: datetime, *,
                        tz: str | None = None) -> Parts | None:
     """The night digest of the activity rows marked `digest`, or None when there are none.
-    Queues its messages (category `digest`) and marks the rows `queued` with the outbox id
+    Rows of portfolios archived meanwhile are marked `skipped` and left out. Queues its messages (category `digest`) and marks the rows `queued` with the outbox id
     of the first message, in the caller's transaction; returns the queued parts."""
     zone = ZoneInfo(tz or get_settings().tz)
     rows = list(await session.scalars(
         select(Activity).where(Activity.telegram == TelegramState.digest)
         .order_by(Activity.id).with_for_update(skip_locked=True)
     ))
+    archived = set(await session.scalars(
+        select(Portfolio.id).where(
+            Portfolio.id.in_({a.portfolio_id for a in rows if a.portfolio_id}),
+            Portfolio.status == PortfolioStatus.archived)
+    )) if rows else set()
+    for a in rows:
+        if a.portfolio_id in archived:  # the same rule as the summaries: left out
+            a.telegram = TelegramState.skipped
+    rows = [a for a in rows if a.portfolio_id not in archived]
     if not rows:
         return None
     names = await _portfolio_names(session, rows)
@@ -307,6 +321,10 @@ class SummaryScheduler:
             return
         async with self._sm() as session, session.begin():
             if not is_ready(await load_config(session)):
+                if local.time() >= CUTOFF:
+                    log.warning("%s of %s not sent: Telegram not ready before %s", job.name,
+                                key, CUTOFF.strftime("%H:%M"))
+                    self._done.add((job.name, key))  # once per summary and day
                 return  # not claimed: it goes out if Telegram is ready before 23:00
             claimed = await run_job_once(session, job.name, key)
             if claimed and local.time() >= CUTOFF:
