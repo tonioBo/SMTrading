@@ -250,6 +250,13 @@ class OutboxSender:
                 row.status = OutboxStatus.failed
                 log.warning("telegram message %s failed after %s attempts", row.id,
                             row.attempts)
+        if (e.kind in (TRANSIENT, CHAT) and self._hold_version is not None
+                and await load_hold_version(session) != self._hold_version):
+            # released (config fixed, queue resumed, failed retried) while this send was in
+            # flight: keep the release, do not push anything back
+            if row.status == OutboxStatus.pending:
+                row.next_attempt_at = now
+            return
         if row.status == OutboxStatus.pending:
             row.next_attempt_at = retry_at
         if e.kind in (TRANSIENT, CHAT):

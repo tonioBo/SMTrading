@@ -672,6 +672,35 @@ async def test_config_fix_releases_hold(maker, http):
     assert [r.status for r in await _outbox(maker)] == ["sent", "sent"]
 
 
+@respx.mock
+async def test_release_during_inflight_failure_not_lost(maker, http):
+    """The admin fixes the config while a failing send is in flight: the failure must not
+    push the queue back to retry_at, the next tick sends."""
+    await _configure(maker)
+    await _queue_texts(maker, "uno", "due")
+    state = {"fail": True}
+
+    async def side_effect(request):
+        if state["fail"]:
+            async with maker() as s:  # release commits in a separate session mid-send
+                await release_hold(s)
+                await s.commit()
+            return _err(403, "Forbidden: bot was kicked")
+        return _ok()
+
+    route = respx.post(SEND_URL).mock(side_effect=side_effect)
+    clock = Clock(DAY)
+    sender, _ = _sender(maker, http, clock)
+    assert await sender.tick() == 1
+    state["fail"] = False
+    clock.advance(SEND_MIN_INTERVAL_S)
+    assert await sender.tick() == 1
+    assert _sent(route)[-1]["text"] == "uno"
+    clock.advance(SEND_MIN_INTERVAL_S)
+    assert await sender.tick() == 1
+    assert [r.status for r in await _outbox(maker)] == ["sent", "sent"]
+
+
 async def test_stale_noncritical_skipped_critical_sent(maker):
     await _configure(maker)
     await _fill(maker)

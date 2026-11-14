@@ -213,7 +213,7 @@ Contratto del cursore (come «Polling degli alert»):
    (per esempio alla ripartenza da `since`): **deduplicare per `id`**.
 5. `already_sent: true`: SMTrading lo invia o lo inviera' da se' su Telegram (gia'
    inviato, in coda, nel riepilogo della notte o non ancora pianificato, per esempio con il
-   worker fermo). **Non ripeterlo**: quando il worker riparte SMTrading lo invia comunque.
+   worker fermo; resta `true` anche se poi e' scartato perche' in pausa da piu' di 24 ore). **Non ripeterlo**: quando il worker riparte SMTrading lo invia comunque.
    `already_sent: false` solo per gli eventi che SMTrading non inviera' mai (Telegram
    disattivato in quel momento, evento vecchio scartato, errore) e per quelli che non
    notifica da se'.

@@ -64,9 +64,12 @@ class PausedIn(BaseModel):
 
 async def _telegram_dto(session: AsyncSession) -> dict[str, Any]:
     counts = dict((await session.execute(
-        select(TelegramOutbox.status, func.count()).where(TelegramOutbox.status.in_(
-            [OutboxStatus.pending, OutboxStatus.paused, OutboxStatus.failed]
-        )).group_by(TelegramOutbox.status)
+        select(TelegramOutbox.status, func.count()).where(
+            TelegramOutbox.status.in_(
+                [OutboxStatus.pending, OutboxStatus.paused, OutboxStatus.failed]),
+            # test messages are never retried in bulk: leave them out of the counts
+            TelegramOutbox.category != "test",
+        ).group_by(TelegramOutbox.status)
     )).all())
     return {**config_dto(await load_config(session)),
             "outbox": {s: counts.get(s, 0) for s in ("pending", "paused", "failed")}}

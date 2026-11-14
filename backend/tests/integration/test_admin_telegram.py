@@ -396,6 +396,13 @@ async def test_resume_releases_sender_hold(admin):
     assert await _hold_state(admin) == (version + 1, 0)
 
 
+async def test_outbox_failed_count_excludes_test_messages(admin):
+    await _outbox(admin, "failed", 1, category="test")
+    await _outbox(admin, "failed", 2)
+    r = await admin.client.get("/api/telegram")
+    assert r.json()["outbox"]["failed"] == 2
+
+
 async def test_retry_all_failed(admin):
     with respx.mock(assert_all_called=False) as router:
         await _configure(admin, router)

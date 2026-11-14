@@ -383,6 +383,15 @@ describe("Notifiche", () => {
     await waitFor(() => expect(region.queryByRole("button", { name: "Riprova tutti i falliti" })).not.toBeInTheDocument());
   });
 
+  it("retry all with nothing to retry shows a notice", async () => {
+    const user = userEvent.setup();
+    server.use(http.post("*/api/telegram/outbox/retry-failed", () => HttpResponse.json({ retried: 0 })));
+    renderApp("/notifiche");
+    const region = within(await screen.findByRole("region", { name: "Ultimi messaggi" }));
+    await user.click(await region.findByRole("button", { name: "Riprova tutti i falliti" }));
+    expect(await region.findByText("Nessun messaggio da riprovare")).toBeInTheDocument();
+  });
+
   it("skipped messages have their own label", async () => {
     server.use(
       http.get("*/api/telegram/outbox", () =>

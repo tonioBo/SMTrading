@@ -400,6 +400,11 @@ function OutboxSection() {
             {errorMessage(retry.error)}
           </p>
         )}
+        {retryAll.data?.retried === 0 && (
+          <p role="status" className="mb-2 text-muted-foreground">
+            Nessun messaggio da riprovare
+          </p>
+        )}
         {retryAll.error && (
           <p role="alert" className="mb-2 text-loss">
             {errorMessage(retryAll.error)}
