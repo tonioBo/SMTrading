@@ -524,17 +524,57 @@ describe("PortfolioDetail", () => {
   });
 
   it("a real portfolio suspended by a live anomaly has no Sblocca, and trailing stops carry the note", async () => {
-    current = { ...portfolio, mode: "paper", live_state: "dry_run", broker_link_id: "l1", status: "reduce_only", reduce_only_reason: "live_unknown" };
+    current = { ...portfolio, mode: "paper", live_state: "dry_run", broker_link_id: "l1", status: "reduce_only", reduce_only_reason: "live_order_unknown" };
     server.use(http.get("*/api/portfolios/p1/orders", () => HttpResponse.json([{ ...openOrder, type: "trailing_stop" }])));
     const user = await openTab("Rischio");
     expect(screen.getByLabelText(/^Modalità: reale · prova\./)).toHaveTextContent("🔴REALE · PROVA");
-    expect(await screen.findByText("live_unknown", { selector: "dd" })).toBeInTheDocument();
+    expect(await screen.findByText("Anomalia del denaro reale: esito sconosciuto di un ordine", { selector: "dd" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sblocca" })).not.toBeInTheDocument();
     const panel = screen.getByRole("region", { name: "Denaro reale" });
     expect(within(panel).getByRole("button", { name: "Ho verificato, riprendi" })).toBeInTheDocument();
     expect(within(panel).queryByRole("button", { name: "Chiudi tutte le posizioni reali" })).not.toBeInTheDocument(); // only when armed
     await user.click(screen.getByRole("tab", { name: "Ordini" }));
     expect(await screen.findByText("stop gestito da SMTrading, non dal broker")).toBeInTheDocument();
+  });
+
+  it("disarms from the portfolio in one click, without TOTP", async () => {
+    current = { ...portfolio, mode: "paper", live_state: "dry_run", broker_link_id: "l1" };
+    const disarms: string[] = [];
+    server.use(
+      http.post("*/api/live-links/l1/disarm", async ({ request }) => {
+        disarms.push(await request.text());
+        current = { ...current, live_state: "configured" };
+        return HttpResponse.json({ id: "l1", live_state: "configured", orders: null, settled: false });
+      }),
+    );
+    const user = userEvent.setup();
+    renderApp("/portafogli/p1");
+    const panel = await screen.findByRole("region", { name: "Denaro reale" });
+    await user.click(within(panel).getByRole("button", { name: "Disattiva denaro reale" }));
+    await waitFor(() => expect(disarms).toHaveLength(1));
+    expect(disarms[0]).not.toMatch(/totp/i);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(await within(panel).findByRole("alert")).toHaveTextContent("Disattivato, ordini da sistemare: riprova");
+    expect(await within(panel).findByRole("button", { name: "Ripeti disattivazione / sistema ordini" })).toBeInTheDocument();
+  });
+
+  it("keeps Sblocca on a locked real portfolio and marks its rows as real", async () => {
+    current = { ...portfolio, mode: "reale", live_state: "armed", broker_link_id: "l1", status: "locked", reduce_only_reason: "live_fuse" };
+    const user = await openTab("Rischio");
+    expect(await screen.findByText("Anomalia del denaro reale: fusibile: troppi ordini reali nell'ultima ora", { selector: "dd" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sblocca" })).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Ordini" }));
+    const orders = await screen.findByRole("table", { name: "Ordini" });
+    expect(await within(orders).findByText("🔴 REALE")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Posizioni" }));
+    const positions = await screen.findByRole("table", { name: "Posizioni" });
+    expect(await within(positions).findByText("🔴 REALE")).toBeInTheDocument();
+  });
+
+  it("labels the known reduce-only reasons in Italian", async () => {
+    current = { ...portfolio, status: "reduce_only", reduce_only_reason: "daily_loss" };
+    await openTab("Rischio");
+    expect(await screen.findByText("Perdita giornaliera massima raggiunta", { selector: "dd" })).toBeInTheDocument();
   });
 
   it("has no Sblocca button on an active portfolio", async () => {

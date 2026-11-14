@@ -214,7 +214,7 @@ describe("LiveLinkWizard", () => {
     expect(within(card).getByText(/disattivato dall'admin/)).toBeInTheDocument();
   });
 
-  it("keeps the disarm button and warns when the orders could not be settled", async () => {
+  it("keeps a retry button and warns when the orders could not be settled", async () => {
     links = [liveLink({ live_state: "armed" })];
     settled = false;
     const user = userEvent.setup();
@@ -223,9 +223,45 @@ describe("LiveLinkWizard", () => {
     await user.click(within(card).getByRole("button", { name: "Disattiva denaro reale" }));
     expect(await within(card).findByRole("alert")).toHaveTextContent("Disattivato, ordini da sistemare: riprova");
     settled = true;
-    await user.click(within(card).getByRole("button", { name: "Disattiva denaro reale" }));
+    await user.click(await within(card).findByRole("button", { name: "Ripeti disattivazione / sistema ordini" }));
     await waitFor(() => expect(disarms).toHaveLength(2));
-    await waitFor(() => expect(within(card).queryByRole("button", { name: "Disattiva denaro reale" })).not.toBeInTheDocument());
-    expect(within(card).queryByText("Disattivato, ordini da sistemare: riprova")).not.toBeInTheDocument();
+    await waitFor(() => expect(within(card).queryByText("Disattivato, ordini da sistemare: riprova")).not.toBeInTheDocument());
+  });
+
+  it("offers the idempotent retry on a configured link, e.g. after a reload", async () => {
+    links = [liveLink({ live_state: "configured", disarmed_reason: "disattivato dall'admin" })];
+    const user = userEvent.setup();
+    renderApp("/broker");
+    const card = await screen.findByLabelText("Denaro reale Alpaca vero");
+    expect(within(card).queryByRole("button", { name: "Disattiva denaro reale" })).not.toBeInTheDocument();
+    await user.click(within(card).getByRole("button", { name: "Ripeti disattivazione / sistema ordini" }));
+    await waitFor(() => expect(disarms).toHaveLength(1));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("shows the one-click disarm on a dry-run link", async () => {
+    links = [liveLink({ live_state: "dry_run" })];
+    const user = userEvent.setup();
+    renderApp("/broker");
+    const card = await screen.findByLabelText("Denaro reale Alpaca vero");
+    await user.click(within(card).getByRole("button", { name: "Disattiva denaro reale" }));
+    await waitFor(() => expect(disarms).toHaveLength(1));
+    expect(disarms[0].body).not.toMatch(/totp/i);
+  });
+
+  it("uses new-password autocomplete on the key fields", async () => {
+    const user = userEvent.setup();
+    renderApp("/broker");
+    await user.click(await screen.findByRole("button", { name: "Nuovo collegamento reale" }));
+    const form = screen.getByRole("form", { name: "Nuovo collegamento denaro reale" });
+    expect(within(form).getByLabelText("Key ID")).toHaveAttribute("autocomplete", "new-password");
+    expect(within(form).getByLabelText("Secret key")).toHaveAttribute("autocomplete", "new-password");
+  });
+
+  it("gives the real-money section an anchor for the banner link", async () => {
+    links = [liveLink()];
+    renderApp("/broker#denaro-reale");
+    await screen.findByLabelText("Denaro reale Alpaca vero");
+    expect(document.getElementById("denaro-reale")).toHaveAccessibleName("Denaro reale");
   });
 });

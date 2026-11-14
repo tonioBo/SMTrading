@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useModes } from "@/api/hooks/dashboard";
 import { useLiveStatus } from "@/api/hooks/live";
 import { TELEGRAM_DOWN_TEXT, liveBannerText } from "@/lib/live";
@@ -22,7 +23,11 @@ export function ModeBanner() {
           className="border-b border-loss bg-loss px-6 py-2 text-center text-sm font-semibold text-white"
         >
           <span aria-hidden="true">🔴 </span>
-          {liveBannerText(armedPortfolios || live.armed_count)}
+          <span>{liveBannerText(armedPortfolios || live.armed_count)}</span>
+          {" · "}
+          <Link to="/broker#denaro-reale" className="underline underline-offset-2">
+            Disattiva
+          </Link>
         </div>
         {!live.telegram_ok && (
           <div role="alert" className="border-b border-warn/40 bg-warn/15 px-6 py-1.5 text-center text-xs font-semibold text-warn">

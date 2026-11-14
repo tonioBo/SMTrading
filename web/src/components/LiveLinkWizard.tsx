@@ -10,7 +10,7 @@ import {
   useTestLiveLink,
 } from "@/api/hooks/live";
 import { usePortfolios, useRiskProfiles, useValuation } from "@/api/hooks/portfolios";
-import type { LiveKeysInput, LiveKind, LiveLink, LiveSnapshot, LiveTestResult } from "@/api/types";
+import type { LiveKeysInput, LiveKind, LiveLink, LiveSnapshot, LiveState, LiveTestResult } from "@/api/types";
 import { FormField, selectClass } from "@/components/FormField";
 import { LiveArmDialog } from "@/components/LiveArmDialog";
 import { LiveTotpDialog } from "@/components/LiveTotpDialog";
@@ -21,10 +21,16 @@ import { Input } from "@/components/ui/input";
 import { SECRET_LABELS } from "@/lib/broker";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatDateTime, formatMoney } from "@/lib/format";
-import { LIVE_KINDS, LIVE_STATE_LABELS, T212_PERMISSIONS, liveKindInfo } from "@/lib/live";
+import {
+  DISARM_LABEL,
+  DISARM_RETRY_LABEL,
+  DISARM_UNSETTLED,
+  LIVE_KINDS,
+  LIVE_STATE_LABELS,
+  T212_PERMISSIONS,
+  liveKindInfo,
+} from "@/lib/live";
 import { cn } from "@/lib/utils";
-
-export const DISARM_UNSETTLED = "Disattivato, ordini da sistemare: riprova";
 
 function Alert({ children }: { children: ReactNode }) {
   return (
@@ -79,7 +85,7 @@ function KeyFields({
     <>
       {keys.map((k) => (
         <FormField key={k} label={SECRET_LABELS[k] ?? k} error={field === k ? errorMessage(error) : null}>
-          <Input type="password" autoComplete="off" value={values[k] ?? ""} onChange={(e) => onChange(k, e.target.value)} />
+          <Input type="password" autoComplete="new-password" value={values[k] ?? ""} onChange={(e) => onChange(k, e.target.value)} />
         </FormField>
       ))}
     </>
@@ -475,28 +481,35 @@ function ArmStep({ link }: { link: LiveLink }) {
   );
 }
 
-/** «Disattiva denaro reale»: one click, no confirmation, no TOTP. */
-function DisarmButton({ link, unsettled, onUnsettled }: { link: LiveLink; unsettled: boolean; onUnsettled: (v: boolean) => void }) {
-  const disarm = useDisarmLiveLink(link.id);
+/**
+ * «Disattiva denaro reale»: one click, no confirmation, no TOTP. On a link already
+ * `configured` it is the idempotent retry (settles the orders left by a failed disarm),
+ * so the retry the backend alert asks for is reachable after a reload or from another device.
+ */
+export function LiveDisarmButton({ linkId, linkName, liveState }: { linkId: string; linkName: string; liveState: LiveState }) {
+  const disarm = useDisarmLiveLink(linkId);
+  const [unsettled, setUnsettled] = useState(false);
+  const retry = liveState === "configured";
   return (
     <div className="space-y-1">
       <Button
         type="button"
-        variant="destructive"
-        className="w-full font-semibold"
+        variant={retry ? "outline" : "destructive"}
+        size={retry ? "sm" : "default"}
+        className={retry ? "w-full border-loss text-loss" : "w-full font-semibold"}
         disabled={disarm.isPending}
         onClick={() =>
           disarm.mutate(undefined, {
             onSuccess: (res) => {
-              onUnsettled(!res.settled);
-              if (res.settled) toast.success(`Denaro reale disattivato su ${link.name}`);
+              setUnsettled(!res.settled);
+              if (res.settled) toast.success(`Denaro reale disattivato su ${linkName}`);
               else toast.warning(DISARM_UNSETTLED);
             },
           })
         }
       >
         <OctagonX aria-hidden />
-        Disattiva denaro reale
+        {retry ? DISARM_RETRY_LABEL : DISARM_LABEL}
       </Button>
       {unsettled && <Alert>{DISARM_UNSETTLED}</Alert>}
       {disarm.error && <Alert>{errorMessage(disarm.error)}</Alert>}
@@ -506,13 +519,12 @@ function DisarmButton({ link, unsettled, onUnsettled }: { link: LiveLink; unsett
 
 /** A real-money link and its 4 steps: keys, read-only test, dry run, arm. */
 export function LiveLinkWizard({ link }: { link: LiveLink }) {
-  const [unsettled, setUnsettled] = useState(false);
   const info = liveKindInfo(link.kind);
   const armed = link.live_state === "armed";
   return (
     <Card aria-label={`Denaro reale ${link.name}`} className="border-2 border-loss">
       <CardHeader className="space-y-2">
-        {(armed || unsettled) && <DisarmButton link={link} unsettled={unsettled} onUnsettled={setUnsettled} />}
+        <LiveDisarmButton linkId={link.id} linkName={link.name} liveState={link.live_state} />
         <div className="flex items-start justify-between gap-2">
           <div>
             <CardTitle className="text-base">{link.name}</CardTitle>

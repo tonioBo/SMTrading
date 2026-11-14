@@ -180,6 +180,7 @@ describe("Layout", () => {
     const banner = await screen.findByRole("status", { name: "Modalità di trading" });
     await waitFor(() => expect(banner).toHaveTextContent("Denaro reale attivo su 1 portafoglio"));
     expect(banner.className).toContain("bg-loss");
+    expect(within(banner).getByRole("link", { name: "Disattiva" })).toHaveAttribute("href", "/broker#denaro-reale");
     expect(screen.getByText("Telegram non funziona: gli ordini reali continuano, le notifiche restano in coda")).toBeInTheDocument();
   });
 

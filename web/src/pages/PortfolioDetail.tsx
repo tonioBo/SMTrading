@@ -16,12 +16,13 @@ import {
   useValuation,
 } from "@/api/hooks/portfolios";
 import { useLiveFlatten, useLiveResume } from "@/api/hooks/live";
-import type { Order, Portfolio, Position, Valuation } from "@/api/types";
+import type { LiveState, Order, Portfolio, Position, Valuation } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EquityChart } from "@/components/EquityChart";
 import { Money } from "@/components/Money";
 import { HaltBanner } from "@/components/HaltBanner";
+import { LiveDisarmButton } from "@/components/LiveLinkWizard";
 import { LiveTotpDialog } from "@/components/LiveTotpDialog";
 import { PageHeader } from "@/components/PageHeader";
 import { Pnl } from "@/components/Pnl";
@@ -36,7 +37,7 @@ import { BROKER_STATUS_LABELS } from "@/lib/broker";
 import { subtractDecimal } from "@/lib/decimal";
 import { errorMessage } from "@/lib/errors";
 import { formatDateTime, formatDecimal, formatMoney, formatPct, formatQty } from "@/lib/format";
-import { LIVE_STATE_LABELS, TRAILING_NOTE, isLiveReason } from "@/lib/live";
+import { LIVE_BADGE, LIVE_STATE_LABELS, TRAILING_NOTE, isLiveReason, reduceOnlyReasonLabel } from "@/lib/live";
 import { Movements } from "@/pages/PortfolioDetailMovements";
 import { Operations } from "@/pages/PortfolioDetailOperations";
 import { PortfolioSettings } from "@/pages/PortfolioDetailSettings";
@@ -124,9 +125,15 @@ function Overview({ portfolio }: { portfolio: Portfolio }) {
   );
 }
 
+/** Row marker of a real-money portfolio: «🔴 REALE» (or · PROVA / · SOSPESO). */
+function LiveMarker({ state }: { state: LiveState | null | undefined }) {
+  if (!state) return null;
+  return <span className="ml-2 whitespace-nowrap text-xs font-semibold text-loss">🔴 {LIVE_BADGE[state].label}</span>;
+}
+
 // --- Posizioni -----------------------------------------------------------------------
 
-function Positions({ portfolioId }: { portfolioId: string }) {
+function Positions({ portfolioId, liveState }: { portfolioId: string; liveState?: LiveState | null }) {
   const { data, isLoading, isError, error, dataUpdatedAt } = usePositions(portfolioId);
   const live = useLiveQuotes(data?.map((p) => p.symbol) ?? [], dataUpdatedAt);
 
@@ -138,6 +145,7 @@ function Positions({ portfolioId }: { portfolioId: string }) {
       cell: (p) => (
         <>
           <span className="font-medium">{p.symbol}</span>
+          <LiveMarker state={liveState} />
           {p.stale && <span className="ml-2 text-xs text-warn">quotazione non aggiornata</span>}
         </>
       ),
@@ -236,7 +244,18 @@ function BrokerCell({ order, linked }: { order: Order; linked: boolean }) {
   return linked ? <Badge variant="outline">Solo simulato</Badge> : <span className="text-muted">—</span>;
 }
 
-function Orders({ portfolioId, linked, real, readOnly }: { portfolioId: string; linked: boolean; real: boolean; readOnly: boolean }) {
+function Orders({
+  portfolioId,
+  linked,
+  liveState,
+  readOnly,
+}: {
+  portfolioId: string;
+  linked: boolean;
+  liveState?: LiveState | null;
+  readOnly: boolean;
+}) {
+  const real = Boolean(liveState);
   const [status, setStatus] = useState("open");
   const { data, isLoading, isError, error } = useOrders(portfolioId, status);
   const cancel = useCancelOrder(portfolioId);
@@ -244,7 +263,17 @@ function Orders({ portfolioId, linked, real, readOnly }: { portfolioId: string; 
 
   const columns: Column<Order>[] = [
     { key: "created", header: "Data", cell: (o) => <span className="num">{formatDateTime(o.created_at)}</span> },
-    { key: "symbol", header: "Simbolo", sortValue: (o) => o.symbol, cell: (o) => o.symbol },
+    {
+      key: "symbol",
+      header: "Simbolo",
+      sortValue: (o) => o.symbol,
+      cell: (o) => (
+        <>
+          {o.symbol}
+          <LiveMarker state={liveState} />
+        </>
+      ),
+    },
     { key: "side", header: "Lato", cell: (o) => (o.side === "buy" ? "Acquisto" : "Vendita") },
     {
       key: "type",
@@ -363,7 +392,8 @@ function Risk({ portfolio }: { portfolio: Portfolio }) {
   const v: Valuation | undefined = valuation.data;
   const distance = v ? subtractDecimal(v.equity_eur, v.maint_req_eur) : null;
   // a reduce-only set by a real-money anomaly is lifted only by «Ho verificato, riprendi» (TOTP)
-  const blocked = (portfolio.status === "reduce_only" || portfolio.status === "locked") && !isLiveReason(portfolio.reduce_only_reason);
+  const blocked =
+    portfolio.status === "locked" || (portfolio.status === "reduce_only" && !isLiveReason(portfolio.reduce_only_reason));
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
@@ -387,7 +417,7 @@ function Risk({ portfolio }: { portfolio: Portfolio }) {
             <Row label="Stato">
               <PortfolioStatusBadge status={portfolio.status} />
             </Row>
-            {portfolio.reduce_only_reason && <Row label="Motivo">{portfolio.reduce_only_reason}</Row>}
+            {portfolio.reduce_only_reason && <Row label="Motivo">{reduceOnlyReasonLabel(portfolio.reduce_only_reason)}</Row>}
             {portfolio.reduce_only_until && (
               <Row label="Fino a">
                 <span className="num">{formatDateTime(portfolio.reduce_only_until)}</span>
@@ -497,9 +527,16 @@ function LivePanel({ portfolio }: { portfolio: Portfolio }) {
           <ShieldAlert className="h-4 w-4" aria-hidden />
           Portafoglio con denaro reale · {LIVE_STATE_LABELS[state] ?? state}
         </p>
-        {suspended && <p>In reduce-only per un'anomalia: {portfolio.reduce_only_reason}. Verifica il conto al broker prima di riprendere.</p>}
+        {suspended && (
+          <p>
+            In reduce-only: {reduceOnlyReasonLabel(portfolio.reduce_only_reason!)}. Verifica il conto al broker prima di riprendere.
+          </p>
+        )}
       </div>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-start gap-2">
+        {portfolio.broker_link_id && (
+          <LiveDisarmButton linkId={portfolio.broker_link_id} linkName={portfolio.name} liveState={state} />
+        )}
         {suspended && (
           <Button
             size="sm"
@@ -659,10 +696,10 @@ export default function PortfolioDetail() {
             <Overview portfolio={portfolio} />
           </TabsContent>
           <TabsContent value="positions">
-            <Positions portfolioId={portfolio.id} />
+            <Positions portfolioId={portfolio.id} liveState={portfolio.live_state} />
           </TabsContent>
           <TabsContent value="orders">
-            <Orders portfolioId={portfolio.id} linked={Boolean(portfolio.broker_link_id)} real={Boolean(portfolio.live_state)} readOnly={archived} />
+            <Orders portfolioId={portfolio.id} linked={Boolean(portfolio.broker_link_id)} liveState={portfolio.live_state} readOnly={archived} />
           </TabsContent>
           <TabsContent value="movements">
             <Movements portfolioId={portfolio.id} timezone={portfolio.timezone} readOnly={archived} />

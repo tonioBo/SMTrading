@@ -1,5 +1,6 @@
 import { Plus, ShieldAlert, ShieldCheck } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
+import { useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import {
   useBrokerLinks,
@@ -388,8 +389,14 @@ function Reconciliations({ link }: { link: BrokerLink }) {
 function LiveSection() {
   const { data, isLoading, isError } = useLiveLinks();
   const [creating, setCreating] = useState(false);
+  const { hash } = useLocation();
+  const loaded = Boolean(data);
+  useEffect(() => {
+    // from the red banner's «Disattiva»: bring the disarm buttons into view
+    if (hash === "#denaro-reale" && loaded) document.getElementById("denaro-reale")?.scrollIntoView?.({ block: "start" });
+  }, [hash, loaded]);
   return (
-    <section aria-labelledby="live-heading" className="mt-10">
+    <section id="denaro-reale" aria-labelledby="live-heading" className="mt-10 scroll-mt-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 id="live-heading" className="flex items-center gap-2 text-lg font-semibold text-loss">
           <ShieldAlert className="h-5 w-5" aria-hidden />

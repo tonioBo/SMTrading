@@ -111,6 +111,16 @@ describe("LiveArmDialog", () => {
     await waitFor(() => expect(closed).toBe(1));
   });
 
+  it("accepts the typed name with surrounding spaces", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    const dialog = screen.getByRole("dialog");
+    await fillAll(user, dialog, "  T212 vero ");
+    await user.click(within(dialog).getByRole("button", { name: "Attiva" }));
+    await waitFor(() => expect(arms).toHaveLength(1));
+    expect(arms[0]).toMatchObject({ confirm_name: "T212 vero" });
+  });
+
   it("without the admin TOTP says to enable it, with a link to Impostazioni", async () => {
     armReply = () =>
       HttpResponse.json(

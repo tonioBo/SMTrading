@@ -37,13 +37,13 @@ export function LiveArmDialog({ link, cash, profile, onClose }: Props) {
   const [totp, setTotp] = useState("");
   const broker = liveKindInfo(link.kind)?.broker ?? link.kind;
   const account = link.account_masked ?? "conto non ancora letto";
-  const ready = CHECKS.every((c) => checks[c.key]) && name === link.name && TOTP_RE.test(totp);
+  const ready = CHECKS.every((c) => checks[c.key]) && name.trim() === link.name && TOTP_RE.test(totp);
   const field = errorField(arm.error);
   const nameError = field === "confirm_name" ? errorMessage(arm.error) : null;
 
   function submit() {
     arm.mutate(
-      { totp, confirm_name: name, ...checks },
+      { totp, confirm_name: name.trim(), ...checks },
       {
         onSuccess: () => {
           toast.success(`Denaro reale attivato su ${link.name}`);

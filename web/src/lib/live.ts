@@ -69,3 +69,32 @@ export function liveBannerText(n: number): string {
 export function isTotpMissing(err: unknown): boolean {
   return err instanceof ApiError && err.code === "FORBIDDEN" && err.message === TOTP_REQUIRED_MESSAGE;
 }
+
+/** Causes of an automatic real-money reduce-only (`live_<cause>`, brokers.live.protect). */
+const LIVE_CAUSES: Record<string, string> = {
+  reconcile_diff: "posizioni diverse da quelle del broker",
+  order_unknown: "esito sconosciuto di un ordine",
+  fingerprint_changed: "conto cambiato",
+  cash_shortfall: "liquidità al broker inferiore a quella del portafoglio",
+  fuse: "fusibile: troppi ordini reali nell'ultima ora",
+  health: "broker non raggiungibile",
+  margin_account: "il conto Alpaca non è più un conto cash (margine attivo)",
+};
+
+const REDUCE_ONLY_REASONS: Record<string, string> = {
+  daily_loss: "Perdita giornaliera massima raggiunta",
+  broker_liquidation: "Liquidazione da parte del broker",
+};
+
+/** `reduce_only_reason` in Italian; an unknown code is shown as it is. */
+export function reduceOnlyReasonLabel(reason: string): string {
+  if (isLiveReason(reason)) {
+    const cause = reason.slice("live_".length);
+    return `Anomalia del denaro reale: ${LIVE_CAUSES[cause] ?? cause}`;
+  }
+  return REDUCE_ONLY_REASONS[reason] ?? reason;
+}
+
+export const DISARM_LABEL = "Disattiva denaro reale";
+export const DISARM_RETRY_LABEL = "Ripeti disattivazione / sistema ordini";
+export const DISARM_UNSETTLED = "Disattivato, ordini da sistemare: riprova";
