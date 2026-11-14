@@ -66,8 +66,9 @@ def _ids(cases):
 @pytest.fixture(autouse=True)
 def _reset_t212_state():
     def reset():
-        t212_core._cache.update(at=0.0, items=None, failed_at=None)
-        t212_core._reverse.clear()
+        for cache in t212_core._instrument_caches.values():  # in place: modules alias them
+            cache.data.update(at=0.0, items=None, failed_at=None)
+            cache.reverse.clear()
         t212_core._rate_blocked_until.clear()
 
     reset()
@@ -400,3 +401,99 @@ async def test_fees_parsed_when_present(case, http, mock):
         assert bo.status == "filled"
         assert bo.avg_fill_price == Decimal("190.25")
         assert bo.fees == Decimal("0.54")
+
+
+class _OtherT212(t212_core._T212Protocol):
+    """A second Trading 212 environment (test only, not registered)."""
+
+    kind = "t212_other_env"
+    BASE_URL = "https://other-env.t212.invalid"
+
+
+async def test_t212_instrument_cache_is_per_environment(http, mock):
+    """A failure/backoff in one environment never affects another, and ticker lists
+    never cross environments."""
+    demo_meta = mock.get(T212DemoAdapter.BASE_URL + "/api/v0/equity/metadata/instruments").mock(
+        return_value=httpx.Response(503, json={})
+    )
+    other_meta = mock.get(_OtherT212.BASE_URL + "/api/v0/equity/metadata/instruments").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"ticker": "SAPd_EQ", "shortName": "SAP", "type": "STOCK", "currencyCode": "EUR"},
+            ],
+        )
+    )
+    demo, other = T212DemoAdapter(dict(T212_CFG), http), _OtherT212(dict(T212_CFG), http)
+    with pytest.raises(RuntimeError):
+        await demo.prepare()
+    with pytest.raises(RuntimeError, match="backing off"):
+        await demo.prepare()
+    await other.prepare()  # not blocked by the demo backoff
+    assert demo_meta.call_count == 1 and other_meta.call_count == 1
+    sap = Instrument(
+        symbol="SAP.DE", name="SAP", asset_class=AssetClass.eu_equity, market="X", currency="EUR"
+    )
+    assert other.supports(_order(symbol="SAP.DE"), sap)
+    assert not demo.supports(_order(symbol="SAP.DE"), sap)  # no metadata in demo
+    assert t212_core.instrument_cache(_OtherT212.BASE_URL).reverse == {"SAPd_EQ": "SAP.DE"}
+    assert t212_core.instrument_cache(T212DemoAdapter.BASE_URL).reverse == {}
+
+
+@pytest.mark.parametrize("case", T212_CASES, ids=_ids(T212_CASES))
+async def test_t212_ratelimit_keeps_a_newer_block_set_while_sleeping(case, http):
+    now = 1_800_000_000.0
+    a = case.adapter(http)
+    a._clock = lambda: now
+    key = a._rate_key("GET", "/api/v0/equity/positions")
+
+    async def concurrent_sleep(s: float) -> None:  # another request exhausts it again
+        t212_core._rate_blocked_until[key] = now + 30
+
+    a._sleep = concurrent_sleep
+    t212_core._rate_blocked_until[key] = now + 5
+    await a._respect_rate_limit(key)
+    assert t212_core._rate_blocked_until[key] == now + 30
+
+
+@pytest.mark.parametrize("case", T212_CASES, ids=_ids(T212_CASES))
+async def test_t212_find_order_requests_carry_order_id(case, http, mock):
+    _mock_t212_instruments(mock, case)
+    mock.get(_t212_api(case, "/orders")).mock(return_value=httpx.Response(200, json=[]))
+    mock.get(_t212_api(case, "/history/orders"), params={"limit": "50"}).mock(
+        return_value=httpx.Response(200, json={"items": [], "nextPagePath": None})
+    )
+    order = _order()
+    await case.adapter(http).find_order(order, _inst(), datetime(2026, 11, 14, tzinfo=UTC))
+    lookups = [c.request for c in mock.calls if "/metadata/" not in c.request.url.path]
+    assert len(lookups) == 2
+    assert all(r.extensions["smt_order_id"] == str(order.id) for r in lookups)
+
+
+@pytest.mark.parametrize("case", T212_CASES, ids=_ids(T212_CASES))
+async def test_t212_foreign_currency_taxes_excluded_and_reported(case, http, mock, caplog):
+    page = _fixture("t212_history_fill_with_fees.json")
+    taxes = page["items"][0]["fill"]["walletImpact"]["taxes"]
+    taxes.append({"name": "FINRA_FEE", "quantity": -0.02, "currency": "USD"})
+    mock.get(_t212_api(case, "/orders/77")).mock(return_value=httpx.Response(404))
+    mock.get(_t212_api(case, "/history/orders"), params={"limit": "50"}).mock(
+        return_value=httpx.Response(200, json=page)
+    )
+    with caplog.at_level("WARNING", logger="smtrading.brokers.t212"):
+        bo = await case.adapter(http).get_order("77")
+    assert bo.fees == Decimal("0.54")  # the USD tax is not converted nor summed
+    assert bo.raw["smt_unconverted_taxes"] == [
+        {"name": "FINRA_FEE", "quantity": "-0.02", "currency": "USD"}
+    ]
+    assert any("not in the account currency" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
+def test_other_base_url_forbidden_without_host_in_message(case):
+    from smtrading.common.errors import ErrorCode, SMTError
+
+    with pytest.raises(SMTError) as e:
+        case.cls({**case.config, "base_url": "https://evil.example.com"}, None)
+    assert e.value.code == ErrorCode.FORBIDDEN
+    assert str(e.value.message) == f"{case.cls.kind}: base URL non consentito"
+    assert case.cls.BASE_URL not in str(e.value.message)

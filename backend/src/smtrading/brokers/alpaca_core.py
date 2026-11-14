@@ -94,7 +94,7 @@ class _AlpacaProtocol(BrokerAdapter):
         super().__init__(config, http)
         base = str(config.get("base_url") or self.BASE_URL).rstrip("/")
         if base != self.BASE_URL:
-            raise SMTError(ErrorCode.FORBIDDEN, f"{self.kind}: only {self.BASE_URL} is allowed")
+            raise SMTError(ErrorCode.FORBIDDEN, f"{self.kind}: base URL non consentito")
         self._headers = {
             "APCA-API-KEY-ID": str(config.get("key_id", "")),
             "APCA-API-SECRET-KEY": str(config.get("secret_key", "")),
