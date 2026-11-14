@@ -48,6 +48,15 @@ def paperclip_path(slug: str) -> str:
     return f"{PAPERCLIP_ROOT}/{slug}"
 
 
+def _chmod_best_effort(path: Path, mode: int) -> None:
+    """Bind mounts from a Windows drive (Docker Desktop / WSL drvfs) refuse chmod for a
+    non-owner (EPERM) while still allowing writes: permissions are cosmetic there."""
+    try:
+        os.chmod(path, mode)
+    except PermissionError:
+        pass
+
+
 def _write_if_changed(path: Path, content: str) -> bool:
     data = content.encode("utf-8")
     try:
@@ -56,12 +65,12 @@ def _write_if_changed(path: Path, content: str) -> bool:
     except FileNotFoundError:
         pass
     path.parent.mkdir(mode=0o755, exist_ok=True)
-    os.chmod(path.parent, 0o755)
+    _chmod_best_effort(path.parent, 0o755)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
-        os.chmod(tmp, 0o644)
+        _chmod_best_effort(Path(tmp), 0o644)
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
