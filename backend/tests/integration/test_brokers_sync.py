@@ -327,6 +327,17 @@ async def test_broker_rejection_rejects_and_notifies(maker, redis, qs):
     assert await _trade_journals(maker, oid) == []
 
 
+async def test_broker_rejection_with_nul_in_message(maker, redis, qs):
+    """A NUL in the broker's message never makes the order UPDATE fail: it is dropped."""
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid)
+    BROKER.reject_next = "rejected\x00 by broker"
+    await _sync(maker, redis, qs).tick()
+    o = await _order(maker, oid)
+    assert (o.status, o.reject_message) == (OrderStatus.rejected, "rejected by broker")
+    assert len(await _notes(maker, pid, "order.rejected")) == 1
+
+
 async def test_local_checks_run_before_routing(maker, redis, qs):
     pid, _ = await _linked_portfolio(maker, cash=100)
     with pytest.raises(SMTError) as e:

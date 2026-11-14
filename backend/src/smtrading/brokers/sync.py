@@ -356,7 +356,8 @@ class BrokerSync:
     ) -> None:
         order.status = OrderStatus.rejected
         order.reject_code = str(code)
-        order.reject_message = (message or "")[:512]
+        # a NUL from the broker would make the order UPDATE fail (Postgres text)
+        order.reject_message = (message or "").replace("\x00", "")[:512]
         order.updated_at = datetime.now(UTC)
         await cancel_held_children(session, order, by="system")
         await notify(
