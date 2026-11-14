@@ -203,7 +203,7 @@ function PortfolioTable({ portfolios }: { portfolios: DashboardData["portfolios"
                     <Link to={`/portafogli/${p.id}`} className="text-accent hover:underline">
                       {p.name}
                     </Link>
-                    <PortfolioModeBadge mode={p.mode} className="ml-2" />
+                    <PortfolioModeBadge mode={p.mode} liveState={p.live_state} className="ml-2" />
                     {p.error && <span className="ml-2 text-xs text-loss">valutazione non disponibile</span>}
                     {p.stale_symbols.length > 0 && <span className="ml-2 text-xs text-warn">quotazioni non aggiornate</span>}
                   </TableCell>

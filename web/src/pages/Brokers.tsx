@@ -1,4 +1,4 @@
-import { Plus, ShieldCheck } from "lucide-react";
+import { Plus, ShieldAlert, ShieldCheck } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import {
@@ -11,10 +11,12 @@ import {
   useSetPortfolioBroker,
   useTestBrokerLink,
 } from "@/api/hooks/brokers";
+import { useLiveLinks } from "@/api/hooks/live";
 import { useIdempotencyKey, usePortfolios } from "@/api/hooks/portfolios";
 import type { BrokerKind, BrokerLink, BrokerLinkPatch, Reconciliation } from "@/api/types";
 import { DataTable, type Column } from "@/components/DataTable";
 import { FormField, selectClass } from "@/components/FormField";
+import { LiveLinkWizard, NewLiveLinkForm } from "@/components/LiveLinkWizard";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,6 +26,7 @@ import { Switch } from "@/components/ui/switch";
 import { BROKER_KINDS, LINK_STATUS_LABELS, SECRET_LABELS, brokerKindLabel } from "@/lib/broker";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatDateTime, formatQty } from "@/lib/format";
+import { isLiveKind } from "@/lib/live";
 
 const PAPER_NOTE = "Solo conti paper/demo: nessun denaro reale";
 
@@ -380,10 +383,47 @@ function Reconciliations({ link }: { link: BrokerLink }) {
   );
 }
 
+// --- real money ----------------------------------------------------------------------
+
+function LiveSection() {
+  const { data, isLoading, isError } = useLiveLinks();
+  const [creating, setCreating] = useState(false);
+  return (
+    <section aria-labelledby="live-heading" className="mt-10">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 id="live-heading" className="flex items-center gap-2 text-lg font-semibold text-loss">
+          <ShieldAlert className="h-5 w-5" aria-hidden />
+          Denaro reale
+        </h2>
+        {!creating && (
+          <Button size="sm" variant="destructive" onClick={() => setCreating(true)}>
+            <Plus className="mr-1 h-4 w-4" aria-hidden />
+            Nuovo collegamento reale
+          </Button>
+        )}
+      </div>
+      <p className="mb-4 text-sm text-muted">
+        Procedura in 4 passi: chiavi, test in sola lettura, prova a secco (facoltativa), attivazione con TOTP. «Disattiva denaro reale»
+        è sempre a un clic.
+      </p>
+      {creating && <NewLiveLinkForm onDone={() => setCreating(false)} />}
+      {isError && <p className="text-loss">Impossibile caricare i collegamenti reali</p>}
+      {isLoading && <p className="text-muted">Caricamento…</p>}
+      {data && data.length === 0 && !creating && <p className="text-muted">Nessun collegamento con denaro reale</p>}
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {data?.map((l) => (
+          <LiveLinkWizard key={l.id} link={l} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 // --- page ----------------------------------------------------------------------------
 
 export default function Brokers() {
-  const { data, isLoading, isError } = useBrokerLinks();
+  const { data: all, isLoading, isError } = useBrokerLinks();
+  const data = all?.filter((l) => !isLiveKind(l.kind)); // real-money links: the section below
   const [creating, setCreating] = useState(false);
   return (
     <div>
@@ -408,9 +448,10 @@ export default function Brokers() {
           <LinkCard key={l.id} link={l} />
         ))}
       </div>
-      {data && data.length > 0 && (
+      <LiveSection />
+      {all && all.length > 0 && (
         <div className="mt-6 space-y-4">
-          {data.map((l) => (
+          {all.map((l) => (
             <Reconciliations key={l.id} link={l} />
           ))}
         </div>

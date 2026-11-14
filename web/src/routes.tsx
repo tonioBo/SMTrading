@@ -8,6 +8,7 @@ import Brokers from "@/pages/Brokers";
 import Connectors from "@/pages/Connectors";
 import Dashboard from "@/pages/Dashboard";
 import Fees from "@/pages/Fees";
+import LiveAudit from "@/pages/LiveAudit";
 import Login from "@/pages/Login";
 import Markets from "@/pages/Markets";
 import McpLog from "@/pages/McpLog";
@@ -38,6 +39,7 @@ export const routes: RouteObject[] = [
           { path: "rischio", element: <Risk /> },
           { path: "connettori", element: <Connectors /> },
           { path: "broker", element: <Brokers /> },
+          { path: "registro-denaro-reale", element: <LiveAudit /> },
           { path: "notifiche", element: <Notifications /> },
           { path: "mercati", element: <Markets /> },
           { path: "log-mcp", element: <McpLog /> },

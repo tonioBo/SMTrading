@@ -31,7 +31,7 @@ const baseColumns: Column<Portfolio>[] = [
         <Link to={`/portafogli/${p.id}`} className="text-accent hover:underline">
           {p.name}
         </Link>
-        <PortfolioModeBadge mode={p.mode} className="ml-2" />
+        <PortfolioModeBadge mode={p.mode} liveState={p.live_state} className="ml-2" />
         {p.valuation_error && <span className="ml-2 text-xs text-loss">valutazione non disponibile</span>}
       </>
     ),

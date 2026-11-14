@@ -49,14 +49,18 @@ export interface KillSwitchResult extends KillSwitchState {
   canceled: number;
 }
 
-/** simulazione = no broker (virtual money); paper = demo broker account; reale reserved */
+/** simulazione = no broker (virtual money); paper = demo broker account; reale = a real-money link that is armed */
 export type PortfolioMode = "simulazione" | "paper" | "reale";
+
+/** State of a real-money («denaro reale») link; null for no link or a paper/demo link. */
+export type LiveState = "configured" | "dry_run" | "armed";
 
 export interface DashboardPortfolio {
   id: string;
   name: string;
   status: string;
   mode: PortfolioMode;
+  live_state?: LiveState | null;
   equity_eur: string | null;
   day_pnl_eur: string | null;
   day_pnl_pct: string | null;
@@ -120,6 +124,8 @@ export interface Portfolio {
   slippage_bps: number;
   status: PortfolioStatus;
   mode: PortfolioMode;
+  /** the real-money link's state (configured | dry_run | armed), null otherwise */
+  live_state?: LiveState | null;
   timezone: string;
   risk_profile_id: string | null;
   reduce_only_reason: string | null;
@@ -319,6 +325,8 @@ export interface RiskProfile {
   allowed_markets: string[];
   short_allowed: boolean;
   description: string | null;
+  /** fuse (Ruling R8.1): real orders sent per hour at most, 1-1000, default 30 */
+  max_live_orders_per_hour?: number;
   /** live portfolios using it (list only; Default also counts those without a profile) */
   portfolios_count?: number;
 }
@@ -331,6 +339,7 @@ export interface AgentPortfolioLink {
   permission: AgentPermission;
   archived?: boolean;
   mode?: PortfolioMode;
+  live_state?: LiveState | null;
 }
 
 export interface AgentWatchlist {
@@ -473,6 +482,7 @@ export interface RiskProfileInput {
   allowed_markets: string[];
   short_allowed: boolean;
   description: string | null;
+  max_live_orders_per_hour?: number;
 }
 
 export type InterestKind = "loan" | "borrow";
@@ -806,4 +816,97 @@ export interface AgentDocExportResult {
   dir: string;
   ok: boolean;
   error?: string;
+}
+
+// --- real money («denaro reale») ------------------------------------------------------
+
+export type LiveKind = "alpaca_live" | "t212_live";
+
+/** The last read-only account snapshot (never the full account ID). */
+export interface LiveSnapshot {
+  currency: string | null;
+  cash_available: string | null;
+  positions_count: number | null;
+  open_orders_count: number | null;
+  crypto_enabled: boolean | null;
+  order_types: string[] | null;
+}
+
+/** GET /api/live-links: never a key, only `key_masked` and `account_masked`. */
+export interface LiveLink {
+  id: string;
+  name: string;
+  kind: LiveKind | string;
+  live_state: LiveState;
+  armed_at: string | null;
+  armed_by: string | null;
+  disarmed_at: string | null;
+  disarmed_reason: string | null;
+  key_masked: string;
+  account_masked: string | null;
+  snapshot: LiveSnapshot | null;
+  last_test_at: string | null;
+  health_failures: number;
+  portfolio: { id: string; name: string } | null;
+}
+
+/** POST /api/live-links (name + kind) and PUT /api/live-links/{id}/keys. */
+export interface LiveKeysInput {
+  name?: string;
+  kind?: LiveKind;
+  key_id?: string;
+  secret_key?: string;
+  api_key?: string;
+  api_secret?: string;
+  crypto_enabled?: boolean;
+}
+
+/** POST /api/live-links/{id}/test: the snapshot read now; `empty` = no positions, no open orders. */
+export interface LiveTestResult extends LiveSnapshot {
+  account_masked: string | null;
+  account_type: string | null;
+  empty: boolean;
+  account_changed: boolean;
+}
+
+export interface LiveArmInput {
+  totp: string;
+  confirm_name: string;
+  accept_risks: boolean;
+  dedicated_account: boolean;
+  limits_set: boolean;
+}
+
+/** POST /api/live-links/{id}/disarm: `settled` false = disarmed, orders still to settle (retry). */
+export interface LiveDisarmResult extends LiveLink {
+  orders: unknown;
+  settled: boolean;
+}
+
+export interface LiveStatus {
+  armed_count: number;
+  dry_run_count: number;
+  portfolios: { id: string; name: string; live_state: LiveState }[];
+  telegram_ok: boolean;
+}
+
+export interface LiveAuditRow {
+  id: number;
+  ts: string;
+  link_id: string;
+  link_name: string;
+  portfolio_id: string | null;
+  portfolio_name: string | null;
+  order_id: string | null;
+  actor: string;
+  action: string;
+  ip: string | null;
+  user_agent: string | null;
+  details: unknown;
+}
+
+export interface LiveAuditFilters {
+  link_id: string;
+  portfolio_id: string;
+  action: string;
 }

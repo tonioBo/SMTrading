@@ -29,7 +29,21 @@ const LIMITS: { field: LimitField; label: string }[] = [
   { field: "max_daily_loss_pct", label: "Perdita giornaliera massima (%)" },
   { field: "max_daily_loss_eur", label: "Perdita giornaliera massima (EUR)" },
 ];
-const PROFILE_FIELDS = ["name", "description", "short_allowed", "allowed_symbols", "allowed_asset_classes", "allowed_markets", ...LIMITS.map((l) => l.field)];
+const PROFILE_FIELDS = [
+  "name",
+  "description",
+  "short_allowed",
+  "allowed_symbols",
+  "allowed_asset_classes",
+  "allowed_markets",
+  "max_live_orders_per_hour",
+  ...LIMITS.map((l) => l.field),
+];
+/** Ruling R8.1: real orders per hour per portfolio (beyond: reduce-only and a red alert). */
+const FUSE_MIN = 1;
+const FUSE_MAX = 1000;
+const FUSE_DEFAULT = 30;
+const FUSE_ERROR = `Inserisci un numero intero tra ${FUSE_MIN} e ${FUSE_MAX}`;
 
 function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onClose: () => void }) {
   const [name, setName] = useState(profile?.name ?? "");
@@ -44,6 +58,7 @@ function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onCl
   const [markets, setMarkets] = useState(profile?.allowed_markets ?? []);
   const [short, setShort] = useState(profile?.short_allowed ?? true);
   const [description, setDescription] = useState(profile?.description ?? "");
+  const [fuse, setFuse] = useState(String(profile?.max_live_orders_per_hour ?? FUSE_DEFAULT));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const save = useSaveRiskProfile();
 
@@ -62,6 +77,8 @@ function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onCl
       parsed[field] = raw ? normalizeAmount(raw) : null;
       if (raw && parsed[field] === null) errs[field] = "Importo non valido";
     }
+    const fuseValue = /^\d+$/.test(fuse.trim()) ? Number(fuse.trim()) : NaN;
+    if (!(fuseValue >= FUSE_MIN && fuseValue <= FUSE_MAX)) errs.max_live_orders_per_hour = FUSE_ERROR;
     setErrors(errs);
     if (Object.keys(errs).length) return;
     const input: RiskProfileInput = {
@@ -72,6 +89,7 @@ function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onCl
       allowed_markets: markets,
       short_allowed: short,
       description: description.trim() || null,
+      max_live_orders_per_hour: fuseValue,
     };
     save.mutate({ id: profile?.id ?? null, profile: input }, { onSuccess: onClose });
   }
@@ -120,6 +138,13 @@ function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onCl
               <TagInput value={markets} onChange={setMarkets} placeholder="XNAS" />
             </FormField>
           </div>
+          <FormField
+            label="Ordini reali massimi all'ora (fusibile)"
+            error={fieldError("max_live_orders_per_hour")}
+            hint={`Solo portafogli con denaro reale: oltre il limite il portafoglio va in reduce-only (${FUSE_MIN}-${FUSE_MAX}, predefinito ${FUSE_DEFAULT})`}
+          >
+            <Input value={fuse} inputMode="numeric" onChange={(e) => setFuse(e.target.value)} />
+          </FormField>
           <div className="flex items-center gap-2 sm:col-span-2">
             <input id="risk-short" type="checkbox" checked={short} onChange={(e) => setShort(e.target.checked)} className="h-4 w-4 accent-[rgb(var(--accent))]" />
             <label htmlFor="risk-short">Vendite allo scoperto consentite</label>

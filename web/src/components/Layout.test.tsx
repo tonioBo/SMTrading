@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -51,6 +51,7 @@ describe("Layout", () => {
       "Rischio e margine",
       "Connettori",
       "Broker",
+      "Registro denaro reale",
       "Notifiche",
       "Mercati",
       "Log MCP",
@@ -159,6 +160,55 @@ describe("Layout", () => {
   it("shows the mode banner from the modes endpoint, and a neutral notice if it fails", async () => {
     renderApp("/");
     expect(await screen.findByText("Simulazione – denaro virtuale, prezzi di mercato reali")).toBeInTheDocument();
+  });
+
+  it("banner red with count and telegram warning", async () => {
+    server.use(
+      http.get("*/api/live/status", () =>
+        HttpResponse.json({
+          armed_count: 1,
+          dry_run_count: 1,
+          portfolios: [
+            { id: "p1", name: "Reale", live_state: "armed" },
+            { id: "p2", name: "Prova", live_state: "dry_run" },
+          ],
+          telegram_ok: false,
+        }),
+      ),
+    );
+    renderApp("/");
+    const banner = await screen.findByRole("status", { name: "Modalità di trading" });
+    await waitFor(() => expect(banner).toHaveTextContent("Denaro reale attivo su 1 portafoglio"));
+    expect(banner.className).toContain("bg-loss");
+    expect(screen.getByText("Telegram non funziona: gli ordini reali continuano, le notifiche restano in coda")).toBeInTheDocument();
+  });
+
+  it("counts the real portfolios in the plural and hides the Telegram warning when it works", async () => {
+    server.use(
+      http.get("*/api/live/status", () =>
+        HttpResponse.json({
+          armed_count: 2,
+          dry_run_count: 0,
+          portfolios: [
+            { id: "p1", name: "A", live_state: "armed" },
+            { id: "p2", name: "B", live_state: "armed" },
+          ],
+          telegram_ok: true,
+        }),
+      ),
+    );
+    renderApp("/");
+    expect(await screen.findByText("Denaro reale attivo su 2 portafogli")).toBeInTheDocument();
+    expect(screen.queryByText(/Telegram non funziona/)).not.toBeInTheDocument();
+  });
+
+  it("shows no Telegram warning without an armed link", async () => {
+    server.use(
+      http.get("*/api/live/status", () => HttpResponse.json({ armed_count: 0, dry_run_count: 1, portfolios: [], telegram_ok: false })),
+    );
+    renderApp("/");
+    expect(await screen.findByText("Simulazione – denaro virtuale, prezzi di mercato reali")).toBeInTheDocument();
+    expect(screen.queryByText(/Telegram non funziona/)).not.toBeInTheDocument();
   });
 
   it("falls back to a neutral notice when the modes cannot be read", async () => {

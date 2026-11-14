@@ -49,6 +49,7 @@ const CATEGORY: Record<string, string> = {
   weekly: "Riepilogo settimanale",
   agent: "Agente",
   test: "Prova",
+  live: "Denaro reale",
 };
 const LEVEL: Record<string, string> = { info: "Info", warning: "Avviso", critical: "Critico", executed: "Eseguito" };
 const DECISION_KIND: Record<DecisionKind, string> = {

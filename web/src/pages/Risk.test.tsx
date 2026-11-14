@@ -152,6 +152,52 @@ describe("Risk", () => {
     expect(within(list).getAllByRole("listitem")).toHaveLength(20);
   });
 
+  it("risk fuse field validates 1-1000", async () => {
+    const user = userEvent.setup();
+    renderApp("/rischio");
+    await user.click(await screen.findByRole("button", { name: "Nuovo profilo" }));
+    const dialog = await screen.findByRole("dialog", { name: "Nuovo profilo di rischio" });
+    await user.type(within(dialog).getByLabelText("Nome"), "Reale");
+    const fuse = within(dialog).getByLabelText("Ordini reali massimi all'ora (fusibile)");
+    expect(fuse).toHaveValue("30"); // the default
+    for (const bad of ["0", "1001", "2,5", "abc"]) {
+      await user.clear(fuse);
+      await user.type(fuse, bad);
+      await user.click(within(dialog).getByRole("button", { name: "Salva" }));
+      expect(within(dialog).getByText("Inserisci un numero intero tra 1 e 1000")).toBeInTheDocument();
+    }
+    expect(profilePosts).toEqual([]);
+    await user.clear(fuse);
+    await user.type(fuse, "1000");
+    await user.click(within(dialog).getByRole("button", { name: "Salva" }));
+    await waitFor(() => expect(profilePosts).toHaveLength(1));
+    expect(profilePosts[0]).toMatchObject({ name: "Reale", max_live_orders_per_hour: 1000 });
+  });
+
+  it("shows the server refusal of the fuse next to its field", async () => {
+    server.use(
+      http.post("*/api/risk-profiles", () =>
+        HttpResponse.json(
+          {
+            code: "INVALID_ORDER",
+            message: "max_live_orders_per_hour deve essere un intero tra 1 e 1000",
+            details: { field: "max_live_orders_per_hour" },
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderApp("/rischio");
+    await user.click(await screen.findByRole("button", { name: "Nuovo profilo" }));
+    const dialog = await screen.findByRole("dialog", { name: "Nuovo profilo di rischio" });
+    await user.type(within(dialog).getByLabelText("Nome"), "Reale");
+    await user.click(within(dialog).getByRole("button", { name: "Salva" }));
+    const fuse = within(dialog).getByLabelText("Ordini reali massimi all'ora (fusibile)");
+    await waitFor(() => expect(fuse).toHaveAttribute("aria-invalid", "true"));
+    expect(within(dialog).getByText("max_live_orders_per_hour deve essere un intero tra 1 e 1000")).toBeInTheDocument();
+  });
+
   it("adds every symbol of a pasted list", async () => {
     const user = userEvent.setup();
     renderApp("/rischio");

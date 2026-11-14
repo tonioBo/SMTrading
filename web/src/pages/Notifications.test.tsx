@@ -405,6 +405,16 @@ describe("Notifiche", () => {
     expect(within(table).queryByRole("button", { name: "Riprova" })).not.toBeInTheDocument();
   });
 
+  it("labels the real-money messages in Italian", async () => {
+    server.use(
+      http.get("*/api/telegram/outbox", () => HttpResponse.json({ items: [outboxItem({ id: 6, category: "live", level: "critical" })] })),
+    );
+    renderApp("/notifiche");
+    const table = await screen.findByRole("table", { name: "Ultimi messaggi" });
+    expect(await within(table).findByText("Denaro reale")).toBeInTheDocument();
+    expect(within(table).queryByText("live")).not.toBeInTheDocument();
+  });
+
   it("decisions filter by kind", async () => {
     const user = userEvent.setup();
     renderApp("/notifiche");

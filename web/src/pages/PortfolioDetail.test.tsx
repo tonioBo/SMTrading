@@ -484,6 +484,59 @@ describe("PortfolioDetail", () => {
     await waitFor(() => expect(screen.queryByRole("button", { name: "Sblocca" })).not.toBeInTheDocument());
   });
 
+  it("resume and flatten ask for totp", async () => {
+    current = { ...portfolio, mode: "reale", live_state: "armed", broker_link_id: "l1", status: "reduce_only", reduce_only_reason: "live_reconcile" };
+    const resumes: unknown[] = [];
+    const flattens: unknown[] = [];
+    server.use(
+      http.post("*/api/portfolios/p1/live-resume", async ({ request }) => {
+        resumes.push(await request.json());
+        current = { ...current, status: "active", reduce_only_reason: null };
+        return HttpResponse.json(current);
+      }),
+      http.post("*/api/portfolios/p1/live-flatten", async ({ request }) => {
+        flattens.push(await request.json());
+        return HttpResponse.json({ code: "FORBIDDEN", message: "codice TOTP già usato", details: { field: "totp" } }, { status: 403 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderApp("/portafogli/p1");
+    const panel = await screen.findByRole("region", { name: "Denaro reale" });
+    expect(screen.getByLabelText(/^Modalità: reale\./)).toHaveTextContent("🔴REALE");
+
+    await user.click(within(panel).getByRole("button", { name: "Ho verificato, riprendi" }));
+    let dialog = await screen.findByRole("dialog", { name: "Riprendere il portafoglio reale?" });
+    const resume = within(dialog).getByRole("button", { name: "Riprendi" });
+    expect(resume).toBeDisabled();
+    await user.type(within(dialog).getByLabelText("Codice TOTP"), "654321");
+    await user.click(resume);
+    await waitFor(() => expect(resumes).toEqual([{ totp: "654321" }]));
+    await waitFor(() => expect(within(panel).queryByRole("button", { name: "Ho verificato, riprendi" })).not.toBeInTheDocument());
+
+    await user.click(within(panel).getByRole("button", { name: "Chiudi tutte le posizioni reali" }));
+    dialog = await screen.findByRole("dialog", { name: "Chiudere tutte le posizioni reali?" });
+    const close = within(dialog).getByRole("button", { name: "Chiudi tutte le posizioni" });
+    expect(close).toBeDisabled();
+    await user.type(within(dialog).getByLabelText("Codice TOTP"), "111222");
+    await user.click(close);
+    await waitFor(() => expect(flattens).toEqual([{ totp: "111222" }]));
+    expect(await within(dialog).findByText("codice TOTP già usato")).toBeInTheDocument();
+  });
+
+  it("a real portfolio suspended by a live anomaly has no Sblocca, and trailing stops carry the note", async () => {
+    current = { ...portfolio, mode: "paper", live_state: "dry_run", broker_link_id: "l1", status: "reduce_only", reduce_only_reason: "live_unknown" };
+    server.use(http.get("*/api/portfolios/p1/orders", () => HttpResponse.json([{ ...openOrder, type: "trailing_stop" }])));
+    const user = await openTab("Rischio");
+    expect(screen.getByLabelText(/^Modalità: reale · prova\./)).toHaveTextContent("🔴REALE · PROVA");
+    expect(await screen.findByText("live_unknown", { selector: "dd" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sblocca" })).not.toBeInTheDocument();
+    const panel = screen.getByRole("region", { name: "Denaro reale" });
+    expect(within(panel).getByRole("button", { name: "Ho verificato, riprendi" })).toBeInTheDocument();
+    expect(within(panel).queryByRole("button", { name: "Chiudi tutte le posizioni reali" })).not.toBeInTheDocument(); // only when armed
+    await user.click(screen.getByRole("tab", { name: "Ordini" }));
+    expect(await screen.findByText("stop gestito da SMTrading, non dal broker")).toBeInTheDocument();
+  });
+
   it("has no Sblocca button on an active portfolio", async () => {
     await openTab("Rischio");
     await screen.findByText("Prudente");

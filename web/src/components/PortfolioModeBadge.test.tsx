@@ -13,4 +13,15 @@ describe("PortfolioModeBadge", () => {
     expect(el).toHaveTextContent(label);
     expect(el.className).toContain(tone);
   });
+
+  it.each([
+    ["armed", "REALE", "paper"],
+    ["dry_run", "REALE · PROVA", "paper"],
+    ["configured", "REALE · SOSPESO", "paper"],
+  ] as const)("badge variants per live_state: %s → 🔴 %s, red even when the mode is %s", (liveState, label, mode) => {
+    render(<PortfolioModeBadge mode={mode} liveState={liveState} />);
+    const el = screen.getByLabelText(new RegExp(`^Modalità: ${label.toLowerCase()}\\.`));
+    expect(el).toHaveTextContent(`🔴${label}`);
+    expect(el.className).toContain("text-loss");
+  });
 });

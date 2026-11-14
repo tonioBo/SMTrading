@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   Percent,
   Settings,
+  ShieldAlert,
   Wallet,
   type LucideIcon,
 } from "lucide-react";
@@ -31,6 +32,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/rischio", label: "Rischio e margine", icon: Gauge },
   { to: "/connettori", label: "Connettori", icon: Cable },
   { to: "/broker", label: "Broker", icon: Landmark },
+  { to: "/registro-denaro-reale", label: "Registro denaro reale", icon: ShieldAlert },
   { to: "/notifiche", label: "Notifiche", icon: Bell },
   { to: "/mercati", label: "Mercati", icon: Globe },
   { to: "/log-mcp", label: "Log MCP", icon: FileText },

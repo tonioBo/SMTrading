@@ -1,4 +1,4 @@
-import { ArchiveRestore, ArrowLeft } from "lucide-react";
+import { ArchiveRestore, ArrowLeft, ShieldAlert } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Link, useParams } from "react-router-dom";
@@ -15,12 +15,14 @@ import {
   useRiskProfiles,
   useValuation,
 } from "@/api/hooks/portfolios";
+import { useLiveFlatten, useLiveResume } from "@/api/hooks/live";
 import type { Order, Portfolio, Position, Valuation } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EquityChart } from "@/components/EquityChart";
 import { Money } from "@/components/Money";
 import { HaltBanner } from "@/components/HaltBanner";
+import { LiveTotpDialog } from "@/components/LiveTotpDialog";
 import { PageHeader } from "@/components/PageHeader";
 import { Pnl } from "@/components/Pnl";
 import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
@@ -34,6 +36,7 @@ import { BROKER_STATUS_LABELS } from "@/lib/broker";
 import { subtractDecimal } from "@/lib/decimal";
 import { errorMessage } from "@/lib/errors";
 import { formatDateTime, formatDecimal, formatMoney, formatPct, formatQty } from "@/lib/format";
+import { LIVE_STATE_LABELS, TRAILING_NOTE, isLiveReason } from "@/lib/live";
 import { Movements } from "@/pages/PortfolioDetailMovements";
 import { Operations } from "@/pages/PortfolioDetailOperations";
 import { PortfolioSettings } from "@/pages/PortfolioDetailSettings";
@@ -233,7 +236,7 @@ function BrokerCell({ order, linked }: { order: Order; linked: boolean }) {
   return linked ? <Badge variant="outline">Solo simulato</Badge> : <span className="text-muted">—</span>;
 }
 
-function Orders({ portfolioId, linked, readOnly }: { portfolioId: string; linked: boolean; readOnly: boolean }) {
+function Orders({ portfolioId, linked, real, readOnly }: { portfolioId: string; linked: boolean; real: boolean; readOnly: boolean }) {
   const [status, setStatus] = useState("open");
   const { data, isLoading, isError, error } = useOrders(portfolioId, status);
   const cancel = useCancelOrder(portfolioId);
@@ -243,7 +246,16 @@ function Orders({ portfolioId, linked, readOnly }: { portfolioId: string; linked
     { key: "created", header: "Data", cell: (o) => <span className="num">{formatDateTime(o.created_at)}</span> },
     { key: "symbol", header: "Simbolo", sortValue: (o) => o.symbol, cell: (o) => o.symbol },
     { key: "side", header: "Lato", cell: (o) => (o.side === "buy" ? "Acquisto" : "Vendita") },
-    { key: "type", header: "Tipo", cell: (o) => o.type },
+    {
+      key: "type",
+      header: "Tipo",
+      cell: (o) => (
+        <span className="flex flex-col items-start">
+          {o.type}
+          {real && o.type === "trailing_stop" && <span className="text-xs text-warn">{TRAILING_NOTE}</span>}
+        </span>
+      ),
+    },
     {
       key: "qty",
       header: "Quantità",
@@ -350,7 +362,8 @@ function Risk({ portfolio }: { portfolio: Portfolio }) {
   const profile = profiles.data?.find((p) => p.id === portfolio.risk_profile_id);
   const v: Valuation | undefined = valuation.data;
   const distance = v ? subtractDecimal(v.equity_eur, v.maint_req_eur) : null;
-  const blocked = portfolio.status === "reduce_only" || portfolio.status === "locked";
+  // a reduce-only set by a real-money anomaly is lifted only by «Ho verificato, riprendi» (TOTP)
+  const blocked = (portfolio.status === "reduce_only" || portfolio.status === "locked") && !isLiveReason(portfolio.reduce_only_reason);
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
@@ -465,6 +478,93 @@ function Risk({ portfolio }: { portfolio: Portfolio }) {
   );
 }
 
+// --- real money ----------------------------------------------------------------------
+
+/** A real-money portfolio: «Ho verificato, riprendi» and «Chiudi tutte le posizioni reali» (TOTP). */
+function LivePanel({ portfolio }: { portfolio: Portfolio }) {
+  const resume = useLiveResume(portfolio.id);
+  const flatten = useLiveFlatten(portfolio.id);
+  const [dialog, setDialog] = useState<"resume" | "flatten" | null>(null);
+  const state = portfolio.live_state!;
+  const suspended = portfolio.status === "reduce_only" && isLiveReason(portfolio.reduce_only_reason);
+  return (
+    <section
+      aria-label="Denaro reale"
+      className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border-2 border-loss bg-loss/10 px-4 py-3 text-sm"
+    >
+      <div className="space-y-0.5">
+        <p className="flex items-center gap-2 font-semibold text-loss">
+          <ShieldAlert className="h-4 w-4" aria-hidden />
+          Portafoglio con denaro reale · {LIVE_STATE_LABELS[state] ?? state}
+        </p>
+        {suspended && <p>In reduce-only per un'anomalia: {portfolio.reduce_only_reason}. Verifica il conto al broker prima di riprendere.</p>}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {suspended && (
+          <Button
+            size="sm"
+            onClick={() => {
+              resume.reset();
+              setDialog("resume");
+            }}
+          >
+            Ho verificato, riprendi
+          </Button>
+        )}
+        {state === "armed" && (
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={() => {
+              flatten.reset();
+              setDialog("flatten");
+            }}
+          >
+            Chiudi tutte le posizioni reali
+          </Button>
+        )}
+      </div>
+      {dialog === "resume" && (
+        <LiveTotpDialog
+          title="Riprendere il portafoglio reale?"
+          description="Il portafoglio torna attivo: gli agenti potranno di nuovo aprire posizioni con denaro reale."
+          confirmLabel="Riprendi"
+          pending={resume.isPending}
+          error={resume.error}
+          onClose={() => setDialog(null)}
+          onConfirm={(totp) =>
+            resume.mutate(totp, {
+              onSuccess: () => {
+                toast.success("Portafoglio ripreso");
+                setDialog(null);
+              },
+            })
+          }
+        />
+      )}
+      {dialog === "flatten" && (
+        <LiveTotpDialog
+          title="Chiudere tutte le posizioni reali?"
+          description="Un ordine a mercato reduce-only per ogni posizione aperta, inviato al broker anche con il kill switch acceso."
+          confirmLabel="Chiudi tutte le posizioni"
+          destructive
+          pending={flatten.isPending}
+          error={flatten.error}
+          onClose={() => setDialog(null)}
+          onConfirm={(totp) =>
+            flatten.mutate(totp, {
+              onSuccess: (res) => {
+                toast.success(`Ordini di chiusura inviati: ${res.orders.length}`);
+                setDialog(null);
+              },
+            })
+          }
+        />
+      )}
+    </section>
+  );
+}
+
 // --- archived banner -----------------------------------------------------------------
 
 function ArchivedBanner({ portfolio }: { portfolio: Portfolio }) {
@@ -533,7 +633,7 @@ export default function PortfolioDetail() {
       <PageHeader title={portfolio?.name ?? "Portafoglio"}>
         {portfolio && (
           <div className="flex items-center gap-2">
-            <PortfolioModeBadge mode={portfolio.mode} />
+            <PortfolioModeBadge mode={portfolio.mode} liveState={portfolio.live_state} />
             <PortfolioStatusBadge status={portfolio.status} />
           </div>
         )}
@@ -541,6 +641,7 @@ export default function PortfolioDetail() {
       {isError && <p className="text-loss">{errorMessage(error, "Impossibile caricare il portafoglio")}</p>}
       {portfolio && archived && <ArchivedBanner portfolio={portfolio} />}
       {portfolio && !archived && <HaltBanner portfolioId={portfolio.id} />}
+      {portfolio && !archived && portfolio.live_state && <LivePanel portfolio={portfolio} />}
       {!portfolio ? (
         !isError && <p className="text-sm text-muted">Caricamento…</p>
       ) : (
@@ -561,7 +662,7 @@ export default function PortfolioDetail() {
             <Positions portfolioId={portfolio.id} />
           </TabsContent>
           <TabsContent value="orders">
-            <Orders portfolioId={portfolio.id} linked={Boolean(portfolio.broker_link_id)} readOnly={archived} />
+            <Orders portfolioId={portfolio.id} linked={Boolean(portfolio.broker_link_id)} real={Boolean(portfolio.live_state)} readOnly={archived} />
           </TabsContent>
           <TabsContent value="movements">
             <Movements portfolioId={portfolio.id} timezone={portfolio.timezone} readOnly={archived} />
