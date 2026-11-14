@@ -150,6 +150,23 @@ avvenuti mentre era archiviato (se il calendario non è leggibile il ripristino 
 riprova più tardi). Non si possono inserire o modificare ordini su un portafoglio
 archiviato.
 
+### Blocco aperture
+
+Il CEO (o un admin) può sospendere le **nuove aperture**, su tutti i portafogli o su uno
+solo: finché il blocco è attivo ogni ordine che aumenterebbe l'esposizione (nuove posizioni,
+incrementi, short, ingressi di bracket/OCO) è rifiutato con `TRADING_HALTED`
+(«Aperture sospese dal CEO: <motivo>»); chiusure, riduzioni, stop loss/take profit delle
+posizioni esistenti, annullamenti, liquidazioni e sincronizzazione broker continuano. Vale per
+portafogli simulati, paper e reali, con lo stesso controllo del kill switch.
+
+- L'agente CEO usa `set_trading_halt` / `get_trading_halt` (vedi `docs/paperclip-mcp.md`):
+  serve il permesso `halt`, da concedere solo al CEO dalla scheda dell'agente oppure con
+  `docker compose exec api python -m smtrading.cli agent halt-permission "CEO SMTrading" on`.
+- Nella web app un banner su Dashboard e dettaglio portafoglio mostra motivo, autore e ora;
+  la scheda **Rischio → Blocco aperture** permette di attivarlo, revocarlo (**Revoca**) e
+  vedere lo storico (le righe non vengono mai cancellate).
+- Attivazione e revoca arrivano su Telegram come messaggi critici.
+
 ### Notifiche Telegram (pagina *Notifiche*)
 
 SMTrading scrive da solo in un gruppo Telegram, senza passare da Paperclip.
@@ -182,7 +199,7 @@ docker compose exec api python -m smtrading.cli agent notify NOME on   # oppure 
 
 | Livello | Eventi |
 |---|---|
-| 🔴 critico | kill switch attivato, liquidazione, perdita giornaliera, ordine sconosciuto al broker |
+| 🔴 critico | kill switch attivato, blocco aperture attivato o revocato, liquidazione, perdita giornaliera, ordine sconosciuto al broker |
 | 🟠 avviso | ordine rifiutato, kill switch disattivato, avviso di margine, liquidazione in attesa del broker, prezzo di esecuzione mancante, modifica ordine non riuscita, differenze di riconciliazione broker |
 | 🟢 eseguito | ordine eseguito |
 

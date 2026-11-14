@@ -89,6 +89,7 @@ class AgentPatchIn(BaseModel):
 
     active: bool | None = None
     can_notify: bool | None = None
+    can_halt: bool | None = None
 
 
 class AgentPortfolioIn(BaseModel):

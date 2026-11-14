@@ -32,7 +32,7 @@ router = APIRouter(prefix="/api", tags=["agents"], dependencies=[Depends(require
 MAX_NAME_LEN = 128
 DEFAULT_AUDIT_LIMIT, MAX_AUDIT_LIMIT = 100, 500
 _PERMISSIONS = ("read", "trade")
-AGENT_FIELDS = ("id", "name", "active", "can_notify", "created_at", "last_seen_at")
+AGENT_FIELDS = ("id", "name", "active", "can_notify", "can_halt", "created_at", "last_seen_at")
 
 
 def _clean_name(name: str) -> str:
@@ -118,9 +118,10 @@ async def patch_agent(
     agent_id: UUID, body: AgentPatchIn, admin: CurrentAdmin, session: DbSession,
     redis: RedisClient,
 ) -> dict:
-    """Only the fields present are changed; a change of `can_notify` is audited."""
+    """Only the fields present are changed; a change of `can_notify` / `can_halt` is
+    audited."""
     fields = body.model_fields_set
-    for name in ("active", "can_notify"):
+    for name in ("active", "can_notify", "can_halt"):
         if name in fields and getattr(body, name) is None:
             raise _invalid(name, f"{name} non può essere nullo")
     agent = await _agent(session, agent_id)
@@ -133,6 +134,14 @@ async def patch_agent(
                 session, agent_id=None, method="admin:agent.notify",
                 params={"agent_id": str(agent_id), "agent": agent.name,
                         "can_notify": body.can_notify, "by": admin.email},
+                outcome="ok", latency_ms=0,
+            )
+        if "can_halt" in fields:
+            agent = await agents.set_agent_can_halt(session, agent_id, body.can_halt)
+            await write_audit(
+                session, agent_id=None, method="admin:agent.halt",
+                params={"agent_id": str(agent_id), "agent": agent.name,
+                        "can_halt": body.can_halt, "by": admin.email},
                 outcome="ok", latency_ms=0,
             )
     return await _agent_dto(session, agent)

@@ -12,6 +12,7 @@
     agent rotate NAME        (prints the new token once; the old one stops working)
     agent deactivate NAME
     agent notify NAME on|off (the `notify` permission: send_telegram)
+    agent halt-permission NAME on|off (the `halt` permission: set_trading_halt)
     telegram set --chat-id ID [--token-stdin] [--no-verify] [--enable]
                  (the bot token is read only from stdin, never from argv; verified with
                  getMe/getChat like the admin API; the output never contains it)
@@ -117,6 +118,9 @@ def build_parser() -> argparse.ArgumentParser:
     notify = agent_sub.add_parser("notify", help="grant/revoke the notify permission")
     notify.add_argument("name")
     notify.add_argument("state", choices=["on", "off"])
+    halt = agent_sub.add_parser("halt-permission", help="grant/revoke the halt permission")
+    halt.add_argument("name")
+    halt.add_argument("state", choices=["on", "off"])
 
     telegram = sub.add_parser("telegram", help="Telegram notifications")
     telegram_sub = telegram.add_subparsers(dest="telegram_command", required=True)
@@ -207,6 +211,18 @@ async def execute_agent(args: argparse.Namespace, session: AsyncSession) -> obje
                 outcome="ok", latency_ms=0,
             )
             return {"id": agent.id, "name": agent.name, "can_notify": agent.can_notify}
+        case "halt-permission":
+            on = args.state == "on"
+            agent = await agents.set_agent_can_halt(
+                session, (await _agent(session, args.name)).id, on
+            )
+            await agents.write_audit(
+                session, agent_id=None, method="admin:agent.halt",
+                params={"agent_id": str(agent.id), "agent": agent.name, "can_halt": on,
+                        "by": SOURCE_CLI},
+                outcome="ok", latency_ms=0,
+            )
+            return {"id": agent.id, "name": agent.name, "can_halt": agent.can_halt}
     raise AssertionError(args.agent_command)  # pragma: no cover
 
 
