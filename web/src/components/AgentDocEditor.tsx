@@ -1,4 +1,5 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
+import { useBlocker } from "react-router-dom";
 import { toast } from "sonner";
 import { ApiError } from "@/api/client";
 import { useSaveAgentDoc } from "@/api/hooks/agentDocs";
@@ -10,6 +11,7 @@ import { errorField, errorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 
 const NOTE_MAX = 200;
+export const DISCARD_PROMPT = "Hai modifiche non salvate: vuoi davvero uscire e perderle?";
 const BODY_MAX_BYTES = 200 * 1024;
 
 interface Props {
@@ -30,6 +32,30 @@ export function AgentDocEditor({ doc, onDone, onReload }: Props) {
   const save = useSaveAgentDoc(doc.slug);
   const conflict = save.error instanceof ApiError && save.error.status === 409;
   const field = errorField(save.error);
+  // unsaved draft: the text differs from the one the edit started from
+  const dirty = body !== doc.body && !save.isSuccess;
+
+  // any navigation (another page, or another document: ?doc= remounts the pane)
+  const blocker = useBlocker(dirty);
+  useEffect(() => {
+    if (blocker.state !== "blocked") return;
+    if (window.confirm(DISCARD_PROMPT)) blocker.proceed();
+    else blocker.reset();
+  }, [blocker]);
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  function cancel() {
+    if (dirty && !window.confirm(DISCARD_PROMPT)) return;
+    onDone();
+  }
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -51,7 +77,7 @@ export function AgentDocEditor({ doc, onDone, onReload }: Props) {
     <form onSubmit={submit} className="space-y-3 p-4" aria-label={`Modifica ${doc.title}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted">Stai modificando la versione {baseVersion}.</p>
-        <Button type="button" variant="outline" size="sm" aria-pressed={preview} onClick={() => setPreview((p) => !p)}>
+        <Button type="button" variant="outline" size="sm" onClick={() => setPreview((p) => !p)}>
           {preview ? "Torna al testo" : "Anteprima"}
         </Button>
       </div>
@@ -94,7 +120,7 @@ export function AgentDocEditor({ doc, onDone, onReload }: Props) {
         <Button type="submit" disabled={save.isPending}>
           Salva
         </Button>
-        <Button type="button" variant="outline" onClick={onDone} disabled={save.isPending}>
+        <Button type="button" variant="outline" onClick={cancel} disabled={save.isPending}>
           Annulla
         </Button>
       </div>

@@ -247,6 +247,54 @@ describe("AgentDocs page", () => {
     expect(await screen.findByRole("heading", { name: "Nuovo RM" })).toBeInTheDocument();
   });
 
+  it("guards an unsaved draft: «Annulla», another document and closing the tab ask first", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm");
+    try {
+      renderApp("/istruzioni-agenti?doc=risk-manager");
+      await user.click(await screen.findByRole("button", { name: "Modifica" }));
+      // the preview toggle says its state with its label only (no aria-pressed as well)
+      expect(screen.getByRole("button", { name: "Anteprima" })).not.toHaveAttribute("aria-pressed");
+
+      // nothing changed: no question
+      const clean = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(clean);
+      expect(clean.defaultPrevented).toBe(false);
+      await user.click(screen.getByRole("button", { name: "Annulla" }));
+      expect(confirm).not.toHaveBeenCalled();
+      expect(screen.queryByRole("textbox", { name: "Testo (Markdown)" })).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Modifica" }));
+      await user.type(screen.getByRole("textbox", { name: "Testo (Markdown)" }), " bozza");
+      const dirty = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(dirty);
+      expect(dirty.defaultPrevented).toBe(true);
+
+      confirm.mockReturnValueOnce(false);
+      await user.click(screen.getByRole("button", { name: "Annulla" }));
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("textbox", { name: "Testo (Markdown)" })).toHaveValue(
+        `${docs["risk-manager"].body} bozza`,
+      );
+
+      confirm.mockReturnValueOnce(false);
+      await user.click(screen.getByRole("button", { name: /Notifier/ }));
+      expect(confirm).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole("textbox", { name: "Testo (Markdown)" })).toHaveValue(
+        `${docs["risk-manager"].body} bozza`,
+      );
+
+      confirm.mockReturnValueOnce(true);
+      await user.click(screen.getByRole("button", { name: /Notifier/ }));
+      expect(confirm).toHaveBeenCalledTimes(3);
+      expect(await screen.findByRole("heading", { name: "Notifier", level: 2 })).toBeInTheDocument();
+      expect(screen.queryByRole("textbox", { name: "Testo (Markdown)" })).not.toBeInTheDocument();
+      expect(puts).toEqual([]);
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
   it("shows the conflict message and reloads the text saved by someone else", async () => {
     const user = userEvent.setup();
     conflictNext = true;
