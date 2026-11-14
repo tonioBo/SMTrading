@@ -34,7 +34,8 @@ TITLES = {
     "order.replace_failed": "Modifica dell'ordine non riuscita",
     "price_alert": "Alert di prezzo",
 }
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+# control characters except \n and \t, plus lone surrogates (not encodable as UTF-8/16)
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\ud800-\udfff]")
 
 
 @dataclass
@@ -73,11 +74,12 @@ def render_activity(a: Activity, names: Names, tz: str) -> str:
 
 
 def utf16_len(s: str) -> int:
-    return len(s.encode("utf-16-le")) // 2
+    """Length in UTF-16 code units; a lone surrogate counts as one and never raises."""
+    return len(s.encode("utf-16-le", "surrogatepass")) // 2
 
 
 def clean_text(text: str) -> str:
-    """Removes control characters except \\n and \\t, then strips."""
+    """Removes control characters except \\n and \\t and lone surrogates, then strips."""
     return _CONTROL.sub("", text).strip()
 
 
@@ -117,15 +119,17 @@ def _pack(lines: list[str], limit: int) -> list[str]:
 def split_message(text: str, pre_block: str | None = None
                   ) -> list[tuple[str, list[dict] | None]]:
     """Splits at line boundaries into parts of at most MAX_LEN (measured in UTF-16 units,
-    which is never less than the character count); a single longer line is cut.
+    which is never less than the character count); a single longer line is cut. Parts that
+    are empty or only whitespace are dropped (Telegram rejects an empty text), so
+    `split_message("")` is `[]`.
 
     `pre_block` follows the text (after a blank line); every part holding (a piece of) it
     gets a `pre` entity covering exactly that piece."""
-    text_parts = _pack(text.split("\n"), MAX_LEN) if text else []
-    if not pre_block:
-        return [(p, None) for p in text_parts] or [("", None)]
-
-    out: list[tuple[str, list[dict] | None]] = [(p, None) for p in text_parts]
+    out: list[tuple[str, list[dict] | None]] = [
+        (p, None) for p in (_pack(text.split("\n"), MAX_LEN) if text else []) if p.strip()
+    ]
+    if not pre_block or not pre_block.strip():
+        return out
     pre_lines = pre_block.split("\n")
     # try to fit the start of the table after the last text part
     if out:
@@ -133,20 +137,20 @@ def split_message(text: str, pre_block: str | None = None
         room = MAX_LEN - utf16_len(last) - 2
         head: list[str] = []
         while pre_lines and room > 0:
-            line = pre_lines[0]
-            need = utf16_len(line) + (1 if head else 0)
+            need = utf16_len(pre_lines[0]) + (1 if head else 0)
             if need > room:
                 break
             head.append(pre_lines.pop(0))
             room -= need
-        if head:
-            block = "\n".join(head)
+        block = "\n".join(head)
+        if block.strip():
             prefix = f"{last}\n\n"
             out.append((prefix + block, _pre(prefix, block)))
         else:
             out.append((last, None))
     for block in _pack(pre_lines, MAX_LEN) if pre_lines else []:
-        out.append((block, _pre("", block)))
+        if block.strip():
+            out.append((block, _pre("", block)))
     return out
 
 

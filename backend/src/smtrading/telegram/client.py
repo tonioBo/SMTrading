@@ -7,12 +7,16 @@ neither `__cause__` nor `__context__` holds the httpx error), with any echo of t
 replaced by `••••`.
 """
 
+import logging
+import re
 from typing import Any
 
 import httpx
 
 API_URL = "https://api.telegram.org"
 _MASK = "••••"
+_TOKEN_RE = re.compile(r"\d+:[A-Za-z0-9_-]+")
+log = logging.getLogger(__name__)
 
 
 class TelegramError(Exception):
@@ -31,6 +35,11 @@ def _int_or_none(v: Any) -> int | None:
 
 class TelegramClient:
     def __init__(self, token: str, http: httpx.AsyncClient, *, timeout: float = 10.0):
+        """The token must look like `<bot id>:<secret>` (after strip): anything else (a
+        newline, `#`, `/`, a control character) would change the request URL."""
+        token = token.strip() if isinstance(token, str) else ""
+        if not _TOKEN_RE.fullmatch(token):
+            raise TelegramError("Token del bot non valido") from None
         self._token = token
         self._http = http
         self._timeout = timeout
@@ -43,7 +52,7 @@ class TelegramClient:
         resp = None
         try:
             resp = await self._http.post(url, json=payload or {}, timeout=self._timeout)
-        except httpx.HTTPError:
+        except (httpx.HTTPError, httpx.InvalidURL):
             pass  # raised below, outside the handler: no __context__ holding the URL
         if resp is None:
             raise TelegramError("Telegram non raggiungibile") from None
@@ -80,13 +89,18 @@ class TelegramClient:
         return TelegramError(msg, status=code, retry_after=retry_after,
                              migrate_to_chat_id=migrate)
 
+    async def _call_dict(self, method: str, payload: dict[str, Any] | None = None
+                         ) -> dict[str, Any]:
+        r = await self._call(method, payload)
+        return r if isinstance(r, dict) else {}
+
     async def get_me(self) -> dict[str, Any]:
-        r = await self._call("getMe") or {}
+        r = await self._call_dict("getMe")
         return {"id": r.get("id"), "username": r.get("username"),
                 "first_name": r.get("first_name")}
 
     async def get_chat(self, chat_id: int | str) -> dict[str, Any]:
-        r = await self._call("getChat", {"chat_id": chat_id}) or {}
+        r = await self._call_dict("getChat", {"chat_id": chat_id})
         return {"id": r.get("id"), "type": r.get("type"), "title": r.get("title")}
 
     async def get_updates(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -96,15 +110,17 @@ class TelegramClient:
 
     async def send_message(self, chat_id: int | str, text: str, *,
                            entities: list[dict[str, Any]] | None = None,
-                           disable_notification: bool = False) -> int:
-        """Plain text: never `parse_mode`; formatting only via `entities`."""
+                           disable_notification: bool = False) -> int | None:
+        """Plain text: never `parse_mode`; formatting only via `entities`. Returns the
+        message_id, or None when Telegram said ok without one: the message was delivered,
+        so it must not be retried (a retry would duplicate it)."""
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
         if entities:
             payload["entities"] = entities
         payload["disable_notification"] = disable_notification
         payload["link_preview_options"] = {"is_disabled": True}
-        r = await self._call("sendMessage", payload) or {}
+        r = await self._call_dict("sendMessage", payload)
         message_id = _int_or_none(r.get("message_id"))
         if message_id is None:
-            raise TelegramError("Risposta di Telegram senza message_id")
+            log.warning("telegram sendMessage ok without a message_id: treated as sent")
         return message_id

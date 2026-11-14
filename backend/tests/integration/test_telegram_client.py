@@ -1,4 +1,6 @@
+import base64
 import json
+import logging
 import uuid
 
 import httpx
@@ -10,6 +12,7 @@ from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.risk.models import AppSetting
 from smtrading.telegram.client import API_URL, TelegramClient, TelegramError
 from smtrading.telegram.config import (
+    UNREADABLE_MESSAGE,
     TelegramConfig,
     config_dto,
     is_ready,
@@ -171,7 +174,7 @@ async def test_config_roundtrip_encrypted(db_session):
     dto = config_dto(loaded)
     assert dto == {"configured": True, "enabled": True, "paused": False,
                    "bot_token_masked": "••••", "bot_username": "smt_bot",
-                   "chat_id": "-100123", "chat_title": "Trading"}
+                   "chat_id": "-100123", "chat_title": "Trading", "error": None}
     assert TOKEN[-4:] not in json.dumps(dto)
     await save_config(db_session, TelegramConfig(bot_token=TOKEN, chat_id="-1", enabled=False))
     assert not is_ready(await load_config(db_session))
@@ -222,3 +225,82 @@ async def test_agent_rate_counter_window(db_session):
     assert await agent_sent_last_minute(db_session, me) == 3
     assert await agent_sent_last_minute(db_session, other) == 1
     assert await agent_sent_last_minute(db_session, uuid.uuid4()) == 0
+
+
+@pytest.mark.parametrize("bad", [f"{TOKEN}\n#x", "123:abc#frag", "123:ab\x00c", "abc:def", "",
+                                 "123456789", "123: abc"])
+@respx.mock
+async def test_invalid_token_rejected_before_any_request(bad):
+    route = respx.post(url__startswith=API_URL).mock(return_value=_ok({}))
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(TelegramError) as info:
+            TelegramClient(bad, http)
+    assert info.value.message == "Token del bot non valido"
+    assert info.value.__context__ is None and info.value.__cause__ is None
+    assert not route.called
+
+
+@respx.mock
+async def test_token_is_stripped():
+    route = respx.post(f"{BASE}/getMe").mock(return_value=_ok({"id": 1, "username": "b"}))
+    async with httpx.AsyncClient() as http:
+        await TelegramClient(f"  {TOKEN}\n", http).get_me()
+    assert route.called
+
+
+@respx.mock
+async def test_invalid_url_mapped_without_token():
+    respx.post(f"{BASE}/getMe").mock(side_effect=httpx.InvalidURL(f"bad {BASE}"))
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(TelegramError) as info:
+            await TelegramClient(TOKEN, http).get_me()
+    assert info.value.message == "Telegram non raggiungibile"
+    _assert_no_token(info.value)
+
+
+@respx.mock
+async def test_ok_without_message_id_counts_as_sent(caplog):
+    respx.post(f"{BASE}/sendMessage").mock(return_value=_ok({"chat": {"id": -1}}))
+    async with httpx.AsyncClient() as http:
+        with caplog.at_level(logging.WARNING, logger="smtrading.telegram.client"):
+            assert await TelegramClient(TOKEN, http).send_message(-1, "x") is None
+    assert "message_id" in caplog.text
+
+
+@pytest.mark.parametrize("result", [None, [], "x", 3, True])
+@respx.mock
+async def test_get_me_and_get_chat_tolerate_odd_results(result):
+    respx.post(f"{BASE}/getMe").mock(return_value=_ok(result))
+    respx.post(f"{BASE}/getChat").mock(return_value=_ok(result))
+    async with httpx.AsyncClient() as http:
+        client = TelegramClient(TOKEN, http)
+        assert await client.get_me() == {"id": None, "username": None, "first_name": None}
+        assert await client.get_chat(-1) == {"id": None, "type": None, "title": None}
+
+
+async def test_enqueue_measures_utf16(db_session):
+    with pytest.raises(ValueError):
+        await enqueue(db_session, source="system", category="event", level="info",
+                      text="🔴" * 2049)  # 2049 characters, 4098 UTF-16 units
+    await enqueue(db_session, source="system", category="event", level="info", text="🔴" * 2048)
+
+
+@pytest.mark.parametrize("token_enc", ["%%% not base64", base64.b64encode(b"short").decode(),
+                                       base64.b64encode(b"x" * 64).decode()])
+async def test_unreadable_config_is_unconfigured_and_warns_once(db_session, caplog, token_enc):
+    await db_session.execute(
+        AppSetting.__table__.insert().values(key="telegram", value={
+            "token_enc": token_enc, "chat_id": "-100", "enabled": True, "paused": False,
+            "bot_username": "b", "chat_title": "T"}))
+    with caplog.at_level(logging.WARNING, logger="smtrading.telegram.config"):
+        first = await load_config(db_session)
+        second = await load_config(db_session)
+    assert first == second
+    assert first.bot_token is None and first.unreadable
+    assert not is_ready(first)
+    warnings = [r for r in caplog.records if r.name == "smtrading.telegram.config"]
+    assert len(warnings) == 1
+    dto = config_dto(first)
+    assert dto["configured"] is False
+    assert dto["error"] == UNREADABLE_MESSAGE == "configurazione illeggibile: reinserisci il token"
+    assert config_dto(TelegramConfig())["error"] is None

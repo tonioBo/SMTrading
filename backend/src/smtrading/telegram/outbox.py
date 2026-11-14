@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.telegram.config import load_config
 from smtrading.telegram.models import OutboxStatus, TelegramOutbox
-from smtrading.telegram.render import MAX_LEN
+from smtrading.telegram.render import MAX_LEN, utf16_len
 
 AGENT_WINDOW_S = 60
 
@@ -17,9 +17,10 @@ AGENT_WINDOW_S = 60
 async def enqueue(session: AsyncSession, *, source: str, category: str, level: str,
                   text: str, entities: list | None = None) -> TelegramOutbox:
     """`paused` while the configuration is paused, `pending` otherwise. Over-long texts are
-    the caller's bug (split them first with `split_message`)."""
-    if len(text) > MAX_LEN:
-        raise ValueError(f"telegram text longer than {MAX_LEN} characters")
+    the caller's bug (split them first with `split_message`); the length is measured in
+    UTF-16 units, never less than the character count Telegram allows."""
+    if utf16_len(text) > MAX_LEN:
+        raise ValueError(f"telegram text longer than {MAX_LEN} UTF-16 units")
     cfg = await load_config(session)
     row = TelegramOutbox(
         source=source, category=category, level=level, text=text, entities=entities or None,

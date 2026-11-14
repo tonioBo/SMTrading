@@ -56,6 +56,25 @@ def test_clean_text_strips_controls_keeps_newlines():
     assert clean_text("<b>*_[x](y)@all") == "<b>*_[x](y)@all"
 
 
+def test_lone_surrogates_never_raise():
+    bad = "a\ud800b\udfffc"
+    assert clean_text(bad) == "abc"
+    assert utf16_len(bad) == 5
+    parts = split_message(bad * 1000)
+    assert all(utf16_len(p) <= MAX_LEN for p, _ in parts)
+
+
+def test_split_message_drops_empty_parts():
+    assert split_message("") == []
+    assert split_message("\n\n  \n") == []
+    long_blank = "a" * 4000 + "\n" + " " * 4000 + "\n" + "b"
+    assert [p.strip() for p, _ in split_message(long_blank)] == ["a" * 4000, "b"]
+    assert split_message("", "  \n ") == []
+    [(part, entities)] = split_message("", "x  1")
+    assert part == "x  1" and entities == [{"type": "pre", "offset": 0, "length": 4}]
+    assert split_message("ciao", "\n") == [("ciao", None)]
+
+
 def test_split_message_short_is_one_part():
     assert split_message("ciao\nmondo") == [("ciao\nmondo", None)]
 
