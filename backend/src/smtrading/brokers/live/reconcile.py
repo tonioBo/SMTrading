@@ -17,8 +17,8 @@ FOR NO KEY UPDATE, then the portfolio through `trip_reduce_only`):
   and not yet synced). Open sells never skip it (a surplus is fine: the account is
   dedicated). A missing FX rate or price: `skipped`;
 - debounce (R8.7): a diff is recorded at once (`Reconciliation(ok=False)`), the portfolio
-  goes reduce-only (`reconcile_diff` / `cash_shortfall`) only when the same diff is found
-  again on the next pass;
+  goes reduce-only (`reconcile_diff` / `cash_shortfall`) only when the same diff (by
+  symbol and sign of the difference; cash short) is found again on the next pass;
 - an `explained` or `skipped` symbol (or cash) that lasts more than UNEXPLAINED_ALERT_AFTER
   sends one critical `live.reconcile_unexplained` per episode (its `since` is carried in
   the stored rows);
@@ -27,8 +27,8 @@ FOR NO KEY UPDATE, then the portfolio through `trip_reduce_only`):
 - another account behind the same keys (fingerprint) -> the activation service's
   `account_changed` (disarmed, reduce-only, one critical `live.account_changed`); the
   stored fingerprint changes only with a new test;
-- an Alpaca account that is no longer a cash account (multiplier > 1, R8.10) -> reduce-only
-  (`margin_account`, critical alert);
+- an Alpaca account that is not (or no longer) a cash account (multiplier > 1, or no
+  multiplier reported, R8.10) -> reduce-only (`margin_account`, critical alert);
 - broker failures raise LiveBrokerUnreachable (`auth` for HTTP 401/403), a broker rate
   limit LiveBrokerRateLimited (not a health failure).
 
@@ -287,7 +287,7 @@ async def reconcile_live(
         for pid in pids:
             rows.append(await _record(session, link, pid, diffs, now,
                                       position_diff=position_diff, cash_short=cash_short))
-        if kind == "alpaca_live" and snap.account_type == "margin":  # R8.10
+        if kind == "alpaca_live" and snap.account_type != "cash":  # R8.10 (no multiplier too)
             for pid in pids:
                 await trip_reduce_only(session, pid, cause="margin_account",
                                        details={"link_id": link_id,
@@ -358,12 +358,18 @@ def _pending(entry: dict) -> str | None:
 
 
 def _actionable(diffs: list[dict]) -> list:
-    """What the debounce compares: the position diffs and whether cash is short."""
+    """What the debounce compares: each position diff as (symbol, sign of ours − broker),
+    not the exact quantities (a fill between two passes must not reset it), and whether
+    cash is short."""
     out: list = []
     for d in diffs:
         if _pending(d) is not None:
             continue
-        out.append(["cash"] if "cash" in d else [d["symbol"], d["ours"], d["broker"]])
+        if "cash" in d:
+            out.append(["cash"])
+        else:
+            delta = Decimal(d["ours"]) - Decimal(d["broker"])
+            out.append([d["symbol"], 1 if delta > 0 else -1])
     return out
 
 

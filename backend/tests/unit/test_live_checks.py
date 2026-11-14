@@ -290,7 +290,8 @@ async def test_cash_cap_counts_other_open_buys(maker, qs):
     with pytest.raises(SMTError) as e:
         await _check(maker, qs, pid, est_value=D(400))  # 408 > 1000 - ~642
     assert e.value.code == ErrorCode.LIVE_CASH_LIMIT
-    assert D(640) < D(e.value.details["committed"]) < D(660)
+    # M-d: value + fees + the 2 % margin (640 x 1,02 = 652,80 plus fees)
+    assert D("652.8") < D(e.value.details["committed"]) < D(670)
 
 
 async def test_no_short_counts_other_open_sells(maker, qs):
@@ -330,3 +331,20 @@ async def test_estimate_buy_is_the_pre_trade_estimate(maker, qs):
                                      result.estimated_fee.currency, "EUR")
     assert value == D(800)
     assert fees == expected + result.estimated_fx_fee_eur
+
+
+async def test_another_orders_missing_quote_never_refuses_this_one(maker, qs):
+    """M-e: an open market buy whose quote is missing is priced at the symbol's last fill
+    x 1,02; the new order is checked, not refused PROVIDER_UNAVAILABLE."""
+    pid, link_id = await _portfolio(maker, qs, held=1)  # a fill of AAPL at 100 USD
+    async with maker() as s:
+        s.add(Order(portfolio_id=pid, symbol="AAPL", side=OrderSide.buy, type=OrderType.market,
+                    qty=D(5), status=OrderStatus.pending, broker_link_id=link_id,
+                    broker_status="to_send"))
+        await s.commit()
+    qs._quotes.pop("AAPL")
+    await _check(maker, qs, pid, est_value=D(300))
+    with pytest.raises(SMTError) as e:
+        await _check(maker, qs, pid, est_value=D(600))  # fits alone, not with the other
+    assert e.value.code == ErrorCode.LIVE_CASH_LIMIT
+    assert D(e.value.details["committed"]) > D(5) * D(100) * D("1.02") * D("0.8")

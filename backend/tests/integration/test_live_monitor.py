@@ -710,3 +710,79 @@ async def test_reconcile_locks_the_link_before_the_portfolio(maker, qs, fake):
     finally:
         event.remove(engine, "before_cursor_execute", record)
     assert seen[:2] == ["link", "portfolio"], seen
+
+
+
+# -- re-review (M-a, M-c, M-f, M-g) -------------------------------------------------------
+
+async def test_debounce_by_symbol_and_sign(maker, qs, fake):
+    """M-a: the broker's quantity moves between the passes (2 then 3, both above ours):
+    the same diff for the debounce: reduce-only on the second pass."""
+    pid, link_id = await _live(maker)
+    fake.alpaca.positions["AAPL"] = D(2)
+    await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    assert (await _get(maker, Portfolio, pid)).status == PortfolioStatus.active
+    fake.alpaca.positions["AAPL"] = D(3)
+    await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
+    assert (await _get(maker, Portfolio, pid)).reduce_only_reason == "live_reconcile_diff"
+
+
+class _NoMultiplierFake(FakeLiveBroker):
+    def _alpaca(self, method, path, params, body):
+        resp = super()._alpaca(method, path, params, body)
+        if (method, path) == ("GET", "/v2/account"):
+            data = resp.json()
+            data.pop("multiplier")
+            return httpx.Response(200, json=data)
+        return resp
+
+
+async def test_alpaca_account_without_multiplier_trips_reduce_only(maker, qs):
+    """M-c: not provably a cash account (no multiplier): reduce-only too."""
+    pid, link_id = await _live(maker)
+    await reconcile_live(maker, link_id, _factory(maker, _NoMultiplierFake()), qs=qs)
+    assert (await _get(maker, Portfolio, pid)).reduce_only_reason == "live_margin_account"
+
+
+async def test_rate_limit_for_over_15_min_alerts_once(maker, qs):
+    """M-f: a rate limit lasting more than 15 minutes: one alert per episode."""
+    _, link_id = await _live(maker)
+    clock = Clock(T0)
+    monitor = LiveMonitor(maker, http_factory=_status_factory(maker, 429), qs=qs, clock=clock)
+    for _ in range(14):
+        await monitor.tick()
+        clock.advance(60)
+    assert await _activities(maker, "live.unreachable") == []
+    for _ in range(10):
+        await monitor.tick()
+        clock.advance(60)
+    (alert,) = await _activities(maker, "live.unreachable")
+    assert "limite di frequenza" in alert.summary
+    assert (await _get(maker, BrokerLink, link_id)).health_failures == 0
+
+
+async def test_t212_account_positions_are_consumed_not_reused(maker, monkeypatch):
+    """M-g: positions_after_account reuses the account read once, and only when recent."""
+    from smtrading.brokers import t212_core
+    from smtrading.brokers.live.t212_live import T212LiveAdapter
+
+    class Counting(FakeLiveBroker):
+        reads = 0
+
+        def _t212(self, method, path, body):
+            if (method, path) == ("GET", "/api/v0/equity/positions"):
+                Counting.reads += 1
+            return super()._t212(method, path, body)
+
+    _, link_id = await _live(maker, kind="t212_live")
+    async with make_live_client(maker, link_id, inner=Counting().transport()) as http:
+        adapter = T212LiveAdapter(dict(T212_CFG), http)
+        await adapter.get_account()
+        await adapter.positions_after_account()
+        assert Counting.reads == 1  # reused once
+        await adapter.positions_after_account()
+        assert Counting.reads == 2  # consumed: read again
+        await adapter.get_account()
+        monkeypatch.setattr(t212_core, "_ACCOUNT_POSITIONS_MAX_AGE_S", -1)
+        await adapter.positions_after_account()
+        assert Counting.reads == 4  # too old: read again

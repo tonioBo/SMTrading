@@ -585,7 +585,18 @@ class BrokerSync:
         orders at the broker are final (their cancels are sent and read back first, in
         this pass, so their fills are applied) and is then clamped to the position.
         A real-money buy whose broker snapshot is too old waits for a fresh one (read
-        here, with no lock held, then the order is checked again: `refreshed`)."""
+        here, with no lock held, then the order is checked again: `refreshed`). The wait
+        clock (`_waiting`) runs only over consecutive waiting passes: any other outcome
+        (sent, rejected, market closed, a liquidation waiting...) resets it."""
+        waiting = [False]
+        try:
+            await self._send_once(order_id, retry=retry, refreshed=refreshed, waiting=waiting)
+        finally:
+            if not waiting[0]:
+                self._waiting.pop(order_id, None)
+
+    async def _send_once(self, order_id: UUID, *, retry: bool, refreshed: bool,
+                         waiting: list[bool]) -> None:
         now = self._clock()
         memo = await self._live_memo(order_id)
         async with self._sm() as session:
@@ -630,6 +641,7 @@ class BrokerSync:
                     await self._commit(session)
                     if retry:
                         await self._cancel_now(to_cancel)
+                        waiting[0] = True  # the retry manages the wait clock
                         await self._send(order_id, retry=False)
                     return
             refusal = await self._refusal(session, portfolio, order, clamp=True)
@@ -644,15 +656,17 @@ class BrokerSync:
                 refusal = await self._live_refusal(session, memo, portfolio, order, link,
                                                    instrument, now)
                 if refusal is _STALE or refusal is _WAIT:
-                    since = self._waiting.setdefault(order_id, now)
-                    if now - since <= LIVE_WAIT_MAX:
-                        await self._commit(session)  # nothing changed: the lock is released
-                        if (refusal is _STALE and not refreshed
-                                and await self._refresh_account(link.id)):
-                            await self._send(order_id, retry=retry, refreshed=True)
+                    await self._commit(session)  # nothing changed: the lock is released
+                    waiting[0] = True  # the clock is kept (or handled by the retry below)
+                    if (refusal is _STALE and not refreshed
+                            and await self._refresh_account(link.id)):
+                        await self._send(order_id, retry=retry, refreshed=True)
                         return
-                    refusal = SMTError(ErrorCode.PROVIDER_UNAVAILABLE, WAIT_TOO_LONG_MESSAGE)
-                self._waiting.pop(order_id, None)
+                    since = self._waiting.setdefault(order_id, now)
+                    if now - since > LIVE_WAIT_MAX:  # after the refresh attempt
+                        await self._update(order_id, self._wait_expired)
+                        self._waiting.pop(order_id, None)
+                    return
             if refusal is not None:
                 await self._reject(session, order, refusal.code, refusal.message)
                 await self._commit(session)
@@ -815,6 +829,14 @@ class BrokerSync:
             link.last_snapshot_at = now
             await session.commit()
         return True
+
+    async def _wait_expired(self, session: AsyncSession, order: Order) -> None:
+        """A real order waited LIVE_WAIT_MAX for account data / quotes: rejected (only if
+        still never sent)."""
+        if (order.broker_status == BrokerState.TO_SEND and order.broker_sent_at is None
+                and order.broker_order_id is None):
+            await self._reject(session, order, ErrorCode.PROVIDER_UNAVAILABLE,
+                               WAIT_TOO_LONG_MESSAGE)
 
     async def _mark_stale(self, link_id: UUID) -> None:
         """A real buy was sent: the snapshot's cash no longer counts it (its own short

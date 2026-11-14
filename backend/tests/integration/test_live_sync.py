@@ -658,3 +658,39 @@ async def test_unknown_outcome_trips_reduce_only_at_once(maker, redis, qs):
                                                     "live_order_unknown")
         assert await s.scalar(select(Activity.id).where(
             Activity.type == "live.reduce_only", Activity.portfolio_id == pid)) is not None
+
+
+
+# -- re-review (N1) ---------------------------------------------------------------------
+
+async def test_wait_clock_resets_when_the_market_closes(maker, redis, qs):
+    """N1: a buy waits one pass (account unreadable) just before the close; at the next
+    open its first stale pass refreshes the account and sends it (no 30-min rejection
+    from a clock that kept running overnight)."""
+    from smtrading.engine.models import TimeInForce
+
+    pid, _ = await _live(maker, snapshot_at=OPEN - timedelta(minutes=5))
+    async with maker() as s:
+        order = await place_order(s, qs, PlaceOrderRequest(
+            portfolio_id=pid, symbol="AAPL", side=OrderSide.buy, type=OrderType.market,
+            qty=TEN, tif=TimeInForce.gtc, agent_id="agent-1"), now=OPEN)
+        await s.commit()
+        oid = order.id
+    clock = Clock(OPEN)
+    sync = _sync(maker, redis, qs, clock)
+    with _mock() as mock:
+        mock.get(f"{ALPACA}/v2/account").mock(return_value=httpx.Response(500))
+        await sync.tick()
+    assert oid in sync._waiting
+    clock.now = OPEN + timedelta(hours=8)  # 23:00 UTC: NASDAQ closed
+    with _mock(called=False):
+        await sync.tick()
+    assert oid not in sync._waiting
+    clock.now = OPEN + timedelta(days=1)  # the next open, the snapshot is stale
+    with _mock() as mock:
+        _account_routes(mock, cash="100000")
+        mock.post(f"{ALPACA}/v2/orders").mock(
+            return_value=httpx.Response(200, json=_alpaca_order()))
+        await sync.tick()
+    o = await _order(maker, oid)
+    assert o.broker_order_id == "bo-1" and o.status != OrderStatus.rejected

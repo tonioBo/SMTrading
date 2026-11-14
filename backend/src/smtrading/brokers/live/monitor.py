@@ -10,7 +10,8 @@ HEALTH_FAILURES_ALERT-th consecutive failure a critical `live.unreachable` is se
 until the broker is reachable again. Credentials refused (HTTP 401/403) count as failures
 too, with their own critical `live.credentials_rejected` («credenziali rifiutate») at the
 first one, once until a success. A broker rate limit (HTTP 429) is not a failure: the
-link is tried again at its next turn. A failure of the monitor itself (not the broker:
+link is tried again at its next turn; one lasting RATE_LIMIT_ALERT_AFTER sends one
+critical `live.unreachable` («limite di frequenza del broker…») per episode. A failure of the monitor itself (not the broker:
 the database, a bug) is logged, the link waits its next turn, and at the
 HEALTH_FAILURES_ALERT-th in a row a critical `live.monitor_failed` is sent (once until a
 success). The link's live_state never changes for health.
@@ -24,7 +25,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import func, select, text
@@ -52,6 +53,8 @@ T212_ACCOUNT_MIN_INTERVAL_S = 5
 ADVISORY_LOCK_KEY = 0x534D544C564D  # "SMTLVM"
 UNREACHABLE_SUMMARY = "broker non raggiungibile"
 CREDENTIALS_SUMMARY = "credenziali rifiutate dal broker: controlla le chiavi"
+RATE_LIMIT_ALERT_AFTER = timedelta(minutes=15)
+RATE_LIMIT_SUMMARY = "limite di frequenza del broker da oltre 15 minuti: conto non verificato"
 MONITOR_FAILED_SUMMARY = "controllo del conto reale non riuscito (errore interno)"
 
 
@@ -71,6 +74,7 @@ class LiveMonitor:
         self._last: dict[UUID, tuple[datetime, datetime]] = {}  # link -> (clock, db time)
         self._internal: dict[UUID, int] = {}  # consecutive monitor (non-broker) failures
         self._auth_alerted: set[UUID] = set()
+        self._rate_limited: dict[UUID, tuple[datetime, bool]] = {}  # since, alerted
 
     async def run(self) -> None:
         engine = self._sm.kw["bind"]
@@ -133,8 +137,10 @@ class LiveMonitor:
             except LiveBrokerRateLimited as e:  # not a health failure: next turn
                 self._last[link_id] = (now, db_now)
                 log.warning("live link %s: broker rate limit: %s", link_id, e)
+                await self._rate_limit(link_id, now)
                 continue
             except LiveBrokerUnreachable as e:
+                self._rate_limited.pop(link_id, None)
                 self._last[link_id] = (now, db_now)
                 self._internal.pop(link_id, None)
                 await self._health(link_id, error=str(e), auth=e.auth)
@@ -146,10 +152,26 @@ class LiveMonitor:
                 continue
             self._last[link_id] = (now, db_now)
             self._internal.pop(link_id, None)
+            self._rate_limited.pop(link_id, None)
             if row is not None:
                 done += 1
                 await self._health(link_id, error=None)
         return done
+
+    async def _rate_limit(self, link_id: UUID, now: datetime) -> None:
+        since, alerted = self._rate_limited.setdefault(link_id, (now, False))
+        if alerted or now - since <= RATE_LIMIT_ALERT_AFTER:
+            return
+        self._rate_limited[link_id] = (since, True)
+        try:
+            async with self._sm() as session:
+                await live_alert(session, kind="unreachable", summary=RATE_LIMIT_SUMMARY,
+                                 portfolio_id=await self._portfolio_of(session, link_id),
+                                 link_id=link_id,
+                                 data={"rate_limited_since": since.isoformat()})
+                await session.commit()
+        except Exception:
+            log.exception("live monitor: alert for link %s failed", link_id)
 
     async def _internal_failure(self, link_id: UUID) -> None:
         count = self._internal[link_id] = self._internal.get(link_id, 0) + 1

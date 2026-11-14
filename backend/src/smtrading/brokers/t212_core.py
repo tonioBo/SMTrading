@@ -33,6 +33,7 @@ from smtrading.instruments.models import AssetClass, Instrument
 
 _API = "/api/v0/equity"
 _CACHE_TTL = 24 * 3600
+_ACCOUNT_POSITIONS_MAX_AGE_S = 5  # positions_after_account reuses a read this recent
 _REFRESH_BACKOFF_S = 60  # the metadata endpoint allows 1 request / 50s
 _HISTORY_PAGES = 5
 _MATCH_SKEW = timedelta(seconds=60)  # clock skew allowed when matching createdAt
@@ -528,6 +529,7 @@ class _T212Protocol(BrokerAdapter):
 
     async def get_positions(self) -> dict[str, Decimal]:
         await self._load_instruments()
+        self._account_positions = None  # a newer read: the account's one is stale
         resp = await self._request("GET", f"{_API}/positions")
         if resp.status_code >= 300:
             raise self._fail(resp)
@@ -535,12 +537,12 @@ class _T212Protocol(BrokerAdapter):
 
     async def positions_after_account(self) -> dict[str, Decimal]:
         """The positions `get_account` just read (Trading 212 rate limits every read)."""
-        data = getattr(self, "_account_positions", None)
-        if data is None:
+        cached = getattr(self, "_account_positions", None)
+        self._account_positions = None  # consumed: never reused
+        if cached is None or time.monotonic() - cached[0] > _ACCOUNT_POSITIONS_MAX_AGE_S:
             return await self.get_positions()
-        self._account_positions = None
         await self._load_instruments()
-        return self._positions(data)
+        return self._positions(cached[1])
 
     def _positions(self, data) -> dict[str, Decimal]:
         if not isinstance(data, list):
@@ -580,7 +582,7 @@ class _T212Protocol(BrokerAdapter):
         orders = self._parse(resp)
         if not isinstance(positions, list) or not isinstance(orders, list):
             raise RuntimeError(f"{self.kind}: unexpected account response")  # noqa: TRY004
-        self._account_positions = positions  # for positions_after_account
+        self._account_positions = (time.monotonic(), positions)  # positions_after_account
         return AccountSnapshot(
             account_id=str(acct["id"]),
             account_type=None,

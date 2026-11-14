@@ -33,6 +33,7 @@ Amounts are compared in the portfolio's base currency, converted through EUR wit
 rates a MemoQuoteSource prefetched for the portfolio (prefetch_portfolio).
 """
 
+import logging
 from datetime import datetime, timedelta
 from decimal import ROUND_UP, Decimal, InvalidOperation, localcontext
 from typing import Any
@@ -62,6 +63,8 @@ from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.portfolios.models import Portfolio
 from smtrading.risk.profiles import effective_risk_profile
 from smtrading.risk.settings import is_kill_switch_on
+
+log = logging.getLogger(__name__)
 
 LIVE_CASH_MARGIN_PCT = Decimal(2)
 SNAPSHOT_MAX_AGE_S = 60
@@ -276,18 +279,65 @@ async def _open_others(session: AsyncSession, portfolio_id: UUID, side: OrderSid
     return [o for o in await session.scalars(query) if _ahead(o, order)]
 
 
+class _LastPrice:
+    """A QuoteSource view for another order's estimate when its quote is missing: the
+    last known price of the symbol (its latest fill) as the ask, x (1 + margin)."""
+
+    def __init__(self, qs: QuoteSource, symbol: str, price: Decimal) -> None:
+        self._qs, self._symbol, self._price = qs, symbol, price
+
+    async def get_quotes(self, symbols, *, max_age_s: int = 5):
+        from datetime import UTC
+
+        from smtrading.marketdata.types import Quote
+
+        price = self._price * (1 + LIVE_CASH_MARGIN_PCT / 100)
+        return {self._symbol: Quote(symbol=self._symbol, bid=None, ask=price, last=price,
+                                    ts=datetime.now(UTC), provider="last_fill")}
+
+    async def get_fx_rate(self, base: str, quote: str) -> Decimal:
+        return await self._qs.get_fx_rate(base, quote)
+
+    async def get_calendar(self, symbols, start, end):
+        return await self._qs.get_calendar(symbols, start, end)
+
+
+async def _last_price(session: AsyncSession, symbol: str) -> Decimal | None:
+    from smtrading.engine.models import Fill
+
+    return await session.scalar(select(Fill.price).where(Fill.symbol == symbol)
+                                .order_by(Fill.created_at.desc()).limit(1))
+
+
 async def committed_buys(session: AsyncSession, qs: QuoteSource, *, portfolio: Portfolio,
                          exclude: UUID | None = None, order: Order | None = None) -> Decimal:
-    """What the portfolio's other open buys ahead of `order` may still cost (value +
-    fees, base currency, `estimate_buy`); `exclude` (a modify) is never counted."""
+    """What the portfolio's other open buys ahead of `order` may still cost
+    (`live_cash_needed` of `estimate_buy`: value + fees + the 2 % margin, base currency);
+    `exclude` (a modify) is never counted. Another order's missing quote never refuses
+    this one: it is priced at the symbol's last fill price x 1.02; with no price at all
+    it raises PROVIDER_UNAVAILABLE only on BrokerSync's frozen memo (the order waits),
+    and at placement it is left to BrokerSync's check before sending (logged)."""
     total = Decimal(0)
     others = await _open_others(session, portfolio.id, OrderSide.buy, symbol=None,
                                 exclude=exclude, order=order)
     for other in others:
         instrument = await session.get(Instrument, other.symbol)
-        value, fees = await estimate_buy(session, qs, portfolio=portfolio,
-                                         instrument=instrument, order=other)
-        total += value + fees
+        try:
+            value, fees = await estimate_buy(session, qs, portfolio=portfolio,
+                                             instrument=instrument, order=other)
+        except SMTError as e:
+            if e.code != ErrorCode.PROVIDER_UNAVAILABLE:
+                raise
+            last = await _last_price(session, other.symbol)
+            if last is None:
+                if getattr(qs, "frozen", False):
+                    raise
+                log.warning("open buy %s: no price for the cash cap estimate", other.id)
+                continue
+            value, fees = await estimate_buy(session, _LastPrice(qs, other.symbol, last),
+                                             portfolio=portfolio, instrument=instrument,
+                                             order=other)
+        total += live_cash_needed(value, fees)
     return total
 
 
