@@ -91,7 +91,9 @@ def _event(session: AsyncSession, type_: str, halt: TradingHalt, by: str,
            agent_id: uuid.UUID | None, reason: str | None) -> None:
     queue_event(session, type_, {
         "halt_id": halt.id, "scope": halt.scope, "portfolio_id": halt.portfolio_id,
-        "agent_id": agent_id, "reason": reason, "by": by,
+        # the activity data reaches agents (feed): an admin is named without the email
+        "agent_id": agent_id, "reason": reason,
+        "by": "admin" if by.startswith("admin:") else by,
     })
 
 

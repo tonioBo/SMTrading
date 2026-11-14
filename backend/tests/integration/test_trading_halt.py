@@ -146,6 +146,7 @@ async def test_set_clear_keeps_history_and_records_critical_activity(db_session,
         ("halt.cleared", "critical", "pending"),
     ]
     assert acts[0].portfolio_id is None and "Mercato instabile" in acts[0].summary
+    assert acts[0].data["by"] == "admin" and acts[1].data["by"] == "agent:x"  # no email
 
 
 async def test_reason_is_required_and_bounded(db_session, p):
