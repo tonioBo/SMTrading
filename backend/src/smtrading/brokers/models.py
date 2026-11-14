@@ -1,7 +1,19 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, LargeBinary, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -10,6 +22,12 @@ from smtrading.common.db import Base
 
 class BrokerLink(Base):
     __tablename__ = "broker_links"
+    __table_args__ = (
+        CheckConstraint(
+            "live_state IS NULL OR live_state IN ('configured', 'dry_run', 'armed')",
+            name="ck_broker_links_live_state",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(128), unique=True)
@@ -21,6 +39,17 @@ class BrokerLink(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # real-money links only (brokers.live.models.LiveState); NULL for paper/demo links
+    live_state: Mapped[str | None] = mapped_column(String(16))
+    armed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    disarmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    armed_by: Mapped[str | None] = mapped_column(String(128))
+    disarmed_reason: Mapped[str | None] = mapped_column(String(200))
+    account_fingerprint: Mapped[str | None] = mapped_column(String(64))  # sha256 kind:account
+    last_account_snapshot: Mapped[dict | None] = mapped_column(JSONB)  # without `raw`
+    last_snapshot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_test_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    health_failures: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
 
 
 class Reconciliation(Base):

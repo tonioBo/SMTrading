@@ -4,6 +4,7 @@ import smtrading.activity.models
 import smtrading.admin.models
 import smtrading.agents.models
 import smtrading.backtest.models
+import smtrading.brokers.live.models
 import smtrading.brokers.models
 import smtrading.connectors.models
 import smtrading.engine.models

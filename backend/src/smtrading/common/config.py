@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     tz: str = "Europe/Rome"
     admin_email: str
     admin_password: str
+    # e2e only: live adapters talk to the in-memory FakeLiveBroker (the live gate stays on)
+    live_fake_broker: bool = False
 
 
 @lru_cache

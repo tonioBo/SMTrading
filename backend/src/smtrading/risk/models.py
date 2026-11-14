@@ -7,15 +7,18 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
     Identity,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -26,6 +29,12 @@ from smtrading.ledger.models import NUM, str_enum
 
 class RiskProfile(Base):
     __tablename__ = "risk_profiles"
+    __table_args__ = (
+        CheckConstraint(
+            "max_live_orders_per_hour BETWEEN 1 AND 1000",
+            name="ck_risk_profiles_max_live_orders_per_hour",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(128), unique=True)
@@ -38,6 +47,10 @@ class RiskProfile(Base):
     allowed_markets: Mapped[list[str]] = mapped_column(JSONB, default=list)
     short_allowed: Mapped[bool] = mapped_column(Boolean, default=True)
     description: Mapped[str | None] = mapped_column(Text)
+    # R8.1 fuse: real orders sent per portfolio in a sliding hour
+    max_live_orders_per_hour: Mapped[int] = mapped_column(
+        Integer, default=30, server_default=text("30")
+    )
 
 
 class InterestKind(enum.StrEnum):

@@ -26,3 +26,16 @@ def test_nonce_random():
     a, b = encrypt_json({"k": "v"}, "m"), encrypt_json({"k": "v"}, "m")
     assert a != b
     assert a[:12] != b[:12]
+
+
+def test_aad_roundtrip_and_mismatch():
+    blob = encrypt_json({"k": "v"}, "m", aad=b"broker_live")
+    assert decrypt_json(blob, "m", aad=b"broker_live") == {"k": "v"}
+    for wrong in (None, b"other"):
+        with pytest.raises(SMTError) as ei:
+            decrypt_json(blob, "m", aad=wrong)
+        assert ei.value.code == ErrorCode.FORBIDDEN
+    plain = encrypt_json({"k": "v"}, "m")  # blobs written before aad stay readable
+    assert decrypt_json(plain, "m") == {"k": "v"}
+    with pytest.raises(SMTError):
+        decrypt_json(plain, "m", aad=b"broker_live")

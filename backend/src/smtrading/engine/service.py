@@ -115,6 +115,8 @@ class PlaceOrderRequest:
     agent_id: str | None = None
     source: str = "agent"
     reduce_only: bool = False
+    # R8.2: a reduce-only market order of "Chiudi tutte le posizioni reali" (passes the kill switch)
+    live_flatten: bool = False
 
 
 def _invalid(message: str, **details) -> SMTError:
@@ -304,7 +306,8 @@ async def _persist(session: AsyncSession, adm: _Admission, **extra) -> Order:
         type=req.type, tif=req.tif, qty=req.qty, notional=req.notional,
         limit_price=req.limit_price, stop_price=req.stop_price, trail_pct=req.trail_pct,
         trail_amount=req.trail_amount, filled_qty=Decimal(0), status=OrderStatus.new,
-        source=req.source, reduce_only=req.reduce_only, **extra,
+        source=req.source, reduce_only=req.reduce_only, live_flatten=req.live_flatten,
+        **extra,
     )
     if check is not None and not check.ok:
         _reject(order, check.code, check.message)

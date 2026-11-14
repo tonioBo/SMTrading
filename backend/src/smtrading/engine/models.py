@@ -122,6 +122,10 @@ class Order(Base):
     reduce_only: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false")
     )
+    # R8.2: reduce-only market order of "Chiudi tutte le posizioni reali" (passes the kill switch)
+    live_flatten: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
     broker_order_id: Mapped[str | None] = mapped_column(String(128))
     broker_link_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("broker_links.id"))
     broker_status: Mapped[str | None] = mapped_column(String(32))
