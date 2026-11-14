@@ -133,3 +133,44 @@ class Notification(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class HaltScope(enum.StrEnum):
+    global_ = "global"
+    portfolio = "portfolio"
+
+
+class TradingHalt(Base):
+    """«Blocco aperture»: while active, orders that would increase exposure in the covered
+    portfolios (every one for `global`) are refused (TRADING_HALTED). Rows are never
+    deleted: clearing one sets `active` false with who and when (the history).
+
+    `set_by` / `cleared_by`: "agent:<uuid>" or "admin:<email>" (the CLI: "admin:cli")."""
+
+    __tablename__ = "trading_halts"
+    __table_args__ = (
+        CheckConstraint("scope IN ('global', 'portfolio')", name="ck_trading_halts_scope"),
+        CheckConstraint(
+            "(scope = 'global') = (portfolio_id IS NULL)", name="ck_trading_halts_portfolio"
+        ),
+        CheckConstraint("active = (cleared_at IS NULL)", name="ck_trading_halts_cleared"),
+        Index(
+            "uq_trading_halts_active_global", "scope", unique=True,
+            postgresql_where=text("active AND scope = 'global'"),
+        ),
+        Index(
+            "uq_trading_halts_active_portfolio", "portfolio_id", unique=True,
+            postgresql_where=text("active AND scope = 'portfolio'"),
+        ),
+        Index("ix_trading_halts_set_at", "set_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(16))
+    portfolio_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("portfolios.id"))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    reason: Mapped[str] = mapped_column(String(500))
+    set_by: Mapped[str] = mapped_column(String(200))
+    set_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    cleared_by: Mapped[str | None] = mapped_column(String(200))
+    cleared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

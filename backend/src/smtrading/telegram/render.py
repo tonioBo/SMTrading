@@ -22,6 +22,8 @@ TITLES = {
     "order.canceled": "Ordine annullato",
     "order.expired": "Ordine scaduto",
     "kill_switch": "Kill switch",
+    "halt.set": "Aperture sospese",
+    "halt.cleared": "Aperture riattivate",
     "portfolio.reset": "Portafoglio azzerato",
     "portfolio.cash": "Movimento di cassa",
     "liquidation": "Liquidazione",

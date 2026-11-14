@@ -40,6 +40,20 @@ def test_kill_switch_on_critical_off_warning():
     assert off.summary == "Kill switch disattivato"
 
 
+def test_halt_set_and_cleared_are_critical_direct():
+    glob = activity_for_event("halt.set", {"scope": "global", "reason": "Drawdown 8%"})
+    one = activity_for_event("halt.set", {"scope": "portfolio", "reason": "Volatile"})
+    off = activity_for_event("halt.cleared", {"scope": "global", "reason": None})
+    off_note = activity_for_event("halt.cleared", {"scope": "portfolio", "reason": "Rientrato"})
+    for d in (glob, one, off, off_note):
+        assert (d.level, d.direct) == (ActivityLevel.critical, True)
+    assert glob.summary == "Aperture sospese su tutti i portafogli: Drawdown 8%"
+    assert one.summary == "Aperture sospese: Volatile"
+    assert off.summary == "Aperture riattivate su tutti i portafogli"
+    assert off_note.summary == "Aperture riattivate: Rientrato"
+    assert activity_for_event("halt.set", {}).summary == "Aperture sospese: ?"
+
+
 def test_cash_and_reset_info():
     dep = activity_for_event("portfolio.cash", {"type": "deposit", "amount": Decimal("1000.00"),
                                                 "currency": "EUR"})

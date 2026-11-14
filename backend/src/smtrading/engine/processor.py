@@ -94,7 +94,7 @@ REJECTING_CODES = frozenset({
     ErrorCode.INSUFFICIENT_BUYING_POWER, ErrorCode.SHORT_NOT_ALLOWED,
     ErrorCode.SYMBOL_NOT_FOUND, ErrorCode.INVALID_ORDER, ErrorCode.REDUCE_ONLY,
     ErrorCode.KILL_SWITCH_ACTIVE, ErrorCode.PORTFOLIO_LOCKED, ErrorCode.RISK_LIMIT_EXCEEDED,
-    ErrorCode.STALE_QUOTE, ErrorCode.PORTFOLIO_ARCHIVED,
+    ErrorCode.STALE_QUOTE, ErrorCode.PORTFOLIO_ARCHIVED, ErrorCode.TRADING_HALTED,
 })
 # resting orders the processor acts on (`new` only exists inside a placement transaction)
 _ACTIVE = tuple(s for s in OrderStatus if s in FILLABLE_STATUSES - {OrderStatus.new})

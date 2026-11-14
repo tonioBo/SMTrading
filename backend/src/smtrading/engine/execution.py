@@ -20,7 +20,8 @@ that opens/adds (open), posted together in one TRADE journal:
 - status at fill (I3, not for LIQUIDATION journals): a locked portfolio fills nothing
   (PORTFOLIO_LOCKED); a reduce_only portfolio only fills purely reducing fills
   (REDUCE_ONLY); with the kill switch on, a fill that opens exposure is refused
-  (KILL_SWITCH_ACTIVE);
+  (KILL_SWITCH_ACTIVE), and so it is while a trading halt covers the portfolio
+  (TRADING_HALTED, risk.halts);
 - a reduce_only order (Ruling R22: closes, bracket exits) is clamped to |position|; with
   nothing to reduce (flat, or held on the order's side) it is canceled with reason
   `nothing_to_reduce` and no journal;
@@ -79,6 +80,7 @@ from smtrading.portfolios.locks import lock_portfolio
 from smtrading.portfolios.models import ARCHIVED_MESSAGE, Portfolio, PortfolioStatus
 from smtrading.portfolios.service import get_cash_balances
 from smtrading.positions.service import upsert_position
+from smtrading.risk.halts import covering_halt, halt_message
 from smtrading.risk.profiles import effective_risk_profile
 from smtrading.risk.settings import get_default_spread_bps, is_kill_switch_on
 from smtrading.valuation.service import value_portfolio
@@ -108,7 +110,7 @@ async def broker_send_check(
 ) -> bool:
     """The fill-time local checks for an order about to be sent to the broker (the same
     the simulator applies at fill, I3): raises PORTFOLIO_LOCKED / REDUCE_ONLY /
-    KILL_SWITCH_ACTIVE; for a reduce_only order clamps qty to the position and returns
+    KILL_SWITCH_ACTIVE / TRADING_HALTED; for a reduce_only order clamps qty to the position and returns
     False when there is nothing to reduce (`clamp=False`: an order already at the broker,
     qty left as is). The caller holds the portfolio lock."""
     held = await session.scalar(
@@ -445,7 +447,7 @@ def _cancel_nothing_to_reduce(session: AsyncSession, order: Order) -> None:
 async def _check_status(
     session: AsyncSession, portfolio: Portfolio, reducing: bool, symbol: str
 ) -> None:
-    """I3: portfolio status and kill switch, enforced again at fill time."""
+    """I3: portfolio status, kill switch and trading halt, enforced again at fill time."""
     details = {"portfolio_id": str(portfolio.id), "symbol": symbol}
     if portfolio.status == PortfolioStatus.archived:
         raise SMTError(ErrorCode.PORTFOLIO_ARCHIVED, ARCHIVED_MESSAGE, details)
@@ -457,6 +459,8 @@ async def _check_status(
         raise SMTError(
             ErrorCode.KILL_SWITCH_ACTIVE, "trading is halted by the kill switch", details
         )
+    if not reducing and (halt := await covering_halt(session, portfolio.id)) is not None:
+        raise SMTError(ErrorCode.TRADING_HALTED, halt_message(halt), details)
 
 
 async def execute_fill(

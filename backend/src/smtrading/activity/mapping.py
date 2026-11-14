@@ -68,6 +68,14 @@ def _cash(p: dict) -> str:
     return f"{what} di {_v(p, 'amount')} {_v(p, 'currency', '')}".rstrip()
 
 
+def _halt(p: dict) -> str:
+    where = " su tutti i portafogli" if p.get("scope") == "global" else ""
+    reason = p.get("reason")
+    if p.get("cleared"):
+        return f"Aperture riattivate{where}" + (f": {reason}" if reason else "")
+    return f"Aperture sospese{where}: {_v(p, 'reason')}"
+
+
 # event type -> (level, direct, summary)
 _EVENTS: dict[str, tuple[ActivityLevel, bool, Callable[[dict], str]]] = {
     "order.accepted": (ActivityLevel.info, False,
@@ -83,6 +91,8 @@ _EVENTS: dict[str, tuple[ActivityLevel, bool, Callable[[dict], str]]] = {
                       lambda p: f"Ordine scaduto: {_v(p, 'symbol')}"),
     "portfolio.reset": (ActivityLevel.info, False, _reset),
     "portfolio.cash": (ActivityLevel.info, False, _cash),
+    "halt.set": (ActivityLevel.critical, True, _halt),
+    "halt.cleared": (ActivityLevel.critical, True, lambda p: _halt({**p, "cleared": True})),
 }
 
 

@@ -227,6 +227,16 @@ async def set_agent_can_notify(
     return agent
 
 
+async def set_agent_can_halt(
+    session: AsyncSession, agent_id: uuid.UUID, can_halt: bool
+) -> Agent:
+    """The `halt` permission: the agent may set/clear trading halts (set_trading_halt)."""
+    agent = await _get_agent(session, agent_id)
+    agent.can_halt = can_halt
+    await session.flush()
+    return agent
+
+
 def _touch(agent: Agent) -> None:
     now = datetime.now(UTC)
     if agent.last_seen_at is None or now - agent.last_seen_at >= _LAST_SEEN_EVERY:

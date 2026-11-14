@@ -10,6 +10,9 @@ uses unrounded values (valuation *_raw fields, Ruling R8).
   increase exposure: they are checked as reducing.
 - Ruling R25: with the kill switch on, only orders that strictly reduce the position
   (|after| < |before|, no sign flip; e.g. reduce_only closes) are accepted.
+- «Blocco aperture» (risk.halts): while a halt covers the portfolio, the same test
+  applies with TRADING_HALTED ("Aperture sospese dal CEO: <reason>"); the kill switch is
+  checked first.
 - With `redis`, the valuation may mark symbols with cached quotes (Ruling R23); only a
   strictly reducing order is accepted on such a stale valuation.
 """
@@ -33,7 +36,8 @@ from smtrading.instruments.service import validate_price, validate_quantity
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.models import ARCHIVED_MESSAGE, Portfolio, PortfolioStatus
-from smtrading.risk.models import RiskProfile
+from smtrading.risk.halts import covering_halt, halt_message
+from smtrading.risk.models import RiskProfile, TradingHalt
 from smtrading.risk.profiles import effective_risk_profile
 from smtrading.risk.settings import get_default_spread_bps, get_stale_threshold, is_kill_switch_on
 from smtrading.valuation.service import mark_price, value_portfolio
@@ -102,6 +106,10 @@ def _kill_switch() -> _Reject:
     return _Reject(ErrorCode.KILL_SWITCH_ACTIVE, "trading is halted by the kill switch")
 
 
+def _halted(halt: TradingHalt) -> _Reject:
+    return _Reject(ErrorCode.TRADING_HALTED, halt_message(halt))
+
+
 async def _held(session: AsyncSession, portfolio_id, symbol: str) -> Decimal:
     balance = await session.scalar(
         select(AccountBalance.balance)
@@ -159,10 +167,11 @@ async def _run(
     # 1-3: switches and whitelist; Ruling R25: with the kill switch on, only orders that
     # strictly reduce the position pass (settled below, once the quantity is known)
     kill_switch = await is_kill_switch_on(session)
-    if kill_switch:
+    halt = await covering_halt(session, portfolio.id)
+    if kill_switch or halt is not None:
         held = await _held(session, portfolio.id, instrument.symbol)
         if held == 0 or (held > 0) == (side == OrderSide.buy):
-            raise _kill_switch()
+            raise _kill_switch() if kill_switch else _halted(halt)
     if portfolio.status == PortfolioStatus.archived:
         raise _Reject(ErrorCode.PORTFOLIO_ARCHIVED, ARCHIVED_MESSAGE)
     if portfolio.status == PortfolioStatus.locked:
@@ -197,6 +206,8 @@ async def _run(
         reduces = abs(after) < abs(before) and _sign(after) in (0, _sign(before))
     if kill_switch and not reduces:
         raise _kill_switch()
+    if halt is not None and not reduces:
+        raise _halted(halt)
     if valuation.stale_symbols and not reduces:
         raise _Reject(
             ErrorCode.PROVIDER_UNAVAILABLE,
