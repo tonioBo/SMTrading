@@ -1,6 +1,6 @@
 import { ArrowLeft } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
-import { useAgents, useSetAgentNotify } from "@/api/hooks/agents";
+import { useAgents, useSetAgentHalt, useSetAgentNotify } from "@/api/hooks/agents";
 import type { Agent } from "@/api/types";
 import { AgentWatchSection } from "@/components/AgentWatchSection";
 import { PageHeader } from "@/components/PageHeader";
@@ -35,6 +35,36 @@ function NotifyPermission({ agent }: { agent: Agent }) {
         {setNotify.error && (
           <p role="alert" className="text-loss">
             {errorMessage(setNotify.error)}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** The `halt` permission (PATCH can_halt): the agent may block new openings (CEO only). */
+function HaltPermission({ agent }: { agent: Agent }) {
+  const setHalt = useSetAgentHalt();
+  const id = `halt-${agent.id}`;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Blocco aperture</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        <div className="flex items-center gap-3">
+          <Switch
+            id={id}
+            checked={agent.can_halt}
+            disabled={setHalt.isPending}
+            onCheckedChange={(can_halt) => setHalt.mutate({ id: agent.id, can_halt })}
+          />
+          <Label htmlFor={id}>Può sospendere le aperture (halt)</Label>
+        </div>
+        <p className="text-xs text-muted">Con set_trading_halt l&apos;agente blocca le nuove aperture su tutti i portafogli o su uno: da concedere solo al CEO.</p>
+        {setHalt.error && (
+          <p role="alert" className="text-loss">
+            {errorMessage(setHalt.error)}
           </p>
         )}
       </CardContent>
@@ -95,6 +125,7 @@ export default function AgentDetail() {
         </CardContent>
       </Card>
       <NotifyPermission agent={agent} />
+      <HaltPermission agent={agent} />
       <AgentWatchSection agentId={agent.id} />
     </div>
   );

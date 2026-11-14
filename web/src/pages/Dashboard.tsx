@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useDashboard, useLiveFeed, FEED_EVENT_LABELS } from "@/api/hooks/dashboard";
 import type { Dashboard as DashboardData, DashboardConnector, MarginAlert } from "@/api/types";
 import { EquityChart } from "@/components/EquityChart";
+import { HaltBanner } from "@/components/HaltBanner";
 import { KillSwitchButton } from "@/components/KillSwitchButton";
 import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
@@ -231,6 +232,7 @@ export default function Dashboard() {
         <LiveIndicator live={live} updatedAt={dataUpdatedAt} />
         <KillSwitchButton />
       </PageHeader>
+      <HaltBanner />
       {isError && <p className="text-loss">Impossibile caricare la dashboard</p>}
       {!data ? (
         !isError && <p className="text-sm text-muted">Caricamento…</p>

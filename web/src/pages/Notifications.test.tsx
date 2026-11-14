@@ -63,6 +63,7 @@ const agent: Agent = {
   created_at: "2026-11-01T10:00:00Z",
   last_seen_at: null,
   can_notify: false,
+  can_halt: false,
   portfolios: [],
 };
 
@@ -444,5 +445,14 @@ describe("AgentDetail notify permission", () => {
     expect(toggle).not.toBeChecked();
     await user.click(toggle);
     await waitFor(() => expect(agentPatches).toEqual([{ can_notify: true }]));
+  });
+
+  it("halt toggle calls PATCH { can_halt }", async () => {
+    const user = userEvent.setup();
+    renderApp("/agenti/a1");
+    const toggle = await screen.findByRole("switch", { name: "Può sospendere le aperture (halt)" });
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    await waitFor(() => expect(agentPatches).toEqual([{ can_halt: true }]));
   });
 });

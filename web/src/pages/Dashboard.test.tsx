@@ -7,6 +7,7 @@ import type { Dashboard } from "@/api/types";
 import type { LiveEvent } from "@/lib/ws";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
+import { haltFixture } from "@/test/halts";
 
 const live = vi.hoisted(() => ({
   handlers: new Map<string, Set<(e: unknown) => void>>(),
@@ -241,5 +242,31 @@ describe("Dashboard", () => {
     await waitFor(() => expect(paused).toHaveTextContent("In pausa · ultimo aggiornamento"));
     const polled = second.queryClient.getQueryCache().find({ queryKey: ["dashboard"], exact: true });
     expect(polled?.observers[0]?.options.refetchInterval).toBe(30_000);
+  });
+});
+
+describe("Dashboard halt banner", () => {
+  it("shows the active halt and revokes it after confirmation", async () => {
+    const user = userEvent.setup();
+    let active = [haltFixture()];
+    const cleared: string[] = [];
+    server.use(
+      http.get("*/api/halts", () => HttpResponse.json({ active, history: [] })),
+      http.post("*/api/halts/:id/clear", ({ params }) => {
+        cleared.push(String(params.id));
+        const halt = { ...active[0], active: false };
+        active = [];
+        return HttpResponse.json({ halt, changed: true });
+      }),
+    );
+    renderApp("/");
+    const banner = await screen.findByRole("alert", { name: "Blocco aperture" });
+    expect(banner).toHaveTextContent("Aperture sospese dal CEO — Drawdown oltre il 5% — dal 14/11/2026 10:30:00");
+    expect(banner).toHaveTextContent("(impostato da CEO SMTrading)");
+    await user.click(within(banner).getByRole("button", { name: "Revoca" }));
+    const dialog = await screen.findByRole("dialog", { name: "Revocare il blocco aperture?" });
+    await user.click(within(dialog).getByRole("button", { name: "Revoca" }));
+    await waitFor(() => expect(cleared).toEqual(["1"]));
+    await waitFor(() => expect(screen.queryByRole("alert", { name: "Blocco aperture" })).not.toBeInTheDocument());
   });
 });

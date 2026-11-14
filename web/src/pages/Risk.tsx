@@ -5,6 +5,7 @@ import { useAppSettings, useInterestRates, useSaveAppSettings, useSaveInterestRa
 import { useRiskProfiles } from "@/api/hooks/portfolios";
 import type { AppSettings, AssetClass, InterestKind, InterestRate, RiskProfile, RiskProfileInput } from "@/api/types";
 import { FormField, selectClass } from "@/components/FormField";
+import { HaltSection } from "@/components/HaltSection";
 import { KillSwitchButton } from "@/components/KillSwitchButton";
 import { RiskProfileCard } from "@/components/RiskProfileCard";
 import { PageHeader } from "@/components/PageHeader";
@@ -321,6 +322,7 @@ export default function Risk() {
       <PageHeader title="Rischio e margine">
         <KillSwitchButton />
       </PageHeader>
+      <HaltSection />
       <ProfilesSection />
       <RatesSection />
       <SettingsSection />

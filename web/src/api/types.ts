@@ -15,6 +15,36 @@ export interface KillSwitchState {
   on: boolean;
 }
 
+/** «Blocco aperture»: while active, orders that would increase exposure are refused. */
+export interface TradingHalt {
+  id: number;
+  scope: "global" | "portfolio";
+  portfolio_id: string | null;
+  portfolio: string | null;
+  active: boolean;
+  reason: string;
+  /** "agent:<id>" or "admin:<email>" */
+  set_by: string;
+  /** the agent's name or the admin email */
+  set_by_name: string | null;
+  set_at: string;
+  cleared_by: string | null;
+  cleared_by_name: string | null;
+  cleared_at: string | null;
+}
+
+export interface TradingHalts {
+  active: TradingHalt[];
+  /** the last 50 cleared, most recently cleared first */
+  history: TradingHalt[];
+}
+
+export interface TradingHaltInput {
+  scope: "global" | "portfolio";
+  portfolio_id?: string | null;
+  reason: string;
+}
+
 export interface KillSwitchResult extends KillSwitchState {
   canceled: number;
 }
@@ -331,6 +361,8 @@ export interface Agent {
   last_seen_at: string | null;
   /** the `notify` permission: may send messages to the Telegram group */
   can_notify: boolean;
+  /** the `halt` permission: may block new openings (set_trading_halt) */
+  can_halt: boolean;
   portfolios: AgentPortfolioLink[];
 }
 

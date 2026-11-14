@@ -20,6 +20,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EquityChart } from "@/components/EquityChart";
 import { Money } from "@/components/Money";
+import { HaltBanner } from "@/components/HaltBanner";
 import { PageHeader } from "@/components/PageHeader";
 import { Pnl } from "@/components/Pnl";
 import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
@@ -539,6 +540,7 @@ export default function PortfolioDetail() {
       </PageHeader>
       {isError && <p className="text-loss">{errorMessage(error, "Impossibile caricare il portafoglio")}</p>}
       {portfolio && archived && <ArchivedBanner portfolio={portfolio} />}
+      {portfolio && !archived && <HaltBanner portfolioId={portfolio.id} />}
       {!portfolio ? (
         !isError && <p className="text-sm text-muted">Caricamento…</p>
       ) : (

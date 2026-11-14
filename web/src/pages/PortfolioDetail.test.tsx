@@ -7,6 +7,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import type { Order, Portfolio, Position, Transaction, Valuation } from "@/api/types";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
+import { haltFixture } from "@/test/halts";
 
 const ws = vi.hoisted(() => ({
   handlers: new Set<{ type: string; call: (p: unknown) => void }>(),
@@ -557,5 +558,26 @@ describe("PortfolioDetail", () => {
     expect(await screen.findByText("serve 0 < maintenance_margin_pct < warning_margin_pct <= 100")).toBeInTheDocument();
     expect(warn).toHaveAttribute("aria-invalid", "true");
     expect(patches).toEqual([{ warning_margin_pct: "40.5" }]);
+  });
+});
+
+describe("PortfolioDetail halt banner", () => {
+  it("shows only the halts covering this portfolio", async () => {
+    server.use(
+      http.get("*/api/halts", () =>
+        HttpResponse.json({
+          active: [
+            haltFixture({ id: 2, scope: "portfolio", portfolio_id: "p1", portfolio: "Alfa", reason: "Troppa volatilità" }),
+            haltFixture({ id: 3, scope: "portfolio", portfolio_id: "p9", portfolio: "Altro", reason: "Non qui" }),
+          ],
+          history: [],
+        }),
+      ),
+    );
+    renderApp("/portafogli/p1");
+    const banner = await screen.findByRole("alert", { name: "Blocco aperture" });
+    expect(banner).toHaveTextContent("Aperture sospese dal CEO su Alfa — Troppa volatilità");
+    expect(screen.getAllByRole("alert", { name: "Blocco aperture" })).toHaveLength(1);
+    expect(screen.queryByText(/Non qui/)).not.toBeInTheDocument();
   });
 });

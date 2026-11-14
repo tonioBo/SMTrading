@@ -5,6 +5,7 @@ import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
+import { haltFixture } from "@/test/halts";
 
 vi.mock("@/lib/ws", async (orig) => ({
   ...(await orig<typeof import("@/lib/ws")>()),
@@ -18,6 +19,7 @@ const server = setupServer(
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
   http.get("*/api/risk-profiles", () => HttpResponse.json([])),
+  http.get("*/api/portfolios", () => HttpResponse.json([{ id: "p1", name: "Alfa" }])),
   http.get("*/api/interest-rates", () =>
     HttpResponse.json([{ kind: "loan", key: "*", annual_pct: "5" }]),
   ),
@@ -160,5 +162,45 @@ describe("Risk", () => {
     await user.click(within(dialog).getByRole("button", { name: "Salva" }));
     await waitFor(() => expect(profilePosts).toHaveLength(1));
     expect(profilePosts[0]).toMatchObject({ allowed_symbols: ["AAPL", "MSFT", "NVDA"] });
+  });
+});
+
+describe("Risk «Blocco aperture»", () => {
+  it("sets a halt on one portfolio and shows active halts and history", async () => {
+    const user = userEvent.setup();
+    const posts: unknown[] = [];
+    server.use(
+      http.get("*/api/halts", () =>
+        HttpResponse.json({
+          active: [haltFixture()],
+          history: [
+            haltFixture({
+              id: 7, active: false, reason: "Vecchio blocco", set_by: "admin:admin@example.com", set_by_name: "admin@example.com",
+              cleared_by: "agent:a9", cleared_by_name: "CEO SMTrading", cleared_at: "2026-11-13T12:00:00Z",
+            }),
+          ],
+        }),
+      ),
+      http.post("*/api/halts", async ({ request }) => {
+        posts.push(await request.json());
+        return HttpResponse.json({ halt: haltFixture({ id: 8 }), changed: true });
+      }),
+    );
+    renderApp("/rischio");
+    const active = await screen.findByRole("list", { name: "Blocchi attivi" });
+    expect(active).toHaveTextContent("Tutti i portafogli — Drawdown oltre il 5%");
+    expect(within(active).getByRole("button", { name: "Revoca" })).toBeInTheDocument();
+    const history = screen.getByRole("table", { name: "Storico blocchi" });
+    expect(history).toHaveTextContent("Vecchio blocco");
+    expect(history).toHaveTextContent("CEO SMTrading");
+
+    await user.click(screen.getByRole("button", { name: "Sospendi aperture" }));
+    expect(await screen.findByText("Il motivo è obbligatorio")).toBeInTheDocument();
+    expect(posts).toEqual([]);
+
+    await user.selectOptions(screen.getByLabelText("Ambito"), "p1");
+    await user.type(screen.getByLabelText("Motivo"), "  Earnings  ");
+    await user.click(screen.getByRole("button", { name: "Sospendi aperture" }));
+    await waitFor(() => expect(posts).toEqual([{ scope: "portfolio", portfolio_id: "p1", reason: "Earnings" }]));
   });
 });

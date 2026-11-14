@@ -57,6 +57,16 @@ export function useSetAgentNotify() {
   });
 }
 
+/** The `halt` permission: the agent may block new openings (set_trading_halt). */
+export function useSetAgentHalt() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, can_halt }: { id: string; can_halt: boolean }) =>
+      apiFetch<Agent>(`/api/agents/${id}`, { method: "PATCH", body: { can_halt } }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: agentsKey }),
+  });
+}
+
 /** Replaces the agent's whole set of portfolio assignments. */
 export function useSetAgentPortfolios(agentId: string) {
   const qc = useQueryClient();
