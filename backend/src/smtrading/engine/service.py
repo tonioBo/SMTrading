@@ -57,7 +57,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from smtrading.brokers.models import BrokerLink
-from smtrading.brokers.service import get_adapter
+from smtrading.brokers.service import open_adapter
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.execution import broker_live, execute_fill, hand_to_broker
 from smtrading.engine.models import (
@@ -430,8 +430,9 @@ async def _route(session: AsyncSession, order: Order, adm: _Admission) -> bool:
     if link is None or not link.enabled:
         _reject(order, ErrorCode.PROVIDER_UNAVAILABLE, "Collegamento al broker disattivato")
         return True
-    adapter = await get_adapter(session, link_id, None)  # no network: config only
-    if not adapter.routable(order, adm.instrument):
+    async with open_adapter(session, link_id, None) as adapter:  # no network: config only
+        routable = adapter.routable(order, adm.instrument)
+    if not routable:
         if order.type == OrderType.trailing_stop:
             return False  # simulated trigger, see hand_to_broker
         _reject(order, ErrorCode.INVALID_ORDER, UNSUPPORTED_BY_BROKER)

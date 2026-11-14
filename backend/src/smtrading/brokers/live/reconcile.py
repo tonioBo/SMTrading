@@ -17,7 +17,6 @@ transaction open (R9), the outcome is written in a last session:
   `live.account_changed`; the stored fingerprint changes only with a new test (Task 5).
 """
 
-import hashlib
 import logging
 from dataclasses import dataclass, field
 from decimal import Decimal, localcontext
@@ -26,19 +25,19 @@ from uuid import UUID
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from smtrading.admin.common import mask_value
 from smtrading.brokers.base import AccountSnapshot
-from smtrading.brokers.live.audit import record_live_audit
+from smtrading.brokers.live.account import (
+    account_fingerprint,
+    decrypt_live_config,
+    snapshot_record,
+)
 from smtrading.brokers.live.models import LiveState
 from smtrading.brokers.live.protect import live_alert, trip_reduce_only
+from smtrading.brokers.live.service import ACCOUNT_CHANGED_REASON, disarm_live_link
 from smtrading.brokers.models import BrokerLink, Reconciliation
 from smtrading.brokers.registry import adapter_class
-from smtrading.common.config import get_settings
-from smtrading.common.crypto import decrypt_json
-from smtrading.common.logsetup import register_secret
 from smtrading.engine.models import OPEN_STATUSES, Order
 from smtrading.engine.quotesource import QuoteSource
-from smtrading.events import json_safe
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.portfolios.models import Portfolio
@@ -46,11 +45,9 @@ from smtrading.portfolios.models import Portfolio
 log = logging.getLogger(__name__)
 
 LIVE_RECONCILE_INTERVAL_S = 60
-LIVE_CONFIG_AAD = b"broker_live"
 CASH_TOLERANCE_EUR = Decimal("0.50")
 CASH_TOLERANCE_PCT = Decimal("0.001")
 INFLIGHT = "ordine in corso"
-ACCOUNT_CHANGED_REASON = "conto cambiato"
 
 
 class LiveBrokerUnreachable(Exception):
@@ -60,24 +57,6 @@ class LiveBrokerUnreachable(Exception):
 def cash_tolerance(ours: Decimal, eur_in_ccy: Decimal) -> Decimal:
     """max(0,50 € in the account currency, 0,1% of our cash)."""
     return max(CASH_TOLERANCE_EUR * eur_in_ccy, ours * CASH_TOLERANCE_PCT)
-
-
-def account_fingerprint(kind: str, account_id: str) -> str:
-    return hashlib.sha256(f"{kind}:{account_id}".encode()).hexdigest()
-
-
-def snapshot_json(snap: AccountSnapshot) -> dict:
-    """The stored `last_account_snapshot`: never the broker's `raw` answer nor the full
-    account ID (same shape as brokers.live.service's test snapshot)."""
-    return json_safe({
-        "account_masked": mask_value(snap.account_id) if snap.account_id else None,
-        "account_type": snap.account_type,
-        "currency": snap.currency, "cash_available": snap.cash_available,
-        "positions_count": snap.positions_count, "open_orders_count": snap.open_orders_count,
-        "crypto_enabled": snap.crypto_enabled,
-        "order_types": sorted(str(t) for t in snap.order_types)
-        if snap.order_types is not None else None,
-    })
 
 
 def _num(v: Decimal) -> str:
@@ -119,17 +98,6 @@ async def _read_state(session: AsyncSession, link_id: UUID) -> _State:
     return state
 
 
-def _live_config(link: BrokerLink) -> dict:
-    if link.config_encrypted is None:
-        return {}
-    config = decrypt_json(link.config_encrypted, get_settings().master_key,
-                          aad=LIVE_CONFIG_AAD)
-    for value in config.values():
-        if isinstance(value, str):
-            register_secret(value)
-    return config
-
-
 async def _our_cash(qs: QuoteSource | None, cash: dict[str, Decimal],
                     ccy: str) -> tuple[Decimal, Decimal] | None:
     """(our cash, 1 EUR) in the account currency `ccy`; None if a rate is missing."""
@@ -163,7 +131,7 @@ async def reconcile_live(
         if not before.portfolio_ids:
             return None
         kind, fingerprint = link.kind, link.account_fingerprint
-        config = _live_config(link)
+        config = decrypt_live_config(link)  # keys registered for log masking
         instruments = list(await session.scalars(
             select(Instrument).where(Instrument.symbol.in_(sorted(before.positions)))
         )) if before.positions else []
@@ -187,7 +155,7 @@ async def reconcile_live(
         if fingerprint is not None and account_fingerprint(kind, snap.account_id) != fingerprint:
             rows = await _account_changed(session, link, pids)
         else:
-            link.last_account_snapshot = snapshot_json(snap)
+            link.last_account_snapshot = snapshot_record(snap)
             link.last_snapshot_at = await session.scalar(select(func.now()))
             diffs, position_diff, cash_short = _compare(before, after, broker, snap, money)
             rows = [Reconciliation(broker_link_id=link_id, portfolio_id=pid, diffs=diffs,
@@ -241,16 +209,13 @@ def _compare(before: _State, after: _State, broker: dict[str, Decimal],
 
 async def _account_changed(session: AsyncSession, link: BrokerLink,
                            pids: list[UUID]) -> list[Reconciliation]:
-    """Another account behind the keys: back to `configured` (a new test and TOTP are
-    needed), portfolio in reduce-only, critical alert (once per change of state)."""
+    """Another account behind the keys: disarmed through the activation service's
+    `disarm_live_link` (back to `configured`: a new test and TOTP are needed; open orders
+    canceled or rejected; audit and critical alert), portfolio in reduce-only and a
+    critical `live.account_changed` (once per change of state)."""
     was = link.live_state
     if was != LiveState.configured:
-        link.live_state = LiveState.configured
-        link.disarmed_at = await session.scalar(select(func.now()))
-        link.disarmed_reason = ACCOUNT_CHANGED_REASON
-        await record_live_audit(session, action="disarmed", link_id=link.id, actor="system",
-                                portfolio_id=pids[0] if pids else None,
-                                details={"reason": ACCOUNT_CHANGED_REASON, "from": was})
+        await disarm_live_link(session, link.id, actor="system", reason=ACCOUNT_CHANGED_REASON)
         await live_alert(
             session, kind="account_changed",
             summary="Conto diverso dietro le stesse credenziali: denaro reale disattivato",

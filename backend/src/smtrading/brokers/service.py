@@ -1,4 +1,6 @@
+import contextlib
 import uuid
+from collections.abc import AsyncIterator
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -83,7 +85,7 @@ async def get_link_config(session: AsyncSession, link_id: uuid.UUID) -> dict:
     (aad=b"broker_live") and their keys registered for log masking."""
     link = await _get(session, link_id)
     if link.kind in LIVE_KINDS:
-        from smtrading.brokers.live.service import decrypt_live_config
+        from smtrading.brokers.live.account import decrypt_live_config
 
         return decrypt_live_config(link)
     if link.config_encrypted is None:
@@ -112,6 +114,22 @@ async def get_adapter(
         elif not (isinstance(http, LiveClient) and http.link_id == link_id):
             http = make_live_client(maker, link_id)
     return adapter_class(link.kind)(config, http)
+
+
+@contextlib.asynccontextmanager
+async def open_adapter(
+    session: AsyncSession, link_id: uuid.UUID, http, *,
+    sessionmaker: async_sessionmaker | None = None,
+) -> AsyncIterator[BrokerAdapter]:
+    """get_adapter as an async context: a client get_adapter built itself (a live link's
+    LiveClient) is closed on exit; the caller's `http` stays open."""
+    adapter = await get_adapter(session, link_id, http, sessionmaker=sessionmaker)
+    try:
+        yield adapter
+    finally:
+        own = getattr(adapter, "http", http)
+        if own is not http and own is not None:
+            await own.aclose()
 
 
 async def check_relink(session: AsyncSession, pf: Portfolio, link_id: uuid.UUID | None

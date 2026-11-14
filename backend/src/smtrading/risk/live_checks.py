@@ -23,7 +23,6 @@ Amounts are compared in the portfolio's base currency, converted through EUR wit
 rates a MemoQuoteSource prefetched for the portfolio (prefetch_portfolio).
 """
 
-import hashlib
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
@@ -32,7 +31,6 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from smtrading.brokers.base import AccountSnapshot
 from smtrading.brokers.live import LIVE_KINDS
 from smtrading.brokers.live.models import LiveState
 from smtrading.brokers.models import BrokerLink
@@ -40,7 +38,6 @@ from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import Order, OrderSide, OrderType
 from smtrading.engine.quotesource import QuoteSource
-from smtrading.events import json_safe
 from smtrading.fees.calculator import compute_trade_fee
 from smtrading.fees.resolver import load_rules, resolve_rule
 from smtrading.instruments.models import Instrument
@@ -142,21 +139,6 @@ def snapshot_cash(link: BrokerLink, now: datetime) -> tuple[Decimal, str] | None
     if cash is None or not ccy:
         return None
     return cash, str(ccy)
-
-
-def snapshot_record(snap: AccountSnapshot) -> dict:
-    """The stored `BrokerLink.last_account_snapshot` (never the broker's `raw` answer)."""
-    return json_safe({
-        "account_id": snap.account_id, "account_type": snap.account_type,
-        "currency": snap.currency, "cash_available": snap.cash_available,
-        "positions_count": snap.positions_count, "open_orders_count": snap.open_orders_count,
-        "crypto_enabled": snap.crypto_enabled,
-        "order_types": sorted(snap.order_types) if snap.order_types is not None else None,
-    })
-
-
-def account_fingerprint(kind: str, account_id: str) -> str:
-    return hashlib.sha256(f"{kind}:{account_id}".encode()).hexdigest()
 
 
 async def estimate_buy(session: AsyncSession, qs: QuoteSource, *, portfolio: Portfolio,

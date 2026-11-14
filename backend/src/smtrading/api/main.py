@@ -104,7 +104,7 @@ async def _register_live_secrets(sessionmaker) -> None:
     """The live broker keys are masked in this process's logs from the start (they are
     registered again on every decrypt); best-effort: a database not reachable yet is
     not a reason to refuse to start."""
-    from smtrading.brokers.live.service import register_live_secrets
+    from smtrading.brokers.live.account import register_live_secrets
 
     try:
         async with sessionmaker() as session:

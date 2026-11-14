@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 import smtrading.models  # noqa: F401  (complete mapper registry before any session)
 from smtrading.backtest.runner import BacktestRunner
+from smtrading.brokers.live.account import register_live_secrets
 from smtrading.brokers.live.monitor import LiveMonitor
 from smtrading.brokers.sync import BrokerSync
 from smtrading.common.config import get_settings
@@ -75,6 +76,19 @@ async def supervise(name: str, factory: Callable[[], Awaitable[None]]) -> None:
         await asyncio.sleep(RESTART_DELAY_S)
 
 
+async def register_live_keys(sessionmaker) -> None:
+    """The live broker keys are masked in the worker's logs from the start (every
+    decrypt registers them again); best-effort: a database not reachable yet does not
+    stop the worker."""
+    try:
+        async with sessionmaker() as session:
+            count = await register_live_secrets(session)
+        if count:
+            log.info("live keys registered for log masking: %s link(s)", count)
+    except Exception:
+        log.warning("live keys not registered at start", exc_info=True)
+
+
 async def run() -> None:
     settings = get_settings()
     redis = Redis.from_url(settings.redis_url)
@@ -86,6 +100,7 @@ async def run() -> None:
         with contextlib.suppress(NotImplementedError, RuntimeError):
             loop.add_signal_handler(sig, stop.set)
     try:
+        await register_live_keys(sessionmaker)
         async with httpx.AsyncClient() as http:
             router = MarketDataRouter(sessionmaker, redis, http)
             async with asyncio.TaskGroup() as tg:

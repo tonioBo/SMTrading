@@ -16,25 +16,23 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from smtrading.activity.models import Activity
 from smtrading.brokers import registry
 from smtrading.brokers.base import BrokerAdapter
+from smtrading.brokers.live import gate
+from smtrading.brokers.live.account import LIVE_AAD, account_fingerprint
 from smtrading.brokers.live.alpaca_live import AlpacaLiveAdapter
 from smtrading.brokers.live.fake import FakeLiveBroker
 from smtrading.brokers.live.gate import make_live_client
-from smtrading.brokers.live.models import LiveState
+from smtrading.brokers.live.models import LiveAudit, LiveState
 from smtrading.brokers.live.monitor import HEALTH_FAILURES_ALERT, LiveMonitor
-from smtrading.brokers.live.reconcile import (
-    LIVE_CONFIG_AAD,
-    account_fingerprint,
-    cash_tolerance,
-    reconcile_live,
-)
+from smtrading.brokers.live.reconcile import cash_tolerance, reconcile_live
 from smtrading.brokers.models import BrokerLink, Reconciliation
+from smtrading.brokers.sync import reconcile, reconcile_all
 from smtrading.common.crypto import encrypt_json
 from smtrading.common.db import make_engine
+from smtrading.common.errors import ErrorCode
 from smtrading.engine.execution import execute_fill
-from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType
+from smtrading.engine.models import BrokerState, Order, OrderSide, OrderStatus, OrderType
 from smtrading.engine.quotesource import FakeQuoteSource
 from smtrading.events import discard_post_commit
-from smtrading.jobs.scheduler import reconcile_paper_links
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
 from smtrading.seed import run_seed
@@ -100,7 +98,7 @@ async def _live(maker, *, kind="alpaca_live", state="armed", cash="1000",
     async with maker() as s:
         link = BrokerLink(
             name=f"L-{uuid.uuid4().hex[:8]}", kind=kind, live_state=state,
-            config_encrypted=encrypt_json(cfg, MASTER, aad=LIVE_CONFIG_AAD),
+            config_encrypted=encrypt_json(cfg, MASTER, aad=LIVE_AAD),
             account_fingerprint=account_fingerprint(kind, account),
         )
         s.add(link)
@@ -257,6 +255,13 @@ async def test_link_without_portfolio_is_not_reconciled(maker, qs):
 
 async def test_fingerprint_change_detected_by_monitor(maker, qs, fake):
     pid, link_id = await _live(maker, account="another-account")
+    async with maker() as s:  # never sent: rejected by the disarm (Task 5's flow)
+        unsent = Order(portfolio_id=pid, symbol="AAPL", side=OrderSide.buy,
+                       type=OrderType.market, qty=D(1), status=OrderStatus.pending,
+                       broker_link_id=link_id, broker_status=BrokerState.TO_SEND)
+        s.add(unsent)
+        await s.commit()
+        unsent_id = unsent.id
     monitor = LiveMonitor(maker, http_factory=_factory(maker, fake), qs=qs,
                           clock=Clock(T0))
     assert await monitor.tick() == 1
@@ -271,6 +276,19 @@ async def test_fingerprint_change_detected_by_monitor(maker, qs, fake):
     rows = await _reconciliations(maker, link_id)
     assert [r.ok for r in rows] == [False]
     assert rows[0].diffs == [{"account": "cambiato"}]
+    # disarmed through disarm_live_link: audit (actor system), critical alert, orders
+    o = await _get(maker, Order, unsent_id)
+    assert (o.status, o.reject_code) == (OrderStatus.rejected, ErrorCode.LIVE_NOT_ARMED)
+    async with maker() as s:
+        audit = list(await s.scalars(select(LiveAudit).where(
+            LiveAudit.link_id == link_id, LiveAudit.action == "disarmed")))
+    assert [(a.actor, a.details["reason"]) for a in audit] == [("system", "conto cambiato")]
+    assert len(await _activities(maker, "live.disarmed")) == 1
+    # the next pass: already configured, no second disarm nor alert
+    monitor._clock.advance(60)
+    assert await monitor.tick() == 1
+    assert len(await _activities(maker, "live.account_changed")) == 1
+    assert len(await _activities(maker, "live.disarmed")) == 1
 
 
 # -- monitor -------------------------------------------------------------------------
@@ -384,7 +402,7 @@ async def test_paper_links_not_in_live_monitor_and_live_not_in_300s_job(
     assert await monitor.tick() == 1
     assert seen == [live_id]
 
-    assert await reconcile_paper_links(maker, object()) == 0
+    assert await reconcile_all(maker, object()) == 0
     assert len(await _reconciliations(maker, paper_id)) == 1
     assert len(await _reconciliations(maker, live_id)) == 1  # only the monitor's
     live = await _get(maker, BrokerLink, live_id)
@@ -406,3 +424,24 @@ async def test_monitor_uses_only_get(maker, qs):
         assert await monitor.tick() == 1
         assert {c.request.method for c in mock.calls} == {"GET"}
     assert (await _reconciliations(maker, link_id))[0].ok
+
+
+async def test_reconcile_of_a_live_link_closes_the_client_it_builds(maker, qs, fake,
+                                                                   monkeypatch):
+    """brokers.sync.reconcile (admin «Riconcilia ora») on a live link: get_adapter builds
+    a LiveClient of its own; it is closed after use (no leaked clients)."""
+    pid, link_id = await _live(maker)
+    built: list[httpx.AsyncClient] = []
+    real = gate.make_live_client
+
+    def recording(sm, lid, **kw):
+        client = real(sm, lid, inner=fake.transport())
+        built.append(client)
+        return client
+
+    monkeypatch.setattr(gate, "make_live_client", recording)
+    async with httpx.AsyncClient() as http:
+        rows = await reconcile(maker, link_id, http)
+        assert not http.is_closed  # the caller's client is the caller's
+    assert [r.portfolio_id for r in rows] == [pid]
+    assert len(built) == 1 and built[0].is_closed

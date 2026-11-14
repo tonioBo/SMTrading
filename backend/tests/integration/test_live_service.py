@@ -21,19 +21,18 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from smtrading.activity.models import Activity
 from smtrading.admin.models import AdminUser
 from smtrading.brokers.live import LIVE_KINDS
+from smtrading.brokers.live.account import LIVE_AAD, register_live_secrets
 from smtrading.brokers.live.alpaca_live import AlpacaLiveAdapter
 from smtrading.brokers.live.fake import FakeLiveBroker
 from smtrading.brokers.live.gate import LiveClient, make_live_client
 from smtrading.brokers.live.models import LiveAudit
 from smtrading.brokers.live.service import (
-    LIVE_AAD,
     Actor,
     arm_live_link,
     check_live_portfolio,
     disarm_live_link,
     flatten_live_portfolio,
     link_live_portfolio,
-    register_live_secrets,
     resume_live_portfolio,
     save_live_keys,
     set_dry_run,

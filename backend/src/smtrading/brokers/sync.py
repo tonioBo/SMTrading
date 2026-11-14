@@ -90,6 +90,7 @@ from smtrading.activity.models import ActivityLevel
 from smtrading.activity.service import record_activity
 from smtrading.brokers.base import BrokerAdapter, BrokerOrder, RateLimited
 from smtrading.brokers.live import LIVE_KINDS
+from smtrading.brokers.live.account import account_fingerprint, snapshot_record
 from smtrading.brokers.live.audit import record_live_audit
 from smtrading.brokers.live.gate import (
     ORDER_EXTENSION,
@@ -103,7 +104,7 @@ from smtrading.brokers.live.gate import (
 )
 from smtrading.brokers.live.protect import record_live_order_activity, trip_reduce_only
 from smtrading.brokers.models import BrokerLink, Reconciliation
-from smtrading.brokers.service import get_adapter
+from smtrading.brokers.service import get_adapter, open_adapter
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.execution import (
     NOTHING_TO_REDUCE,
@@ -140,13 +141,11 @@ from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.risk.daily_loss import check_daily_loss
 from smtrading.risk.live_checks import (
     SENDABLE_STATES,
-    account_fingerprint,
     check_live_cash,
     check_live_fuse,
     check_live_state,
     estimate_buy,
     snapshot_fresh,
-    snapshot_record,
 )
 from smtrading.risk.models import Notification
 from smtrading.risk.settings import is_kill_switch_on
@@ -272,15 +271,22 @@ class BrokerSync:
         self._account_read_at: dict[UUID, datetime] = {}
 
     async def aclose(self) -> None:
-        for client, _ in self._live_clients.values():
+        """Closes the per-link LiveClients (run() does it when it ends)."""
+        clients, self._live_clients, self._adapters = self._live_clients, {}, {}
+        for client, _ in clients.values():
             with contextlib.suppress(Exception):
                 await client.aclose()
-        self._live_clients = {}
 
     async def run(self) -> None:
         """Every interval_s a pass, while holding the advisory lock (single writer).
         The lock lives on a dedicated connection, checked before every pass: if that
         connection is lost (and the lock with it) the passes stop until it is retaken."""
+        try:
+            await self._run()
+        finally:
+            await self.aclose()
+
+    async def _run(self) -> None:
         engine = self._sm.kw["bind"]
         warned = False
         while True:
@@ -1228,27 +1234,30 @@ async def reconcile(
     Reconciliation per linked portfolio (diffs: [{symbol, ours, broker}], quantities as
     strings). Portfolios sharing a link share the broker account, so `ours` is their
     sum. Nothing is corrected. Reads, broker calls and writes use separate sessions:
-    no transaction is open during network I/O."""
-    async with sessionmaker() as session:
-        link = await session.get(BrokerLink, link_id)
-        if link is None:
-            raise SMTError(ErrorCode.NOT_FOUND, f"broker link {link_id} not found")
-        portfolio_ids = list(await session.scalars(
-            select(Portfolio.id).where(Portfolio.broker_link_id == link_id)
-            .order_by(Portfolio.id)
-        ))
-        if not portfolio_ids:
-            return []
-        ours: dict[str, Decimal] = {}
-        for pid in portfolio_ids:
-            for symbol, qty in (await _position_balances(session, pid)).items():
-                ours[symbol] = ours.get(symbol, Decimal(0)) + qty
-        instruments = list(await session.scalars(
-            select(Instrument).where(Instrument.symbol.in_(sorted(ours)))
-        )) if ours else []
-        adapter = await get_adapter(session, link_id, http)
-    await adapter.prepare(instruments)
-    broker = await adapter.get_positions()
+    no transaction is open during network I/O. A client the adapter needed of its own
+    (a live link's LiveClient) is closed after the broker calls."""
+    async with contextlib.AsyncExitStack() as stack:
+        async with sessionmaker() as session:
+            link = await session.get(BrokerLink, link_id)
+            if link is None:
+                raise SMTError(ErrorCode.NOT_FOUND, f"broker link {link_id} not found")
+            portfolio_ids = list(await session.scalars(
+                select(Portfolio.id).where(Portfolio.broker_link_id == link_id)
+                .order_by(Portfolio.id)
+            ))
+            if not portfolio_ids:
+                return []
+            ours: dict[str, Decimal] = {}
+            for pid in portfolio_ids:
+                for symbol, qty in (await _position_balances(session, pid)).items():
+                    ours[symbol] = ours.get(symbol, Decimal(0)) + qty
+            instruments = list(await session.scalars(
+                select(Instrument).where(Instrument.symbol.in_(sorted(ours)))
+            )) if ours else []
+            adapter = await stack.enter_async_context(
+                open_adapter(session, link_id, http, sessionmaker=sessionmaker))
+        await adapter.prepare(instruments)
+        broker = await adapter.get_positions()
     diffs = [
         {"symbol": symbol, "ours": _num(ours.get(symbol, Decimal(0))),
          "broker": _num(broker.get(symbol, Decimal(0)))}
@@ -1291,11 +1300,15 @@ async def _previous_diffs(
 
 
 async def reconcile_all(sessionmaker: async_sessionmaker[AsyncSession], http) -> int:
-    """Reconcile every enabled link (scheduler job); the link status records the
-    outcome. Returns how many reconciliations found differences."""
+    """Reconcile every enabled paper/demo link (scheduler job); the link status records
+    the outcome. Real-money links (live_state not null) are left to the LiveMonitor,
+    which reconciles them through the live gate. Returns how many reconciliations found
+    differences."""
     async with sessionmaker() as session:
         link_ids = list(await session.scalars(
-            select(BrokerLink.id).where(BrokerLink.enabled.is_(True)).order_by(BrokerLink.name)
+            select(BrokerLink.id)
+            .where(BrokerLink.enabled.is_(True), BrokerLink.live_state.is_(None))
+            .order_by(BrokerLink.name)
         ))
     mismatched = 0
     for link_id in link_ids:

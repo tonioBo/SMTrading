@@ -20,7 +20,6 @@ reale» (`armed`, TOTP) -> one-click disarm (back to `configured`, no TOTP).
 - Every step is recorded in the append-only `live_audit`.
 """
 
-import hashlib
 import logging
 import uuid
 from dataclasses import dataclass
@@ -34,20 +33,26 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.admin.auth import _check_totp
-from smtrading.admin.common import MASK, mask_value, redact
+from smtrading.admin.common import MASK, redact
 from smtrading.admin.models import AdminUser
-from smtrading.brokers.base import AccountSnapshot
 from smtrading.brokers.live import LIVE_KINDS
+from smtrading.brokers.live.account import (
+    LIVE_FIELDS,
+    account_fingerprint,
+    decrypt_live_config,
+    encrypt_live_config,
+    key_masked,
+    live_secrets,
+    register_config_secrets,
+    snapshot_record,
+)
 from smtrading.brokers.live.audit import record_live_audit
 from smtrading.brokers.live.gate import LiveClient, make_live_client
 from smtrading.brokers.live.models import LiveState
 from smtrading.brokers.live.protect import live_alert, trip_reduce_only
 from smtrading.brokers.models import BrokerLink
 from smtrading.brokers.registry import adapter_class
-from smtrading.common.config import get_settings
-from smtrading.common.crypto import decrypt_json, encrypt_json
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.common.logsetup import register_secret
 from smtrading.engine.execution import broker_live
 from smtrading.engine.models import (
     OPEN_STATUSES,
@@ -59,7 +64,7 @@ from smtrading.engine.models import (
     TimeInForce,
 )
 from smtrading.engine.quotesource import QuoteSource
-from smtrading.events import POST_COMMIT_KEY, json_safe, queue_event
+from smtrading.events import POST_COMMIT_KEY, queue_event
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.portfolios.locks import lock_live_portfolio, lock_portfolio
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
@@ -71,7 +76,6 @@ from smtrading.telegram.models import TelegramOutbox
 
 log = logging.getLogger(__name__)
 
-LIVE_AAD = b"broker_live"
 LIVE_TEST_MAX_AGE_S = 900
 TELEGRAM_TEST_MAX_AGE = timedelta(hours=24)
 KEYS_REPLACED_REASON = "chiavi sostituite"
@@ -81,11 +85,6 @@ TOTP_REQUIRED_MESSAGE = "Attiva prima l'autenticazione a due fattori"
 NOT_DEDICATED_MESSAGE = "Il conto non è dedicato: chiudi posizioni e ordini dall'app del broker"
 CLOSE_REAL_POSITIONS_MESSAGE = "Chiudi prima le posizioni reali"
 
-# per kind: (key ID field, secret field, other allowed fields)
-_FIELDS: dict[str, tuple[str, str, frozenset[str]]] = {
-    "alpaca_live": ("key_id", "secret_key", frozenset({"crypto_enabled"})),
-    "t212_live": ("api_key", "api_secret", frozenset({"order_types"})),
-}
 
 
 @dataclass(frozen=True)
@@ -112,72 +111,12 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-# -- keys and secrets ------------------------------------------------------------------
-
-def live_secrets(kind: str, config: dict) -> list[str]:
-    """The texts to mask for a live config: both keys and, for Trading 212, the Base64
-    Basic credential the adapter sends (longest first)."""
-    key_field, secret_field, _ = _FIELDS.get(kind, ("", "", frozenset()))
-    found = [str(v) for f in (key_field, secret_field)
-             if isinstance(v := config.get(f), str) and v]
-    if kind == "t212_live" and config.get("api_key"):
-        import base64
-
-        cred = f"{config.get('api_key', '')}:{config.get('api_secret', '')}"
-        found.append(base64.b64encode(cred.encode()).decode())
-    return sorted(set(found), key=len, reverse=True)
-
-
-def register_config_secrets(kind: str, config: dict) -> None:
-    for value in live_secrets(kind, config):
-        register_secret(value)
-
-
-def encrypt_live_config(config: dict) -> bytes:
-    return encrypt_json(config, get_settings().master_key, aad=LIVE_AAD)
-
-
-def decrypt_live_config(link: BrokerLink) -> dict:
-    """The decrypted config of a live link; its keys are registered for log masking."""
-    if link.config_encrypted is None:
-        return {}
-    config = decrypt_json(link.config_encrypted, get_settings().master_key, aad=LIVE_AAD)
-    register_config_secrets(link.kind, config)
-    return config
-
-
-async def register_live_secrets(session: AsyncSession) -> int:
-    """At process start: registers the keys of every live link (log masking). Returns how
-    many links; a config that cannot be read is skipped (logged without details)."""
-    count = 0
-    for link in await session.scalars(select(BrokerLink).where(BrokerLink.kind.in_(LIVE_KINDS))):
-        try:
-            decrypt_live_config(link)
-            count += 1
-        except SMTError:
-            log.warning("live link %s: keys cannot be decrypted", link.id)
-    return count
-
-
-def key_masked(kind: str, config: dict) -> str:
-    """'••••' + the last 4 characters of the key ID."""
-    key_field = _FIELDS[kind][0]
-    value = config.get(key_field)
-    return mask_value(value) if value else MASK
-
-
-def account_masked(account_id: str | None) -> str | None:
-    return mask_value(account_id) if account_id else None
-
-
-def fingerprint(kind: str, account_id: str) -> str:
-    return hashlib.sha256(f"{kind}:{account_id}".encode()).hexdigest()
-
+# -- keys ------------------------------------------------------------------------------
 
 def _clean_config(kind: str, config: dict) -> dict:
     if kind not in LIVE_KINDS:
         raise _invalid(f"tipo di collegamento reale sconosciuto: {kind}", "kind")
-    key_field, secret_field, extra = _FIELDS[kind]
+    key_field, secret_field, extra = LIVE_FIELDS[kind]
     base = config.get("base_url")
     if base and str(base).rstrip("/") != adapter_class(kind).BASE_URL:
         raise SMTError(ErrorCode.FORBIDDEN, f"{kind}: base URL non consentito",
@@ -295,21 +234,6 @@ async def save_live_keys(
 
 # -- read-only test --------------------------------------------------------------------
 
-def _snapshot_dict(snap: AccountSnapshot) -> dict[str, Any]:
-    """What is stored and shown of the account (never `raw`, never the full ID)."""
-    return json_safe({
-        "account_masked": account_masked(snap.account_id),
-        "account_type": snap.account_type,
-        "currency": snap.currency,
-        "cash_available": snap.cash_available,
-        "positions_count": snap.positions_count,
-        "open_orders_count": snap.open_orders_count,
-        "crypto_enabled": snap.crypto_enabled,
-        "order_types": sorted(str(t) for t in snap.order_types)
-        if snap.order_types is not None else None,
-    })
-
-
 def _is_empty(snapshot: dict | None) -> bool:
     return bool(snapshot) and snapshot.get("positions_count") == 0 \
         and snapshot.get("open_orders_count") == 0
@@ -361,9 +285,9 @@ async def test_live_link(
             await client.aclose()
 
     now = _now()
-    snapshot = _snapshot_dict(snap)
+    snapshot = snapshot_record(snap)
     empty = _is_empty(snapshot)
-    fp = fingerprint(kind, snap.account_id)
+    fp = account_fingerprint(kind, snap.account_id)
     async with sessionmaker() as session:
         link = await _live_link(session, link_id)
         changed = link.account_fingerprint is not None and link.account_fingerprint != fp

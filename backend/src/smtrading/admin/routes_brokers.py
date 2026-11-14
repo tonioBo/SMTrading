@@ -37,10 +37,10 @@ from smtrading.brokers.models import BrokerLink, Reconciliation
 from smtrading.brokers.registry import adapter_class
 from smtrading.brokers.service import (
     create_link,
-    get_adapter,
     get_link_config,
     link_portfolio,
     list_links,
+    open_adapter,
     update_link,
 )
 from smtrading.brokers.sync import reconcile
@@ -226,8 +226,7 @@ async def test_link(
         secrets = await _secrets(session, await _link(session, link_id))
         error = None
         try:
-            async with httpx.AsyncClient() as http:
-                adapter = await get_adapter(session, link_id, http)
+            async with httpx.AsyncClient() as http, open_adapter(session, link_id, http) as adapter:
                 await session.commit()  # no transaction across the network call
                 await asyncio.wait_for(adapter.health_check(), BROKER_TIMEOUT_S)
         except Exception as e:  # noqa: BLE001 - reported to the admin and recorded
@@ -243,8 +242,7 @@ async def get_broker_positions(link_id: UUID, session: DbSession, redis: RedisCl
     """The outcome is recorded on the link: a failure (answered redacted) or ok."""
     secrets = await _secrets(session, await _link(session, link_id))
     try:
-        async with httpx.AsyncClient() as http:
-            adapter = await get_adapter(session, link_id, http)
+        async with httpx.AsyncClient() as http, open_adapter(session, link_id, http) as adapter:
             await session.commit()
             await asyncio.wait_for(adapter.prepare(), BROKER_TIMEOUT_S)
             positions = await asyncio.wait_for(adapter.get_positions(), BROKER_TIMEOUT_S)

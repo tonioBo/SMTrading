@@ -27,8 +27,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from smtrading.brokers.models import BrokerLink
-from smtrading.brokers.sync import reconcile
+from smtrading.brokers.sync import reconcile_all
 from smtrading.corporate.actions import run_corporate_actions
 from smtrading.corporate.interest import run_interest
 from smtrading.corporate.snapshots import ensure_day_open, take_snapshots
@@ -52,36 +51,6 @@ DAILY_RETRY_S = 300
 CATCH_UP_DAYS = 7
 
 DailyJob = Callable[[AsyncSession, QuoteSource, date], Awaitable[int]]
-
-
-async def reconcile_paper_links(sessionmaker: async_sessionmaker[AsyncSession], http) -> int:
-    """brokers.sync.reconcile_all without the real-money links (live_state not null: the
-    LiveMonitor reconciles them through the live gate). The link status records the
-    outcome; returns how many reconciliations found differences."""
-    async with sessionmaker() as session:
-        link_ids = list(await session.scalars(
-            select(BrokerLink.id)
-            .where(BrokerLink.enabled.is_(True), BrokerLink.live_state.is_(None))
-            .order_by(BrokerLink.name)
-        ))
-    mismatched = 0
-    for link_id in link_ids:
-        try:
-            rows = await reconcile(sessionmaker, link_id, http)
-            status, error = "ok", None
-        except Exception as e:  # noqa: BLE001  (any failure goes to the link status)
-            log.warning("reconciliation of broker link %s failed: %s", link_id, e)
-            rows, status, error = [], "error", str(e)[:500]
-        async with sessionmaker() as session:
-            link = await session.get(BrokerLink, link_id)
-            if link is not None:
-                link.status, link.last_error = status, error
-                await session.commit()
-        bad = [r for r in rows if not r.ok]
-        if bad:
-            mismatched += len(bad)
-            log.warning("broker link %s: positions differ: %s", link_id, bad[0].diffs)
-    return mismatched
 
 
 class JobScheduler:
@@ -125,7 +94,7 @@ class JobScheduler:
         if self._http is not None:
             await self._every(
                 "broker reconciliation", RECONCILE_INTERVAL_S, now,
-                lambda: reconcile_paper_links(self._sm, self._http),
+                lambda: reconcile_all(self._sm, self._http),
             )
 
     async def _every(

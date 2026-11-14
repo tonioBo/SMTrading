@@ -51,8 +51,29 @@ async def test_trailing_slash_path_works(mcp_server, mcp_call):
     assert [p["name"] for p in payload] == ["Demo"]
 
 
-async def test_list_portfolios_only_assigned(mcp_server, mcp_call):
+async def _set_hide_mode(db_url: str, on: bool) -> None:
+    from sqlalchemy.dialects.postgresql import insert
+
+    from smtrading.risk.models import AppSetting
+
+    engine = make_engine(db_url)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                insert(AppSetting).values(key="mcp_hide_mode", value={"on": on})
+                .on_conflict_do_update(index_elements=["key"], set_={"value": {"on": on}}))
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize("hide_mode", [None, False], ids=["hide-mode-default-on", "hide-mode-off"])
+async def test_list_portfolios_only_assigned(mcp_server, mcp_call, hide_mode):
+    """With `mcp_hide_mode` on (the seeded default) a simulated portfolio has no `mode`;
+    with the setting off the agent sees `simulazione`."""
     from smtrading.portfolios.service import create_portfolio
+
+    if hide_mode is not None:
+        await _set_hide_mode(mcp_server.db_url, hide_mode)
 
     engine = make_engine(mcp_server.db_url)
     try:
@@ -78,7 +99,7 @@ async def test_list_portfolios_only_assigned(mcp_server, mcp_call):
         "name": "Demo",
         "base_currency": "EUR",
         "status": "active",
-        "mode": "simulazione",
+        **({} if hide_mode is None else {"mode": "simulazione"}),
         "permission": "trade",
     }
     assert by_name["ReadOnly"]["permission"] == "read"

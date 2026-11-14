@@ -4,6 +4,8 @@ and the fuse before sending, one live.order.* activity per outcome. Never reache
 network: respx with assert_all_mocked (an unmocked request fails the test) and the
 session socket guard of conftest."""
 
+import asyncio
+import contextlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -342,6 +344,9 @@ async def test_cash_recheck_before_send_with_fresh_snapshot(maker, redis, qs):
         assert link.last_snapshot_at == OPEN
         assert D(link.last_account_snapshot["cash_available"]) == D(500)
         assert "raw" not in link.last_account_snapshot
+        # the shared snapshot format: the account ID only masked
+        assert link.last_account_snapshot["account_masked"] == "••••ct-1"
+        assert "acct-1" not in str(link.last_account_snapshot)
 
 
 async def test_fuse_recheck_before_send(maker, redis, qs):
@@ -401,3 +406,18 @@ async def test_paper_paths_unchanged(maker, redis, qs):
     o = await _order(maker, oid)
     assert o.broker_order_id == "bo-1" and o.broker_status == "accepted"
     assert await _types(maker, oid) == [] and await _audit(maker, oid) == []
+
+
+async def test_broker_sync_closes_its_live_clients_when_stopped(maker, redis, qs):
+    """The per-link LiveClients kept across passes are closed when run() ends (a
+    supervised restart builds a new BrokerSync: nothing leaks)."""
+    _, link_id = await _live(maker)
+    sync = _sync(maker, redis, qs)
+    client, _ = sync._live_client(link_id)
+    task = asyncio.create_task(sync.run())
+    await asyncio.sleep(0.3)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert client.is_closed
+    assert sync._live_clients == {}

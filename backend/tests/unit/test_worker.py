@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import signal
 from types import SimpleNamespace
@@ -103,6 +104,11 @@ def _idle_telegram_loops(monkeypatch):
     monkeypatch.setattr(worker, "OutboxSender", _IdleProcessor)
     monkeypatch.setattr(worker, "SummaryScheduler", _IdleProcessor)
     monkeypatch.setattr(worker, "LiveMonitor", _IdleProcessor)
+    monkeypatch.setattr(worker, "register_live_secrets", _no_live_keys)
+
+
+async def _no_live_keys(session) -> int:
+    return 0
 
 
 class _FakeEngine:
@@ -371,3 +377,54 @@ async def test_run_supervises_live_monitor(monkeypatch):
     await asyncio.wait_for(worker.run(), 2)
     assert started.is_set()
     assert isinstance(seen["qs"], worker.MarketDataRouter)
+
+
+async def test_run_registers_live_keys_before_the_jobs(monkeypatch):
+    """The live links' keys are registered for log masking at worker start, before any
+    job (and any adapter) runs."""
+    order: list[str] = []
+
+    async def register(session):
+        order.append("keys")
+        return 1
+
+    class FakeMonitor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run(self):
+            order.append("job")
+            signal.raise_signal(signal.SIGTERM)
+            await asyncio.sleep(3600)
+
+    monkeypatch.setattr(
+        worker, "get_settings",
+        lambda: SimpleNamespace(redis_url="redis://unused:6379/0", database_url="x"),
+    )
+    monkeypatch.setattr(worker.Redis, "from_url", staticmethod(lambda url: _FlakyRedis()))
+    monkeypatch.setattr(worker, "make_engine", lambda url: _FakeEngine())
+    monkeypatch.setattr(worker, "StreamManager", _IdleProcessor)
+    monkeypatch.setattr(worker, "health_checks", lambda router: asyncio.sleep(3600))
+    monkeypatch.setattr(worker, "OrderProcessor", _IdleProcessor)
+    monkeypatch.setattr(worker, "AlertEvaluator", _IdleProcessor)
+    monkeypatch.setattr(worker, "JobScheduler", _IdleProcessor)
+    monkeypatch.setattr(worker, "LiveMonitor", FakeMonitor)
+    monkeypatch.setattr(worker, "register_live_secrets", register)
+    monkeypatch.setattr(worker, "async_sessionmaker", lambda *a, **kw: _SessionMaker())
+    await asyncio.wait_for(worker.run(), 2)
+    assert order[:2] == ["keys", "job"]
+
+
+async def test_run_survives_a_live_key_registration_failure(monkeypatch, caplog):
+    async def register(session):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(worker, "register_live_secrets", register)
+    with caplog.at_level(logging.WARNING, logger="smtrading.worker"):
+        await worker.register_live_keys(_SessionMaker())
+    assert any("live keys" in r.getMessage() for r in caplog.records)
+
+
+class _SessionMaker:
+    def __call__(self):
+        return contextlib.nullcontext(None)
