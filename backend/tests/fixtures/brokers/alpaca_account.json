@@ -1,0 +1,15 @@
+{
+  "id": "e6fe16f3-64a4-4921-8928-cadf02f92f98",
+  "account_number": "PA0000001234",
+  "status": "ACTIVE",
+  "crypto_status": "ACTIVE",
+  "currency": "USD",
+  "cash": "1000.50",
+  "buying_power": "1000.50",
+  "non_marginable_buying_power": "1000.50",
+  "multiplier": "1",
+  "portfolio_value": "1000.50",
+  "pattern_day_trader": false,
+  "trading_blocked": false,
+  "shorting_enabled": false
+}

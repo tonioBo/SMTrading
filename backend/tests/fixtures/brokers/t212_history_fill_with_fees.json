@@ -1,0 +1,19 @@
+{
+  "items": [
+    {
+      "order": {"id": 77, "ticker": "AAPL_US_EQ", "side": "BUY", "quantity": 2, "filledQuantity": 2,
+                "status": "FILLED", "createdAt": "2026-11-14T10:00:00Z"},
+      "fill": {
+        "id": 9001, "price": 190.25, "quantity": 2, "type": "TRADE", "filledAt": "2026-11-14T10:00:01Z",
+        "walletImpact": {
+          "currency": "EUR", "fxRate": 0.92, "netValue": -351.42, "realisedProfitLoss": 0,
+          "taxes": [
+            {"name": "CURRENCY_CONVERSION_FEE", "quantity": -0.53, "currency": "EUR", "chargedAt": "2026-11-14T10:00:01Z"},
+            {"name": "FINRA_FEE", "quantity": -0.01, "currency": "EUR", "chargedAt": "2026-11-14T10:00:01Z"}
+          ]
+        }
+      }
+    }
+  ],
+  "nextPagePath": null
+}

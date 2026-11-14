@@ -18,10 +18,33 @@ class BrokerOrder:
     avg_fill_price: Decimal | None
     message: str | None
     raw: dict = field(default_factory=dict)
+    # fees reported by the broker, in the account currency (None: not reported)
+    fees: Decimal | None = None
+
+
+class RateLimited(RuntimeError):  # retryable, like any RuntimeError
+    """The broker refused the request for its rate limit (HTTP 429): not a rejection,
+    and the request was not processed."""
+
+
+@dataclass(frozen=True)
+class AccountSnapshot:
+    """A read-only view of the broker account (GET requests only)."""
+
+    account_id: str
+    account_type: str | None
+    currency: str
+    cash_available: Decimal
+    positions_count: int
+    open_orders_count: int
+    crypto_enabled: bool | None
+    order_types: frozenset[OrderType] | None
+    raw: dict
 
 
 class BrokerAdapter:
-    """Paper/demo broker connection. Adapters never talk to real-money endpoints.
+    """Broker connection. Paper/demo adapters never talk to real-money endpoints.
+    Live adapters (brokers/live) talk to them only through the live gate.
 
     Errors: order rejections come back as BrokerOrder(status="rejected"); transport and 5xx
     failures raise RuntimeError (retryable). Error text never contains credentials.
@@ -32,6 +55,8 @@ class BrokerAdapter:
     """
 
     kind: ClassVar[str]
+    live: ClassVar[bool] = False
+    BASE_URL: ClassVar[str]  # a class constant, never read from the configuration
     idempotent_place: ClassVar[bool] = True
     supported_types: ClassVar[frozenset[OrderType]]
     supported_asset_classes: ClassVar[frozenset[AssetClass]]
@@ -64,7 +89,10 @@ class BrokerAdapter:
         raise NotImplementedError
 
     async def find_order(
-        self, order: Order, instrument: Instrument, since: datetime,
+        self,
+        order: Order,
+        instrument: Instrument,
+        since: datetime,
         exclude: frozenset[str] = frozenset(),
     ) -> BrokerOrder | None:
         """The broker order created for `order`'s current submission at or after
@@ -80,6 +108,10 @@ class BrokerAdapter:
         raise NotImplementedError
 
     async def get_positions(self) -> dict[str, Decimal]:
+        raise NotImplementedError
+
+    async def get_account(self) -> AccountSnapshot:
+        """The account snapshot, read with GET requests only."""
         raise NotImplementedError
 
     async def health_check(self) -> None:

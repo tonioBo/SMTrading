@@ -1,0 +1,7 @@
+{
+  "id": 20001234,
+  "currency": "EUR",
+  "cash": {"availableToTrade": 987.65, "inPies": 0, "reservedForOrders": 12.35},
+  "investments": {"currentValue": 0, "totalCost": 0, "realizedProfitLoss": 0, "unrealizedProfitLoss": 0},
+  "totalValue": 1000.00
+}
