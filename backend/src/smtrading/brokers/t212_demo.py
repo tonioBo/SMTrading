@@ -1,5 +1,6 @@
 from typing import ClassVar
 
+from smtrading.brokers.live import refuse_live_host
 from smtrading.brokers.registry import register
 from smtrading.brokers.t212_core import (  # noqa: F401  (re-exported)
     _STATUS,
@@ -19,3 +20,7 @@ _reverse = instrument_cache(DEMO_URL).reverse
 class T212DemoAdapter(_T212Protocol):
     kind: ClassVar[str] = "t212_demo"
     BASE_URL: ClassVar[str] = DEMO_URL
+
+    def __init__(self, config: dict, http) -> None:
+        refuse_live_host(config)  # never a real-money host, whatever the message below
+        super().__init__(config, http)

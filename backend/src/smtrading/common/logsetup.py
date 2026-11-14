@@ -2,7 +2,9 @@
 
 httpx logs every request URL at INFO and some providers (Finnhub `token=`, Twelve Data
 `apikey=`) put the key in the query string, so the httpx/httpcore loggers are raised to
-WARNING and every root handler gets a filter that masks secret-looking values.
+WARNING and every root handler gets a filter that masks secret-looking values and the
+values registered with `register_secret` (live broker keys). Records of the httpx/httpcore
+loggers that mention a live broker host (LIVE_HOSTS) are dropped altogether.
 """
 
 import logging
@@ -29,12 +31,40 @@ _TELEGRAM = re.compile(r"/bot\d+:[A-Za-z0-9_-]+")
 _TELEGRAM_TOKEN = re.compile(r"\d{6,12}:[A-Za-z0-9_-]{30,}")
 
 
+_MIN_SECRET_LEN = 8
+_registered: set[str] = set()
+_NETWORK_LOGGERS = ("httpx", "httpcore")
+
+
+def register_secret(value: str) -> None:
+    """Mask `value` wherever it appears in a log text. Values under 8 characters are not
+    registered (they would mask ordinary words)."""
+    if isinstance(value, str) and len(value) >= _MIN_SECRET_LEN:
+        _registered.add(value)
+
+
+def _mentions_live_host(text: str) -> bool:
+    try:
+        from smtrading.brokers.live import LIVE_HOSTS
+    except Exception:  # noqa: BLE001 - cannot tell: assume it does (record dropped)
+        return True
+    low = text.lower()
+    return any(host in low for host in LIVE_HOSTS)
+
+
+def _is_network_logger(name: str) -> bool:
+    return any(name == n or name.startswith(n + ".") for n in _NETWORK_LOGGERS)
+
+
 def _auth(m: re.Match) -> str:
     scheme = f"{m.group(3)} " if m.group(3) else ""
     return f"{m.group(1)}{m.group(2)}{scheme}<redacted>"
 
 
 def redact_log_text(text: str) -> str:
+    for secret in sorted(_registered, key=len, reverse=True):
+        if secret in text:
+            text = text.replace(secret, "<redacted>")
     text = _TELEGRAM.sub("/bot<redacted>", text)
     text = _TELEGRAM_TOKEN.sub("<redacted>", text)
     text = _SECRET_JSON.sub(r"\1\2\1\3\4<redacted>\4", text)
@@ -52,6 +82,8 @@ class RedactingFilter(logging.Filter):
         safe generic line (nothing of it, secrets included, is written)."""
         try:
             message = record.getMessage()
+            if _is_network_logger(record.name) and _mentions_live_host(message):
+                return False  # never log a request to a real-money broker
             redacted = redact_log_text(message)
             if redacted != message:
                 record.msg, record.args = redacted, None
@@ -82,7 +114,10 @@ def configure_logging(level: int = logging.INFO, *, add_handler: bool = True,
     if add_handler and not root.handlers:
         logging.basicConfig(level=level)
     for name in _QUIET_LOGGERS:
-        logging.getLogger(name).setLevel(logging.WARNING)
+        quiet = logging.getLogger(name)
+        quiet.setLevel(logging.WARNING)
+        if not any(isinstance(f, RedactingFilter) for f in quiet.filters):
+            quiet.addFilter(RedactingFilter())  # also for handlers added on it later
     for logger in (root, *(logging.getLogger(n) for n in extra_loggers)):
         for handler in logger.handlers:
             _install_filter(handler)

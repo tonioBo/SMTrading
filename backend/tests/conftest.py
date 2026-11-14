@@ -13,6 +13,38 @@ import smtrading.models  # noqa: F401  (every table on Base.metadata, for single
 from smtrading.common.config import get_settings
 from smtrading.common.db import get_sessionmaker, make_engine
 
+LIVE_HOST_MESSAGE = "tentata connessione a un host live nei test"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_live_network():
+    """No test ever resolves or connects to a real-money host (LIVE_HOSTS)."""
+    import socket
+
+    from smtrading.brokers.live import LIVE_HOSTS
+
+    def is_live(host) -> bool:
+        if isinstance(host, bytes):
+            host = host.decode("ascii", "replace")
+        return isinstance(host, str) and host.lower().rstrip(".") in LIVE_HOSTS
+
+    real_getaddrinfo, real_create_connection = socket.getaddrinfo, socket.create_connection
+
+    def getaddrinfo(host, *args, **kwargs):
+        if is_live(host):
+            raise RuntimeError(LIVE_HOST_MESSAGE)
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    def create_connection(address, *args, **kwargs):
+        if is_live(address[0]):
+            raise RuntimeError(LIVE_HOST_MESSAGE)
+        return real_create_connection(address, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(socket, "getaddrinfo", getaddrinfo)
+        mp.setattr(socket, "create_connection", create_connection)
+        yield
+
 
 @pytest.fixture(autouse=True)
 def _clear_settings_cache():

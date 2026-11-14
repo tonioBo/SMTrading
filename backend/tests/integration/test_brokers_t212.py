@@ -8,6 +8,7 @@ import pytest
 import respx
 
 from smtrading.brokers import t212_demo
+from smtrading.brokers.live.t212_live import T212LiveAdapter
 from smtrading.brokers.t212_demo import DEMO_URL, T212DemoAdapter
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.models import Order, OrderSide, OrderType, TimeInForce
@@ -215,12 +216,12 @@ async def test_5xx_and_network_errors_do_not_leak(http):
 @respx.mock
 async def test_redirect_to_other_host_not_followed(http):
     _mock_instruments()
-    evil = respx.get("https://live.trading212.com/api/v0/equity/positions").mock(
+    evil = respx.get(f"{T212LiveAdapter.BASE_URL}/api/v0/equity/positions").mock(
         return_value=httpx.Response(200, json=[])
     )
     respx.get(f"{API}/positions").mock(
         return_value=httpx.Response(
-            302, headers={"location": "https://live.trading212.com/api/v0/equity/positions"}
+            302, headers={"location": f"{T212LiveAdapter.BASE_URL}/api/v0/equity/positions"}
         )
     )
     with pytest.raises(RuntimeError, match="redirect"):
@@ -228,7 +229,7 @@ async def test_redirect_to_other_host_not_followed(http):
     assert not evil.called
 
 
-@pytest.mark.parametrize("url", ["https://live.trading212.com", "http://localhost:1"])
+@pytest.mark.parametrize("url", [T212LiveAdapter.BASE_URL, "http://localhost:1"])
 def test_non_demo_url_forbidden(url):
     with pytest.raises(SMTError) as e:
         T212DemoAdapter({**CFG, "base_url": url}, None)

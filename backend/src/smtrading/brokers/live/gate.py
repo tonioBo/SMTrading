@@ -221,9 +221,30 @@ class LiveClient(httpx.AsyncClient):
         return self._gate.link_id
 
 
+def _default_inner() -> httpx.AsyncBaseTransport:
+    """The fake only when the setting is explicitly on: settings that cannot be loaded (a
+    process or test without the SMT_ environment) mean the setting is off."""
+    from pydantic import ValidationError
+
+    from smtrading.common.config import get_settings
+
+    try:
+        fake = get_settings().live_fake_broker
+    except ValidationError:
+        fake = False
+    if fake:
+        from smtrading.brokers.live.fake import fake_broker
+
+        return fake_broker().transport()
+    return httpx.AsyncHTTPTransport()
+
+
 def make_live_client(sessionmaker: async_sessionmaker, link_id: uuid.UUID, *,
                      inner: httpx.AsyncBaseTransport | None = None,
                      timeout: float = 10.0) -> LiveClient:
-    """`inner` defaults to httpx.AsyncHTTPTransport() (respx intercepts it in tests)."""
-    gate = LiveGateTransport(inner or httpx.AsyncHTTPTransport(), sessionmaker, link_id)
+    """`inner` defaults to httpx.AsyncHTTPTransport() (respx intercepts it in tests), or to
+    the in-memory FakeLiveBroker when the `live_fake_broker` setting is on (e2e only; the
+    gate stays in front of it)."""
+    gate = LiveGateTransport(inner if inner is not None else _default_inner(),
+                             sessionmaker, link_id)
     return LiveClient(gate, timeout=timeout, _maker=_MAKER)

@@ -7,6 +7,7 @@ import pytest
 import respx
 
 from smtrading.brokers.alpaca_paper import _STATUS, PAPER_URL, AlpacaPaperAdapter
+from smtrading.brokers.live.alpaca_live import AlpacaLiveAdapter
 from smtrading.brokers.service import (
     create_link,
     get_adapter,
@@ -161,7 +162,7 @@ async def test_network_error_does_not_leak(http):
     assert "KID-SECRET" not in str(e.value)
 
 
-@pytest.mark.parametrize("url", ["https://api.alpaca.markets", "http://localhost:1"])
+@pytest.mark.parametrize("url", [AlpacaLiveAdapter.BASE_URL, "http://localhost:1"])
 def test_non_paper_url_forbidden(url):
     with pytest.raises(SMTError) as e:
         AlpacaPaperAdapter({**CFG, "base_url": url}, None)
@@ -242,10 +243,12 @@ async def test_duplicate_client_order_id_returns_existing(http):
 async def test_redirect_not_followed(http):
     respx.post(f"{PAPER_URL}/v2/orders").mock(
         return_value=httpx.Response(
-            307, headers={"location": "https://api.alpaca.markets/v2/orders"}
+            307, headers={"location": f"{AlpacaLiveAdapter.BASE_URL}/v2/orders"}
         )
     )
-    live = respx.post("https://api.alpaca.markets/v2/orders").mock(return_value=httpx.Response(200))
+    live = respx.post(f"{AlpacaLiveAdapter.BASE_URL}/v2/orders").mock(
+        return_value=httpx.Response(200)
+    )
     with pytest.raises(RuntimeError):
         await AlpacaPaperAdapter(CFG, http).place_order(_order(), _inst())
     assert not live.called

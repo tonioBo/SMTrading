@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from smtrading.admin.common import redact
 from smtrading.brokers import registry
 from smtrading.brokers.alpaca_paper import AlpacaPaperAdapter
+from smtrading.brokers.live.alpaca_live import AlpacaLiveAdapter
+from smtrading.brokers.live.t212_live import T212LiveAdapter
 from smtrading.brokers.models import Reconciliation
 from smtrading.brokers.service import get_link_config
 from smtrading.common.config import get_settings
@@ -180,17 +182,17 @@ async def test_non_paper_url_forbidden(admin):
     c = admin.client
     r = await c.post("/api/broker-links", json={
         "name": "Live", "kind": "alpaca_paper",
-        "config": {"key_id": "k", "secret_key": "s", "base_url": "https://api.alpaca.markets"},
+        "config": {"key_id": "k", "secret_key": "s", "base_url": AlpacaLiveAdapter.BASE_URL},
     })
     assert r.status_code == 403 and r.json()["code"] == "FORBIDDEN"
     r = await c.post("/api/broker-links", json={
         "name": "Live212", "kind": "t212_demo",
-        "config": {"api_key": "k", "base_url": "https://live.trading212.com"},
+        "config": {"api_key": "k", "base_url": T212LiveAdapter.BASE_URL},
     })
     assert r.status_code == 403
     link = await _link(c)
     r = await c.patch(f"/api/broker-links/{link['id']}", json={
-        "config": {"base_url": "https://api.alpaca.markets"},
+        "config": {"base_url": AlpacaLiveAdapter.BASE_URL},
     })
     assert r.status_code == 403
     assert (await c.get("/api/broker-links")).json()[0]["name"] == "Alpaca"

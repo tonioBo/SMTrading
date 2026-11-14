@@ -17,7 +17,12 @@ import respx
 from smtrading.brokers import alpaca_core, t212_core
 from smtrading.brokers.alpaca_paper import AlpacaPaperAdapter
 from smtrading.brokers.base import AccountSnapshot, BrokerAdapter, RateLimited
+from smtrading.brokers.live.alpaca_live import AlpacaLiveAdapter
+from smtrading.brokers.live.gate import make_live_client
+from smtrading.brokers.live.t212_live import T212LiveAdapter
+from smtrading.brokers.models import BrokerLink
 from smtrading.brokers.t212_demo import T212DemoAdapter
+from smtrading.common.db import make_engine
 from smtrading.engine.models import Order, OrderSide, OrderType, TimeInForce
 from smtrading.instruments.models import AssetClass, Instrument
 
@@ -50,10 +55,12 @@ class Case:
 
 ALPACA_CFG = {"key_id": "CANARYKEYID0001", "secret_key": "CANARYSECRET-do-not-use"}
 T212_CFG = {"api_key": "CANARYKEYID0001", "api_secret": "CANARYSECRET-do-not-use"}
-# Task 4 adds the live classes (with a LiveClient on an armed link).
+# The live classes run on a LiveClient (make_live_client) on an armed link of the test db.
 CASES = [
     Case(AlpacaPaperAdapter, "alpaca", ALPACA_CFG),
     Case(T212DemoAdapter, "t212", T212_CFG),
+    Case(AlpacaLiveAdapter, "alpaca", ALPACA_CFG),
+    Case(T212LiveAdapter, "t212", T212_CFG),
 ]
 ALPACA_CASES = [c for c in CASES if c.family == "alpaca"]
 T212_CASES = [c for c in CASES if c.family == "t212"]
@@ -77,9 +84,38 @@ def _reset_t212_state():
 
 
 @pytest.fixture
-async def http():
-    async with httpx.AsyncClient() as c:
-        yield c
+async def http(request):
+    """A plain client for the paper/demo classes; for a live class a LiveClient whose gate
+    reads an armed link (with its one portfolio) inside a rolled-back transaction."""
+    callspec = getattr(request.node, "callspec", None)
+    case = callspec.params.get("case") if callspec is not None else None
+    if case is None or not case.cls.live:
+        async with httpx.AsyncClient() as c:
+            yield c
+        return
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from smtrading.portfolios.models import Portfolio
+
+    engine = make_engine(request.getfixturevalue("migrated_db"))
+    async with engine.connect() as conn:
+        trans = await conn.begin()
+        sm = async_sessionmaker(bind=conn, expire_on_commit=False,
+                                join_transaction_mode="create_savepoint")
+        async with sm() as s:
+            link = BrokerLink(name=f"L-{uuid.uuid4().hex[:8]}", kind=case.cls.kind,
+                              live_state="armed")
+            s.add(link)
+            await s.flush()
+            s.add(Portfolio(name=f"P-{uuid.uuid4().hex[:8]}", broker_link_id=link.id))
+            await s.commit()
+        try:
+            async with make_live_client(sm, link.id,
+                                        inner=httpx.AsyncHTTPTransport()) as c:
+                yield c
+        finally:
+            await trans.rollback()
+    await engine.dispose()
 
 
 @pytest.fixture
