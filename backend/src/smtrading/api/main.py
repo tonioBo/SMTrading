@@ -114,7 +114,6 @@ async def _register_live_secrets(sessionmaker) -> None:
         logging.getLogger(__name__).warning("live keys not registered at start")
 
 
-def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
 async def _export_agent_docs(sessionmaker) -> None:
     """Startup export of the «Istruzioni agenti» for Paperclip (never fails the boot)."""
     try:
@@ -124,6 +123,7 @@ async def _export_agent_docs(sessionmaker) -> None:
         logging.getLogger(__name__).warning("agent docs export at startup failed", exc_info=True)
 
 
+def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     """`runtime_factory(sessionmaker, redis)` overrides the MCP runtime (tests inject a
     FakeQuoteSource); by default the MarketDataRouter is the MCP quote source."""
     # uvicorn has configured its own loggers (they keep their handlers, access log
@@ -139,8 +139,8 @@ async def _export_agent_docs(sessionmaker) -> None:
     async def lifespan(app: FastAPI):
         sessionmaker = async_sessionmaker(resources.engine, expire_on_commit=False)
         await _register_live_secrets(sessionmaker)
-        try:
         await _export_agent_docs(sessionmaker)
+        try:
             async with httpx.AsyncClient() as http:
                 if runtime_factory is not None:
                     runtime = runtime_factory(sessionmaker, resources.redis)
