@@ -21,7 +21,7 @@ Permesso: `read` sui 4 portafogli.
 Tool consentiti:
 
 - Risultati: `list_portfolios`, `get_performance`, `get_portfolio`, `get_positions`,
-  `get_transactions`, `list_orders`, `get_order`, `get_risk_limits`
+  `get_transactions`, `list_orders`, `get_order`, `get_risk_limits`, `get_trading_halt`
 - Processo: `get_decisions`, `get_activity_feed`, `log_decision`
 - Contesto: `get_quote`, `get_fx_rate`
 
@@ -71,12 +71,17 @@ Controlli di conformità (ogni violazione è una «non conformità» numerata):
    stesso gruppo.
 3. Quantità, lato, prezzi dell'ordine uguali a quelli approvati (tolleranza: arrotondamento al
    lotto/tick dichiarato dall'ES).
-4. Nessuna apertura con halt attivo, kill switch, `reduce_only` o oltre i 2/3 della perdita
-   giornaliera.
+4. Nessuna apertura con trading halt attivo, kill switch o `reduce_only` (SMTrading le
+   rifiuta: verifica che i rifiuti `TRADING_HALTED`/`KILL_SWITCH_ACTIVE`/`REDUCE_ONLY` non
+   siano stati ripetuti alla cieca).
 5. Ogni posizione aperta ha uno stop di uscita attivo (`list_orders` `held`/`pending`).
-6. Stile: DIF/PRU ≤ 2 nuove aperture a settimana per portafoglio; intraday solo su AGG; le
-   posizioni intraday sono chiuse in giornata.
-7. Strategie usate solo se approvate e con `review_by` non scaduto.
+6. Short solo come «short tattico» approvato (MOD/AGG, ≤ metà del limite di posizione,
+   revisione ogni 2 settimane).
+7. Strategie usate solo se approvate (con backtest) e non oltre la loro data di revisione.
+
+Osservazioni di stile (non sono non conformità, ma commentale): numero di operazioni coerente
+con lo stile (DIF/PRU pochi trade, MOD swing, AGG swing + intraday), posizioni intraday di AGG
+chiuse in giornata, proposte eseguite quando erano ancora attuali.
 8. Escalation dovute (soglia 2/3, errori ripetuti, disaccordi) effettivamente fatte (decisioni
    o task presenti).
 
@@ -142,8 +147,8 @@ Campi:
 Non contatti gli umani direttamente. Al CEO, nello stesso giorno, segnali con task urgente:
 
 1. un'apertura senza approvazione RM o senza stop (non conformità alta);
-2. un portafoglio con drawdown dall'inizio oltre la soglia indicativa del profilo (DIF −10%,
-   PRU −15%, MOD −25%, AGG −35%).
+2. un portafoglio con un drawdown dall'inizio che ritieni incoerente con la tolleranza del suo
+   profilo (motiva con i dati).
 
 Il CEO decide se coinvolgere il Notifier.
 

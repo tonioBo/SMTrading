@@ -43,7 +43,7 @@ Note operative sulla tabella:
 
 | Agente | Permesso SMTrading | Può inviare ordini | Può usare `send_telegram` |
 |---|---|---|---|
-| CEO SMTrading | read su tutti e 4 | no | no |
+| CEO SMTrading | read su tutti e 4 + **halt** (`set_trading_halt`, unico) | no | no |
 | Portfolio Manager | read | no | no |
 | Risk Manager | read | no | no |
 | Execution Supervisor | **trade** su tutti e 4 | **sì, l'unico** | no |
@@ -90,6 +90,35 @@ Regole del flusso:
    giornaliera) possono essere chieste dal RM direttamente all'ES senza proposta del PM.
 4. Ogni apertura è un **bracket** (`place_bracket_order` con `stop_loss` e `take_profit`).
 
+### Regole vincolanti e autonomia
+
+Le regole **vincolanti** (decise dall'utente) sono poche e non si discutono:
+
+1. il flusso PM → RM → ES (il CEO approva solo strategie e allocazioni);
+2. bracket con stop loss e take profit per ogni apertura;
+3. backtest obbligatorio prima di usare una strategia;
+4. i limiti del profilo di rischio di ogni portafoglio;
+5. le condizioni di escalation (§11);
+6. `log_decision` per ogni decisione rilevante;
+7. il trading halt di SMTrading e il kill switch (§7).
+
+Tutto il resto (dimensione delle posizioni, distanza di stop e target, momento di ingresso,
+gestione degli eventi societari, durata delle posizioni intraday) lo decidi **con giudizio**,
+caso per caso, in modo coerente con il profilo e lo stile del portafoglio. I numeri citati
+nelle istruzioni di ruolo come «esempio» sono indicazioni, non soglie. Quando ti discosti da
+una prassi abituale, scrivi il perché nella proposta o nella `log_decision`.
+
+### Short tattico
+
+I backtest di SMTrading sono solo long, quindi le strategie short non si possono
+backtestare. Uno short è ammesso solo come **«short tattico»**:
+
+- solo su **MOD** e **AGG** (profili con `short_allowed`) e su strumenti `shortable`;
+- dimensione massima pari a **metà del limite di posizione** del profilo;
+- con approvazione esplicita del CEO (`log_decision` `strategy` con
+  `details.type = "short_tattico"`);
+- con revisione ogni **2 settimane** (`details.review_by`).
+
 ## 5. Identificativi convenzionali
 
 Usali in tutti i task, nei `details` di `log_decision` e come `client_order_id`.
@@ -99,7 +128,6 @@ Usali in tutti i task, nei `details` di `log_decision` e come `client_order_id`.
 | Strategia | `STR-<NNN>` | `STR-003` |
 | Proposta | `PROP-<COD>-<AAAAMMGG>-<HHMM>-<n>` | `PROP-MOD-20261116-1005-1` |
 | Seconda versione di una proposta | suffisso `-v2` | `PROP-MOD-20261116-1005-1-v2` |
-| Halt | `HALT-<AAAAMMGG>-<n>` | `HALT-20261116-1` |
 | Escalation | `ESC-<AAAAMMGG>-<HHMM>` | `ESC-20261116-1410` |
 
 `client_order_id` = id della proposta (max 128 caratteri). Un `client_order_id` già usato
@@ -165,17 +193,22 @@ Su task: leggi il task, fai solo le chiamate che servono al task, rispondi, chiu
   deduplica. Un `after_id` sconosciuto dà `INVALID_ORDER` con `details.field = after_id`:
   riparti senza cursore.
 
-## 7. Stato di HALT (blocco aperture ordinato dal CEO)
+## 7. Trading halt (blocco aperture di SMTrading)
 
-- Il CEO dichiara un halt con `log_decision` `kind: "risk_rule"` e `details.halt = true`
-  (con `details.scope` = lista di codici portafoglio o `"ALL"`) e lo revoca con un'altra
-  `risk_rule` con `details.halt = false` e lo stesso `details.halt_id`.
-- **Ogni agente**, prima di proporre, approvare o eseguire un'apertura, legge
-  `get_decisions` con `kind: "risk_rule"` (limit 20) e determina se esiste un halt attivo
-  (l'ultimo record per quel `halt_id` ha `halt: true`).
-- Con halt attivo: **solo chiusure e riduzioni**. Nessuna nuova apertura, nessun aumento.
+Il trading halt è una funzione di SMTrading:
 
-Distingui l'halt (convenzione tra agenti) da:
+- `set_trading_halt` con `scope` = `"global"` oppure `"portfolio"` (con `portfolio_id`),
+  `active` = `true`/`false`, `reason` (testo). Può usarlo **solo il CEO** (permesso halt);
+  agli altri risponde `FORBIDDEN`.
+- `get_trading_halt` (facoltativo `portfolio_id`): stato dell'halt. Lo possono leggere tutti.
+- Con halt attivo SMTrading **rifiuta gli ordini che aumentano l'esposizione** con
+  `TRADING_HALTED`. Chiusure, annullamenti e le uscite stop loss / take profit funzionano.
+- SMTrading avvisa da sé su Telegram quando l'halt viene attivato o revocato: il Notifier non
+  lo ripete.
+- **Prima di proporre, approvare o eseguire un'apertura** chiama `get_trading_halt` con il
+  `portfolio_id`: con halt attivo (globale o del portafoglio) niente aperture, solo chiusure.
+
+Distingui l'halt da:
 
 - **kill switch** (`get_risk_limits.kill_switch = true`, codice `KILL_SWITCH_ACTIVE`): blocco
   globale deciso da un umano, passano solo ordini che riducono;
@@ -245,7 +278,7 @@ RISCHI
 
 ## 11. Escalation agli umani (via Notifier)
 
-Crea un task `ESCALATION` per il Notifier (e mettine in copia il CEO) quando:
+Crea un task `ESCALATION` per il Notifier (e mettine in copia il CEO) quando (condizioni vincolanti):
 
 1. `daily_loss.current_eur` ≥ **2/3 di `daily_loss.limit_eur`** su un portafoglio (lo rileva
    soprattutto il Risk Manager; chiunque lo veda lo segnala).
@@ -286,6 +319,7 @@ Gli errori arrivano come `{"code", "message", "details"}`. Codici reali e reazio
 | `PROVIDER_UNAVAILABLE` | dati di mercato non disponibili (anche valutazione con quotazioni in cache) | Riprova al ciclo successivo; 2 cicli di fila → escalation. |
 | `MARKET_CLOSED_QUEUED` | mercato chiuso, ordine messo in coda | Informativo: l'ordine attende l'apertura. |
 | `KILL_SWITCH_ACTIVE` | kill switch globale attivo | Stop aperture su tutto. Solo riduzioni. Informa il CEO. |
+| `TRADING_HALTED` | trading halt attivo (globale o del portafoglio) | Nessuna apertura né aumento finché il CEO non lo revoca; chiusure e annullamenti funzionano. |
 | `REDUCE_ONLY` | portafoglio in sola riduzione (es. perdita giornaliera) | Stop aperture su quel portafoglio fino a `reduce_only_until`. |
 | `PORTFOLIO_LOCKED` | portafoglio bloccato | Nessun ordine. Escalation se non annunciato. |
 | `PORTFOLIO_ARCHIVED` | portafoglio archiviato (agli agenti appare `NOT_FOUND`) | Come `NOT_FOUND`. |
@@ -307,7 +341,7 @@ Non esistono altri codici per gli agenti: se ne vedi uno diverso, riportalo cos�
 - **OCO**: due ordini collegati: quando uno si esegue, l'altro si annulla.
 - **Reduce-only**: si possono solo ridurre/chiudere posizioni.
 - **Kill switch**: blocco globale delle aperture deciso da un umano.
-- **Halt**: blocco delle aperture deciso dal CEO tra agenti (§7).
+- **Trading halt**: blocco delle aperture impostato dal CEO con `set_trading_halt` (§7); errore `TRADING_HALTED`.
 - **Stale**: quotazione troppo vecchia (`stale`, `stale_symbols`, `STALE_QUOTE`).
 - **R** / **R:R**: rischio per operazione (distanza ingresso-stop × quantità) e rapporto
   rendimento/rischio (distanza take profit / distanza stop).

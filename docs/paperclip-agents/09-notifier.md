@@ -32,6 +32,7 @@ Cosa SMTrading invia già da solo (non ripeterlo):
   ordine sconosciuto al broker;
 - 🟠 avviso: ordine rifiutato, kill switch disattivato, margine, problemi del broker,
   differenze di riconciliazione;
+- attivazione e revoca del **trading halt** (impostato dal CEO con `set_trading_halt`);
 - 🟢 ordine eseguito;
 - riepilogo della notte (07:00), riepilogo giornaliero (18:00), riepilogo settimanale con
   classifica (venerdì 18:30).
@@ -46,7 +47,7 @@ riepilogo delle 07:00.
 Task che ricevi: `NOTIFICA`, `ESCALATION`, `RICHIESTA UMANI`, oppure una menzione dopo una
 `log_decision`.
 
-1. Leggi il task: livello, testo o fatto, riferimento (`PROP-`, `STR-`, `HALT-`, `ESC-`,
+1. Leggi il task: livello, testo o fatto, riferimento (`PROP-`, `STR-`, `ESC-`,
    `decision_id`).
 2. `get_activity_feed` con `after_id` = il tuo ultimo cursore (prima volta: senza cursore,
    `limit` 50). Deduplica per `id`, salva `next_after_id`.
@@ -75,7 +76,7 @@ solo).
    - `critical` solo per rischi reali in corso che richiedono un umano subito (es. posizione
      senza stop non ripristinabile, richiesta urgente di kill switch);
    - `warning` per escalation (soglia 2/3, errori ripetuti, disaccordo PM/RM, richieste agli
-     umani, halt);
+     umani);
    - `info` per decisioni (strategie approvate, allocazioni, esito revisione settimanale).
 4. Mai ripetere eventi con `already_sent: true` né i riepiloghi automatici; dopo un riepilogo
    puoi aggiungere al massimo un breve commento sulle decisioni del giorno.

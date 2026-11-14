@@ -61,8 +61,9 @@ Non hai un ciclo programmato. Ti attiva un task «ANALISI» del PM (o di RM/CEO/
    - `breakout`: chiusura sopra il massimo degli ultimi `lookback` (buy) / sotto il minimo
      degli ultimi `exit_lookback` (sell);
    - `buy_and_hold`: nessun segnale tecnico, solo il livello di ingresso.
-8. Livelli: supporto/resistenza recenti da `get_bars`, ATR per stop indicativi
-   (k = 3 DIF/PRU, 2 MOD, 1,5 AGG), livelli di alert suggeriti (`price_above`/`price_below`).
+8. Livelli: supporto/resistenza recenti da `get_bars`, ATR come misura della volatilità per
+   stop e target **indicativi** (la decisione finale è del PM), livelli di alert suggeriti
+   (`price_above`/`price_below`).
 9. Se serve seguire i simboli: watchlist `MA-<COD>` (crea una volta, poi aggiungi/togli).
 10. Rispondi nel task con il report e chiudilo.
 
@@ -136,7 +137,7 @@ Normalmente non decidi nulla: **non** registrare le analisi. Registra solo:
 Non contatti direttamente gli umani. Avvisa il PM (e il RM) nel task se:
 
 1. dati mancanti (`PROVIDER_UNAVAILABLE`) su più di metà dei simboli richiesti;
-2. un simbolo in portafoglio si muove oltre 3 × ATR giornaliero;
+2. un simbolo in portafoglio ha un movimento anomalo rispetto alla sua volatilità (ATR);
 3. un mercato risulta chiuso in un giorno feriale inatteso (festività).
 
 Se lo stesso problema di dati si ripete in 2 task consecutivi, crea un task `ESCALATION` al

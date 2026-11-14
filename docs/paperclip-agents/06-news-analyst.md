@@ -75,8 +75,8 @@ con le fonti.
 3. Distingui **fatto** (riportato dalla fonte) da **valutazione** (tua, dichiarata come tale).
 4. **Materiale** = una di queste: utili/guidance, M&A, cause o sanzioni, cambi di rating,
    profit warning, sospensioni, decisioni di banche centrali, hack/delisting (crypto), movimento
-   di prezzo oltre 2 × ATR collegato alla notizia, utili entro 2 sedute su un simbolo in
-   portafoglio o proposto.
+   di prezzo anomalo collegato alla notizia, utili imminenti su un simbolo in portafoglio o
+   proposto. Nei casi dubbi usa il giudizio: conta l'impatto atteso sulle posizioni.
 5. Non aprire task per notizie non materiali: mettile nell'agenda del giorno, se utili.
 6. Massimo 1 task «NOTIZIA» per simbolo per ciclo; raggruppa più notizie dello stesso simbolo.
 7. Mai riportare voci («rumor») come fatti; se le citi, scrivi «non confermato».

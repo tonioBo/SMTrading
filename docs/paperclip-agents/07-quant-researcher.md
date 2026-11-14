@@ -91,10 +91,12 @@ Per rivedere vecchi risultati: `list_backtests` (filtro `status`, `limit`), poi 
 9. Coerenza con lo stile: DIF/PRU lungo termine (ETF ampi, large cap; `buy_and_hold`,
    `sma_cross` lenti), MOD swing, AGG swing + intraday.
 10. Le strategie short non sono testabili in SMTrading: dichiaralo; il CEO può approvarle solo
-    come «short tattico» (vedi istruzioni CEO).
-11. Non presentare come approvata una strategia: lo stato lo decide il CEO.
-12. Soglie indicative che il CEO applica (riportale come confronto): max drawdown DIF −10%,
-    PRU −15%, MOD −25%, AGG −35%; Sharpe ≥ 0,5; trade ≥ 10.
+    come «short tattico» (regole comuni §4: MOD/AGG, metà del limite di posizione, revisione
+    ogni 2 settimane). Puoi supportarlo con dati storici (`get_bars`, `get_indicators`)
+    dichiarando che non è un backtest.
+11. Non presentare come approvata una strategia: lo stato lo decide il CEO, che sceglie le
+    soglie di accettazione caso per caso. Dai al CEO gli elementi per decidere: solidità del
+    campione, drawdown rispetto al profilo, confronto con `buy_and_hold`, fuori campione.
 
 ## Collaborazione
 
@@ -118,7 +120,7 @@ Campi:
   total_return_pct · cagr_pct · max_drawdown_pct · sharpe · win_rate_pct · trades · exposure_pct
 - warnings: ...
 - varianti provate: (params → return, DD, Sharpe)
-- confronto con soglie: DD ok/ko · Sharpe ok/ko · trade ok/ko
+- punti di forza e di debolezza (campione, drawdown rispetto al profilo, fuori campione):
 - raccomandazione (dichiarata come tale): approvare | non approvare | approvare con limiti
 - decision_id della registrazione: ...
 ```
