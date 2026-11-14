@@ -1,5 +1,6 @@
 import {
   Bell,
+  BookOpen,
   Bot,
   Cable,
   FileText,
@@ -25,6 +26,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/portafogli", label: "Portafogli", icon: Wallet },
   { to: "/agenti", label: "Agenti", icon: Bot },
+  { to: "/istruzioni-agenti", label: "Istruzioni agenti", icon: BookOpen },
   { to: "/commissioni", label: "Commissioni", icon: Percent },
   { to: "/rischio", label: "Rischio e margine", icon: Gauge },
   { to: "/connettori", label: "Connettori", icon: Cable },

@@ -751,3 +751,42 @@ export interface DecisionFilters {
   portfolio_id: string;
   kind: string;
 }
+
+// --- «Istruzioni agenti» (/api/agent-docs) ---
+
+export interface AgentDocSummary {
+  slug: string;
+  title: string;
+  current_version: number;
+  updated_at: string;
+  /** admin email, or "seed" for the texts loaded from docs/paperclip-agents */
+  updated_by: string;
+}
+
+export interface AgentDocDetail extends AgentDocSummary {
+  body: string;
+}
+
+export interface AgentDocVersionInfo {
+  version: number;
+  author: string;
+  note: string | null;
+  created_at: string;
+  /** bytes */
+  size: number;
+}
+
+export interface AgentDocVersion {
+  slug: string;
+  version: number;
+  body: string;
+  author: string;
+  note: string | null;
+  created_at: string;
+}
+
+export interface AgentDocInput {
+  body: string;
+  note?: string | null;
+  base_version: number;
+}

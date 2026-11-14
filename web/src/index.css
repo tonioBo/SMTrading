@@ -38,3 +38,67 @@
     font-variant-numeric: tabular-nums;
   }
 }
+
+/* «Istruzioni agenti»: rendered Markdown */
+@layer components {
+  .md-doc {
+    @apply max-w-[78ch] text-sm leading-relaxed;
+  }
+  .md-doc h1 {
+    @apply mb-2 mt-4 text-xl font-semibold tracking-tight;
+  }
+  .md-doc h2 {
+    @apply mb-2 mt-6 border-t border-border pt-3 text-lg font-semibold;
+  }
+  .md-doc h3 {
+    @apply mb-1 mt-4 font-semibold;
+  }
+  .md-doc p,
+  .md-doc ul,
+  .md-doc ol,
+  .md-doc blockquote,
+  .md-doc pre {
+    @apply my-2;
+  }
+  .md-doc ul {
+    @apply list-disc pl-5;
+  }
+  .md-doc ol {
+    @apply list-decimal pl-5;
+  }
+  .md-doc li {
+    @apply my-0.5;
+  }
+  .md-doc a {
+    @apply text-accent underline underline-offset-2;
+  }
+  .md-doc code {
+    @apply rounded-sm bg-card px-1 py-px font-mono text-[0.85em];
+  }
+  .md-doc pre {
+    @apply overflow-x-auto rounded-md bg-card p-3;
+  }
+  .md-doc pre code {
+    @apply bg-transparent p-0;
+  }
+  .md-doc blockquote {
+    @apply border-l-2 border-accent bg-card px-3 py-1.5;
+  }
+  .md-doc hr {
+    @apply my-4 border-border;
+  }
+  .md-table {
+    @apply my-3 overflow-x-auto;
+  }
+  .md-doc table {
+    @apply min-w-full border-collapse font-sans text-[0.8rem];
+    font-variant-numeric: normal;
+  }
+  .md-doc th,
+  .md-doc td {
+    @apply border border-border px-2 py-1 text-left align-top;
+  }
+  .md-doc th {
+    @apply bg-card font-semibold;
+  }
+}
