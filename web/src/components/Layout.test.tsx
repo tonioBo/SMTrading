@@ -20,6 +20,7 @@ const server = setupServer(
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: killSwitchOn })),
   http.get("*/api/risk-profiles", () => HttpResponse.json([])),
+  http.get("*/api/portfolios", () => HttpResponse.json([])), // pages reached by navigation
   http.get("*/api/interest-rates", () => HttpResponse.json([])),
   http.get("*/api/settings/app", () =>
     HttpResponse.json({ stale_quote_s: {}, default_spread_bps: {}, timezone: "Europe/Rome" }),

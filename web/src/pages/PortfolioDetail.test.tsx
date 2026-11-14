@@ -2,9 +2,10 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
+import { toast } from "sonner";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { QueryClient } from "@tanstack/react-query";
-import type { Order, Portfolio, Position, Transaction, Valuation } from "@/api/types";
+import type { LiveLink, Order, Portfolio, Position, Transaction, Valuation } from "@/api/types";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
 import { haltFixture } from "@/test/halts";
@@ -158,12 +159,30 @@ let patches: unknown[] = [];
 let canceled: string[] = [];
 let orderStatuses: (string | null)[] = [];
 let unarchived = 0;
+const liveLinkFixture: LiveLink = {
+  id: "l1",
+  name: "Alpaca vero",
+  kind: "alpaca_live",
+  live_state: "armed",
+  armed_at: "2026-11-14T10:00:00Z",
+  armed_by: "admin@example.com",
+  disarmed_at: null,
+  disarmed_reason: null,
+  key_masked: "••••0001",
+  account_masked: "••••1234",
+  snapshot: null,
+  last_test_at: null,
+  health_failures: 0,
+  portfolio: { id: "p1", name: "Alfa" },
+};
+let liveLinks: LiveLink[] = [liveLinkFixture];
 
 const server = setupServer(
   ...commonHandlers,
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
   http.get("*/api/portfolios/p1", () => HttpResponse.json(current)),
+  http.get("*/api/live-links", () => HttpResponse.json(liveLinks)),
   http.patch("*/api/portfolios/p1", async ({ request }) => {
     patches.push(await request.json());
     current = { ...current, status: "active", reduce_only_reason: null };
@@ -262,6 +281,7 @@ afterEach(() => {
   canceled = [];
   orderStatuses = [];
   unarchived = 0;
+  liveLinks = [liveLinkFixture];
   ws.subscribed.length = 0;
 });
 afterAll(() => server.close());
@@ -539,12 +559,15 @@ describe("PortfolioDetail", () => {
 
   it("disarms from the portfolio in one click, without TOTP", async () => {
     current = { ...portfolio, mode: "paper", live_state: "dry_run", broker_link_id: "l1" };
+    liveLinks = [{ ...liveLinkFixture, live_state: "dry_run" }];
+    const warn = vi.spyOn(toast, "warning");
     const disarms: string[] = [];
     server.use(
       http.post("*/api/live-links/l1/disarm", async ({ request }) => {
         disarms.push(await request.text());
         current = { ...current, live_state: "configured" };
-        return HttpResponse.json({ id: "l1", live_state: "configured", orders: null, settled: false });
+        liveLinks = [{ ...liveLinkFixture, live_state: "configured", armed_at: null, disarmed_at: "2026-11-14T11:00:00Z" }];
+        return HttpResponse.json({ ...liveLinks[0], orders: null, settled: false });
       }),
     );
     const user = userEvent.setup();
@@ -556,19 +579,37 @@ describe("PortfolioDetail", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(await within(panel).findByRole("alert")).toHaveTextContent("Disattivato, ordini da sistemare: riprova");
     expect(await within(panel).findByRole("button", { name: "Ripeti disattivazione / sistema ordini" })).toBeInTheDocument();
+    expect(warn).toHaveBeenCalledWith("Disattivato, ordini da sistemare: riprova");
+    const success = vi.spyOn(toast, "success");
+    server.use(
+      http.post("*/api/live-links/l1/disarm", () => HttpResponse.json({ ...liveLinks[0], orders: { canceled: 0 }, settled: true })),
+    );
+    await user.click(within(panel).getByRole("button", { name: "Ripeti disattivazione / sistema ordini" }));
+    await waitFor(() => expect(success).toHaveBeenCalledWith("Denaro reale disattivato su Alpaca vero")); // the link's name
+    warn.mockRestore();
+    success.mockRestore();
   });
 
-  it("keeps Sblocca on a locked real portfolio and marks its rows as real", async () => {
+  it("a locked real portfolio with a live reason resumes with TOTP, has no Sblocca, and its rows are marked", async () => {
     current = { ...portfolio, mode: "reale", live_state: "armed", broker_link_id: "l1", status: "locked", reduce_only_reason: "live_fuse" };
     const user = await openTab("Rischio");
     expect(await screen.findByText("Anomalia del denaro reale: fusibile: troppi ordini reali nell'ultima ora", { selector: "dd" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Sblocca" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sblocca" })).not.toBeInTheDocument();
+    const panel = screen.getByRole("region", { name: "Denaro reale" });
+    expect(within(panel).getByRole("button", { name: "Ho verificato, riprendi" })).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Ordini" }));
     const orders = await screen.findByRole("table", { name: "Ordini" });
     expect(await within(orders).findByText("🔴 REALE")).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "Posizioni" }));
     const positions = await screen.findByRole("table", { name: "Posizioni" });
     expect(await within(positions).findByText("🔴 REALE")).toBeInTheDocument();
+  });
+
+  it("keeps Sblocca on a portfolio locked by a broker liquidation", async () => {
+    current = { ...portfolio, status: "locked", reduce_only_reason: "broker_liquidation" };
+    await openTab("Rischio");
+    expect(await screen.findByText("Liquidazione da parte del broker", { selector: "dd" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sblocca" })).toBeInTheDocument();
   });
 
   it("labels the known reduce-only reasons in Italian", async () => {

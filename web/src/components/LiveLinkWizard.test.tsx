@@ -105,7 +105,7 @@ const server = setupServer(
   }),
   http.post("*/api/live-links/:id/disarm", async ({ request }) => {
     disarms.push({ body: await request.text(), headers: Object.fromEntries(request.headers.entries()) });
-    links = [{ ...links[0], live_state: "configured", armed_at: null, disarmed_reason: "disattivato dall'admin" }];
+    links = [{ ...links[0], live_state: "configured", armed_at: null, disarmed_at: "2026-11-14T11:00:00Z", disarmed_reason: "disattivato dall'admin" }];
     return HttpResponse.json({ ...links[0], orders: settled ? { canceled: 0 } : null, settled });
   }),
 );
@@ -229,7 +229,7 @@ describe("LiveLinkWizard", () => {
   });
 
   it("offers the idempotent retry on a configured link, e.g. after a reload", async () => {
-    links = [liveLink({ live_state: "configured", disarmed_reason: "disattivato dall'admin" })];
+    links = [liveLink({ live_state: "configured", disarmed_at: "2026-11-14T11:00:00Z", disarmed_reason: "disattivato dall'admin" })];
     const user = userEvent.setup();
     renderApp("/broker");
     const card = await screen.findByLabelText("Denaro reale Alpaca vero");
@@ -237,6 +237,14 @@ describe("LiveLinkWizard", () => {
     await user.click(within(card).getByRole("button", { name: "Ripeti disattivazione / sistema ordini" }));
     await waitFor(() => expect(disarms).toHaveLength(1));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("shows no disarm or retry on a link that was never armed", async () => {
+    links = [liveLink({ live_state: "configured", armed_at: null, disarmed_at: null })];
+    renderApp("/broker");
+    const card = await screen.findByLabelText("Denaro reale Alpaca vero");
+    expect(within(card).queryByRole("button", { name: "Disattiva denaro reale" })).not.toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: "Ripeti disattivazione / sistema ordini" })).not.toBeInTheDocument();
   });
 
   it("shows the one-click disarm on a dry-run link", async () => {

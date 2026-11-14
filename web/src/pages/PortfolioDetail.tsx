@@ -15,7 +15,7 @@ import {
   useRiskProfiles,
   useValuation,
 } from "@/api/hooks/portfolios";
-import { useLiveFlatten, useLiveResume } from "@/api/hooks/live";
+import { useLiveFlatten, useLiveLinks, useLiveResume } from "@/api/hooks/live";
 import type { LiveState, Order, Portfolio, Position, Valuation } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
@@ -391,9 +391,8 @@ function Risk({ portfolio }: { portfolio: Portfolio }) {
   const profile = profiles.data?.find((p) => p.id === portfolio.risk_profile_id);
   const v: Valuation | undefined = valuation.data;
   const distance = v ? subtractDecimal(v.equity_eur, v.maint_req_eur) : null;
-  // a reduce-only set by a real-money anomaly is lifted only by «Ho verificato, riprendi» (TOTP)
-  const blocked =
-    portfolio.status === "locked" || (portfolio.status === "reduce_only" && !isLiveReason(portfolio.reduce_only_reason));
+  // a real-money anomaly (reduce-only or locked, Ruling R8.13) is lifted only by «Ho verificato, riprendi» (TOTP)
+  const blocked = (portfolio.status === "reduce_only" || portfolio.status === "locked") && !isLiveReason(portfolio.reduce_only_reason);
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
@@ -516,7 +515,9 @@ function LivePanel({ portfolio }: { portfolio: Portfolio }) {
   const flatten = useLiveFlatten(portfolio.id);
   const [dialog, setDialog] = useState<"resume" | "flatten" | null>(null);
   const state = portfolio.live_state!;
-  const suspended = portfolio.status === "reduce_only" && isLiveReason(portfolio.reduce_only_reason);
+  const suspended = (portfolio.status === "reduce_only" || portfolio.status === "locked") && isLiveReason(portfolio.reduce_only_reason);
+  const links = useLiveLinks();
+  const link = links.data?.find((l) => l.id === portfolio.broker_link_id);
   return (
     <section
       aria-label="Denaro reale"
@@ -529,13 +530,18 @@ function LivePanel({ portfolio }: { portfolio: Portfolio }) {
         </p>
         {suspended && (
           <p>
-            In reduce-only: {reduceOnlyReasonLabel(portfolio.reduce_only_reason!)}. Verifica il conto al broker prima di riprendere.
+            {portfolio.status === "locked" ? "Bloccato" : "In reduce-only"}: {reduceOnlyReasonLabel(portfolio.reduce_only_reason!)}. Verifica il conto al broker prima di riprendere.
           </p>
         )}
       </div>
       <div className="flex flex-wrap items-start gap-2">
         {portfolio.broker_link_id && (
-          <LiveDisarmButton linkId={portfolio.broker_link_id} linkName={portfolio.name} liveState={state} />
+          <LiveDisarmButton
+            linkId={portfolio.broker_link_id}
+            linkName={link?.name ?? "il collegamento reale"}
+            liveState={link?.live_state ?? state}
+            everArmed={Boolean(link?.armed_at || link?.disarmed_at)}
+          />
         )}
         {suspended && (
           <Button

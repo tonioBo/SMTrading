@@ -483,13 +483,25 @@ function ArmStep({ link }: { link: LiveLink }) {
 
 /**
  * «Disattiva denaro reale»: one click, no confirmation, no TOTP. On a link already
- * `configured` it is the idempotent retry (settles the orders left by a failed disarm),
- * so the retry the backend alert asks for is reachable after a reload or from another device.
+ * `configured` that was armed before (`everArmed`) it is the idempotent retry (settles the
+ * orders left by a failed disarm), reachable after a reload or from another device; a link
+ * never armed shows nothing.
  */
-export function LiveDisarmButton({ linkId, linkName, liveState }: { linkId: string; linkName: string; liveState: LiveState }) {
+export function LiveDisarmButton({
+  linkId,
+  linkName,
+  liveState,
+  everArmed,
+}: {
+  linkId: string;
+  linkName: string;
+  liveState: LiveState;
+  everArmed: boolean;
+}) {
   const disarm = useDisarmLiveLink(linkId);
   const [unsettled, setUnsettled] = useState(false);
   const retry = liveState === "configured";
+  if (retry && !everArmed && !unsettled) return null;
   return (
     <div className="space-y-1">
       <Button
@@ -524,7 +536,12 @@ export function LiveLinkWizard({ link }: { link: LiveLink }) {
   return (
     <Card aria-label={`Denaro reale ${link.name}`} className="border-2 border-loss">
       <CardHeader className="space-y-2">
-        <LiveDisarmButton linkId={link.id} linkName={link.name} liveState={link.live_state} />
+        <LiveDisarmButton
+          linkId={link.id}
+          linkName={link.name}
+          liveState={link.live_state}
+          everArmed={Boolean(link.armed_at || link.disarmed_at)}
+        />
         <div className="flex items-start justify-between gap-2">
           <div>
             <CardTitle className="text-base">{link.name}</CardTitle>
