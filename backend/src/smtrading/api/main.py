@@ -100,6 +100,19 @@ class _BuildHeader:
 RuntimeFactory = Callable[[async_sessionmaker[AsyncSession], Redis], McpRuntime]
 
 
+async def _register_live_secrets(sessionmaker) -> None:
+    """The live broker keys are masked in this process's logs from the start (they are
+    registered again on every decrypt); best-effort: a database not reachable yet is
+    not a reason to refuse to start."""
+    from smtrading.brokers.live.service import register_live_secrets
+
+    try:
+        async with sessionmaker() as session:
+            await register_live_secrets(session)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).warning("live keys not registered at start")
+
+
 def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     """`runtime_factory(sessionmaker, redis)` overrides the MCP runtime (tests inject a
     FakeQuoteSource); by default the MarketDataRouter is the MCP quote source."""
@@ -115,6 +128,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         sessionmaker = async_sessionmaker(resources.engine, expire_on_commit=False)
+        await _register_live_secrets(sessionmaker)
         try:
             async with httpx.AsyncClient() as http:
                 if runtime_factory is not None:
