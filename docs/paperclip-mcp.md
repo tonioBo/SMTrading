@@ -170,6 +170,13 @@ Simulazione pura di una strategia solo long su barre storiche: non tocca portafo
 - `get_backtest`: stato e risultato di un backtest dell'agente (di un altro agente: `FORBIDDEN`). Il `result` contiene `metrics` (`total_return_pct`, `cagr_pct`, `max_drawdown_pct`, `sharpe`, `win_rate_pct`, `trades`, `exposure_pct`), `equity` (al massimo 1000 punti) e `trades`; un backtest fallito ha `error`.
 - `list_backtests`: i backtest dell'agente, dal piu' recente, senza curva e operazioni; filtro `status`, `limit` 1-100.
 
+### Blocco aperture (CEO)
+
+- `set_trading_halt`: attiva (`active: true`) o revoca (`active: false`) il blocco delle nuove aperture. Serve il permesso `halt` (di solito solo il CEO; senza: `FORBIDDEN` con `details.needed = "halt"`). `scope` `global` (tutti i portafogli, default) o `portfolio` (con `portfolio_id`, serve `read` su quel portafoglio); `reason` 1-500 caratteri, obbligatoria per attivare (i caratteri di controllo sono rimossi). Risponde `{active, changed, halt}`: la stessa motivazione una seconda volta non cambia nulla (`changed: false`), una motivazione diversa sostituisce il blocco; revocare senza blocco attivo da' `{active: false, changed: false, halt: null}`. SMTrading invia da se' il messaggio Telegram critico (`halt.set` / `halt.cleared`, `already_sent` nel feed): non ripeterlo.
+- `get_trading_halt`: aperto a tutti gli agenti. I blocchi attivi che coprono i portafogli dell'agente (o solo `portfolio_id`, serve `read`): `{halted, halts: [{id, scope, portfolio_id, portfolio, reason, set_by, since}]}`, dal piu' recente; `set_by` e' il nome dell'agente o `admin`.
+
+Mentre un blocco copre un portafoglio, ogni ordine che aumenterebbe l'esposizione (nuove posizioni, incrementi, aperture short, ingresso di bracket e OCO) e' rifiutato con `TRADING_HALTED` e messaggio `Aperture sospese dal CEO: <motivo>`; il rifiuto resta registrato come ordine `rejected`. Restano permessi gli ordini che riducono o chiudono (`close_position`, vendite fino alla quantita' posseduta), gli stop loss / take profit delle posizioni esistenti, gli annullamenti, le liquidazioni e la sincronizzazione col broker. Un ordine di apertura gia' in attesa (limit, stop) e' rifiutato quando scatterebbe. Il controllo e' quello del kill switch (che ha la precedenza) e vale per portafogli simulati, paper e reali. Il permesso si concede dalla scheda dell'agente o con `python -m smtrading.cli agent halt-permission NOME on`.
+
 ### Decisioni, feed delle attivita' e Telegram
 
 - `log_decision`: registra una decisione nello storico permanente (visibile nella web app): `kind` (`proposal`, `approval`, `veto`, `allocation`, `strategy`, `risk_rule`, `other`), `summary` (1-500 caratteri), `portfolio_id` facoltativo (serve `read`), `symbols` (al massimo 50, max 32 caratteri l'uno, portati in maiuscolo e senza duplicati), `details` (oggetto, al massimo 8 KB). Risponde `{decision_id, created_at}`; non invia messaggi Telegram.
@@ -299,6 +306,7 @@ Un errore e' restituito con `isError: true` e un testo JSON
 - `SYMBOL_NOT_ALLOWED`: simbolo non consentito dal profilo di rischio.
 - `SYMBOL_NOT_FOUND`: simbolo sconosciuto.
 - `KILL_SWITCH_ACTIVE`: kill switch globale attivo.
+- `TRADING_HALTED`: blocco aperture attivo (dal CEO o dall'admin): sono permessi solo ordini che riducono o chiudono; il motivo e' nel messaggio, `get_trading_halt` dice chi e da quando.
 - `REDUCE_ONLY`: il portafoglio accetta solo ordini che riducono le posizioni.
 - `PORTFOLIO_LOCKED`: portafoglio bloccato.
 - `PORTFOLIO_ARCHIVED`: portafoglio archiviato (sola lettura); un agente vede invece `NOT_FOUND`.
@@ -307,7 +315,7 @@ Un errore e' restituito con `isError: true` e un testo JSON
 - `SHORT_NOT_ALLOWED`: vendita allo scoperto non consentita.
 - `INVALID_ORDER`: argomenti non validi, compresi argomenti mancanti o del tipo sbagliato (il campo e' in `details.field`).
 - `NOT_FOUND`: risorsa inesistente.
-- `FORBIDDEN`: token non valido, portafoglio non assegnato o permesso insufficiente.
+- `FORBIDDEN`: token non valido, portafoglio non assegnato o permesso insufficiente (`notify`, `halt`: `details.needed`).
 - `RATE_LIMITED`: troppe richieste.
 - `PROVIDER_UNAVAILABLE`: dati di mercato non disponibili.
 - `INTERNAL`: errore interno inatteso. Non fa parte dei codici della spec: il messaggio e'

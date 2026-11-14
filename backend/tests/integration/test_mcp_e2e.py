@@ -37,6 +37,8 @@ ALL_TOOLS = {
     "run_backtest", "get_backtest", "list_backtests",
     # decisions, activity feed, Telegram
     "log_decision", "get_decisions", "get_activity_feed", "send_telegram",
+    # trading halt
+    "set_trading_halt", "get_trading_halt",
 }
 
 
