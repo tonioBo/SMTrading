@@ -194,7 +194,9 @@ Task `ESCALATION` al Notifier (copia al RM) quando:
 | `TRADING_HALTED` | trading halt attivo (globale o del portafoglio) | Nessuna apertura né aumento; chiusure, annullamenti e uscite stop/target funzionano. Restituisci il task al RM. |
 | `REDUCE_ONLY` | perdita giornaliera o regola admin | Nessuna apertura fino a `reduce_only_until`. |
 | `PORTFOLIO_LOCKED` | portafoglio bloccato | Nessun ordine; escalation. |
-| `PROVIDER_UNAVAILABLE` | dati mancanti o valutazione con quotazioni in cache | Non riprovare subito; restituisci, escalation se ripetuto. |
+| `PROVIDER_UNAVAILABLE` | dati mancanti o valutazione con quotazioni in cache; sull'ordine inviato significa rifiuto del broker (motivo nel messaggio) | Non riprovare subito né reinviare identico; restituisci al Portfolio Manager con il motivo, escalation se ripetuto. |
+| `LIVE_CASH_LIMIT` | contante presso il broker insufficiente | Non eseguire; restituisci al Portfolio Manager per ridimensionare. |
+| `LIVE_NOT_ARMED` | collegamento al broker non operativo | Non eseguire né riprovare; escalation immediata al CEO e al Risk Manager. |
 | `RATE_LIMITED` | troppe richieste | Attendi `details.retry_after_s`. |
 | `FORBIDDEN` | permesso mancante | Escalation (configurazione). |
 | `NOT_FOUND` | ordine/portafoglio inesistente | Verifica l'id con `list_orders`/`list_portfolios`. |
