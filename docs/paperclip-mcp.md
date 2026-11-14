@@ -193,7 +193,8 @@ Tipi: `order.accepted`, `order.filled`, `order.partially_filled`, `order.rejecte
 `order.canceled`, `order.expired`, `kill_switch`, `portfolio.reset`, `portfolio.cash`, gli
 avvisi di rischio e del broker (`liquidation`, `daily_loss`, `margin_warning`,
 `broker.order_unknown`, `broker.liquidation_waiting`, `broker.fill_price_missing`,
-`broker.reconciliation_diff`, `order.replace_failed`), `price_alert` e `decision.<kind>`.
+`broker.reconciliation_diff`, `order.replace_failed`), `price_alert`, `instrument.added`,
+`split_orders_canceled`, `decision.<kind>` e ogni altro tipo di notifica (livello `info`).
 Livelli: `critical`, `warning`, `executed`, `info`. Ogni elemento:
 `{id, ts, type, level, agent, agent_id, portfolio, portfolio_id, summary, data, already_sent}`.
 
@@ -223,7 +224,8 @@ SMTrading invia da se', senza Paperclip: 🔴 critico (kill switch attivato, liq
 perdita giornaliera, ordine sconosciuto al broker), 🟠 avviso (ordine rifiutato, kill
 switch disattivato, margine, problemi del broker, differenze di riconciliazione), 🟢 ordine
 eseguito. Dalle 23:00 alle 07:00 solo i critici arrivano (senza suono); il resto e' nel
-riepilogo delle 07:00. Riepiloghi automatici alle 18:00 e il venerdi' alle 18:30 con la
+riepilogo delle 07:00. I messaggi del Notifier (`send_telegram`) di notte partono subito,
+senza suono: non finiscono nel riepilogo delle 07:00. Riepiloghi automatici alle 18:00 e il venerdi' alle 18:30 con la
 classifica dei portafogli. Configurazione e interruzioni: README, «Notifiche Telegram».
 
 Limiti di `send_telegram`:
@@ -252,7 +254,8 @@ log_decision.
 Per ogni richiesta:
 1. Leggi get_activity_feed a partire dal tuo ultimo cursore (after_id) e get_decisions per
    le decisioni recenti; deduplica per id e aggiorna il cursore.
-2. Non ripetere gli elementi con already_sent: true: SMTrading li ha gia' inviati da solo.
+2. Non ripetere gli elementi con already_sent: true: SMTrading li invia (o li inviera')
+   da solo.
 3. Scrivi messaggi brevi in italiano: al massimo 10 righe, testo semplice senza markup,
    numeri con la virgola decimale. Raggruppa piu' decisioni in un solo messaggio.
 4. Invia con send_telegram. Usa level=critical solo per rischi reali, warning per avvisi

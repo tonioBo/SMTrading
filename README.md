@@ -157,8 +157,10 @@ SMTrading scrive da solo in un gruppo Telegram, senza passare da Paperclip.
 **Collegamento.**
 
 1. Su Telegram apri @BotFather, `/newbot`, scegli nome e username e copia il token.
-2. Crea un gruppo, aggiungi il bot e scrivi un messaggio nel gruppo (senza almeno un
-   messaggio recente il bot non lo vede).
+2. Crea un gruppo, aggiungi il bot e scrivi `/start@nome_bot` nel gruppo: con la privacy
+   del bot attiva (impostazione predefinita) i messaggi normali non gli arrivano. Telegram
+   conserva questi aggiornamenti solo per circa 24 ore: se il gruppo non compare, riscrivi
+   il comando.
 3. *Notifiche → Collegamento*: incolla il token (resta cifrato e non viene mai mostrato:
    solo `••••` e `@nome_bot`), poi **Rileva gruppi** elenca i gruppi in cui il bot ha
    ricevuto messaggi; sceglilo (o inserisci l'ID a mano). Ogni modifica è verificata con
@@ -190,17 +192,25 @@ delle attività e nei riepiloghi.
 **Ore silenziose e riepiloghi** (fuso orario del server):
 
 - dalle 23:00 alle 07:00 i messaggi critici arrivano comunque, senza suono; gli altri sono
-  raccolti e inviati alle **07:00** in un unico *Riepilogo della notte*;
+  raccolti e inviati alle **07:00** in un unico *Riepilogo della notte* (gli eventi di un
+  portafoglio archiviato nel frattempo sono esclusi, come nei riepiloghi);
 - **18:00** riepilogo giornaliero e **venerdì 18:30** riepilogo settimanale, con la
   classifica dei portafogli (rendimento, drawdown massimo, numero di operazioni) e le
   decisioni del periodo. Sono costruiti da SMTrading e arrivano anche se Paperclip è fermo;
   un riepilogo mancato per un riavvio è inviato al ritorno del worker, ma solo prima delle
-  23:00 dello stesso giorno.
+  23:00 dello stesso giorno (se a quell'ora Telegram non è pronto, il log del worker lo
+  segnala con un WARNING).
 
-**Pausa, coda e ritentativi.** Ogni messaggio passa dalla coda `outbox` (*Notifiche →
-Coda*): `pending`, `sent`, `paused`, `failed`. *Metti in pausa* ferma gli invii (i messaggi
-restano in coda e all'uscita dalla pausa partono in ordine); la pausa non blocca il
-messaggio di prova. Un messaggio `failed` si rimanda con *Riprova*.
+**Pausa, disattivazione, coda e ritentativi.** Ogni messaggio passa dalla coda `outbox`
+(*Notifiche → Ultimi messaggi*): `pending`, `sent`, `paused`, `failed`, `skipped`.
+*Metti in pausa* ferma gli invii: i messaggi restano in coda e all'uscita dalla pausa
+partono in ordine, tranne quelli non critici in pausa da più di 24 ore, che diventano
+`skipped` (notizie vecchie; i critici partono sempre); la pausa non blocca il messaggio di
+prova. **Disattivare** le notifiche invece scarta gli eventi diretti che avvengono mentre
+sono spente: non vengono inviati nemmeno dopo la riattivazione (restano nel feed delle
+attività e nei riepiloghi). Per sospendere temporaneamente senza perdere nulla usa la
+pausa. Un messaggio `failed` si rimanda con *Riprova*, tutti insieme con *Riprova tutti i
+falliti* (i messaggi di prova esclusi).
 
 **Interruzioni di Telegram.** Gli invii sono uno alla volta, in ordine, a distanza di
 almeno 3 secondi. Errori transitori del servizio (rete, 5xx, 429) non fanno mai fallire
@@ -209,11 +219,16 @@ attende `retry_after`) e, tornato Telegram, i messaggi arrivano nell'ordine orig
 Se il token salvato non è più leggibile (per esempio con una nuova `SMT_MASTER_KEY`) gli
 eventi restano in attesa finché non lo reinserisci; gli eventi non critici più vecchi di
 24 ore sono scartati, quelli critici partono comunque. Errori che dipendono dalla
-configurazione (token non valido, bot rimosso, gruppo non trovato) bloccano la coda e,
-dopo 10 tentativi, la testa passa a `failed` finché non si corregge e si preme *Riprova*;
-un errore specifico di un messaggio (es. 400) lo fa fallire da solo senza fermare gli altri.
-Se il gruppo diventa supergruppo l'ID viene aggiornato da solo. Con Telegram non
-configurato o disattivato planner e invio restano inattivi.
+configurazione (token non valido, bot rimosso o senza permessi, gruppo non trovato)
+bloccano la coda: dopo 10 tentativi la testa passa a `failed` e la coda resta ferma; se
+la configurazione non viene corretta anche i messaggi successivi falliscono, uno alla volta
+(circa 51 minuti ciascuno). Salvare un nuovo token o un nuovo gruppo, togliere la pausa o
+premere *Riprova tutti i falliti* sblocca subito la coda (senza attendere i 900 s); i
+messaggi già `failed` si rimandano con *Riprova* o *Riprova tutti i falliti*. Un errore
+specifico di un messaggio (es. 400) lo fa fallire da solo senza fermare gli altri. Se il
+gruppo diventa supergruppo l'ID viene aggiornato da solo. Con Telegram non configurato o
+disattivato gli eventi diretti sono scartati (vedi sopra), i messaggi già in coda
+aspettano e i riepiloghi non partono.
 
 ### Agenti e Paperclip
 

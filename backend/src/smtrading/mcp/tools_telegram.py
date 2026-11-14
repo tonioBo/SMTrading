@@ -82,9 +82,10 @@ def register(mcp: MCPServer) -> None:
         {outbox_id, status} (status "pending", or "paused" while notifications are paused;
         the worker delivers it). The text is sent verbatim, no formatting (no Markdown or
         HTML); control characters except newline and tab are removed. level: info (no
-        prefix), warning (🟠) or critical (🔴). At most 4096 characters prefix included,
-        at most 20 messages per 60 s (RATE_LIMITED, details.retry_after_s). Events SMTrading
-        already sent (already_sent in get_activity_feed) need no repeat."""
+        prefix), warning (🟠) or critical (🔴). At most 4096 UTF-16 units (an emoji counts
+        2) prefix included, at most 20 messages per 60 s (RATE_LIMITED,
+        details.retry_after_s). Events SMTrading sends itself (already_sent in
+        get_activity_feed) need no repeat."""
         params = audit_params({"text": text, "level": level})
         return await run_tool(
             "send_telegram", params, lambda ctx: _send_telegram(ctx, text, level)
