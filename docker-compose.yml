@@ -65,6 +65,7 @@ services:
       - "127.0.0.1:8000:8000"  # local only (spec); Paperclip uses the docker network
     volumes:
       - backups:/backups:ro  # listed by GET /api/system/backups
+      - ./agent-instructions:/agent-instructions  # AGENTS.md per agent, read by Paperclip (External mode)
 
   worker:
     <<: *app

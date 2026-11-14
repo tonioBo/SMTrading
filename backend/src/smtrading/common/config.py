@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     live_fake_broker: bool = False
     # «Istruzioni agenti» seed folder (docs/paperclip-agents); None = the checkout's
     agent_docs_dir: str | None = None
+    # where the agents' AGENTS.md files for Paperclip's External mode are written
+    agent_docs_export_dir: str = "/agent-instructions"
 
 
 @lru_cache

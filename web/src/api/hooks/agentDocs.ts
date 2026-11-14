@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
 import { newKey } from "@/api/hooks/portfolios";
 import type {
+  AgentDocExportResult,
+  AgentDocExportStatus,
   AgentDocDetail,
   AgentDocInput,
   AgentDocSummary,
@@ -59,5 +61,23 @@ export function useRestoreAgentDoc(slug: string) {
         idempotencyKey: newKey(),
       }),
     onSettled: () => void qc.invalidateQueries({ queryKey: agentDocsKey }),
+  });
+}
+
+export const exportStatusKey = [...agentDocsKey, "export-status"] as const;
+
+export function useAgentDocExportStatus() {
+  return useQuery({
+    queryKey: exportStatusKey,
+    queryFn: () => apiFetch<AgentDocExportStatus>("/api/agent-docs/export-status"),
+  });
+}
+
+export function useExportAgentDocs() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<AgentDocExportResult>("/api/agent-docs/export", { method: "POST", idempotencyKey: newKey() }),
+    onSettled: () => void qc.invalidateQueries({ queryKey: exportStatusKey }),
   });
 }

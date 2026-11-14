@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
 from smtrading.admin.common import _transaction
 from smtrading.admin.idempotency import Idempotency, idempotent
-from smtrading.agentdocs import service
+from smtrading.agentdocs import export, service
 from smtrading.agents.service import write_audit
 
 router = APIRouter(prefix="/api/agent-docs", tags=["agent-docs"],
@@ -40,6 +40,16 @@ def _conflict(exc: service.VersionConflict) -> JSONResponse:
 @router.get("")
 async def list_agent_docs(session: DbSession) -> list[dict[str, Any]]:
     return await service.list_docs(session)
+
+
+@router.get("/export-status")
+async def agent_docs_export_status(session: DbSession) -> dict[str, Any]:
+    return await export.export_status(session)
+
+
+@router.post("/export")
+async def agent_docs_export(session: DbSession) -> dict[str, Any]:
+    return await export.export_all(session)
 
 
 @router.get("/{slug}")
@@ -75,6 +85,8 @@ async def save_agent_doc(
                             "note": service.clean_note(body.note), "by": admin.email},
                     outcome="ok", latency_ms=0,
                 )
+        if changed:
+            await export.export_all(session)  # after the commit: a rollback never exports
         return {"doc": doc, "changed": changed}
 
     try:
@@ -97,6 +109,7 @@ async def restore_agent_doc(
                         "restored_from": version, "by": admin.email},
                 outcome="ok", latency_ms=0,
             )
+        await export.export_all(session)
         return {"doc": doc}
 
     return await idem.run(run)

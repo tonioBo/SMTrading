@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useAgentDoc, useAgentDocs } from "@/api/hooks/agentDocs";
+import { useAgentDoc, useAgentDocExportStatus, useAgentDocs, useExportAgentDocs } from "@/api/hooks/agentDocs";
 import type { AgentDocSummary } from "@/api/types";
 import { AgentDocEditor } from "@/components/AgentDocEditor";
 import { AgentDocVersions } from "@/components/AgentDocVersions";
@@ -77,6 +77,61 @@ function Roster({
         </div>
       ))}
     </nav>
+  );
+}
+
+const timeHM = (iso: string) =>
+  new Date(iso).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
+
+function ExportStatus() {
+  const status = useAgentDocExportStatus();
+  const run = useExportAgentDocs();
+  const s = status.data;
+  let text = "Esportazione per Paperclip: in attesa del primo aggiornamento";
+  let bad = false;
+  if (s?.ok === false) {
+    text = `Esportazione per Paperclip non riuscita: ${s.error ?? "errore sconosciuto"}`;
+    bad = true;
+  } else if (s?.ok && s.last_export_at) {
+    text = `Esportazione per Paperclip: aggiornata alle ${timeHM(s.last_export_at)}`;
+  }
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-3 text-sm">
+      <p role="status" className={cn("text-xs", bad ? "text-loss" : "text-muted")}>
+        {text}
+      </p>
+      <Button size="sm" variant="outline" disabled={run.isPending} onClick={() => run.mutate()}>
+        Esporta ora
+      </Button>
+    </div>
+  );
+}
+
+function PaperclipSettings({ slug, copy }: { slug: string; copy: (text: string, what: string) => void }) {
+  const status = useAgentDocExportStatus();
+  const root = status.data?.agents.find((a) => a.slug === slug)?.path ?? `/smtrading-instructions/${slug}`;
+  const entry = status.data?.entry_file ?? "AGENTS.md";
+  const rows = [
+    { label: "Root path", value: root },
+    { label: "Entry file", value: entry },
+  ];
+  return (
+    <div className="mx-4 mt-3 rounded-md border border-border bg-card p-3 text-xs">
+      <p className="mb-2 font-medium">Impostazioni «External» in Paperclip</p>
+      <dl className="grid gap-1.5">
+        {rows.map((r) => (
+          <div key={r.label} className="flex flex-wrap items-center gap-2">
+            <dt className="w-20 text-muted">{r.label}</dt>
+            <dd>
+              <code className="font-mono">{r.value}</code>
+            </dd>
+            <Button size="sm" variant="outline" aria-label={`Copia ${r.label}`} onClick={() => copy(r.value, r.label)}>
+              Copia
+            </Button>
+          </div>
+        ))}
+      </dl>
+    </div>
   );
 }
 
@@ -160,6 +215,7 @@ function DocPane({ slug, title }: { slug: string; title: string }) {
           Paperclip.
         </p>
       )}
+      {!setup && !editing && <PaperclipSettings slug={slug} copy={(t, w) => void copy(t, w)} />}
       <p role="status" aria-live="polite" className="min-h-[1.25rem] px-4 pt-2 text-xs text-accent">
         {status}
       </p>
@@ -211,6 +267,7 @@ export default function AgentDocs() {
         I 9 agenti Paperclip: le regole comuni vanno incollate in testa alle istruzioni di ogni agente.
       </p>
       {isError && <p className="text-sm text-loss">Impossibile caricare le istruzioni.</p>}
+      <ExportStatus />
       {selected && (
         <div className="grid items-start gap-5 lg:grid-cols-[17rem_minmax(0,1fr)]">
           <Roster

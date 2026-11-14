@@ -35,6 +35,8 @@ let docs: Record<string, AgentDocDetail>;
 let puts: AgentDocInput[];
 let restores: string[];
 let conflictNext: boolean;
+let exports: number;
+let exportStatus: Record<string, unknown>;
 
 function reset() {
   docs = Object.fromEntries(
@@ -53,6 +55,17 @@ function reset() {
   puts = [];
   restores = [];
   conflictNext = false;
+  exports = 0;
+  exportStatus = {
+    last_export_at: "2026-11-14T08:05:00Z",
+    ok: true,
+    error: null,
+    dir: "/agent-instructions",
+    entry_file: "AGENTS.md",
+    agents: Object.keys(TITLES)
+      .filter((s) => s !== "readme" && s !== "common")
+      .map((slug) => ({ slug, path: `/smtrading-instructions/${slug}` })),
+  };
 }
 reset();
 
@@ -83,6 +96,11 @@ const server = setupServer(
         })),
     ),
   ),
+  http.get("*/api/agent-docs/export-status", () => HttpResponse.json(exportStatus)),
+  http.post("*/api/agent-docs/export", () => {
+    exports += 1;
+    return HttpResponse.json({ exported: 9, dir: "/agent-instructions", ok: true });
+  }),
   http.get("*/api/agent-docs/:slug", ({ params }) => HttpResponse.json(docs[params.slug as string])),
   http.get("*/api/agent-docs/:slug/versions", ({ params }) => HttpResponse.json(versions(params.slug as string))),
   http.get("*/api/agent-docs/:slug/versions/:v", ({ params }) =>
@@ -264,3 +282,24 @@ describe("AgentDocs page", () => {
     expect(await screen.findByText(/Versione 3/)).toBeInTheDocument();
   });
 });
+
+describe("export for Paperclip", () => {
+  it("shows the status line, runs «Esporta ora» and shows the External settings with copy", async () => {
+    stubClipboard(async () => {});
+    renderApp("/istruzioni-agenti?doc=risk-manager");
+    expect(await screen.findByText(/Esportazione per Paperclip: aggiornata alle \d{2}:\d{2}/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Esporta ora" }));
+    await waitFor(() => expect(exports).toBe(1));
+    expect(await screen.findByText("/smtrading-instructions/risk-manager")).toBeInTheDocument();
+    expect(screen.getByText("AGENTS.md")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Copia Root path" }));
+    expect(await screen.findByText("Root path copiato negli appunti")).toBeInTheDocument();
+  });
+
+  it("shows the error in Italian when the export failed", async () => {
+    exportStatus = { ...exportStatus, ok: false, error: "Esportazione non riuscita: la cartella non esiste" };
+    renderApp("/istruzioni-agenti?doc=ceo");
+    expect(await screen.findByText(/non riuscita: Esportazione non riuscita: la cartella non esiste/)).toBeInTheDocument();
+  });
+});
+

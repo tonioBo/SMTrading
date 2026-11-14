@@ -791,3 +791,19 @@ export interface AgentDocInput {
   note?: string | null;
   base_version: number;
 }
+
+export interface AgentDocExportStatus {
+  last_export_at: string | null;
+  ok: boolean | null;
+  error: string | null;
+  dir: string;
+  entry_file: string;
+  agents: { slug: string; path: string }[];
+}
+
+export interface AgentDocExportResult {
+  exported: number;
+  dir: string;
+  ok: boolean;
+  error?: string;
+}

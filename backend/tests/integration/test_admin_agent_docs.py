@@ -257,3 +257,111 @@ async def test_mutating_routes_require_csrf(admin, method, path, body):
         r = await no_csrf.request(method, path, json=body)
     assert r.status_code == 403, r.text
     assert (await admin.client.get("/api/agent-docs/ceo")).json()["current_version"] == 1
+
+
+# --- export for Paperclip (External instructions mode) ------------------------------------
+
+AGENTS = sorted(SLUGS - {"readme", "common"})
+
+
+@pytest.fixture
+def export_dir(tmp_path, monkeypatch):
+    from smtrading.agentdocs import export
+
+    d = tmp_path / "agent-instructions"
+    d.mkdir()
+    monkeypatch.setenv("SMT_AGENT_DOCS_EXPORT_DIR", str(d))
+    export.reset_state()
+    return d
+
+
+def _composed(common: str, role: str) -> str:
+    return common.strip() + "\n\n---\n\n" + role.strip() + "\n"
+
+
+async def test_startup_exports_the_copy_composition(export_dir, admin):
+    common = (DOCS_DIR / "00-regole-comuni.md").read_text("utf-8")
+    assert sorted(p.name for p in export_dir.iterdir()) == sorted(AGENTS + ["README.txt"])
+    ceo = (DOCS_DIR / "01-ceo.md").read_text("utf-8")
+    assert (export_dir / "ceo" / "AGENTS.md").read_text("utf-8") == _composed(common, ceo)
+    assert "Non modificarli" in (export_dir / "README.txt").read_text("utf-8")
+    assert oct((export_dir / "ceo").stat().st_mode & 0o777) == "0o755"
+    assert oct((export_dir / "ceo" / "AGENTS.md").stat().st_mode & 0o777) == "0o644"
+
+
+async def test_export_is_idempotent_and_atomic(export_dir, admin):
+    f = export_dir / "ceo" / "AGENTS.md"
+    before = f.stat().st_mtime_ns
+    ino = f.stat().st_ino
+    r = await admin.client.post("/api/agent-docs/export")
+    assert r.status_code == 200
+    assert r.json() == {"exported": 9, "dir": str(export_dir), "ok": True}
+    assert f.stat().st_mtime_ns == before and f.stat().st_ino == ino  # unchanged: not rewritten
+    assert not [p for d in export_dir.iterdir() if d.is_dir() for p in d.glob(".tmp-*")]
+    await admin.client.put("/api/agent-docs/ceo", json={"body": "# CEO\nnuovo", "base_version": 1})
+    assert f.stat().st_ino != ino  # replaced via temp file + os.replace
+    assert not list((export_dir / "ceo").glob(".tmp-*"))
+
+
+async def test_save_and_restore_re_export(export_dir, admin):
+    c = admin.client
+    common = (DOCS_DIR / "00-regole-comuni.md").read_text("utf-8")
+    await c.put("/api/agent-docs/ceo", json={"body": "# CEO\nnuovo", "base_version": 1})
+    assert (export_dir / "ceo" / "AGENTS.md").read_text("utf-8") == _composed(common, "# CEO\nnuovo")
+    await c.post("/api/agent-docs/ceo/restore/1")
+    ceo = (DOCS_DIR / "01-ceo.md").read_text("utf-8")
+    assert (export_dir / "ceo" / "AGENTS.md").read_text("utf-8") == _composed(common, ceo)
+
+
+async def test_common_change_re_exports_all_agents(export_dir, admin):
+    r = await admin.client.put("/api/agent-docs/common",
+                               json={"body": "# Regole\nNUOVE", "base_version": 1})
+    assert r.status_code == 200
+    for slug in AGENTS:
+        assert (export_dir / slug / "AGENTS.md").read_text("utf-8").startswith("# Regole\nNUOVE\n\n---\n\n")
+
+
+async def test_failed_save_does_not_export(export_dir, admin):
+    f = export_dir / "ceo" / "AGENTS.md"
+    before = f.read_text("utf-8")
+    c = admin.client
+    assert (await c.put("/api/agent-docs/ceo", json={"body": "  ", "base_version": 1})).status_code == 400
+    assert (await c.put("/api/agent-docs/ceo", json={"body": "x", "base_version": 7})).status_code == 409
+    assert f.read_text("utf-8") == before
+    f.write_text("manomesso", "utf-8")  # a no-op save (same text) neither exports
+    body = (await c.get("/api/agent-docs/ceo")).json()["body"]
+    await c.put("/api/agent-docs/ceo", json={"body": body, "base_version": 1})
+    assert f.read_text("utf-8") == "manomesso"
+
+
+@pytest.fixture
+def missing_export_dir(tmp_path, monkeypatch):
+    from smtrading.agentdocs import export
+
+    monkeypatch.setenv("SMT_AGENT_DOCS_EXPORT_DIR", str(tmp_path / "missing"))
+    export.reset_state()
+
+
+async def test_unwritable_dir_reports_error_but_save_succeeds(missing_export_dir, admin):
+    c = admin.client
+    r = await c.put("/api/agent-docs/ceo", json={"body": "# CEO\nnuovo", "base_version": 1})
+    assert r.status_code == 200 and r.json()["doc"]["current_version"] == 2
+    st = (await c.get("/api/agent-docs/export-status")).json()
+    assert st["ok"] is False and "Esportazione non riuscita" in st["error"]
+    r = await c.post("/api/agent-docs/export")
+    assert r.json()["ok"] is False and r.json()["exported"] == 0 and r.json()["error"]
+
+
+async def test_export_status_and_endpoint_auth(export_dir, admin):
+    c = admin.client
+    st = (await c.get("/api/agent-docs/export-status")).json()
+    assert st["ok"] is True and st["error"] is None and st["last_export_at"]
+    assert st["entry_file"] == "AGENTS.md"
+    assert st["agents"][0] == {"slug": "ceo", "path": "/smtrading-instructions/ceo"}
+    assert len(st["agents"]) == 9
+    async with httpx.AsyncClient(transport=c._transport, base_url="http://test",
+                                 cookies=c.cookies) as no_csrf:
+        assert (await no_csrf.post("/api/agent-docs/export")).status_code == 403
+    async with httpx.AsyncClient(transport=c._transport, base_url="http://test") as anon:
+        assert (await anon.post("/api/agent-docs/export", json={})).status_code == 401
+        assert (await anon.get("/api/agent-docs/export-status")).status_code == 401

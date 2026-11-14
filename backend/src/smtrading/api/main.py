@@ -13,6 +13,7 @@ from starlette.routing import Route
 import smtrading.models  # noqa: F401  (complete mapper registry before any session)
 from smtrading.admin.errors import install_error_handlers
 from smtrading.admin.routes_agent_docs import router as agent_docs_router
+from smtrading.agentdocs import export as agent_docs_export
 from smtrading.admin.routes_agents import router as agents_router
 from smtrading.admin.routes_auth import router as auth_router
 from smtrading.admin.routes_brokers import router as brokers_router
@@ -114,6 +115,15 @@ async def _register_live_secrets(sessionmaker) -> None:
 
 
 def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
+async def _export_agent_docs(sessionmaker) -> None:
+    """Startup export of the «Istruzioni agenti» for Paperclip (never fails the boot)."""
+    try:
+        async with sessionmaker() as session:
+            await agent_docs_export.export_all(session)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).warning("agent docs export at startup failed", exc_info=True)
+
+
     """`runtime_factory(sessionmaker, redis)` overrides the MCP runtime (tests inject a
     FakeQuoteSource); by default the MarketDataRouter is the MCP quote source."""
     # uvicorn has configured its own loggers (they keep their handlers, access log
@@ -130,6 +140,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
         sessionmaker = async_sessionmaker(resources.engine, expire_on_commit=False)
         await _register_live_secrets(sessionmaker)
         try:
+        await _export_agent_docs(sessionmaker)
             async with httpx.AsyncClient() as http:
                 if runtime_factory is not None:
                     runtime = runtime_factory(sessionmaker, resources.redis)
