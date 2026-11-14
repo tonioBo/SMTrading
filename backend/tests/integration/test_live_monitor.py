@@ -542,7 +542,7 @@ async def test_unexplained_for_over_30_min_alerts_once(maker, qs, fake):
 async def test_missing_fx_rate_skips_cash_then_alerts_after_30_min(maker, fake):
     """Minor: no EUR rate for a EUR portfolio on a USD account: the cash is skipped, and
     an alert follows after 30 minutes of it."""
-    pid, link_id = await _live(maker, cash="100", ccy="EUR")
+    _, link_id = await _live(maker, cash="100", ccy="EUR")
     row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=FakeQuoteSource())
     assert row.ok and row.diffs[0]["cash"] == {"skipped": "cambio non disponibile"}
     async with maker() as s:
@@ -630,7 +630,7 @@ async def test_internal_failures_alert_after_three(maker, qs, fake, monkeypatch)
     turn (`_last`), and the third one in a row sends a critical alert."""
     from smtrading.brokers.live import monitor as monitor_module
 
-    _, link_id = await _live(maker)
+    await _live(maker)
     calls = []
 
     async def broken(*a, **kw):

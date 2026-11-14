@@ -859,13 +859,13 @@ async def test_alpaca_margin_account_fails_the_test_and_cannot_be_armed(sm, redi
                   "account_type")
 
 
-async def _held_position(sm, pid, link_id, qty=D(2)) -> None:
+async def _held_position(sm, pid, link_id, qty="2") -> None:
     async with sm() as s:  # a position filled while unlinked
         await s.execute(update(Portfolio).where(Portfolio.id == pid)
                         .values(broker_link_id=None))
         await place_order(s, _qs(), PlaceOrderRequest(
             portfolio_id=pid, symbol="AAPL", side=OrderSide.buy, type=OrderType.market,
-            qty=qty), now=OPEN)
+            qty=D(qty)), now=OPEN)
         await s.execute(update(Portfolio).where(Portfolio.id == pid)
                         .values(broker_link_id=link_id))
         await s.commit()
@@ -882,7 +882,7 @@ async def _flatten(sm, redis, pid, admin, code):
 
 async def test_flatten_refused_on_a_link_not_armed(sm, redis, fake):
     """M2: nothing could be sent: the admin closes from the broker's app."""
-    link_id, pid, admin, totp = await _armed_with_portfolio(sm, redis, fake)
+    link_id, pid, admin, _ = await _armed_with_portfolio(sm, redis, fake)
     await _held_position(sm, pid, link_id)
     async with sm() as s:
         await disarm_live_link(s, link_id, actor=WHO, reason="prova")

@@ -268,11 +268,11 @@ async def test_fuse_rejection_is_stored_with_the_trip(maker, qs):
 
 # -- fix round T5-T7: aggregate checks, one estimate ------------------------------------
 
-async def _open_order(maker, pid, link_id, *, side=OrderSide.buy, qty=D(8), price=D(100),
+async def _open_order(maker, pid, link_id, *, side=OrderSide.buy, qty="8", price="100",
                       status=OrderStatus.pending, oco=None, reduce_only=False):
     async with maker() as s:
         o = Order(portfolio_id=pid, symbol="AAPL", side=side, type=OrderType.limit,
-                  qty=qty, limit_price=price, status=status, broker_link_id=link_id,
+                  qty=D(qty), limit_price=D(price), status=status, broker_link_id=link_id,
                   broker_status="to_send", oco_group_id=oco, reduce_only=reduce_only)
         s.add(o)
         await s.commit()
@@ -297,7 +297,7 @@ async def test_no_short_counts_other_open_sells(maker, qs):
     """I1: position 5; an open sell of 3: a new sell of 3 would sell 6 -> refused; an
     OCO pair counts once (its largest leg); a reduce-only order is clamped (not checked)."""
     pid, link_id = await _portfolio(maker, qs, held=5)
-    await _open_order(maker, pid, link_id, side=OrderSide.sell, qty=D(3))
+    await _open_order(maker, pid, link_id, side=OrderSide.sell, qty="3")
     await _check(maker, qs, pid, side=OrderSide.sell, qty=D(2))
     with pytest.raises(SMTError) as e:
         await _check(maker, qs, pid, side=OrderSide.sell, qty=D(3))
