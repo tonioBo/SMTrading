@@ -475,6 +475,8 @@ async def execute_fill(
     fill_price: Decimal | None = None,
     source: Literal["sim", "broker"] = "sim",
     final: bool = False,
+    fee_override: Decimal | None = None,
+    fee_override_ccy: str | None = None,
 ) -> FillResult | None:
     """Fill `order_id` at `quote`; None if the order is no longer fillable (or a
     reduce_only order had nothing to reduce: canceled for a simulated fill, progress
@@ -487,6 +489,10 @@ async def execute_fill(
     Ruling R12: a purely reducing fill (close/cover) is never blocked for lack of cash. It
     may take a margin loan even at leverage 1, but only after converting from the base
     currency and then from any other cash currency (FX journal with the usual fx fee).
+
+    `fee_override` (a broker fill whose fee the broker reported, plan 8) replaces the fee
+    the rules compute; it is in `fee_override_ccy` (default: the rule's currency). The
+    Fill keeps no fee rule then.
 
     `qs` is wrapped in a MemoQuoteSource (shared if it already is one) and frozen before
     the first journal. `redis`, when given, lets the post-fill valuation fall back to
@@ -562,6 +568,10 @@ async def execute_fill(
         notional = quantize_money(qty * price, ccy)
         fee = compute_trade_fee(rule, notional * to_rule_ccy)
     fee_ccy = rule.currency
+    fee_rule_id = rule.id
+    if fee_override is not None:  # the broker's actual fee
+        fee_ccy, fee_rule_id = (fee_override_ccy or rule.currency).upper(), None
+        fee = quantize_money(max(fee_override, Decimal(0)), fee_ccy)
 
     split = _split_fill(held, buy, qty, price, notional, ccy)
     after, close_notional, open_notional = split.after, split.close_notional, split.open_notional
@@ -708,7 +718,7 @@ async def execute_fill(
         qty=qty, price=price,
         quote_bid=quote.bid if quote else None, quote_ask=quote.ask if quote else None,
         quote_last=quote.last if quote else None, quote_ts=quote.ts if quote else None,
-        source=source, fee_amount=charge, fee_currency=charge_ccy, fee_rule_id=rule.id,
+        source=source, fee_amount=charge, fee_currency=charge_ccy, fee_rule_id=fee_rule_id,
         journal_id=trade.id,
     )
     session.add(fill)

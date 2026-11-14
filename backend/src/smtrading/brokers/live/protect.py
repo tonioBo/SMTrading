@@ -19,9 +19,10 @@ from smtrading.activity.mapping import ActivityDraft
 from smtrading.activity.models import Activity, ActivityLevel
 from smtrading.activity.service import record_activity
 from smtrading.brokers.base import BrokerOrder
-from smtrading.brokers.live.audit import record_live_audit
+from smtrading.brokers.live.audit import _redact, record_live_audit
 from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import Order
+from smtrading.events import json_safe
 from smtrading.instruments.models import Instrument
 from smtrading.portfolios.locks import lock_portfolio
 from smtrading.portfolios.models import PortfolioStatus
@@ -193,9 +194,10 @@ async def live_alert(session: AsyncSession, *, kind: str, summary: str,
 
 async def record_live_order_activity(
     session: AsyncSession, order: Order, phase: Phase, *, bo: BrokerOrder | None = None,
-    message: str | None = None,
+    message: str | None = None, payload: dict | None = None,
 ) -> None:
-    """The `live.order.<phase>` activity of a real order (one Telegram message each)."""
+    """The `live.order.<phase>` activity of a real order (one Telegram message each).
+    `payload`: the order request body (a dry run), secret-named keys masked."""
     currency = await session.scalar(
         select(Instrument.currency).where(Instrument.symbol == order.symbol))
     filled = bo.filled_qty if bo is not None else order.filled_qty
@@ -212,6 +214,8 @@ async def record_live_order_activity(
         "fees": bo.fees if bo is not None else None, "message": message,
         "live_flatten": order.live_flatten,
     }
+    if payload is not None:
+        data["payload"] = _redact(json_safe(payload))
     if phase == "partial":
         data["fill_id"] = str(filled)  # each partial fill is its own fact
     record_activity(

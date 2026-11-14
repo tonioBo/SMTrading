@@ -15,6 +15,10 @@ uses unrounded values (valuation *_raw fields, Ruling R8).
   checked first.
 - With `redis`, the valuation may mark symbols with cached quotes (Ruling R23); only a
   strictly reducing order is accepted on such a stale valuation.
+- A real-money portfolio (linked to a live kind) also runs `risk.live_checks.live_pre_trade`
+  (link armed, strict kill switch, no short, cash cap, fuse) once the estimates are known
+  and before the risk limits (order notional, position weight, buying power). With
+  `live_effects=False` (a preview, a modify) the fuse never trips the portfolio.
 """
 
 from dataclasses import dataclass
@@ -37,6 +41,7 @@ from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.models import ARCHIVED_MESSAGE, Portfolio, PortfolioStatus
 from smtrading.risk.halts import covering_halt, halt_message
+from smtrading.risk.live_checks import live_link_of, live_pre_trade, to_currency
 from smtrading.risk.models import RiskProfile, TradingHalt
 from smtrading.risk.profiles import effective_risk_profile
 from smtrading.risk.settings import get_default_spread_bps, get_stale_threshold, is_kill_switch_on
@@ -162,7 +167,8 @@ async def _run(
     session: AsyncSession, qs: QuoteSource, *, portfolio: Portfolio, instrument: Instrument,
     side: OrderSide, qty: Decimal | None, notional: Decimal | None, order_type: OrderType,
     limit_price: Decimal | None, stop_price: Decimal | None, check_quote_age: bool,
-    reduce_only: bool, redis,
+    reduce_only: bool, redis, live_flatten: bool = False, now: datetime | None = None,
+    live_effects: bool = True, exclude_order=None,
 ) -> CheckResult:
     # 1-3: switches and whitelist; Ruling R25: with the kill switch on, only orders that
     # strictly reduce the position pass (settled below, once the quantity is known)
@@ -223,6 +229,8 @@ async def _run(
         if not instrument.shortable:
             raise _Reject(ErrorCode.SHORT_NOT_ALLOWED, f"{instrument.symbol} is not shortable")
 
+    live_link = await live_link_of(session, portfolio)
+
     # 8a: order notional limit, before the fee and fx lookups
     to_eur = await qs.get_fx_rate(ccy, EUR)
     with localcontext() as ctx:
@@ -267,6 +275,17 @@ async def _run(
         if increases:
             bp_after -= notional_eur
 
+    if live_link is not None:  # real money: before the position and buying power limits
+        est_fees = await to_currency(qs, fee, rule.currency, base) + await to_currency(
+            qs, fx_fee_eur, EUR, base)
+        await live_pre_trade(
+            session, qs, portfolio=portfolio, link=live_link, instrument=instrument,
+            side=side, qty=qty, notional=notional,
+            est_value=await to_currency(qs, order_notional, ccy, base), est_fees=est_fees,
+            reduce_only=reduce_only, live_flatten=live_flatten,
+            now=now or datetime.now(UTC), trip=live_effects, exclude_order=exclude_order,
+        )
+
     # 8b: position limit
     if increases and profile is not None and profile.max_position_pct is not None:
         mark = mark_price(quote) if quote is not None else price
@@ -306,13 +325,18 @@ async def pre_trade_check(
     check_quote_age: bool = True,
     reduce_only: bool = False,
     redis=None,
+    live_flatten: bool = False,
+    now: datetime | None = None,
+    live_effects: bool = True,
+    exclude_order=None,
 ) -> CheckResult:
     try:
         return await _run(
             session, qs, portfolio=portfolio, instrument=instrument, side=side, qty=qty,
             notional=notional, order_type=order_type, limit_price=limit_price,
             stop_price=stop_price, check_quote_age=check_quote_age,
-            reduce_only=reduce_only, redis=redis,
+            reduce_only=reduce_only, redis=redis, live_flatten=live_flatten, now=now,
+            live_effects=live_effects, exclude_order=exclude_order,
         )
     except _Reject as r:
         return CheckResult(ok=False, code=r.code, message=r.message)
