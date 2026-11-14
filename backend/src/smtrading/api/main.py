@@ -12,6 +12,7 @@ from starlette.routing import Route
 
 import smtrading.models  # noqa: F401  (complete mapper registry before any session)
 from smtrading.admin.errors import install_error_handlers
+from smtrading.admin.routes_agent_docs import router as agent_docs_router
 from smtrading.admin.routes_agents import router as agents_router
 from smtrading.admin.routes_auth import router as auth_router
 from smtrading.admin.routes_brokers import router as brokers_router
@@ -143,6 +144,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(auth_router)
     app.include_router(portfolios_router)
     app.include_router(agents_router)
+    app.include_router(agent_docs_router)
     app.include_router(fees_router)
     app.include_router(risk_router)
     app.include_router(halts_router)

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from decimal import Decimal
+from pathlib import Path
 
 from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import smtrading.models  # noqa: F401  (complete mapper registry: portfolios -> broker_links FK)
 from smtrading.admin.auth import MIN_PASSWORD_LEN, hash_password, normalize_email
 from smtrading.admin.models import AdminUser
+from smtrading.agentdocs.service import DEFAULT_DOCS_DIR, seed_agent_docs
 from smtrading.agents.models import Agent
 from smtrading.agents.service import assign_portfolio, create_agent
 from smtrading.common.config import get_settings
@@ -47,11 +49,15 @@ _APP_SETTINGS = {
 }
 _SYSTEM_STATE = {"kill_switch": {"on": False}}
 
-async def run_seed(session: AsyncSession, *, admin: tuple[str, str] | None = None) -> str | None:
+async def run_seed(
+    session: AsyncSession, *, admin: tuple[str, str] | None = None,
+    agent_docs_dir: Path | None = None,
+) -> str | None:
     """Idempotent seed. Does not commit. Existing rows (and admin edits) are left untouched.
 
     `admin` = (email, password) of the web-app admin, created only if missing (the CLI
-    entry point passes SMT_ADMIN_EMAIL / SMT_ADMIN_PASSWORD).
+    entry point passes SMT_ADMIN_EMAIL / SMT_ADMIN_PASSWORD). `agent_docs_dir` = the
+    «Istruzioni agenti» texts (default: the checkout's docs/paperclip-agents).
 
     Returns the plaintext demo-agent token when it was created by this run (print it only
     after the caller commits), else None."""
@@ -86,6 +92,7 @@ async def run_seed(session: AsyncSession, *, admin: tuple[str, str] | None = Non
     await seed_connectors(session)
     await _seed_risk(session)
     token = await _seed_demo_agent(session)
+    await seed_agent_docs(session, agent_docs_dir or DEFAULT_DOCS_DIR)
     if admin is not None:
         await seed_admin(session, *admin)
     await session.flush()
@@ -230,14 +237,16 @@ async def _seed_risk(session: AsyncSession) -> None:
 async def _main() -> None:
     async with get_sessionmaker()() as session:
         settings = get_settings()
-        token = await run_seed(session, admin=(settings.admin_email, settings.admin_password))
+        docs_dir = Path(settings.agent_docs_dir) if settings.agent_docs_dir else None
+        token = await run_seed(session, admin=(settings.admin_email, settings.admin_password),
+                               agent_docs_dir=docs_dir)
         await session.commit()
     if token is not None:
         print(
             f"SMTrading: token agente {DEMO_AGENT_NAME} = {token} "
             "(salvalo: non verrà più mostrato)"
         )
-    log.info("seed complete: instrument catalog, default fee rule, Demo portfolio")
+    log.info("seed complete: instrument catalog, default fee rule, Demo portfolio, agent docs")
 
 
 def main() -> None:

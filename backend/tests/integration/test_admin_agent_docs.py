@@ -1,0 +1,259 @@
+"""«Istruzioni agenti»: the insert-only seed from docs/paperclip-agents and the admin API
+(/api/agent-docs): append-only versions, the base_version conflict, restore, audit, CSRF."""
+
+import asyncio
+import uuid
+from pathlib import Path
+
+import httpx
+import pytest
+from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import async_sessionmaker
+
+from smtrading.common.config import get_settings
+from smtrading.common.db import make_engine
+
+PASSWORD = "correct-horse-battery"
+DOCS_DIR = Path(__file__).resolve().parents[3] / "docs" / "paperclip-agents"
+SLUGS = {
+    "readme", "common", "ceo", "portfolio-manager", "risk-manager", "execution-supervisor",
+    "market-analyst", "news-analyst", "quant-researcher", "performance-auditor", "notifier",
+}
+
+
+# --- seed ---------------------------------------------------------------------------------
+
+async def _docs(session):
+    from smtrading.agentdocs.models import AgentDoc
+
+    return {d.slug: d for d in await session.scalars(select(AgentDoc))}
+
+
+async def _bodies(session, slug):
+    from smtrading.agentdocs.models import AgentDocVersion
+
+    return list(await session.scalars(
+        select(AgentDocVersion.body).where(AgentDocVersion.slug == slug)
+        .order_by(AgentDocVersion.version)))
+
+
+async def test_seed_loads_the_eleven_docs_at_version_1(db_session):
+    from smtrading.seed import run_seed
+
+    await run_seed(db_session)
+    docs = await _docs(db_session)
+    assert set(docs) == SLUGS
+    assert {d.current_version for d in docs.values()} == {1}
+    assert docs["readme"].title == "Guida all'installazione"
+    assert docs["common"].title == "Regole comuni"
+    assert docs["ceo"].title == "CEO SMTrading"
+    assert docs["notifier"].title == "Notifier"
+    assert await _bodies(db_session, "ceo") == [(DOCS_DIR / "01-ceo.md").read_text("utf-8")]
+
+
+async def test_seed_is_insert_only(db_session, tmp_path):
+    from smtrading.agentdocs import service
+    from smtrading.seed import run_seed
+
+    await run_seed(db_session)
+    await service.save_doc(db_session, "ceo", body="mio testo", note=None, base_version=1,
+                           author="admin@example.com")
+    (tmp_path / "01-ceo.md").write_text("# 01 · CEO\nnuovo dal file", "utf-8")
+    (tmp_path / "10-nuovo-ruolo.md").write_text("# 10 · Nuovo ruolo\ntesto", "utf-8")
+    (tmp_path / "appunti.txt").write_text("ignorato", "utf-8")
+    assert await service.seed_agent_docs(db_session, tmp_path) == 1
+    await run_seed(db_session)
+    docs = await _docs(db_session)
+    assert docs["ceo"].current_version == 2
+    assert await _bodies(db_session, "ceo") == [
+        (DOCS_DIR / "01-ceo.md").read_text("utf-8"), "mio testo"]
+    assert docs["nuovo-ruolo"].title == "Nuovo ruolo"
+    assert len(docs) == len(SLUGS) + 1
+
+
+async def test_seed_without_the_folder_is_a_no_op(db_session, tmp_path):
+    from smtrading.agentdocs import service
+
+    assert await service.seed_agent_docs(db_session, tmp_path / "missing") == 0
+    assert await _docs(db_session) == {}
+
+
+async def test_versions_are_append_only(db_session):
+    from smtrading.seed import run_seed
+
+    await run_seed(db_session)
+    with pytest.raises(DBAPIError, match="AGENT_DOC_VERSION_IMMUTABLE"):
+        async with db_session.begin_nested():
+            await db_session.execute(text("update agent_doc_versions set body = 'x'"))
+    with pytest.raises(DBAPIError, match="AGENT_DOC_VERSION_IMMUTABLE"):
+        async with db_session.begin_nested():
+            await db_session.execute(text("delete from agent_doc_versions"))
+
+
+# --- admin API ----------------------------------------------------------------------------
+
+@pytest.fixture
+async def admin(fresh_db, redis_url, monkeypatch):
+    from smtrading.admin.auth import hash_password
+    from smtrading.admin.models import AdminUser
+    from smtrading.api.main import create_app
+    from smtrading.engine.quotesource import FakeMarketData
+    from smtrading.mcp.runtime import McpRuntime
+    from smtrading.seed import run_seed
+
+    monkeypatch.setenv("SMT_DATABASE_URL", fresh_db)
+    monkeypatch.setenv("SMT_REDIS_URL", redis_url)
+    monkeypatch.setenv("SMT_MASTER_KEY", "test-master-key")
+    monkeypatch.setenv("SMT_ADMIN_EMAIL", "admin@example.com")
+    monkeypatch.setenv("SMT_ADMIN_PASSWORD", "test-password")
+    get_settings.cache_clear()
+
+    engine = make_engine(fresh_db)
+    sm = async_sessionmaker(engine, expire_on_commit=False)
+    email = f"admin-{uuid.uuid4().hex[:8]}@example.com"
+    async with sm() as s:
+        await run_seed(s)
+        s.add(AdminUser(email=email, password_hash=await hash_password(PASSWORD)))
+        await s.commit()
+
+    qs = FakeMarketData()
+    app = create_app(runtime_factory=lambda sm_, redis: McpRuntime(sm_, redis, qs, qs))
+    started, stop = asyncio.Event(), asyncio.Event()
+
+    async def run_lifespan():
+        async with app.router.lifespan_context(app):
+            started.set()
+            await stop.wait()
+
+    lifespan = asyncio.create_task(run_lifespan())
+    await asyncio.wait_for(started.wait(), 15)
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.post("/api/auth/login", json={"email": email, "password": PASSWORD})
+            assert r.status_code == 200
+            client.headers["X-CSRF-Token"] = client.cookies["smt_csrf"]
+
+            class NS:
+                pass
+
+            ns = NS()
+            ns.client, ns.sm, ns.email = client, sm, email
+            yield ns
+    finally:
+        stop.set()
+        await lifespan
+        await engine.dispose()
+
+
+async def _audits(admin, method):
+    from smtrading.agents.models import McpAuditLog
+
+    async with admin.sm() as s:
+        return list(await s.scalars(select(McpAuditLog.params)
+                                    .where(McpAuditLog.method == method)
+                                    .order_by(McpAuditLog.id)))
+
+
+async def test_list_and_get(admin):
+    c = admin.client
+    r = await c.get("/api/agent-docs")
+    assert r.status_code == 200
+    listed = {d["slug"]: d for d in r.json()}
+    assert set(listed) == SLUGS
+    assert listed["risk-manager"] == {
+        "slug": "risk-manager", "title": "Risk Manager", "current_version": 1,
+        "updated_at": listed["risk-manager"]["updated_at"], "updated_by": "seed",
+    }
+    doc = (await c.get("/api/agent-docs/common")).json()
+    assert doc["body"] == (DOCS_DIR / "00-regole-comuni.md").read_text("utf-8")
+    assert doc["current_version"] == 1 and doc["title"] == "Regole comuni"
+    assert (await c.get("/api/agent-docs/nessuno")).status_code == 404
+
+
+async def test_save_creates_a_version_and_audits(admin):
+    c = admin.client
+    r = await c.put("/api/agent-docs/ceo",
+                    json={"body": "# CEO\nnuovo", "note": "  più breve  ", "base_version": 1})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["changed"] is True
+    assert out["doc"]["current_version"] == 2 and out["doc"]["body"] == "# CEO\nnuovo"
+    assert out["doc"]["updated_by"] == admin.email
+
+    versions = (await c.get("/api/agent-docs/ceo/versions")).json()
+    assert [(v["version"], v["author"], v["note"]) for v in versions] == [
+        (2, admin.email, "più breve"), (1, "seed", None)]
+    assert versions[0]["size"] == len(b"# CEO\nnuovo")
+    v1 = (await c.get("/api/agent-docs/ceo/versions/1")).json()
+    assert v1["body"] == (DOCS_DIR / "01-ceo.md").read_text("utf-8")
+    assert (await c.get("/api/agent-docs/ceo/versions/9")).status_code == 404
+
+    # the same text again: no new version
+    r = await c.put("/api/agent-docs/ceo", json={"body": "# CEO\nnuovo", "base_version": 2})
+    assert r.json()["changed"] is False and r.json()["doc"]["current_version"] == 2
+    assert await _audits(admin, "admin:agent_doc.update") == [
+        {"slug": "ceo", "version": 2, "note": "più breve", "by": admin.email}]
+
+
+async def test_save_with_a_stale_base_version_is_a_conflict(admin):
+    c = admin.client
+    assert (await c.put("/api/agent-docs/notifier",
+                        json={"body": "primo", "base_version": 1})).status_code == 200
+    r = await c.put("/api/agent-docs/notifier", json={"body": "secondo", "base_version": 1})
+    assert r.status_code == 409
+    assert r.json()["message"] == "Il testo è stato modificato da qualcun altro, ricarica"
+    assert r.json()["details"] == {"current_version": 2}
+    assert (await c.get("/api/agent-docs/notifier")).json()["body"] == "primo"
+
+
+@pytest.mark.parametrize("body,field", [
+    ({"body": "   ", "base_version": 1}, "body"),
+    ({"body": "x" * (200 * 1024 + 1), "base_version": 1}, "body"),
+    ({"body": "x", "note": "n" * 201, "base_version": 1}, "note"),
+])
+async def test_invalid_saves(admin, body, field):
+    r = await admin.client.put("/api/agent-docs/ceo", json=body)
+    assert r.status_code == 400 and r.json()["details"]["field"] == field
+    assert (await admin.client.get("/api/agent-docs/ceo")).json()["current_version"] == 1
+
+
+async def test_restore_copies_an_old_version(admin):
+    c = admin.client
+    original = (await c.get("/api/agent-docs/ceo")).json()["body"]
+    await c.put("/api/agent-docs/ceo", json={"body": "rovinato", "base_version": 1})
+    r = await c.post("/api/agent-docs/ceo/restore/1")
+    assert r.status_code == 200, r.text
+    doc = r.json()["doc"]
+    assert doc["current_version"] == 3 and doc["body"] == original
+    versions = (await c.get("/api/agent-docs/ceo/versions")).json()
+    assert versions[0]["note"] == "Ripristino della versione 1"
+    # the current version, or one that does not exist
+    assert (await c.post("/api/agent-docs/ceo/restore/3")).status_code == 400
+    assert (await c.post("/api/agent-docs/ceo/restore/42")).status_code == 404
+    assert await _audits(admin, "admin:agent_doc.restore") == [
+        {"slug": "ceo", "version": 3, "restored_from": 1, "by": admin.email}]
+
+
+async def test_routes_require_login(admin):
+    async with httpx.AsyncClient(transport=admin.client._transport,
+                                 base_url="http://test") as anon:
+        for method, path in (("GET", "/api/agent-docs"), ("GET", "/api/agent-docs/ceo"),
+                             ("GET", "/api/agent-docs/ceo/versions"),
+                             ("GET", "/api/agent-docs/ceo/versions/1"),
+                             ("PUT", "/api/agent-docs/ceo"),
+                             ("POST", "/api/agent-docs/ceo/restore/1")):
+            assert (await anon.request(method, path, json={})).status_code == 401
+
+
+@pytest.mark.parametrize("method,path,body", [
+    ("PUT", "/api/agent-docs/ceo", {"body": "x", "base_version": 1}),
+    ("POST", "/api/agent-docs/ceo/restore/1", None),
+])
+async def test_mutating_routes_require_csrf(admin, method, path, body):
+    async with httpx.AsyncClient(transport=admin.client._transport, base_url="http://test",
+                                 cookies=admin.client.cookies) as no_csrf:
+        r = await no_csrf.request(method, path, json=body)
+    assert r.status_code == 403, r.text
+    assert (await admin.client.get("/api/agent-docs/ceo")).json()["current_version"] == 1

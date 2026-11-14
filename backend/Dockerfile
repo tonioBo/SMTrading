@@ -23,6 +23,9 @@ COPY src ./src
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY docker ./docker
+# «Istruzioni agenti» seed texts: the compose build context `agentdocs` = docs/paperclip-agents
+COPY --from=agentdocs . ./agent-docs
+ENV SMT_AGENT_DOCS_DIR=/app/agent-docs
 RUN uv sync --frozen --no-dev && chmod +x docker/entrypoint-api.sh \
     && useradd --system --uid 10001 --no-create-home smt \
     && mkdir -p /app/.cache && chown -R smt /app

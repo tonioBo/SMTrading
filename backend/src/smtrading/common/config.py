@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     admin_password: str
     # e2e only: live adapters talk to the in-memory FakeLiveBroker (the live gate stays on)
     live_fake_broker: bool = False
+    # «Istruzioni agenti» seed folder (docs/paperclip-agents); None = the checkout's
+    agent_docs_dir: str | None = None
 
 
 @lru_cache

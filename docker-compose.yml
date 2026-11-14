@@ -3,6 +3,8 @@ name: smtrading
 x-app: &app
   build:
     context: ./backend
+    additional_contexts:
+      agentdocs: ./docs/paperclip-agents  # «Istruzioni agenti» seed (COPY --from=agentdocs)
     args:
       SMT_BUILD_ID: ${SMT_BUILD_ID:-}
   image: smtrading-backend:local

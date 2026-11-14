@@ -2,6 +2,7 @@
 
 import smtrading.activity.models
 import smtrading.admin.models
+import smtrading.agentdocs.models
 import smtrading.agents.models
 import smtrading.backtest.models
 import smtrading.brokers.live.models
