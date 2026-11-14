@@ -2,6 +2,7 @@
 worker's OutboxSender."""
 
 import uuid
+from datetime import timedelta
 
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,8 @@ from smtrading.telegram.models import OutboxStatus, TelegramOutbox
 from smtrading.telegram.render import MAX_LEN, utf16_len
 
 AGENT_WINDOW_S = 60
+STALE_AFTER = timedelta(hours=24)  # R7.1: older non-critical news is not sent any more
+STALE_MESSAGE = "Non inviato: in pausa da più di 24 ore"
 
 
 async def enqueue(session: AsyncSession, *, source: str, category: str, level: str,
@@ -48,6 +51,16 @@ async def agent_sent_last_minute(session: AsyncSession, agent_id: uuid.UUID) -> 
 
 
 async def resume_paused(session: AsyncSession) -> int:
+    """The paused rows go back to pending, due now. The non-critical ones created more than
+    STALE_AFTER ago are `skipped` instead (the planner's rule for old news); critical rows
+    are always sent. Returns the rows resumed."""
+    await session.execute(
+        update(TelegramOutbox)
+        .where(TelegramOutbox.status == OutboxStatus.paused,
+               TelegramOutbox.level != "critical",
+               TelegramOutbox.created_at < func.now() - STALE_AFTER)
+        .values(status=OutboxStatus.skipped, last_error=STALE_MESSAGE)
+    )
     result = await session.execute(
         update(TelegramOutbox)
         .where(TelegramOutbox.status == OutboxStatus.paused)

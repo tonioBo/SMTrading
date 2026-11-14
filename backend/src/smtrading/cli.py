@@ -38,7 +38,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import smtrading.models  # noqa: F401  (complete mapper registry, e.g. broker_links FK)
-from smtrading.admin.routes_telegram import apply_config
 from smtrading.agents import service as agents
 from smtrading.agents.models import Agent, AgentPortfolio
 from smtrading.common.config import get_settings
@@ -59,6 +58,7 @@ from smtrading.events import discard_post_commit, dispatch_post_commit, json_saf
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.portfolios.models import Portfolio
 from smtrading.positions.service import get_positions
+from smtrading.telegram.settings import apply_config
 from smtrading.valuation.service import value_portfolio
 
 SOURCE = "admin"

@@ -343,6 +343,76 @@ async def test_pause_resume_moves_rows(admin):
     assert r.json()["outbox"] == {"pending": 2, "paused": 0, "failed": 1}
 
 
+async def _hold_state(admin):
+    """(hold_version, pending rows not due yet)."""
+    from sqlalchemy import func
+
+    from smtrading.telegram.config import load_hold_version
+    from smtrading.telegram.models import TelegramOutbox
+
+    async with admin.sm() as s:
+        version = await load_hold_version(s)
+        held = await s.scalar(select(func.count()).select_from(TelegramOutbox).where(
+            TelegramOutbox.status == "pending", TelegramOutbox.next_attempt_at > func.now()))
+    return version, held
+
+
+async def _hold_rows(admin, ids):
+    from sqlalchemy import text, update
+
+    from smtrading.telegram.models import TelegramOutbox
+
+    async with admin.sm() as s:
+        await s.execute(update(TelegramOutbox).where(TelegramOutbox.id.in_(ids))
+                        .values(next_attempt_at=text("now() + interval '15 minutes'")))
+        await s.commit()
+
+
+async def test_config_change_releases_sender_hold(admin):
+    with respx.mock(assert_all_called=False) as router:
+        await _configure(admin, router)
+    held = await _outbox(admin, "pending", 2)
+    await _hold_rows(admin, held)
+    version, n = await _hold_state(admin)
+    assert n == 2
+    with respx.mock(assert_all_called=False) as router:  # same values: no release
+        _mock_ok(router)
+        await admin.client.put("/api/telegram/config", json={"chat_id": CHAT})
+    assert await _hold_state(admin) == (version, 2)
+    with respx.mock(assert_all_called=False) as router:  # new token: released
+        _mock_ok(router, base=BASE2)
+        r = await admin.client.put("/api/telegram/config", json={"bot_token": TOKEN2})
+        assert r.status_code == 200, r.text
+    assert await _hold_state(admin) == (version + 1, 0)
+
+
+async def test_resume_releases_sender_hold(admin):
+    held = await _outbox(admin, "pending", 1)
+    await _hold_rows(admin, held)
+    await admin.client.put("/api/telegram/paused", json={"paused": True})
+    version, _ = await _hold_state(admin)
+    r = await admin.client.put("/api/telegram/paused", json={"paused": False})
+    assert r.status_code == 200
+    assert await _hold_state(admin) == (version + 1, 0)
+
+
+async def test_retry_all_failed(admin):
+    with respx.mock(assert_all_called=False) as router:
+        await _configure(admin, router)
+    failed = await _outbox(admin, "failed", 2)
+    [test_row] = await _outbox(admin, "failed", 1, category="test")
+    [sent] = await _outbox(admin, "sent", 1)
+    version, _ = await _hold_state(admin)
+    r = await admin.client.post("/api/telegram/outbox/retry-failed")
+    assert r.status_code == 200 and r.json() == {"retried": 2}
+    items = {i["id"]: i for i in (await admin.client.get("/api/telegram/outbox")).json()["items"]}
+    assert [items[i]["status"] for i in failed] == ["pending", "pending"]
+    assert items[test_row]["status"] == "failed" and items[sent]["status"] == "sent"
+    assert (await _hold_state(admin))[0] == version + 1
+    assert ("admin:telegram.retry_failed", {"by": admin.email, "retried": 2}) in \
+        await _audits(admin)
+
+
 async def test_outbox_list_and_retry(admin):
     from smtrading.agents import service as agents
 
@@ -451,6 +521,7 @@ async def test_routes_require_login(admin):
     ("POST", "/api/telegram/test", None),
     ("PUT", "/api/telegram/paused", {"paused": True}),
     ("POST", "/api/telegram/outbox/1/retry", None),
+    ("POST", "/api/telegram/outbox/retry-failed", None),
 ])
 async def test_mutating_routes_require_csrf(admin, method, path, body):
     async with httpx.AsyncClient(transport=admin.client._transport, base_url="http://test",
@@ -462,7 +533,7 @@ async def test_mutating_routes_require_csrf(admin, method, path, body):
 async def test_invalid_filter_messages_list_values(admin):
     r = await admin.client.get("/api/telegram/outbox?status=nope")
     assert r.status_code == 400
-    assert r.json()["message"].endswith("pending, sent, failed, paused")
+    assert r.json()["message"].endswith("pending, sent, failed, paused, skipped")
     r = await admin.client.get("/api/decisions?kind=loud")
     assert r.status_code == 400
     assert r.json()["message"].endswith(

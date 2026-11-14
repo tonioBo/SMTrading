@@ -19,7 +19,9 @@ Errors (`TelegramError.kind`):
   after MAX_ATTEMPTS, is `failed`; the following rows go on.
 
 A restarted sender recovers the hold from the head row: lowest-id pending row not due and
-whose last error was chat-wide.
+whose last error was chat-wide. A held sender polls the settings' `hold_version`: a new
+token or group, a resume or «Riprova tutti i falliti» (`telegram.settings.release_hold`)
+bumps it, and the hold is dropped at once instead of waiting up to 900 s.
 
 Supergroup migration (400 with `migrate_to_chat_id`): the configuration takes the new
 chat id (audited when it actually changes), and the message is sent again at once to the
@@ -46,9 +48,16 @@ from smtrading.telegram.client import (
     TelegramError,
     kind_of_message,
 )
-from smtrading.telegram.config import TelegramConfig, is_ready, load_config, save_config
+from smtrading.telegram.config import (
+    TelegramConfig,
+    is_ready,
+    load_config,
+    load_hold_version,
+    save_config,
+)
 from smtrading.telegram.models import OutboxStatus, TelegramOutbox
 from smtrading.telegram.quiet import is_quiet
+from smtrading.telegram.settings import lock_settings
 
 SEND_MIN_INTERVAL_S = 3
 MAX_ATTEMPTS = 10
@@ -82,6 +91,7 @@ class OutboxSender:
         self._hold_until: datetime | None = None  # chat-wide pause (429, outage, config)
         self._last_send: datetime | None = None
         self._recovered = False
+        self._hold_version: int | None = None  # settings' hold_version last seen
 
     async def run(self) -> None:
         """Sends while holding the advisory lock (single sender). The lock lives on a
@@ -133,7 +143,8 @@ class OutboxSender:
         """Sends (or attempts) at most one message; returns 1 when a row was handled."""
         if not self._recovered:
             await self._recover_hold()
-        if self._hold_until is not None and self._clock() < self._hold_until:
+        if (self._hold_until is not None and self._clock() < self._hold_until
+                and not await self._hold_released()):
             return 0
         if self._last_send is not None:
             wait = (self._last_send + timedelta(seconds=SEND_MIN_INTERVAL_S)
@@ -142,6 +153,7 @@ class OutboxSender:
                 await self._sleep(wait)
         async with self._sm() as session, session.begin():
             cfg = await load_config(session)
+            self._hold_version = cfg.hold_version
             if not is_ready(cfg) or cfg.paused:
                 return 0
             now = self._clock()
@@ -158,8 +170,20 @@ class OutboxSender:
             await self._send(session, cfg, row, now)
             return 1
 
+    async def _hold_released(self) -> bool:
+        """True (and the hold dropped) when the settings' hold_version changed since the
+        last tick: the configuration was fixed, the queue resumed or the failed retried."""
+        async with self._sm() as session:
+            version = await load_hold_version(session)
+        seen, self._hold_version = self._hold_version, version
+        if seen is None or version == seen:
+            return False
+        self._hold_until = None
+        return True
+
     async def _recover_hold(self) -> None:
         async with self._sm() as session:
+            self._hold_version = await load_hold_version(session)
             head = await session.scalar(
                 select(TelegramOutbox)
                 .where(TelegramOutbox.status == OutboxStatus.pending)
@@ -200,7 +224,9 @@ class OutboxSender:
         self._hold_until = None
 
     async def _migrate(self, session: AsyncSession, old: str, new: str) -> str:
-        """The group became a supergroup: the configuration takes the new chat id."""
+        """The group became a supergroup: the configuration takes the new chat id. The row
+        is locked first, so a pause or a config saved meanwhile is kept."""
+        await lock_settings(session)
         fresh = await load_config(session)
         if fresh.chat_id == old and old != new:
             fresh.chat_id = new

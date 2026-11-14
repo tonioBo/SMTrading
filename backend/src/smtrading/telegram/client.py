@@ -116,7 +116,7 @@ class TelegramClient:
             msg, kind = MSG_BAD_TOKEN, CHAT
         elif code == 400 and "chat not found" in low:
             msg, kind = MSG_CHAT_NOT_FOUND, CHAT
-        elif code == 400 and "not enough rights" in low:
+        elif code == 400 and ("not enough rights" in low or "no rights" in low):
             msg, kind = MSG_NO_RIGHTS, CHAT
         elif code == 403:
             msg, kind = MSG_NOT_MEMBER, CHAT

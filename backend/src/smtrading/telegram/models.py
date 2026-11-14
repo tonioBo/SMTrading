@@ -14,6 +14,7 @@ class OutboxStatus(enum.StrEnum):
     sent = "sent"
     failed = "failed"
     paused = "paused"
+    skipped = "skipped"  # paused for more than 24 h, non-critical: old news (never sent)
 
 
 class TelegramOutbox(Base):

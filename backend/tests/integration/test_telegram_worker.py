@@ -32,6 +32,7 @@ from smtrading.telegram.models import TelegramOutbox
 from smtrading.telegram.outbox import enqueue, resume_paused, retry_outbox
 from smtrading.telegram.planner import TelegramPlanner
 from smtrading.telegram.sender import MAX_ATTEMPTS, SEND_MIN_INTERVAL_S, OutboxSender
+from smtrading.telegram.settings import release_hold
 
 TOKEN = "123456789:AAHsecretSECRETsecret_SECRET-1234567"
 SEND_URL = f"{API_URL}/bot{TOKEN}/sendMessage"
@@ -592,6 +593,85 @@ async def test_unreadable_config_keeps_pending_until_token_reentered(maker, http
     assert _sent(route)[0]["text"].startswith("🟢 Ordine eseguito")
 
 
+@pytest.mark.parametrize("stored", [
+    {"token_enc": "AAAA", "chat_id": CHAT, "enabled": False},  # disabled
+    {"token_enc": "AAAA", "chat_id": None, "enabled": True},  # no group
+])
+async def test_unreadable_and_disabled_skips(maker, stored):
+    """Disabled (or no group) wins over unreadable: the rows are skipped, not kept for weeks
+    and sent when the token is entered again."""
+    await _fill(maker)
+    async with maker() as s:
+        s.add(AppSetting(key="telegram", value=stored))
+        await s.commit()
+    assert await TelegramPlanner(maker, clock=Clock(DAY), tz=TZ).tick() == 1
+    assert [a.telegram for a in await _activity(maker)] == ["skipped"]
+
+
+@respx.mock
+async def test_migration_keeps_concurrent_pause(maker, http, monkeypatch):
+    """The supergroup migration locks the settings row before reading it: a pause written
+    meanwhile (by an admin) is applied after it, never overwritten."""
+    await _configure(maker)
+    await _queue_texts(maker, "uno")
+    respx.post(SEND_URL).mock(side_effect=[
+        _err(400, "Bad Request: group chat was upgraded", migrate_to_chat_id=-100999),
+        _ok(3)])
+    real = sender_mod.load_config
+    calls, pauses = 0, []
+
+    async def pause() -> None:
+        async with maker() as other:
+            await other.execute(text(
+                "update app_settings set value = jsonb_set(value, '{paused}', 'true') "
+                "where key = 'telegram'"))
+            await other.commit()
+
+    async def load_then_pause(session):
+        nonlocal calls
+        calls += 1
+        cfg = await real(session)
+        if calls == 2:  # inside _migrate: an admin pauses Telegram right now
+            pauses.append(asyncio.create_task(pause()))
+            await asyncio.sleep(0.3)  # committed by now unless the row is locked
+        return cfg
+
+    monkeypatch.setattr(sender_mod, "load_config", load_then_pause)
+    sender, _ = _sender(maker, http, Clock(DAY))
+    assert await sender.tick() == 1
+    await asyncio.gather(*pauses)
+    async with maker() as s:
+        cfg = await real(s)
+    assert (cfg.chat_id, cfg.paused) == ("-100999", True)
+
+
+@respx.mock
+async def test_config_fix_releases_hold(maker, http):
+    """A chat-wide config error holds the queue up to 900 s; saving a new token or group
+    (settings version changes) releases the hold at once."""
+    await _configure(maker)
+    await _queue_texts(maker, "uno", "due")
+    route = respx.post(SEND_URL).mock(return_value=_err(403, "Forbidden: bot was kicked"))
+    clock = Clock(DAY)
+    sender, _ = _sender(maker, http, clock)
+    for _ in range(6):  # backoff now well above a minute
+        assert await sender.tick() == 1
+        first, _second = await _outbox(maker)
+        clock.t = first.next_attempt_at
+    assert await sender.tick() == 1
+    clock.advance(1)
+    assert await sender.tick() == 0  # held
+    route.return_value = _ok()
+    async with maker() as s:  # the admin fixes the group (same path as PUT /config)
+        await release_hold(s)
+        await s.commit()
+    assert await sender.tick() == 1
+    assert _sent(route)[-1]["text"] == "uno"
+    clock.advance(SEND_MIN_INTERVAL_S)
+    assert await sender.tick() == 1
+    assert [r.status for r in await _outbox(maker)] == ["sent", "sent"]
+
+
 async def test_stale_noncritical_skipped_critical_sent(maker):
     await _configure(maker)
     await _fill(maker)
@@ -678,6 +758,7 @@ async def test_single_sender_holds_advisory_lock(maker, http):
     (_err(403, "Forbidden: bot was kicked"), "chat"),
     (_err(400, "Bad Request: chat not found"), "chat"),
     (_err(400, "Bad Request: not enough rights to send text messages to the chat"), "chat"),
+    (_err(400, "Bad Request: have no rights to send a message"), "chat"),
     (_err(400, "Bad Request: can't parse entities"), "message"),
 ])
 async def test_error_kinds(http, response, kind):

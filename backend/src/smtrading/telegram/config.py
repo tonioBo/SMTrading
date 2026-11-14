@@ -34,13 +34,14 @@ class TelegramConfig:
     bot_username: str | None = None
     chat_title: str | None = None
     unreadable: bool = False  # a stored token could not be decrypted (e.g. new master key)
+    hold_version: int = 0  # bumped by settings.release_hold; the sender drops its hold
 
     def __repr__(self) -> str:  # the token never reaches a log through a repr
         token = MASK if self.bot_token else None
         return (f"TelegramConfig(bot_token={token!r}, chat_id={self.chat_id!r}, "
                 f"enabled={self.enabled!r}, paused={self.paused!r}, "
                 f"bot_username={self.bot_username!r}, chat_title={self.chat_title!r}, "
-                f"unreadable={self.unreadable!r})")
+                f"unreadable={self.unreadable!r}, hold_version={self.hold_version!r})")
 
 
 def _str_or_none(v: Any) -> str | None:
@@ -63,7 +64,21 @@ async def load_config(session: AsyncSession) -> TelegramConfig:
         paused=bool(raw.get("paused")),
         bot_username=_str_or_none(raw.get("bot_username")),
         chat_title=_str_or_none(raw.get("chat_title")),
+        hold_version=_int(raw.get("hold_version")),
     )
+
+
+def _int(v: Any) -> int:
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+async def load_hold_version(session: AsyncSession) -> int:
+    """Only `hold_version` (no decrypt): what the held sender polls."""
+    raw = await session.scalar(select(AppSetting.value).where(AppSetting.key == SETTINGS_KEY))
+    return _int(raw.get("hold_version")) if isinstance(raw, dict) else 0
 
 
 def _decrypt_token(token_enc: Any) -> str | None:
@@ -96,6 +111,7 @@ async def save_config(session: AsyncSession, cfg: TelegramConfig) -> None:
         "paused": cfg.paused,
         "bot_username": cfg.bot_username,
         "chat_title": cfg.chat_title,
+        "hold_version": cfg.hold_version,
     }
     stmt = insert(AppSetting).values(key=SETTINGS_KEY, value=value)
     await session.execute(stmt.on_conflict_do_update(index_elements=["key"], set_={"value": value}))

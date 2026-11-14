@@ -3,10 +3,9 @@ message, pause, outbox and the agents' decisions log.
 
 The bot token never reaches a response, an error, the audit or a log: Telegram failures
 arrive as `TelegramError` (Italian, already redacted) and become 400 `INVALID_ORDER` with
-`details.field`. `apply_config` is shared with the CLI (`telegram set`).
+`details.field`. The settings logic lives in `telegram.settings` (shared with the CLI).
 """
 
-import re
 from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
@@ -22,29 +21,26 @@ from smtrading.activity.service import list_decisions
 from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
 from smtrading.admin.common import _invalid, _transaction
 from smtrading.agents.models import Agent
-from smtrading.agents.service import write_audit
 from smtrading.common.errors import SMTError
 from smtrading.mcp.dto import to_jsonable
 from smtrading.portfolios.models import Portfolio
-from smtrading.risk.models import AppSetting
-from smtrading.telegram.client import TelegramClient, TelegramError
-from smtrading.telegram.config import (
-    SETTINGS_KEY,
-    UNREADABLE_MESSAGE,
-    TelegramConfig,
-    config_dto,
-    load_config,
-    save_config,
-)
+from smtrading.telegram.client import TelegramError
+from smtrading.telegram.config import UNREADABLE_MESSAGE, config_dto, load_config
 from smtrading.telegram.models import OutboxStatus, TelegramOutbox
-from smtrading.telegram.outbox import resume_paused, retry_outbox
+from smtrading.telegram.outbox import retry_outbox
+from smtrading.telegram.settings import (
+    apply_config,
+    audit,
+    clean_token,
+    client_for,
+    retry_all_failed,
+    set_paused,
+)
 
 router = APIRouter(prefix="/api", tags=["telegram"], dependencies=[Depends(require_admin)])
 
-HTTP_TIMEOUT_S = 10.0
 DEFAULT_LIMIT, MAX_LIMIT = 50, 200
 TEST_TEXT = "🟢 Messaggio di prova da SMTrading"
-_CHAT_ID = re.compile(r"-?\d{1,20}|@[A-Za-z][A-Za-z0-9_]{3,31}")
 _CHAT_TYPES = ("group", "supergroup", "channel")
 _UPDATE_KEYS = ("message", "edited_message", "channel_post", "edited_channel_post",
                 "my_chat_member", "chat_member")
@@ -64,108 +60,6 @@ class DetectChatsIn(BaseModel):
 
 class PausedIn(BaseModel):
     paused: bool
-
-
-# --- helpers shared with the CLI -----------------------------------------------------------
-
-def clean_token(token: str) -> str:
-    """Strip and drop every whitespace character (a pasted token often carries some)."""
-    cleaned = "".join(token.split())
-    if not cleaned:
-        raise _invalid("bot_token", "inserisci il token del bot")
-    return cleaned
-
-
-def clean_chat_id(chat_id: str | int) -> str:
-    text = str(chat_id).strip()
-    if isinstance(chat_id, bool) or not _CHAT_ID.fullmatch(text):
-        raise _invalid("chat_id", "ID del gruppo non valido (es. -1001234567890)")
-    return text
-
-
-def _client(token: str, http: httpx.AsyncClient) -> TelegramClient:
-    try:
-        return TelegramClient(token, http, timeout=HTTP_TIMEOUT_S)
-    except TelegramError as e:
-        raise _invalid("bot_token", e.message) from None
-
-
-async def _lock_settings(session: AsyncSession) -> None:
-    """Serialises concurrent writers of the telegram settings row (if it exists)."""
-    await session.execute(
-        select(AppSetting.key).where(AppSetting.key == SETTINGS_KEY).with_for_update()
-    )
-
-
-async def _audit(session: AsyncSession, method: str, by: str, **params: Any) -> None:
-    await write_audit(session, agent_id=None, method=method, params={"by": by, **params},
-                      outcome="ok", latency_ms=0)
-
-
-async def apply_config(
-    session: AsyncSession, http: httpx.AsyncClient, *, fields: set[str],
-    bot_token: str | None = None, chat_id: str | int | None = None,
-    enabled: bool | None = None, verify: bool = True, by: str,
-) -> TelegramConfig:
-    """Validates, verifies with Telegram (getMe with the effective token, getChat with the
-    effective chat) when the token or the chat changes, then saves and audits — all in the
-    caller's transaction, which must be committed by the caller. Nothing is saved on error.
-    While the stored token is unreadable every update must re-enter the token."""
-    for name in fields & {"bot_token", "chat_id", "enabled"}:
-        if {"bot_token": bot_token, "chat_id": chat_id, "enabled": enabled}[name] is None:
-            raise _invalid(name, f"{name} non può essere nullo")
-    new_token = clean_token(bot_token) if "bot_token" in fields else None
-    new_chat = clean_chat_id(chat_id) if "chat_id" in fields else None
-
-    current = await load_config(session)
-    if current.unreadable and new_token is None:
-        raise _invalid("bot_token", UNREADABLE_MESSAGE)
-    token = new_token or current.bot_token
-    chat = new_chat or current.chat_id
-    token_changed = new_token is not None and new_token != current.bot_token
-    chat_changed = new_chat is not None and new_chat != current.chat_id
-    if new_chat is not None and token is None:
-        raise _invalid("bot_token", "inserisci prima il token del bot")
-
-    username, title = current.bot_username, current.chat_title
-    if token_changed or chat_changed:
-        username = None if token_changed else username
-        title = None if (chat_changed or token_changed) else title
-        if verify:
-            client = _client(token, http)
-            try:
-                username = (await client.get_me()).get("username")
-            except TelegramError as e:
-                raise _invalid("bot_token", e.message) from None
-            if chat is not None:
-                try:
-                    info = await client.get_chat(chat)
-                except TelegramError as e:
-                    raise _invalid("chat_id", e.message) from None
-                title = info.get("title")
-                if info.get("id") is not None:  # an @username resolves to the numeric id
-                    chat = str(info["id"])
-
-    await _lock_settings(session)
-    fresh = await load_config(session)  # pause may have changed during the verification
-    if new_chat is None and fresh.chat_id != current.chat_id:
-        # the sender migrated the group to a supergroup meanwhile: keep its new id
-        chat, title = fresh.chat_id, fresh.chat_title
-    cfg = TelegramConfig(
-        bot_token=token, chat_id=chat,
-        enabled=fresh.enabled if enabled is None else enabled,
-        paused=fresh.paused, bot_username=username, chat_title=title,
-    )
-    if cfg.enabled and not (cfg.bot_token and cfg.chat_id):
-        raise _invalid("enabled", "per attivare le notifiche servono il token e il gruppo")
-    changed = [name for name, yes in (
-        ("bot_token", token_changed), ("chat_id", new_chat is not None and cfg.chat_id != current.chat_id),
-        ("enabled", cfg.enabled != current.enabled),
-    ) if yes]
-    await save_config(session, cfg)
-    await _audit(session, "admin:telegram.config", by, changed=changed,
-                 chat_id=cfg.chat_id, enabled=cfg.enabled)
-    return cfg
 
 
 async def _telegram_dto(session: AsyncSession) -> dict[str, Any]:
@@ -239,7 +133,7 @@ async def detect_chats(body: DetectChatsIn, session: DbSession) -> dict:
         token = cfg.bot_token
     async with httpx.AsyncClient() as http:
         try:
-            updates = await _client(token, http).get_updates(100)
+            updates = await client_for(token, http).get_updates(100)
         except TelegramError as e:
             raise _invalid("bot_token", e.message) from None
     chats: dict[Any, dict[str, Any]] = {}
@@ -270,7 +164,7 @@ async def send_test(admin: CurrentAdmin, session: DbSession, redis: RedisClient)
     error, message_id = None, None
     async with httpx.AsyncClient() as http:
         try:
-            message_id = await _client(cfg.bot_token, http).send_message(cfg.chat_id, TEST_TEXT)
+            message_id = await client_for(cfg.bot_token, http).send_message(cfg.chat_id, TEST_TEXT)
         except (TelegramError, SMTError) as e:
             error = e.message
     async with _transaction(session, redis):
@@ -280,7 +174,7 @@ async def send_test(admin: CurrentAdmin, session: DbSession, redis: RedisClient)
             last_error=error[:500] if error else None, telegram_message_id=message_id,
             sent_at=None if error else datetime.now(UTC),
         ))
-        await _audit(session, "admin:telegram.test", admin.email, ok=error is None)
+        await audit(session, "admin:telegram.test", admin.email, ok=error is None)
     return {"ok": True} if error is None else {"ok": False, "error": error}
 
 
@@ -288,19 +182,10 @@ async def send_test(admin: CurrentAdmin, session: DbSession, redis: RedisClient)
 async def put_paused(
     body: PausedIn, admin: CurrentAdmin, session: DbSession, redis: RedisClient
 ) -> dict:
-    """Changes only the `paused` flag of the stored settings (an unreadable token stays as
-    it is); on resume the paused rows go back to pending."""
+    """Changes only the `paused` flag; on resume the paused rows go back to pending (see
+    `telegram.settings.set_paused`)."""
     async with _transaction(session, redis):
-        await _lock_settings(session)
-        raw = await session.get(AppSetting, SETTINGS_KEY)
-        if raw is None or not isinstance(raw.value, dict):
-            await save_config(session, TelegramConfig(paused=body.paused))
-        else:
-            raw.value = {**raw.value, "paused": body.paused}
-            await session.flush()
-        resumed = 0 if body.paused else await resume_paused(session)
-        await _audit(session, "admin:telegram.pause", admin.email, paused=body.paused,
-                     resumed=resumed)
+        await set_paused(session, body.paused, by=admin.email)
     return await _telegram_dto(session)
 
 
@@ -325,12 +210,20 @@ async def get_outbox(
     return {"items": await _outbox_dtos(session, rows)}
 
 
+@router.post("/telegram/outbox/retry-failed")
+async def retry_failed(admin: CurrentAdmin, session: DbSession, redis: RedisClient) -> dict:
+    """«Riprova tutti i falliti» (test messages excepted)."""
+    async with _transaction(session, redis):
+        retried = await retry_all_failed(session, by=admin.email)
+    return {"retried": retried}
+
+
 @router.post("/telegram/outbox/{outbox_id}/retry")
 async def retry(outbox_id: int, admin: CurrentAdmin, session: DbSession,
                 redis: RedisClient) -> dict:
     async with _transaction(session, redis):
         row = await retry_outbox(session, outbox_id)
-        await _audit(session, "admin:telegram.retry", admin.email, outbox_id=outbox_id)
+        await audit(session, "admin:telegram.retry", admin.email, outbox_id=outbox_id)
     return (await _outbox_dtos(session, [row]))[0]
 
 

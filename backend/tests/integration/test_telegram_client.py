@@ -166,7 +166,8 @@ async def test_config_roundtrip_encrypted(db_session):
     raw = await db_session.scalar(select(AppSetting.value).where(AppSetting.key == "telegram"))
     dumped = json.dumps(raw)
     assert TOKEN not in dumped and TOKEN.split(":")[1] not in dumped
-    assert set(raw) == {"token_enc", "chat_id", "enabled", "paused", "bot_username", "chat_title"}
+    assert set(raw) == {"token_enc", "chat_id", "enabled", "paused", "bot_username", "chat_title",
+                        "hold_version"}
     loaded = await load_config(db_session)
     assert loaded == cfg
     assert is_ready(loaded)
@@ -197,6 +198,32 @@ async def test_enqueue_paused_when_config_paused(db_session):
     assert await resume_paused(db_session) == 2
     await db_session.refresh(paused)
     assert paused.status == OutboxStatus.pending
+
+
+async def test_resume_skips_stale_noncritical_events(db_session):
+    """R7.1 on resume: a non-critical message paused for more than 24 h is old news and is
+    skipped; critical ones are always sent."""
+    await save_config(db_session, TelegramConfig(bot_token=TOKEN, chat_id="-1", enabled=True,
+                                                 paused=True))
+    rows = {}
+    for name, level in (("old_fill", "executed"), ("old_critical", "critical"),
+                        ("old_agent", "info"), ("fresh_fill", "executed")):
+        rows[name] = await enqueue(db_session, source="system", category="event",
+                                   level=level, text=name)
+    await db_session.execute(
+        update(TelegramOutbox)
+        .where(TelegramOutbox.id.in_([rows[n].id for n in ("old_fill", "old_critical",
+                                                            "old_agent")]))
+        .values(created_at=text("now() - interval '25 hours'")))
+    assert await resume_paused(db_session) == 2
+    for row in rows.values():
+        await db_session.refresh(row)
+    assert {n: r.status for n, r in rows.items()} == {
+        "old_fill": OutboxStatus.skipped, "old_critical": OutboxStatus.pending,
+        "old_agent": OutboxStatus.skipped, "fresh_fill": OutboxStatus.pending}
+    assert rows["old_fill"].last_error is not None
+    with pytest.raises(SMTError):  # skipped is final, like the planner's skipped
+        await retry_outbox(db_session, rows["old_fill"].id)
 
 
 async def test_retry_only_failed(db_session):

@@ -2,8 +2,8 @@
 messages (now), digest entries (quiet hours, non-critical) or `skipped`.
 
 - Telegram never configured (no token or no group) or disabled: `skipped`.
-- Configuration unreadable (the stored token cannot be decrypted, e.g. a new master key):
-  nothing is planned, the rows stay `pending` until the token is entered again; then they
+- Configuration unreadable (the stored token cannot be decrypted, e.g. a new master key)
+  while enabled with a group: nothing is planned, the rows stay `pending` until the token is entered again; then they
   are planned in id order. Non-critical rows older than STALE_AFTER are `skipped` then
   (old news); critical rows are always sent.
 - Quiet hours are evaluated when the row is planned; the sender evaluates them again
@@ -15,7 +15,7 @@ messages (now), digest entries (quiet hours, non-critical) or `skipped`.
 import asyncio
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -25,12 +25,11 @@ from smtrading.agents.models import Agent
 from smtrading.common.config import get_settings
 from smtrading.portfolios.models import Portfolio
 from smtrading.telegram.config import TelegramConfig, is_ready, load_config
-from smtrading.telegram.outbox import enqueue
+from smtrading.telegram.outbox import STALE_AFTER, enqueue
 from smtrading.telegram.quiet import is_quiet
 from smtrading.telegram.render import Names, render_activity
 
 BATCH = 100
-STALE_AFTER = timedelta(hours=24)
 log = logging.getLogger(__name__)
 
 
@@ -79,7 +78,8 @@ class TelegramPlanner:
             if not rows:
                 return 0
             cfg = await load_config(session)
-            if cfg.unreadable:
+            # disabled (or no group) wins over unreadable: skip, never send weeks later
+            if cfg.unreadable and cfg.enabled and cfg.chat_id:
                 return 0  # wait for the token to be entered again: nothing is lost
             if not is_ready(cfg):
                 for a in rows:
