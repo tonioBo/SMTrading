@@ -25,6 +25,8 @@ _TOKEN_HEADER = re.compile(r"(?i)\b(x-[a-z0-9-]*(?:token|key|secret))(\s*:\s*)[^
 _AUTH_SCHEME = re.compile(r"(?i)\b(Basic|Bearer)\s+(?!<redacted>)[A-Za-z0-9+/=._~-]+")
 # Telegram bot API: /bot<id>:<token>/method
 _TELEGRAM = re.compile(r"/bot\d+:[A-Za-z0-9_-]+")
+# a bare Telegram bot token (<bot id>:<35-char secret>) anywhere else in a text
+_TELEGRAM_TOKEN = re.compile(r"\d{6,12}:[A-Za-z0-9_-]{30,}")
 
 
 def _auth(m: re.Match) -> str:
@@ -34,6 +36,7 @@ def _auth(m: re.Match) -> str:
 
 def redact_log_text(text: str) -> str:
     text = _TELEGRAM.sub("/bot<redacted>", text)
+    text = _TELEGRAM_TOKEN.sub("<redacted>", text)
     text = _SECRET_JSON.sub(r"\1\2\1\3\4<redacted>\4", text)
     text = _AUTH_HEADER.sub(_auth, text)
     text = _TOKEN_HEADER.sub(r"\1\2<redacted>", text)

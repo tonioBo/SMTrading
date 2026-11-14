@@ -1,0 +1,67 @@
+"""The Telegram outbox: rows are written in the caller's transaction and sent by the
+worker's OutboxSender."""
+
+import uuid
+
+from sqlalchemy import func, select, text, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.telegram.config import load_config
+from smtrading.telegram.models import OutboxStatus, TelegramOutbox
+from smtrading.telegram.render import MAX_LEN
+
+AGENT_WINDOW_S = 60
+
+
+async def enqueue(session: AsyncSession, *, source: str, category: str, level: str,
+                  text: str, entities: list | None = None) -> TelegramOutbox:
+    """`paused` while the configuration is paused, `pending` otherwise. Over-long texts are
+    the caller's bug (split them first with `split_message`)."""
+    if len(text) > MAX_LEN:
+        raise ValueError(f"telegram text longer than {MAX_LEN} characters")
+    cfg = await load_config(session)
+    row = TelegramOutbox(
+        source=source, category=category, level=level, text=text, entities=entities or None,
+        status=OutboxStatus.paused if cfg.paused else OutboxStatus.pending,
+    )
+    session.add(row)
+    await session.flush()
+    return row
+
+
+async def agent_sent_last_minute(session: AsyncSession, agent_id: uuid.UUID) -> int:
+    """Messages the agent queued in the last 60 s. Takes a per-agent transaction lock first,
+    so concurrent `send_telegram` calls of one agent count and insert one after the other."""
+    await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+                          {"k": f"tg:{agent_id}"})
+    return await session.scalar(
+        select(func.count()).select_from(TelegramOutbox).where(
+            TelegramOutbox.source == f"agent:{agent_id}",
+            TelegramOutbox.created_at > func.now() - text(f"interval '{AGENT_WINDOW_S} seconds'"),
+        )
+    ) or 0
+
+
+async def resume_paused(session: AsyncSession) -> int:
+    result = await session.execute(
+        update(TelegramOutbox)
+        .where(TelegramOutbox.status == OutboxStatus.paused)
+        .values(status=OutboxStatus.pending, next_attempt_at=func.now())
+    )
+    return result.rowcount or 0
+
+
+async def retry_outbox(session: AsyncSession, outbox_id: int) -> TelegramOutbox:
+    row = await session.get(TelegramOutbox, outbox_id, with_for_update=True)
+    if row is None:
+        raise SMTError(ErrorCode.NOT_FOUND, "messaggio non trovato", {"field": "id"})
+    if row.status != OutboxStatus.failed:
+        raise SMTError(ErrorCode.INVALID_ORDER, "si possono riprovare solo i messaggi non inviati",
+                       {"field": "status"})
+    row.status = OutboxStatus.pending
+    row.attempts = 0
+    row.last_error = None
+    row.next_attempt_at = await session.scalar(select(func.now()))
+    await session.flush()
+    return row

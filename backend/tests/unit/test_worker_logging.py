@@ -83,6 +83,16 @@ def test_redaction_covers_oauth_json_headers_and_telegram(text, secret):
     assert secret not in out, out
 
 
+def test_log_redacts_telegram_token():
+    secret = "AAH" + "x9_-Q" * 7  # 38 characters, like a real bot token secret
+    for text in (f"https://api.telegram.org/bot123456789:{secret}/sendMessage",
+                 f"token 123456789:{secret} rejected",
+                 f"ConnectError('https://api.telegram.org/bot123456789:{secret}/getMe')"):
+        out = redact_log_text(text)
+        assert secret not in out, out
+        assert "123456789:" not in out, out
+
+
 def test_telegram_path_keeps_the_method():
     out = redact_log_text("https://api.telegram.org/bot123456:AAE-xyz/sendMessage")
     assert out == "https://api.telegram.org/bot<redacted>/sendMessage"
