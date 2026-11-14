@@ -6,6 +6,13 @@ with Redis or the worker down. Decisions are append-only.
 
 Visibility for an agent (feed and decisions): rows of its (non archived) portfolios,
 or global rows (no portfolio) that are system-wide, its own, or decisions.
+
+Feed cursor and the settle window: ids are assigned at insert, rows become visible at
+commit, so a row can appear with an id lower than one already returned. The feed only
+moves its cursor over rows older than FEED_SETTLE_S; a transaction that stays open
+longer than that between recording an activity and committing can still slip behind
+the cursor (business transactions are short; a transaction-id based cursor would close
+the gap). Items newer than the cursor may be returned twice: consumers dedupe by id.
 """
 
 import json
@@ -13,8 +20,9 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, event, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from smtrading.activity.mapping import MAX_SUMMARY, ActivityDraft
 from smtrading.activity.models import (
@@ -34,16 +42,25 @@ FEED_SETTLE_S = 3
 MAX_SYMBOLS = 50
 MAX_SYMBOL_LEN = 32
 MAX_DETAILS_BYTES = 8192
+MAX_TYPE = 64
+MAX_LEVEL = 16
 _SENT = (TelegramState.queued.value, TelegramState.digest.value)
 
 
 def _uuid(value: Any) -> uuid.UUID | None:
     if value is None or isinstance(value, uuid.UUID):
         return value
+    if not isinstance(value, str):
+        return None
     try:
-        return uuid.UUID(str(value))
+        return uuid.UUID(value)
     except ValueError:
         return None
+
+
+def _text(value: Any, limit: int) -> str:
+    text = "" if value is None else str(getattr(value, "value", value))
+    return text[:limit]
 
 
 def record_activity(
@@ -55,20 +72,25 @@ def record_activity(
 ) -> None:
     """Add the activity row to the session (no flush). A fact about an order announced
     twice in the same transaction (e.g. a rejection by `notify` and by `queue_event`)
-    is recorded once: the first one wins. Fills are told apart by their fill_id."""
+    is recorded once: the first one wins. Fills are told apart by their fill_id.
+
+    It never aborts the business transaction: every field is normalised to fit its
+    column (no foreign key on agent_id), the data made JSON safe (Decimal, UUID,
+    datetime, enums and sets of kill-switch, fill or reset payloads)."""
     from smtrading.events import json_safe  # events imports this module
 
-    order_id = draft.data.get("order_id")
+    data = draft.data if isinstance(draft.data, dict) else {"value": draft.data}
+    order_id = data.get("order_id")
     if order_id is not None:
         keys: dict = session.info.setdefault(ACTIVITY_KEYS, {})
-        key = (draft.type, str(order_id), str(draft.data.get("fill_id")))
+        key = (str(draft.type), str(order_id), str(data.get("fill_id")))
         seen = keys.get(key)
         if seen is not None and seen in session:  # not rolled back meanwhile
             return
     row = Activity(
-        type=draft.type, level=str(draft.level), agent_id=_uuid(agent_id),
-        portfolio_id=_uuid(portfolio_id), summary=draft.summary[:MAX_SUMMARY],
-        data=json_safe(draft.data),
+        type=_text(draft.type, MAX_TYPE), level=_text(draft.level, MAX_LEVEL),
+        agent_id=_uuid(agent_id), portfolio_id=_uuid(portfolio_id),
+        summary=_text(draft.summary, MAX_SUMMARY), data=json_safe(data),
         telegram=TelegramState.pending.value if draft.direct else None,
     )
     session.add(row)
@@ -76,8 +98,20 @@ def record_activity(
         keys[key] = row
 
 
-def clear_activity_keys(session: AsyncSession) -> None:
+def clear_activity_keys(session: AsyncSession | Session) -> None:
     session.info.pop(ACTIVITY_KEYS, None)
+
+
+@event.listens_for(Session, "after_commit")
+def _keys_after_commit(session: Session) -> None:
+    if not session.in_nested_transaction():  # a savepoint release is not the commit
+        clear_activity_keys(session)
+
+
+@event.listens_for(Session, "after_soft_rollback")
+def _keys_after_rollback(session: Session, previous_transaction) -> None:
+    if not session.in_nested_transaction():
+        clear_activity_keys(session)
 
 
 def _invalid(field: str, message: str) -> SMTError:
@@ -194,25 +228,30 @@ async def list_feed(
     limit: int = 50,
 ) -> tuple[list[dict], int | None]:
     """(items, next_after_id), the get_triggered_alerts contract: without a cursor or
-    `since`, the newest `limit` rows newest first and next_after_id = the newest id;
-    with either, ascending ids, only rows older than FEED_SETTLE_S (a slower
-    transaction may still commit a lower id), next_after_id = the last id returned or
-    the cursor itself. Items carry Python values (datetime, UUID): json_safe them."""
+    `since`, the newest `limit` rows newest first (fresh ones included) and
+    next_after_id = the newest id older than FEED_SETTLE_S (None if there is none), so
+    rows still settling come again on the next call: consumers dedupe by id. With a
+    cursor or `since`, ascending ids, only rows older than FEED_SETTLE_S,
+    next_after_id = the last id returned or the cursor itself. An after_id the viewer
+    cannot see is reported as unknown. Items carry Python values (datetime, UUID):
+    json_safe them."""
+    visible = await _visible(session, Activity, viewer_agent_id)
+    settled = Activity.ts <= func.now() - timedelta(seconds=FEED_SETTLE_S)
     if after_id is not None and await session.scalar(
-        select(Activity.id).where(Activity.id == after_id)
-    ) is None:
+        select(Activity.id).where(Activity.id == after_id, visible)
+    ) is None:  # unknown or not visible: the same answer
         raise _invalid("after_id", "unknown after_id")
     stmt = (
         select(Activity, Agent.name, Portfolio.name)
         .outerjoin(Agent, Agent.id == Activity.agent_id)
         .outerjoin(Portfolio, Portfolio.id == Activity.portfolio_id)
-        .where(await _visible(session, Activity, viewer_agent_id))
+        .where(visible)
     )
     if after_id is None and since is None:
         rows = (await session.execute(stmt.order_by(Activity.id.desc()).limit(limit))).all()
-        next_after = rows[0][0].id if rows else None
+        next_after = await session.scalar(select(func.max(Activity.id)).where(visible, settled))
     else:
-        stmt = stmt.where(Activity.ts <= func.now() - timedelta(seconds=FEED_SETTLE_S))
+        stmt = stmt.where(settled)
         if after_id is not None:
             stmt = stmt.where(Activity.id > after_id)
         if since is not None:

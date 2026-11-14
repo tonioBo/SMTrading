@@ -9,8 +9,15 @@ import pytest
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from smtrading.activity.models import Activity, Decision
-from smtrading.activity.service import list_decisions, list_feed, log_decision
+from smtrading.activity.mapping import ActivityDraft
+from smtrading.activity.models import Activity, ActivityLevel, Decision
+from smtrading.activity.service import (
+    ACTIVITY_KEYS,
+    list_decisions,
+    list_feed,
+    log_decision,
+    record_activity,
+)
 from smtrading.agents.service import assign_portfolio, create_agent
 from smtrading.brokers import registry
 from smtrading.brokers.base import BrokerAdapter
@@ -156,37 +163,132 @@ class _ReconcileAdapter(BrokerAdapter):
         return dict(self.positions)
 
 
-async def test_reconcile_diff_records_activity(fresh_db, redis_url, monkeypatch):
+@pytest.fixture
+async def maker(fresh_db, redis_url, monkeypatch):
     monkeypatch.setenv("SMT_DATABASE_URL", fresh_db)
     monkeypatch.setenv("SMT_REDIS_URL", redis_url)
     monkeypatch.setenv("SMT_MASTER_KEY", "test-master-key")
     monkeypatch.setenv("SMT_ADMIN_EMAIL", "admin@example.com")
     monkeypatch.setenv("SMT_ADMIN_PASSWORD", "test-password")
     engine = make_engine(fresh_db)
-    maker = async_sessionmaker(engine, expire_on_commit=False)
-    try:
-        async with maker() as s:
-            await run_seed(s)
-            p = await _portfolio(s)
-            link = await create_link(s, "L-act", "fake_activity_test", {})
-            await link_portfolio(s, p.id, link.id)
-            await s.commit()
-        _ReconcileAdapter.positions = {}
-        assert [r.ok for r in await reconcile(maker, link.id, None)] == [True]
-        _ReconcileAdapter.positions = {"AAPL": D(5)}
-        assert [r.ok for r in await reconcile(maker, link.id, None)] == [False]
-        async with maker() as s:
-            rows = await _rows(s, type="broker.reconciliation_diff")
-        assert len(rows) == 1
-        r = rows[0]
-        assert (r.level, r.telegram, r.portfolio_id, r.agent_id) == (
-            "warning", "pending", p.id, None)
-        assert r.summary == "Riconciliazione broker con 1 differenze"
-        assert r.data == {"broker_link_id": str(link.id),
-                          "diffs": [{"symbol": "AAPL", "ours": "0", "broker": "5"}]}
-    finally:
-        _ReconcileAdapter.positions = {}
-        await engine.dispose()
+    sm = async_sessionmaker(engine, expire_on_commit=False)
+    async with sm() as s:
+        await run_seed(s)
+        await s.commit()
+    _ReconcileAdapter.positions = {}
+    yield sm
+    _ReconcileAdapter.positions = {}
+    await engine.dispose()
+
+
+async def _linked(maker, n=1):
+    async with maker() as s:
+        pids = [(await _portfolio(s)).id for _ in range(n)]
+        link = await create_link(s, f"L-{uuid.uuid4().hex[:6]}", "fake_activity_test", {})
+        for pid in pids:
+            await link_portfolio(s, pid, link.id)
+        await s.commit()
+    return pids, link.id
+
+
+async def _diff_rows(maker) -> list[Activity]:
+    async with maker() as s:
+        return await _rows(s, type="broker.reconciliation_diff")
+
+
+async def test_reconcile_diff_records_activity(maker):
+    (pid,), link_id = await _linked(maker)
+    assert [r.ok for r in await reconcile(maker, link_id, None)] == [True]
+    assert await _diff_rows(maker) == []
+    _ReconcileAdapter.positions = {"AAPL": D(5)}
+    assert [r.ok for r in await reconcile(maker, link_id, None)] == [False]
+    rows = await _diff_rows(maker)
+    assert len(rows) == 1
+    r = rows[0]
+    assert (r.level, r.telegram, r.portfolio_id, r.agent_id) == (
+        "warning", "pending", pid, None)
+    assert r.summary == "Riconciliazione broker con 1 differenza"
+    assert r.data == {"broker_link_id": str(link_id),
+                      "diffs": [{"symbol": "AAPL", "ours": "0", "broker": "5"}]}
+
+
+async def test_reconcile_repeat_not_direct_change_direct(maker):
+    (pid,), link_id = await _linked(maker)
+    _ReconcileAdapter.positions = {"AAPL": D(5)}
+    await reconcile(maker, link_id, None)
+    await reconcile(maker, link_id, None)  # same differences: recorded, not sent
+    _ReconcileAdapter.positions = {"AAPL": D(5), "MSFT": D(1)}
+    await reconcile(maker, link_id, None)  # changed: sent
+    _ReconcileAdapter.positions = {}
+    await reconcile(maker, link_id, None)  # fixed: nothing to record
+    _ReconcileAdapter.positions = {"AAPL": D(5), "MSFT": D(1)}
+    await reconcile(maker, link_id, None)  # back after an ok one: sent again
+    rows = await _diff_rows(maker)
+    assert [(r.telegram, r.summary) for r in rows] == [
+        ("pending", "Riconciliazione broker con 1 differenza"),
+        (None, "Riconciliazione broker con 1 differenza"),
+        ("pending", "Riconciliazione broker con 2 differenze"),
+        ("pending", "Riconciliazione broker con 2 differenze"),
+    ]
+    assert {r.portfolio_id for r in rows} == {pid}
+
+
+async def test_reconcile_compares_each_portfolio_with_its_previous(maker):
+    pids, link_id = await _linked(maker, 2)
+    _ReconcileAdapter.positions = {"AAPL": D(5)}
+    await reconcile(maker, link_id, None)
+    await reconcile(maker, link_id, None)
+    rows = await _diff_rows(maker)
+    assert sorted((str(r.portfolio_id), r.telegram or "") for r in rows) == sorted(
+        [(str(p), "pending") for p in pids] + [(str(p), "") for p in pids])
+
+
+async def test_activity_keys_cleared_on_commit_and_rollback(maker):
+    async with maker() as s:
+        pid = (await _portfolio(s)).id
+        await notify(s, portfolio_id=pid, kind="order.rejected",
+                     payload={"order_id": uuid.uuid4(), "symbol": "AAPL"})
+        assert ACTIVITY_KEYS in s.info
+        await s.commit()
+        assert ACTIVITY_KEYS not in s.info
+        await notify(s, portfolio_id=pid, kind="order.rejected",
+                     payload={"order_id": uuid.uuid4(), "symbol": "AAPL"})
+        await s.rollback()
+        assert ACTIVITY_KEYS not in s.info
+
+
+async def test_unknown_agent_id_never_aborts(maker, qs):
+    ghost = uuid.uuid4()  # UUID-shaped, no such agent
+    async with maker() as s:
+        p = await _portfolio(s, cash=100000)
+        order = await place_order(s, qs, PlaceOrderRequest(
+            portfolio_id=p.id, symbol="AAPL", side=OrderSide.buy, type=OrderType.market,
+            qty=D(1), agent_id=str(ghost),
+        ), now=OPEN)
+        assert order.status == OrderStatus.filled
+        await notify(s, portfolio_id=None, kind="price_alert", agent_id=str(ghost),
+                     payload={"symbol": "AAPL"})
+        await s.commit()
+    async with maker() as s:
+        rows = await _rows(s, agent_id=ghost)
+    assert {r.type for r in rows} == {"order.filled", "order.accepted", "price_alert"}
+
+
+async def test_record_activity_normalises_everything(db_session):
+    p = await _portfolio(db_session)
+    record_activity(db_session, ActivityDraft(
+        "t" * 100, "warning", True, "s" * 900,
+        {"amount": D("1.50"), "at": datetime(2026, 1, 1, tzinfo=UTC), "ids": {1},
+         "order_id": uuid.uuid4()},
+    ), portfolio_id=str(p.id), agent_id=12345)
+    record_activity(db_session, ActivityDraft(
+        "x", ActivityLevel.info, False, None, "not a dict",  # type: ignore[arg-type]
+    ), portfolio_id=p.id, agent_id=None)
+    rows = await _rows(db_session, portfolio_id=p.id)
+    a, b = rows
+    assert (len(a.type), a.level, len(a.summary), a.agent_id) == (64, "warning", 500, None)
+    assert a.data["amount"] == "1.50" and a.data["ids"] == [1]
+    assert (b.summary, b.data, b.telegram) == ("", {"value": "not a dict"}, None)
 
 
 # -- decisions -----------------------------------------------------------------------
@@ -309,6 +411,38 @@ async def test_feed_cursor_contract(db_session):
     with pytest.raises(SMTError) as e:
         await list_feed(db_session, agent.id, after_id=mine[-1] + 10_000, since=None, limit=10)
     assert e.value.code == ErrorCode.INVALID_ORDER and e.value.details["field"] == "after_id"
+
+
+async def test_feed_invisible_after_id_is_unknown(db_session):
+    _p, agent = await _feed_setup(db_session)
+    hidden = await _portfolio(db_session)
+    _deposit(db_session, hidden, 1)
+    await _settle(db_session)
+    hidden_id = (await _rows(db_session, portfolio_id=hidden.id))[-1].id
+    with pytest.raises(SMTError) as e:
+        await list_feed(db_session, agent.id, after_id=hidden_id, since=None, limit=10)
+    assert e.value.code == ErrorCode.INVALID_ORDER and e.value.details["field"] == "after_id"
+    assert e.value.message == "unknown after_id"
+
+
+async def test_feed_first_cursor_is_settled(db_session):
+    p, agent = await _feed_setup(db_session)
+    _deposit(db_session, p, 1)
+    await _settle(db_session)
+    settled = (await _rows(db_session, portfolio_id=p.id))[-1].id
+    _deposit(db_session, p, 2)
+    fresh = (await _rows(db_session, portfolio_id=p.id))[-1]
+    await db_session.execute(
+        update(Activity).where(Activity.id == fresh.id).values(ts=datetime.now(UTC))
+    )
+    items, cursor = await list_feed(db_session, agent.id, after_id=None, since=None, limit=10)
+    assert [i["id"] for i in items][:2] == [fresh.id, settled]  # fresh rows still shown
+    assert cursor == settled  # but the cursor stays behind them
+    items, cursor = await list_feed(db_session, agent.id, after_id=cursor, since=None, limit=10)
+    assert items == [] and cursor == settled
+    await _settle(db_session)
+    items, cursor = await list_feed(db_session, agent.id, after_id=cursor, since=None, limit=10)
+    assert [i["id"] for i in items] == [fresh.id] and cursor == fresh.id
 
 
 async def test_feed_settle_window(db_session):

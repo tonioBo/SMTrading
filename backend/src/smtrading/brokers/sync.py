@@ -41,7 +41,8 @@ the lock (startup recovery).
   its OCO sibling is requested and sent in the same pass.
 
 `reconcile` compares the broker's positions with ours; it never corrects anything (a
-difference is recorded in the activity feed and sent to Telegram).
+difference is recorded in the activity feed; it is sent to Telegram only when it
+differs from the portfolio's previous reconciliation).
 """
 
 import asyncio
@@ -53,6 +54,7 @@ from decimal import Decimal, localcontext
 from uuid import UUID
 
 from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.activity.mapping import ActivityDraft
@@ -946,16 +948,34 @@ async def reconcile(
         for pid in portfolio_ids
     ]
     async with sessionmaker() as session:
-        session.add_all(rows)
-        for row in rows:
-            if not row.ok:
+        if diffs:
+            previous = await _previous_diffs(session, link_id, portfolio_ids)
+            noun = "differenza" if len(diffs) == 1 else "differenze"
+            for row in rows:
+                # only a change is sent to Telegram; a repeat is recorded quietly
                 record_activity(session, ActivityDraft(
-                    "broker.reconciliation_diff", ActivityLevel.warning, True,
-                    f"Riconciliazione broker con {len(diffs)} differenze",
+                    "broker.reconciliation_diff", ActivityLevel.warning,
+                    previous.get(row.portfolio_id) != diffs,
+                    f"Riconciliazione broker con {len(diffs)} {noun}",
                     {"broker_link_id": link_id, "diffs": diffs},
                 ), portfolio_id=row.portfolio_id, agent_id=None)
+        session.add_all(rows)
         await session.commit()
     return rows
+
+
+async def _previous_diffs(
+    session: AsyncSession, link_id: UUID, portfolio_ids: list[UUID]
+) -> dict[UUID, list]:
+    """The diffs of the last reconciliation of each portfolio on the link ([] if ok)."""
+    rows = await session.execute(
+        select(Reconciliation.portfolio_id, Reconciliation.diffs)
+        .where(Reconciliation.broker_link_id == link_id,
+               Reconciliation.portfolio_id.in_(portfolio_ids))
+        .ext(distinct_on(Reconciliation.portfolio_id))
+        .order_by(Reconciliation.portfolio_id, Reconciliation.ts.desc())
+    )
+    return {pid: diffs or [] for pid, diffs in rows}
 
 
 async def reconcile_all(sessionmaker: async_sessionmaker[AsyncSession], http) -> int:

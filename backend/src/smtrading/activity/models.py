@@ -51,6 +51,7 @@ class Activity(Base):
     __tablename__ = "activity"
     __table_args__ = (
         Index("ix_activity_portfolio_id", "portfolio_id", "id"),
+        Index("ix_activity_ts", "ts"),
         Index(
             "ix_activity_telegram_open",
             "id",
@@ -64,9 +65,8 @@ class Activity(Base):
     )
     type: Mapped[str] = mapped_column(String(64))
     level: Mapped[str] = mapped_column(String(16))
-    agent_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL")
-    )
+    # no foreign key (0016): recording an activity never aborts the business transaction
+    agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     portfolio_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("portfolios.id")
     )

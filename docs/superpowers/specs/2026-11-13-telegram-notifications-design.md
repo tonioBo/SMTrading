@@ -44,6 +44,8 @@ Il metodo MCP `get_activity_feed(after_id?, limit≤200)` restituisce in ordine 
 
 Ogni elemento contiene `{id, ts, type, agent, portfolio, summary, data}`. Il feed è limitato ai portafogli su cui l'agente ha almeno il permesso `read`.
 
+Finestra di assestamento (`FEED_SETTLE_S = 3` s): gli id nascono all'inserimento, le righe diventano visibili al commit. Il cursore avanza solo sulle righe più vecchie di 3 s; anche la prima chiamata senza cursore può mostrare righe più recenti, ma il suo `next_after_id` resta dietro di esse, quindi un elemento può arrivare due volte e l'agente deduplica per `id`. Limite noto: una transazione che resta aperta più di 3 s tra la registrazione dell'attività e il commit può finire dietro il cursore (le transazioni applicative sono brevi; un cursore basato sugli id di transazione chiuderebbe il caso). Un `after_id` sconosciuto o non visibile riceve la stessa risposta (`INVALID_ORDER`, `field=after_id`).
+
 ### Metodi MCP
 - `log_decision(kind, summary, portfolio?, symbols?, details?)`: per tutti gli agenti con accesso al portafoglio.
 - `get_activity_feed(after_id?, limit?)`.

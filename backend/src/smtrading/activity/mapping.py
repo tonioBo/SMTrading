@@ -88,6 +88,7 @@ _EVENTS: dict[str, tuple[ActivityLevel, bool, Callable[[dict], str]]] = {
 
 def activity_for_event(type: str, payload: dict) -> ActivityDraft | None:
     """The activity of a domain event, or None for events that are not recorded."""
+    # data is the raw payload (bools, ints, Decimal, UUID): record_activity json_safes it
     if type == "kill_switch":
         level = ActivityLevel.critical if payload.get("on") else ActivityLevel.warning
         return ActivityDraft(type, level, True, _truncate(_kill_switch(payload)), payload)
