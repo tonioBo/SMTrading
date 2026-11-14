@@ -375,3 +375,45 @@ async def test_trading_halt_lets_only_reducing_orders_through(sm, kind, passes):
         for method in ("GET", "DELETE"):
             assert (await _send(client, method, order_id)).status_code == 200
     assert len(inner.requests) == (3 if passes else 2)
+
+
+@pytest.mark.parametrize("held,side,body_qty,passes", [
+    ("5", OrderSide.sell, "1", True),    # partial close of a long: strictly reduces
+    ("1", OrderSide.sell, "1", True),    # full close
+    ("0.5", OrderSide.sell, "1", False),  # larger than the position: would flip short
+    ("0", OrderSide.sell, "1", False),   # flat: opens a short
+    ("5", OrderSide.buy, "1", False),    # adds to the long
+    ("5", OrderSide.sell, "3", False),   # body asks for more than the order
+])
+async def test_trading_halt_lets_strictly_reducing_orders_through(
+        sm, held, side, body_qty, passes):
+    """A non-reduce_only order (OCO exit leg, plain close) passes the halt when its side
+    closes the position and its quantity is no more than it, and the body is that order."""
+    from smtrading.ledger.models import Account, AccountBalance, AccountKind
+    from smtrading.risk.models import TradingHalt
+
+    link_id, order_id = await _setup(sm, state="armed")
+    async with sm() as s:
+        order = await s.get(Order, order_id)
+        order.side = side
+        acct = Account(portfolio_id=order.portfolio_id, asset="ZZGATE",
+                       kind=AccountKind.position)
+        s.add(acct)
+        await s.flush()
+        s.add(AccountBalance(account_id=acct.id, balance=Decimal(held)))
+        s.add(TradingHalt(scope="portfolio", portfolio_id=order.portfolio_id,
+                          reason="Stop", set_by="admin:admin@example.com"))
+        await s.commit()
+    inner = Counting()
+    body = {"symbol": "ZZGATE", "side": side.value, "qty": body_qty}
+    async with make_live_client(sm, link_id, inner=inner.transport()) as client:
+        send = client.post(f"{BASE}/v2/orders", json=body,
+                           extensions={"smt_order_id": str(order_id)})
+        if passes:
+            assert (await send).status_code == 200
+            assert len(inner.requests) == 1
+        else:
+            with pytest.raises(LiveGateClosed) as e:
+                await send
+            assert e.value.code == ErrorCode.TRADING_HALTED
+            assert inner.requests == []

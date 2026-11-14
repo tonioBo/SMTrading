@@ -240,13 +240,17 @@ class _Admission:
 
 async def _run_check(
     session: AsyncSession, qs: QuoteSource, req: PlaceOrderRequest, portfolio: Portfolio,
-    instrument: Instrument, market: MarketStatus, redis=None,
+    instrument: Instrument, market: MarketStatus, redis=None, *, now: datetime | None = None,
+    live_effects: bool = True, exclude_order: UUID | None = None,
 ) -> CheckResult:
+    """`live_effects=False` (preview, modify): the real-money fuse never trips the
+    portfolio; `exclude_order` (modify) is not counted by it."""
     return await pre_trade_check(
         session, qs, portfolio=portfolio, instrument=instrument, side=req.side, qty=req.qty,
         notional=req.notional, order_type=req.type, limit_price=req.limit_price,
         stop_price=req.stop_price, check_quote_age=market.is_open,
-        reduce_only=req.reduce_only, redis=redis,
+        reduce_only=req.reduce_only, redis=redis, live_flatten=req.live_flatten, now=now,
+        live_effects=live_effects, exclude_order=exclude_order,
     )
 
 
@@ -287,7 +291,8 @@ async def _admit(
 
 async def _check_admission(session: AsyncSession, adm: _Admission) -> None:
     adm.check = await _run_check(
-        session, adm.qs, adm.req, adm.portfolio, adm.instrument, adm.market, adm.redis
+        session, adm.qs, adm.req, adm.portfolio, adm.instrument, adm.market, adm.redis,
+        now=adm.now,
     )
 
 
@@ -510,7 +515,8 @@ async def preview_order(
         ensure_not_archived(portfolio)
         instrument = await get_instrument(session, req.symbol)
         market = market_status(instrument.market, now)
-        return await _run_check(session, qs, req, portfolio, instrument, market, redis)
+        return await _run_check(session, qs, req, portfolio, instrument, market, redis,
+                                now=now, live_effects=False)
     except SMTError as e:
         return CheckResult(ok=False, code=e.code, message=e.message)
 
@@ -723,6 +729,13 @@ async def _cancel(session: AsyncSession, orders: list[Order], by: str) -> None:
     await _untrack_if_idle(session, {o.symbol for o in orders})
 
 
+async def cancel_orders(session: AsyncSession, orders: list[Order], *, by: str) -> None:
+    """Cancel these open orders, already locked FOR UPDATE by the caller (with their
+    portfolio): locally, or cancel_requested for BrokerSync when at the broker."""
+    if orders:
+        await _cancel(session, orders, by)
+
+
 async def cancel_order(session: AsyncSession, order_id: UUID, *, by: str) -> Order:
     """Cancel an open order; a bracket entry takes its open children with it."""
     order = await _lock_order(session, order_id)
@@ -839,7 +852,8 @@ async def modify_order(
     else:
         market = market_status(instrument.market, now or datetime.now(UTC))
         check = await _run_check(
-            session, MemoQuoteSource.wrap(qs), req, portfolio, instrument, market, redis
+            session, MemoQuoteSource.wrap(qs), req, portfolio, instrument, market, redis,
+            now=now, live_effects=False, exclude_order=order.id,
         )
         if not check.ok:
             raise SMTError(check.code, check.message, {"order_id": str(order.id)})

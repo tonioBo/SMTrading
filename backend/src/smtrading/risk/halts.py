@@ -117,7 +117,7 @@ def _event(session: AsyncSession, type_: str, halt: TradingHalt, by: str,
     })
 
 
-def _reduces(order: Any, held: Decimal) -> bool:
+def reduces_position(order: Any, held: Decimal) -> bool:
     """The order strictly reduces the current position (closing side, no more than it)."""
     closing = held != 0 and (held > 0) != (order.side == "buy")
     if not closing:
@@ -137,7 +137,7 @@ async def cancel_openings(
     Portfolio by portfolio in id order, the row locked first and its open orders read
     again under the lock (a placement that committed meanwhile is caught)."""
     from smtrading.engine.models import LIQUIDATION_ROLE, OPEN_STATUSES, Order
-    from smtrading.engine.service import _cancel
+    from smtrading.engine.service import cancel_orders
     from smtrading.ledger.models import Account, AccountBalance, AccountKind
     from smtrading.portfolios.locks import lock_portfolio
 
@@ -161,12 +161,12 @@ async def cancel_openings(
             o for o in orders
             if o.parent_id is None and not (o.reduce_only or o.live_flatten
                                             or o.role == LIQUIDATION_ROLE)
-            and not _reduces(o, held.get(o.symbol) or Decimal(0))
+            and not reduces_position(o, held.get(o.symbol) or Decimal(0))
         ]
         ids = {o.id for o in doomed}
         doomed += [o for o in orders if o.parent_id in ids]  # the legs go with their entry
         if doomed:
-            await _cancel(session, doomed, by)
+            await cancel_orders(session, doomed, by=by)
             canceled += len(doomed)
     return canceled
 

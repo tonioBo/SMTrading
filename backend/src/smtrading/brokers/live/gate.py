@@ -12,7 +12,8 @@ portfolio's status, the kill switch and the order being sent:
   posizioni reali» passes (Ruling R8.2): `live_flatten`, reduce-only, market, still open
   and not acknowledged by the broker, and the request body is that order (same
   instrument and side, no more than its quantity); while a trading halt covers the
-  portfolio only a reduce-only, live-flatten or liquidation order passes (TRADING_HALTED);
+  portfolio only a reduce-only, live-flatten or liquidation order, or one that strictly
+  reduces the position with a matching body, passes (TRADING_HALTED);
 - exactly one portfolio must be linked to the link (1 live link <-> 1 portfolio);
 - `dry_run`: an order POST raises `LiveDryRun` with the JSON payload (no headers), any
   other non-GET raises `LiveGateClosed`.
@@ -36,8 +37,9 @@ from smtrading.brokers.live.models import LiveState
 from smtrading.brokers.models import BrokerLink
 from smtrading.common.errors import ErrorCode
 from smtrading.engine.models import LIQUIDATION_ROLE, OPEN_STATUSES, Order, OrderSide, OrderType
+from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
-from smtrading.risk.halts import covering_halt, halt_message
+from smtrading.risk.halts import covering_halt, halt_message, reduces_position
 from smtrading.risk.settings import is_kill_switch_on
 
 ORDER_EXTENSION = "smt_order_id"
@@ -176,7 +178,8 @@ class LiveGateTransport(httpx.AsyncBaseTransport):
                 order = (await session.execute(
                     select(Order.portfolio_id, Order.live_flatten, Order.reduce_only,
                            Order.type, Order.symbol, Order.side, Order.qty, Order.status,
-                           Order.broker_order_id, Order.role).where(Order.id == order_id)
+                           Order.broker_order_id, Order.role, Order.filled_qty)
+                    .where(Order.id == order_id)
                 )).first()
                 if order is not None and order.portfolio_id != portfolio.id:
                     raise LiveGateClosed(ErrorCode.LIVE_NOT_ARMED, OTHER_PORTFOLIO_MESSAGE)
@@ -188,11 +191,27 @@ class LiveGateTransport(httpx.AsyncBaseTransport):
                            and _body_matches(_payload(request), order))
                 if not flatten:
                     raise LiveGateClosed(ErrorCode.KILL_SWITCH_ACTIVE, KILL_SWITCH_MESSAGE)
-            if (halt := await covering_halt(session, portfolio.id)) is not None and not (
-                order is not None and (order.reduce_only or order.live_flatten
-                                       or order.role == LIQUIDATION_ROLE)
-            ):  # defense in depth: BrokerSync already refuses openings under a halt
+            halt = await covering_halt(session, portfolio.id)
+            if halt is not None and not await self._passes_halt(session, request, order):
+                # defense in depth: BrokerSync already refuses openings under a halt
                 raise LiveGateClosed(ErrorCode.TRADING_HALTED, halt_message(halt))
+
+    @staticmethod
+    async def _passes_halt(session: Any, request: httpx.Request, order: Any) -> bool:
+        """Under a halt: reduce_only, live_flatten and liquidation orders, or an order that
+        strictly reduces the position (closing side, no more than it: OCO exits, plain
+        closes) whose request body is that order."""
+        if order is None:
+            return False
+        if order.reduce_only or order.live_flatten or order.role == LIQUIDATION_ROLE:
+            return True
+        held = await session.scalar(
+            select(AccountBalance.balance)
+            .join(Account, AccountBalance.account_id == Account.id)
+            .where(Account.portfolio_id == order.portfolio_id, Account.asset == order.symbol,
+                   Account.kind == AccountKind.position)
+        ) or Decimal(0)
+        return reduces_position(order, held) and _body_matches(_payload(request), order)
 
     async def aclose(self) -> None:
         await self._inner.aclose()
