@@ -520,3 +520,67 @@ async def test_mcp_order_on_suspended_real_portfolio_live_not_armed(mcp_server, 
         "type": "market", "qty": "1"})
     assert is_error and out["code"] == "LIVE_NOT_ARMED", out
     assert "CANARY" not in json.dumps(out)
+
+
+async def test_dry_run_rejection_is_agent_safe(mcp_server, mcp_call, book, monkeypatch):
+    """R8.11: with mcp_hide_mode on, an order rejected by the dry run reaches the agent as
+    a generic broker rejection: no LIVE_DRY_RUN, no «prova a secco», no payload; the
+    stored order (portal, Telegram) keeps the real code."""
+    from smtrading.brokers.live.protect import record_live_order_activity
+    from smtrading.brokers.live.t212_live import T212LiveAdapter
+    from smtrading.brokers.sync import DRY_RUN_MESSAGE
+    from smtrading.engine.models import BrokerState
+    from smtrading.engine.service import reject_broker_order
+    from smtrading.mcp.dto import AGENT_REJECT_CODE, AGENT_REJECT_MESSAGE
+
+    url, token, demo = mcp_server.url, mcp_server.token, mcp_server.demo_id
+    link_id = await _live_link_for_demo(mcp_server.db_url, demo, "dry_run")
+    async with _Db(mcp_server.db_url) as s:
+        o = Order(portfolio_id=demo, agent_id=str(mcp_server.agent_id), symbol="ENI.MI",
+                  side=OrderSide.sell, type=OrderType.market, qty=D(1),
+                  status=OrderStatus.pending, broker_link_id=link_id,
+                  broker_status=BrokerState.TO_SEND)
+        s.add(o)
+        await s.flush()
+        await reject_broker_order(s, o, "LIVE_DRY_RUN", DRY_RUN_MESSAGE)
+        await record_live_order_activity(s, o, "dry_run", message=DRY_RUN_MESSAGE,
+                                         payload={"symbol": "ENI.MI", "qty": "1"})
+        await s.commit()
+        discard_post_commit(s)
+        order_id = str(o.id)
+
+    calls = (("get_order", {"order_id": order_id}),
+             ("list_orders", {"portfolio_id": str(demo)}),
+             ("get_activity_feed", None),
+             ("get_portfolio", {"portfolio_id": str(demo)}),
+             ("list_portfolios", None))
+    payloads = []
+    for tool, args in calls:
+        is_error, out = await mcp_call(url, token, tool, args)
+        assert not is_error, out
+        payloads.append(out)
+        low = json.dumps(out, ensure_ascii=False).lower()
+        assert not any(w in low for w in ("prova", "dry", "secco")), (tool, low)
+    got = payloads[0]
+    assert got["status"] == "rejected" and got["reject_code"] == AGENT_REJECT_CODE
+    assert got["reject_message"] == AGENT_REJECT_MESSAGE
+    feed = payloads[2]["items"]
+    assert any(i["type"] == "live.order.rejected" for i in feed), feed
+    # an MCP order on the dry-run portfolio is accepted (it is rejected later, at the
+    # send). Routability of ENI.MI on Trading 212 depends on the process-wide instrument
+    # cache other tests may have filled (the fake lists US tickers only): pinned here.
+    monkeypatch.setattr(T212LiveAdapter, "routable", lambda self, order, instrument: True)
+    is_error, placed = await mcp_call(url, token, "place_order", {
+        "portfolio_id": str(demo), "symbol": "ENI.MI", "side": "sell", "type": "market",
+        "qty": "1"})
+    assert not is_error, placed
+    assert placed["status"] in ("pending", "queued"), placed
+    low = json.dumps(placed, ensure_ascii=False).lower()
+    assert not any(w in low for w in ("prova", "dry", "secco")), low
+
+    async with _Db(mcp_server.db_url) as s:  # humans keep the real code
+        stored = await s.get(Order, UUID(order_id))
+        assert stored.reject_code == "LIVE_DRY_RUN"
+    await _set_hide_mode(mcp_server.db_url, False)
+    _, got = await mcp_call(url, token, "get_order", {"order_id": order_id})
+    assert got["reject_code"] == "LIVE_DRY_RUN"

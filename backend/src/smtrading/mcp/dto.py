@@ -7,6 +7,7 @@ Enum -> its value. Each `*_dto` returns a fixed field set (the `*_FIELDS` tuples
 """
 
 import dataclasses
+import json
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
@@ -169,6 +170,72 @@ def to_jsonable(obj: Any) -> Any:
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         return {f.name: to_jsonable(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
     raise TypeError(f"not JSON-serialisable: {type(obj).__name__}")
+
+
+# --- agent-safe results (R8.11) -------------------------------------------------------
+# With mcp_hide_mode on, agents must not learn that a real-money portfolio is in a dry
+# run: an order rejected by it reaches them as a generic broker rejection (humans, in the
+# portal and on Telegram, keep LIVE_DRY_RUN).
+AGENT_REJECT_CODE = "BROKER_REJECTED"
+AGENT_REJECT_MESSAGE = "ordine non eseguito dal broker"
+_DRY_CODE = str(ErrorCode.LIVE_DRY_RUN)
+_DRY_TYPE = "live.order.dry_run"
+_DRY_MARKERS = (_DRY_CODE, "dry_run", "prova a secco", "(prova)")
+_DRY_TEXTS = (
+    ("prova a secco: ordine non inviato", AGENT_REJECT_MESSAGE),
+    ("Ordine non inviato (prova a secco)", AGENT_REJECT_MESSAGE),
+    ("prova a secco", AGENT_REJECT_MESSAGE),
+)
+
+
+def mentions_dry_run(result: Any) -> bool:
+    """Cheap pre-check: does a JSON-safe result mention the dry run at all?"""
+    text = json.dumps(result, ensure_ascii=False, default=str)
+    return any(m in text for m in _DRY_MARKERS)
+
+
+def _agent_text(text: str) -> str:
+    for old, new in _DRY_TEXTS:
+        text = text.replace(old, new)
+    return text
+
+
+def agent_safe(value: Any) -> Any:
+    """A JSON-safe result with every trace of a dry run replaced: reject codes
+    LIVE_DRY_RUN -> BROKER_REJECTED with the generic message, `live.order.dry_run`
+    activity items -> `live.order.rejected` (summary rebuilt, request payload dropped),
+    the dry-run texts in any string."""
+    if isinstance(value, list):
+        return [agent_safe(v) for v in value]
+    if isinstance(value, str):
+        return _agent_text(value)
+    if not isinstance(value, dict):
+        return value
+    dry_item = value.get("type") == _DRY_TYPE
+    dry = dry_item or value.get("phase") == "dry_run" or _DRY_CODE in (
+        value.get("code"), value.get("reject_code"))
+    out: dict[str, Any] = {}
+    for k, v in value.items():
+        if dry and k in ("payload", "dry_run"):
+            continue
+        out[k] = agent_safe(v)
+    if not dry:
+        return out
+    for code_key, message_key in (("code", "message"), ("reject_code", "reject_message")):
+        if out.get(code_key) == _DRY_CODE:
+            out[code_key] = AGENT_REJECT_CODE
+            out[message_key] = AGENT_REJECT_MESSAGE
+    if out.get("phase") == "dry_run":
+        out["phase"] = "rejected"
+        if "message" in out:
+            out["message"] = AGENT_REJECT_MESSAGE
+    if dry_item:
+        out["type"] = "live.order.rejected"
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        symbol = data.get("symbol") or ""
+        out["summary"] = f"Ordine rifiutato: {symbol}: {AGENT_REJECT_MESSAGE}".replace(
+            ": :", ":")
+    return out
 
 
 def _invalid(field: str, message: str, **extra: Any) -> SMTError:

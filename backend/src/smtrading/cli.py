@@ -239,10 +239,10 @@ async def execute_agent(args: argparse.Namespace, session: AsyncSession) -> obje
     raise AssertionError(args.agent_command)  # pragma: no cover
 
 
-async def execute_live(args: argparse.Namespace, session: AsyncSession) -> object:
+async def execute_live(args: argparse.Namespace, session: AsyncSession, redis=None) -> object:
     """`live status` / `live disarm` (the same service as the admin's one-click disarm)."""
     from smtrading.brokers.live import LIVE_KINDS
-    from smtrading.brokers.live.service import Actor, disarm_live_link
+    from smtrading.brokers.live.service import Actor, disarm_live_link_now
     from smtrading.brokers.models import BrokerLink
 
     match args.live_command:
@@ -268,11 +268,15 @@ async def execute_live(args: argparse.Namespace, session: AsyncSession) -> objec
                 raise SMTError(ErrorCode.NOT_FOUND, "collegamento reale non trovato",
                                {"name": args.name})
             reason = (args.reason or "").strip() or LIVE_DISARM_REASON
-            orders = await disarm_live_link(session, link_id, actor=Actor(SOURCE_CLI),
-                                            reason=reason)
+            await session.commit()  # the two phases use their own sessions (R8.12)
+            maker = async_sessionmaker(bind=session.bind, expire_on_commit=False)
+            orders = await disarm_live_link_now(maker, link_id, actor=Actor(SOURCE_CLI),
+                                                reason=reason, redis=redis)
             state = await session.scalar(select(BrokerLink.live_state)
-                                         .where(BrokerLink.id == link_id))
-            return {"name": args.name, "live_state": state, "orders": orders}
+                                         .where(BrokerLink.id == link_id)
+                                         .execution_options(populate_existing=True))
+            return {"name": args.name, "live_state": state, "orders": orders,
+                    "settled": orders is not None}
     raise AssertionError(args.live_command)  # pragma: no cover
 
 
@@ -307,7 +311,7 @@ async def execute(
         case "telegram":
             return await execute_telegram(args, session)
         case "live":
-            return await execute_live(args, session)
+            return await execute_live(args, session, redis)
         case "agent":
             return await execute_agent(args, session)
         case "order":

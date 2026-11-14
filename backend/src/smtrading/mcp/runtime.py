@@ -37,7 +37,14 @@ from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.events import discard_post_commit, dispatch_post_commit
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.mcp.auth import current_agent
-from smtrading.mcp.dto import to_jsonable
+from smtrading.mcp.dto import (
+    AGENT_REJECT_CODE,
+    AGENT_REJECT_MESSAGE,
+    agent_safe,
+    mentions_dry_run,
+    to_jsonable,
+)
+from smtrading.risk.settings import get_mcp_hide_mode
 
 log = logging.getLogger("smtrading.mcp")
 
@@ -104,14 +111,22 @@ async def _execute(
             # serialised inside the transaction: a result that cannot be rendered
             # rolls the call back instead of reporting an error for committed work
             result = to_jsonable(await fn(ctx))
+            if mentions_dry_run(result) and await get_mcp_hide_mode(session):
+                result = agent_safe(result)  # R8.11
         except SMTError as e:
+            err = e
+            if e.code == ErrorCode.LIVE_DRY_RUN and await get_mcp_hide_mode(session):
+                err = SMTError(AGENT_REJECT_CODE, AGENT_REJECT_MESSAGE,  # R8.11
+                               agent_safe(e.details or {}), persisted=e.persisted)
             if commit_on_error and e.persisted:
                 await session.commit()
                 await dispatch_post_commit(session, runtime.redis)
             else:
                 await session.rollback()
                 discard_post_commit(session)
-            raise
+            if err is e:
+                raise
+            raise err from None
         except Exception:
             await session.rollback()
             discard_post_commit(session)

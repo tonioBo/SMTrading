@@ -495,6 +495,19 @@ async def test_live_canary_keys_never_leak(admin, caplog):
     await call("GET", "/api/live/status")
     await call("GET", f"/api/broker-links/{lid}/positions")
     await call("POST", f"/api/broker-links/{lid}/reconcile")
+    await call("GET", "/api/dashboard")
+    await call("GET", "/api/dashboard/modes")
+    await call("GET", "/api/agents")
+    async with admin.sm() as s:  # an automatic reduce-only, then «Ho verificato, riprendi»
+        p = await s.get(Portfolio, uuid.UUID(pf["id"]))
+        p.status, p.reduce_only_reason = PortfolioStatus.reduce_only, "live_fuse"
+        await s.commit()
+    r = await call("POST", f"/api/portfolios/{pf['id']}/live-resume",
+                   json={"totp": await admin.codes.code()})
+    assert r.status_code == 200, r.text
+    r = await call("POST", f"/api/portfolios/{pf['id']}/live-flatten",
+                   json={"totp": await admin.codes.code()})
+    assert r.status_code == 200, r.text
 
     alpaca = (await call("POST", "/api/live-links", json={
         "name": "Reale A", "kind": "alpaca_live", "key_id": KEY_ID, "secret_key": SECRET,
@@ -515,9 +528,28 @@ async def test_live_canary_keys_never_leak(admin, caplog):
     await call("GET", f"/api/broker-links/{lid}/positions")
     await call("POST", f"/api/broker-links/{lid}/reconcile")
     await call("POST", f"/api/live-links/{lid}/disarm", json={})
+    r = await call("PUT", f"/api/portfolios/{pf['id']}/live-link", json={"link_id": None})
+    assert r.status_code == 200, r.text
+    r = await call("PUT", f"/api/live-links/{lid}/keys", json=T212)
+    assert r.status_code == 200, r.text
+    # refusals with the keys in the body never echo them
+    r = await call("POST", "/api/live-links", json={"name": "X", "kind": "bogus", **T212})
+    assert r.status_code == 400
+    r = await call("POST", "/api/live-links", json={"name": "Reale", "kind": "t212_live",
+                                                    **T212})
+    assert r.status_code == 400  # the name is taken
+    r = await call("PUT", f"/api/live-links/{uuid.uuid4()}/keys", json=T212)
+    assert r.status_code == 404
+    r = await call("POST", "/api/broker-links", json={"name": "Y", "kind": "t212_live",
+                                                      "config": T212})
+    assert r.status_code == 400
     await call("GET", "/api/live-audit")
     await call("GET", "/api/live-audit.csv")
     await call("GET", "/api/live-links")
+    for argv in (("live", "status"), ("live", "disarm", "Reale")):
+        code, out = await _cli(admin, *argv)
+        assert code == 0, out
+        responses.append(out)
 
     seen = "\n".join(responses) + "\n" + await _all_rows_text(admin.sm) + "\n" + caplog.text
     for canary in CANARIES:
@@ -598,7 +630,7 @@ async def test_cli_live_disarm(admin):
     code, out = await _cli(admin, "live", "disarm", link["name"], "--reason", "da shell")
     assert code == 0, out
     assert json.loads(out) == {"name": link["name"], "live_state": "configured",
-                               "orders": 1}
+                               "orders": 1, "settled": True}
     async with admin.sm() as s:
         db_link = await s.get(BrokerLink, uuid.UUID(link["id"]))
         assert db_link.live_state == "configured" and db_link.disarmed_reason == "da shell"
@@ -606,3 +638,88 @@ async def test_cli_live_disarm(admin):
         assert row.actor == "cli"
     code, out = await _cli(admin, "live", "disarm", "Nessuno")
     assert code == 1 and json.loads(out)["error"]["code"] == "NOT_FOUND"
+
+
+async def test_disarm_accepts_any_body_and_caps_the_reason(admin):
+    from smtrading.activity.models import Activity
+
+    link, _ = await _wizard(admin)
+    c = admin.client
+    long_reason = "r" * 500
+    for kwargs in ({}, {"content": b"not json"}, {"json": []}, {"json": {"reason": 5}},
+                   {"json": "testo"}, {"json": {"reason": long_reason}}):
+        r = await c.post(f"/api/live-links/{link['id']}/disarm", **kwargs)
+        assert r.status_code == 200, (kwargs, r.text)
+        assert r.json()["live_state"] == "configured"
+    assert r.json()["disarmed_reason"] == "r" * 200
+    async with admin.sm() as s:
+        rows = list(await s.scalars(select(LiveAudit).where(
+            LiveAudit.action == "disarmed").order_by(LiveAudit.id)))
+        alerts = list(await s.scalars(select(Activity).where(Activity.type == "live.disarmed")))
+    assert rows[0].details["reason"] == "disattivato dall'admin"
+    assert rows[-1].details["reason"] == "r" * 200
+    assert all(long_reason not in (a.summary or "") for a in alerts)
+    assert all(long_reason not in json.dumps(a.data) for a in alerts)
+
+
+async def _unsent_order(admin, link, pf):
+    async with admin.sm() as s:
+        o = Order(portfolio_id=uuid.UUID(pf["id"]), symbol="AAPL", side=OrderSide.buy,
+                  type=OrderType.limit, qty=D(1), limit_price=D(50),
+                  status=OrderStatus.pending, broker_status=BrokerState.TO_SEND,
+                  broker_link_id=uuid.UUID(link["id"]))
+        s.add(o)
+        await s.commit()
+        return o.id
+
+
+async def test_two_phase_disarm_link_stays_disarmed_when_settling_fails(admin, monkeypatch):
+    """R8.12: the state change commits first; a failure while settling the orders leaves
+    the link disarmed, is alerted and audited; disarming again settles them (retry)."""
+    from smtrading.activity.models import Activity
+    from smtrading.brokers.live import service
+
+    link, pf = await _wizard(admin)
+    order_id = await _unsent_order(admin, link, pf)
+
+    async def boom(*a, **kw):
+        raise RuntimeError("settle failed")
+
+    real = service._settle_disarm
+    monkeypatch.setattr(service, "_settle_disarm", boom)
+    r = await admin.client.post(f"/api/live-links/{link['id']}/disarm", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["live_state"] == "configured" and r.json()["settled"] is False
+    async with admin.sm() as s:
+        db_link = await s.get(BrokerLink, uuid.UUID(link["id"]))
+        assert db_link.live_state == "configured" and db_link.armed_at is None
+        assert (await s.get(Order, order_id)).status == OrderStatus.pending
+        alert = await s.scalar(select(Activity).where(Activity.type == "live.disarmed"))
+        assert alert is not None and alert.data.get("settle_failed") is True
+        audit = await s.scalar(select(LiveAudit).where(LiveAudit.action == "disarmed"))
+        assert audit.details.get("settle_failed") is True
+
+    monkeypatch.setattr(service, "_settle_disarm", real)  # retry: disarm again
+    r = await admin.client.post(f"/api/live-links/{link['id']}/disarm", json={})
+    assert r.status_code == 200 and r.json()["settled"] is True and r.json()["orders"] == 1
+    async with admin.sm() as s:
+        o = await s.get(Order, order_id)
+        assert o.status == OrderStatus.rejected and o.reject_code == "LIVE_NOT_ARMED"
+
+
+async def test_cli_disarm_is_two_phase(admin, monkeypatch):
+    from smtrading.brokers.live import service
+
+    link, pf = await _wizard(admin)
+    await _unsent_order(admin, link, pf)
+
+    async def boom(*a, **kw):
+        raise RuntimeError("settle failed")
+
+    monkeypatch.setattr(service, "_settle_disarm", boom)
+    code, out = await _cli(admin, "live", "disarm", link["name"])
+    assert code == 0, out
+    assert json.loads(out) == {"name": link["name"], "live_state": "configured",
+                               "orders": None, "settled": False}
+    async with admin.sm() as s:
+        assert (await s.get(BrokerLink, uuid.UUID(link["id"]))).live_state == "configured"

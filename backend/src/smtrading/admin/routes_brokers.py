@@ -39,7 +39,12 @@ from smtrading.admin.common import (
     secret_values,
 )
 from smtrading.admin.idempotency import Idempotency, idempotent
-from smtrading.admin.routes_live import live_http_factory, request_actor, run_live_test
+from smtrading.admin.routes_live import (
+    LIVE_TIMEOUT_S,
+    live_http_factory,
+    request_actor,
+    run_live_test,
+)
 from smtrading.admin.routes_portfolios import portfolio_dto
 from smtrading.brokers.alpaca_paper import PAPER_URL
 from smtrading.brokers.live import LIVE_KINDS
@@ -273,7 +278,7 @@ async def test_link(
                 await session.commit()  # the live test uses its own sessions
                 await asyncio.wait_for(
                     run_live_test(request, link_id, request_actor(request, admin)),
-                    BROKER_TIMEOUT_S)
+                    LIVE_TIMEOUT_S)
             else:
                 async with httpx.AsyncClient() as http, \
                         open_adapter(session, link_id, http) as adapter:
@@ -300,8 +305,9 @@ async def get_broker_positions(
         async with _client(request, link) as http, \
                 open_adapter(session, link_id, http) as adapter:
             await session.commit()
-            await asyncio.wait_for(adapter.prepare(), BROKER_TIMEOUT_S)
-            positions = await asyncio.wait_for(adapter.get_positions(), BROKER_TIMEOUT_S)
+            timeout = LIVE_TIMEOUT_S if link.kind in LIVE_KINDS else BROKER_TIMEOUT_S
+            await asyncio.wait_for(adapter.prepare(), timeout)
+            positions = await asyncio.wait_for(adapter.get_positions(), timeout)
     except SMTError as e:
         await session.rollback()
         await _record(session, redis, link_id, _error_text(e, secrets))
@@ -394,7 +400,7 @@ async def post_reconcile(
             if live:
                 row = await asyncio.wait_for(
                     reconcile_live(sm, link_id, live_http_factory(request), qs=qs),
-                    BROKER_TIMEOUT_S)
+                    LIVE_TIMEOUT_S)
                 rows = [row] if row is not None else []
             else:
                 async with httpx.AsyncClient() as http:

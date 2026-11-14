@@ -47,7 +47,7 @@ from smtrading.brokers.live.models import LIVE_AUDIT_ACTIONS, LiveAudit, LiveSta
 from smtrading.brokers.live.service import (
     Actor,
     arm_live_link,
-    disarm_live_link,
+    disarm_live_link_now,
     flatten_live_portfolio,
     link_live_portfolio,
     resume_live_portfolio,
@@ -106,10 +106,6 @@ class ArmIn(BaseModel):
     limits_set: bool = False
 
 
-class DisarmIn(BaseModel):
-    reason: str | None = None
-
-
 class LiveLinkIn(BaseModel):
     link_id: UUID | None
     totp: str | None = None
@@ -148,6 +144,12 @@ def _link_secrets(link: BrokerLink) -> list[str]:
         return live_secrets(link.kind, decrypt_live_config(link))
     except SMTError:
         return []
+
+
+def _error_text(e: Exception, secrets: list[str]) -> str:
+    if isinstance(e, TimeoutError):
+        return f"timeout dopo {LIVE_TIMEOUT_S:g} s"
+    return redact(f"{type(e).__name__}: {e}", secrets)[:300]
 
 
 def _redacted(e: SMTError, secrets: list[str]) -> SMTError:
@@ -224,7 +226,7 @@ async def put_live_keys(link_id: UUID, body: LiveKeysIn, request: Request,
     """New keys: the link goes back to `configured` (disarmed first if it was armed)."""
     async with _transaction(session, redis):
         link = await _live_link(session, link_id)
-        await save_live_keys(session, name=body.name or link.name, kind=body.kind or link.kind,
+        await save_live_keys(session, name=body.name or link.name, kind=link.kind,
                              config=body.config(), actor=request_actor(request, admin),
                              link_id=link_id)
     return await _fresh_dto(session, link_id)
@@ -242,9 +244,9 @@ async def post_live_test(link_id: UUID, request: Request, admin: CurrentAdmin,
             run_live_test(request, link_id, request_actor(request, admin)), LIVE_TIMEOUT_S)
     except SMTError as e:
         raise _redacted(e, secrets) from None
-    except TimeoutError:
+    except Exception as e:  # noqa: BLE001 - answered redacted, never with the keys
         raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE,
-                       f"test del collegamento non riuscito: timeout dopo {LIVE_TIMEOUT_S:g} s",
+                       f"test del collegamento non riuscito: {_error_text(e, secrets)}",
                        {"link_id": str(link_id)}) from None
 
 
@@ -271,15 +273,28 @@ async def post_arm(link_id: UUID, body: ArmIn, request: Request, admin: CurrentA
 
 @router.post("/live-links/{link_id}/disarm")
 async def post_disarm(link_id: UUID, request: Request, admin: CurrentAdmin,
-                      session: DbSession, redis: RedisClient,
-                      body: DisarmIn | None = None) -> dict:
-    """«Disattiva denaro reale»: one click, no TOTP."""
-    reason = ((body.reason if body else None) or "").strip() or DISARM_REASON
-    async with _transaction(session, redis):
-        await _live_link(session, link_id)
-        orders = await disarm_live_link(session, link_id, actor=request_actor(request, admin),
-                                        reason=reason)
-    return {**await _fresh_dto(session, link_id), "orders": orders}
+                      session: DbSession, redis: RedisClient) -> dict:
+    """«Disattiva denaro reale»: one click, no TOTP, any body (an optional JSON
+    `{"reason": "..."}`: a reason that is not a text is ignored). Two phases (R8.12): the
+    link is `configured` once this answers, `settled` false if its orders could not be
+    settled (alerted; disarm again to retry)."""
+    reason = await _disarm_reason(request)
+    await _live_link(session, link_id)  # 404 before anything changes
+    await session.commit()
+    orders = await disarm_live_link_now(request.app.state.sessionmaker, link_id,
+                                        actor=request_actor(request, admin), reason=reason,
+                                        redis=redis)
+    return {**await _fresh_dto(session, link_id), "orders": orders,
+            "settled": orders is not None}
+
+
+async def _disarm_reason(request: Request) -> str:
+    try:
+        data = json.loads(await request.body() or b"null")
+    except (ValueError, UnicodeDecodeError):
+        data = None
+    reason = data.get("reason") if isinstance(data, dict) else None
+    return (reason.strip() if isinstance(reason, str) else "") or DISARM_REASON
 
 
 # --- the real portfolio ------------------------------------------------------------------

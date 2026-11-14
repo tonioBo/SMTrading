@@ -77,7 +77,7 @@ from smtrading.engine.models import (
 )
 from smtrading.engine.quotesource import QuoteSource
 from smtrading.engine.service import reject_broker_order
-from smtrading.events import POST_COMMIT_KEY, queue_event
+from smtrading.events import POST_COMMIT_KEY, dispatch_post_commit, queue_event
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.portfolios.locks import lock_broker_link, lock_live_portfolio, lock_portfolio
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
@@ -94,6 +94,7 @@ TELEGRAM_TEST_MAX_AGE = timedelta(hours=24)
 KEYS_REPLACED_REASON = "chiavi sostituite"
 ACCOUNT_CHANGED_REASON = "conto cambiato"
 DISARMED_MESSAGE = "denaro reale disattivato"
+DISARM_REASON_MAX = 200
 TOTP_REQUIRED_MESSAGE = "Attiva prima l'autenticazione a due fattori"
 NOT_DEDICATED_MESSAGE = "Il conto non è dedicato: chiudi posizioni e ordini dall'app del broker"
 CASH_ACCOUNT_MESSAGE = "Il conto Alpaca deve essere un conto cash (senza margine)"
@@ -469,18 +470,24 @@ async def arm_live_link(
     return link
 
 
-async def disarm_live_link(session: AsyncSession, link_id: uuid.UUID, *,
-                           actor: Actor | str, reason: str, alert: bool = True) -> int:
-    """«Disattiva denaro reale»: one click, no TOTP. Back to `configured`; the open orders
-    already at (or maybe at) the broker get a cancellation request (BrokerSync sends the
-    DELETE, which the gate always lets through), the ones never sent are rejected with
-    LIVE_NOT_ARMED through engine.service.reject_broker_order (their held bracket
-    children canceled, notified, untracked) with a `live.order.rejected` each. Held
-    children of an entry at the broker stay with it (BrokerSync settles them). Lock order
-    (R8.9): link, portfolios, orders. `alert=False`: the caller sends its own alert (an
-    account change). Returns how many orders it touched."""
-    link = await _live_link(session, link_id)
-    previous = link.live_state
+def _disarm_reason(reason: object) -> str:
+    """The disarm reason as stored, audited and alerted: text, at most 200 characters."""
+    text = reason.strip() if isinstance(reason, str) else ""
+    return (text or DISARMED_MESSAGE)[:DISARM_REASON_MAX]
+
+
+def _mark_disarmed(link: BrokerLink, reason: str, now: datetime) -> None:
+    link.live_state = LiveState.configured
+    link.armed_at = None
+    link.disarmed_at = now
+    link.disarmed_reason = reason
+
+
+async def _settle_disarm(session: AsyncSession, link: BrokerLink, *, actor: Actor | str,
+                         reason: str, previous: str | None, alert: bool) -> int:
+    """The orders of a disarmed link (locked by the caller): the ones at (or maybe at)
+    the broker get a cancellation request, the ones never sent are rejected; then the
+    `disarmed` audit row and (with `alert`, from armed/dry_run) the alert."""
     portfolios = await _linked_portfolios(session, link.id)
     for p in portfolios:
         await lock_portfolio(session, p.id)  # lock order: link, portfolio, its orders
@@ -509,9 +516,6 @@ async def disarm_live_link(session: AsyncSession, link_id: uuid.UUID, *,
             await reject_broker_order(session, o, ErrorCode.LIVE_NOT_ARMED, DISARMED_MESSAGE)
             await record_live_order_activity(session, o, "rejected", message=DISARMED_MESSAGE)
             touched += 1
-    link.live_state = LiveState.configured
-    link.disarmed_at = now
-    link.disarmed_reason = reason[:200]
     await session.flush()
     portfolio_id = portfolios[0].id if portfolios else None
     await record_live_audit(session, action="disarmed", link_id=link.id,
@@ -523,6 +527,79 @@ async def disarm_live_link(session: AsyncSession, link_id: uuid.UUID, *,
                          portfolio_id=portfolio_id, link_id=link.id,
                          data={"link_name": link.name, "reason": reason, "orders": touched})
     return touched
+
+
+async def disarm_live_link(session: AsyncSession, link_id: uuid.UUID, *,
+                           actor: Actor | str, reason: str, alert: bool = True) -> int:
+    """«Disattiva denaro reale» inside the caller's transaction (key replacement, account
+    change): one click, no TOTP. Back to `configured`; the open orders already at (or
+    maybe at) the broker get a cancellation request (BrokerSync sends the DELETE, which
+    the gate always lets through), the ones never sent are rejected with LIVE_NOT_ARMED
+    through engine.service.reject_broker_order (their held bracket children canceled,
+    notified, untracked) with a `live.order.rejected` each. Held children of an entry at
+    the broker stay with it (BrokerSync settles them). Lock order (R8.9): link,
+    portfolios, orders. `alert=False`: the caller sends its own alert (an account
+    change). Returns how many orders it touched. The admin and the CLI use the two-phase
+    `disarm_live_link_now`."""
+    reason = _disarm_reason(reason)
+    link = await _live_link(session, link_id)
+    previous = link.live_state
+    _mark_disarmed(link, reason, _now())
+    await session.flush()
+    return await _settle_disarm(session, link, actor=actor, reason=reason,
+                                previous=previous, alert=alert)
+
+
+async def disarm_live_link_now(sessionmaker: async_sessionmaker, link_id: uuid.UUID, *,
+                               actor: Actor | str, reason: object, redis=None) -> int | None:
+    """The admin's and the CLI's disarm, in two phases (R8.12):
+
+    1. its own short transaction puts the link in `configured` and commits first: from
+       then on the live gate refuses every order POST and BrokerSync claims nothing;
+    2. another transaction settles the orders, the audit row and the alert. If it fails
+       the link stays disarmed: the failure is logged, audited (`settle_failed`) and
+       alerted, and None is returned. The never-sent orders are rejected by BrokerSync
+       anyway (LIVE_NOT_ARMED when it would claim them); disarming again (idempotent)
+       retries the settlement and the cancellation requests.
+
+    Returns how many orders phase 2 touched. Effects are dispatched with `redis`."""
+    reason = _disarm_reason(reason)
+    async with sessionmaker() as session:
+        link = await _live_link(session, link_id)
+        previous = link.live_state
+        name = link.name
+        _mark_disarmed(link, reason, _now())
+        await session.commit()
+    try:
+        async with sessionmaker() as session:
+            link = await _live_link(session, link_id)
+            touched = await _settle_disarm(session, link, actor=actor, reason=reason,
+                                           previous=previous, alert=True)
+            await session.commit()
+            await _dispatch(session, redis)
+        return touched
+    except Exception:
+        log.exception("live link %s disarmed, but settling its orders failed", link_id)
+    async with sessionmaker() as session:
+        await record_live_audit(session, action="disarmed", link_id=link_id, **_who(actor),
+                                details={"reason": reason, "from": previous,
+                                         "settle_failed": True})
+        await live_alert(
+            session, kind="disarmed",
+            summary=(f"Denaro reale disattivato su {name}: {reason}. Sistemazione degli"
+                     " ordini non riuscita: ripeti «Disattiva denaro reale»"),
+            portfolio_id=None, link_id=link_id,
+            data={"link_name": name, "reason": reason, "settle_failed": True})
+        await session.commit()
+        await _dispatch(session, redis)
+    return None
+
+
+async def _dispatch(session: AsyncSession, redis) -> None:
+    try:
+        await dispatch_post_commit(session, redis)
+    except Exception:
+        log.exception("live disarm: post-commit effects failed")
 
 
 # -- the real portfolio ----------------------------------------------------------------

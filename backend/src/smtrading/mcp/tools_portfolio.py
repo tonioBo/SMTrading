@@ -28,7 +28,7 @@ from smtrading.mcp.dto import (
 )
 from smtrading.mcp.runtime import ToolCtx, run_tool
 from smtrading.performance import service as performance
-from smtrading.portfolios.mode import PortfolioMode, mode_fields
+from smtrading.portfolios.mode import PortfolioMode, mode_fields, portfolio_links
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.queries import day_pnl, list_portfolio_journals, today_day_open
 from smtrading.risk.daily_loss import net_cash_flows_eur
@@ -69,20 +69,23 @@ async def _valuation(ctx: ToolCtx, portfolio: Portfolio) -> PortfolioValuation:
     return await value_portfolio(ctx.session, ctx.qs, portfolio.id, redis=ctx.redis)
 
 
-async def _mode_field(ctx: ToolCtx, portfolio: Portfolio) -> dict[str, Any]:
+async def _mode_field(ctx: ToolCtx, portfolio: Portfolio, link: BrokerLink | None = None,
+                      *, hide: bool | None = None) -> dict[str, Any]:
     """`{"mode", "live_state"}`, or nothing for a portfolio that is not `reale` (an armed
     real-money link) while the admin setting `mcp_hide_mode` is on: agents must not learn
-    that a portfolio is simulated, paper or a real-money link that sends nothing."""
-    link = (await ctx.session.get(BrokerLink, portfolio.broker_link_id)
-            if portfolio.broker_link_id is not None else None)
+    that a portfolio is simulated, paper or a real-money link that sends nothing.
+    `link`/`hide`: already loaded by the caller (otherwise read here)."""
+    if link is None and portfolio.broker_link_id is not None:
+        link = await ctx.session.get(BrokerLink, portfolio.broker_link_id)
     fields = mode_fields(portfolio, link)
-    if fields["mode"] != PortfolioMode.reale and await get_mcp_hide_mode(ctx.session):
+    if fields["mode"] != PortfolioMode.reale and (
+            hide if hide is not None else await get_mcp_hide_mode(ctx.session)):
         return {}
     return fields
 
 
 async def _list_portfolios(ctx: ToolCtx) -> list[dict]:
-    rows = await ctx.session.execute(
+    rows = (await ctx.session.execute(
         select(Portfolio, AgentPortfolio.permission)
         .join(AgentPortfolio, AgentPortfolio.portfolio_id == Portfolio.id)
         .where(
@@ -90,17 +93,19 @@ async def _list_portfolios(ctx: ToolCtx) -> list[dict]:
             Portfolio.status != PortfolioStatus.archived,  # invisible to agents (Task 13)
         )
         .order_by(Portfolio.name)
-    )
+    )).all()
+    links = await portfolio_links(ctx.session, [p for p, _ in rows])
+    hide = await get_mcp_hide_mode(ctx.session)
     return [
         {
             "id": p.id,
             "name": p.name,
             "base_currency": p.base_currency,
             "status": p.status,
-            **await _mode_field(ctx, p),
+            **await _mode_field(ctx, p, links.get(p.broker_link_id), hide=hide),
             "permission": permission,
         }
-        for p, permission in rows.all()
+        for p, permission in rows
     ]
 
 
