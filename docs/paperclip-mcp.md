@@ -184,7 +184,7 @@ README).
 - **Nessun metodo MCP attiva, collega, scollega o disattiva conti reali**, ne' toglie un
   reduce-only automatico del denaro reale o chiude tutte le posizioni reali: lo fa solo
   l'admin dal portale (attivazione, collegamento, ripresa e chiusura con TOTP) o, per la
-  sola disattivazione, con `smtrading live disarm`. I token degli agenti non hanno alcun
+  sola disattivazione, con `python -m smtrading.cli live disarm`. I token degli agenti non hanno alcun
   permesso in piu' per i portafogli reali.
 - **Il kill switch blocca anche le chiusure**: su un portafoglio reale ogni invio e'
   rifiutato con `KILL_SWITCH_ACTIVE`, compresi `close_position`, `close_all_positions` e gli

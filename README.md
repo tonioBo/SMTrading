@@ -187,8 +187,8 @@ sono vere) → `armed` (denaro reale). Chiavi sostituite o conto diverso al test
 - **Kill switch** (intestazione): sui portafogli reali blocca **ogni** invio, anche le
   chiusure; passano solo le cancellazioni e gli ordini di «Chiudi tutte le posizioni reali».
 - **Da riga di comando**, anche senza interfaccia web:
-  `docker compose exec -T api smtrading live disarm "<nome collegamento>" --reason "<motivo>"`
-  (nessun TOTP); `docker compose exec -T api smtrading live status` elenca i collegamenti.
+  `docker compose exec -T api python -m smtrading.cli live disarm "<nome collegamento>" --reason "<motivo>"`
+  (nessun TOTP); `docker compose exec -T api python -m smtrading.cli live status` elenca i collegamenti.
 - **«Chiudi tutte le posizioni reali»** (dettaglio del portafoglio, TOTP): ordini a mercato
   reduce-only, ammessi anche con il kill switch acceso.
 - L'**app del broker** resta sempre l'ultima risorsa.
