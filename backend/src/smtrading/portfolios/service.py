@@ -50,11 +50,18 @@ def set_portfolio_status(
             and is_live_reason(portfolio.reduce_only_reason)):
         if not allow_live:
             raise _live_resume_refused(portfolio.id)
-        session.sync_session.info.setdefault(_LIVE_RESUME_KEY, set()).add(portfolio.id)
+        allow_live_resume(session, portfolio)
     portfolio.status = status
     if status == PortfolioStatus.active:
         portfolio.reduce_only_reason = None
         portfolio.reduce_only_until = None
+
+
+def allow_live_resume(session: AsyncSession, portfolio: Portfolio) -> None:
+    """Lets the next flush take the live reason away from `portfolio` (the TOTP resume
+    only: brokers.live.service.resume_live_portfolio, via set_portfolio_status or when it
+    restores the lock found by the live anomaly)."""
+    session.sync_session.info.setdefault(_LIVE_RESUME_KEY, set()).add(portfolio.id)
 
 
 _UNKNOWN = object()

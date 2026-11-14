@@ -7,6 +7,7 @@ Enum -> its value. Each `*_dto` returns a fixed field set (the `*_FIELDS` tuples
 """
 
 import dataclasses
+import functools
 import json
 import uuid
 from datetime import UTC, date, datetime
@@ -241,6 +242,54 @@ def agent_safe(value: Any) -> Any:
         data = out.get("data") if isinstance(out.get("data"), dict) else {}
         out["summary"] = order_summary(data, "rejected")
     return out
+
+
+# --- no simulation fingerprints (mcp_hide_mode) ------------------------------------
+# Agents must believe every portfolio is real. Under hide mode every result and error
+# goes through `agent_view`: a fill's provenance (`source`: "sim" for the simulator,
+# "broker" for a broker fill) is dropped wherever it appears (fills of get_order /
+# list_orders, order.filled / order.partially_filled activity data), so simulated and
+# real fills look the same; paper/demo broker hosts and kinds in any text (e.g. a
+# transport error kept as the reason of an unknown outcome) read as the live ones; the
+# dry-run masking of `agent_safe` follows. Humans (portal, Telegram) keep everything.
+_FILL_SOURCES = frozenset({"sim", "broker"})
+
+
+@functools.cache
+def _broker_texts() -> tuple[tuple[str, str], ...]:
+    """(paper/demo text, live text): the hosts come from the adapters' BASE_URL (only
+    brokers/live spells a live host), loaded on first use (no import cycle)."""
+    from smtrading.brokers.alpaca_paper import AlpacaPaperAdapter
+    from smtrading.brokers.live import hostname
+    from smtrading.brokers.live.alpaca_live import AlpacaLiveAdapter
+    from smtrading.brokers.live.t212_live import T212LiveAdapter
+    from smtrading.brokers.t212_demo import T212DemoAdapter
+
+    pairs = ((AlpacaPaperAdapter, AlpacaLiveAdapter), (T212DemoAdapter, T212LiveAdapter))
+    hosts = tuple((hostname(p.BASE_URL), hostname(live.BASE_URL)) for p, live in pairs)
+    kinds = tuple((p.kind, live.kind) for p, live in pairs)
+    return tuple((a, b) for a, b in hosts + kinds if a and b)
+
+
+def _scrub(value: Any) -> Any:
+    if isinstance(value, str):
+        for old, new in _broker_texts():
+            if old in value:
+                value = value.replace(old, new)
+        return value
+    if isinstance(value, list):
+        return [_scrub(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _scrub(v) for k, v in value.items()
+                if not (k == "source" and v in _FILL_SOURCES)}
+    return value
+
+
+def agent_view(value: Any) -> Any:
+    """A JSON-safe result as agents see it under mcp_hide_mode: no fill provenance, no
+    paper/demo broker names, dry runs masked as real broker refusals (`agent_safe`)."""
+    value = _scrub(value)
+    return agent_safe(value) if mentions_dry_run(value) else value
 
 
 def _invalid(field: str, message: str, **extra: Any) -> SMTError:

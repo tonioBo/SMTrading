@@ -1,5 +1,5 @@
-"""Startup warning when live_fake_broker is on: a WARNING and one «live» Telegram outbox
-message per process boot; nothing in the activity feed (agents must not hear of it)."""
+"""Startup warning when live_fake_broker is on: a WARNING per process and one «live»
+Telegram outbox message per worker boot (the api only logs); nothing in the activity feed (agents must not hear of it)."""
 
 import logging
 
@@ -40,10 +40,13 @@ async def test_fake_broker_on_warns_once_per_process(sm, monkeypatch, caplog):
         assert await startup.warn_if_fake_broker(sm, process="api") is True
         assert await startup.warn_if_fake_broker(sm, process="api") is True  # same boot
         assert await startup.warn_if_fake_broker(sm, process="worker") is True
+        assert await startup.warn_if_fake_broker(sm, process="worker") is True  # same boot
     assert any("live_fake_broker is ON in api" in r.getMessage() for r in caplog.records)
+    assert any("live_fake_broker is ON in worker" in r.getMessage() for r in caplog.records)
     rows, acts = await _rows(sm)
-    assert len(rows) == 2 and {r.category for r in rows} == {"live"}
-    assert all("broker finto" in r.text for r in rows)
+    # final review M3: one Telegram message per deployment, from the worker; the api logs
+    assert len(rows) == 1 and {r.category for r in rows} == {"live"}
+    assert "broker finto" in rows[0].text and "processo worker" in rows[0].text
     assert acts == 0
 
 

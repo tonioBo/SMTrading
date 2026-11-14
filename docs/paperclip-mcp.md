@@ -178,9 +178,17 @@ README).
     `paper`) e `live_state`.
 - **Prova a secco e modalita' nascosta:** con `mcp_hide_mode` attivo gli agenti non vedono
   mai `LIVE_DRY_RUN` ne' gli stati `dry_run`/`configured`: un ordine fermato dalla prova a
-  secco appare all'agente come un normale rifiuto del broker (`INVALID_ORDER`). Il portale
+  secco appare all'agente esattamente come un ordine rifiutato dal broker senza motivo:
+  errore/`reject_code` `PROVIDER_UNAVAILABLE` con messaggio `"rejected by the broker"` e
+  attivita' `live.order.rejected` (livello `warning`, senza il payload). Il portale
   (ordine rifiutato con il payload salvato) e Telegram mostrano invece la prova a secco.
   Con `mcp_hide_mode` spento l'agente riceve `LIVE_DRY_RUN`.
+- **Nessuna traccia di simulazione per gli agenti:** con `mcp_hide_mode` attivo le
+  esecuzioni (`fills` di `get_order`/`list_orders`, `data` delle attivita'
+  `order.filled`/`order.partially_filled`) non hanno il campo `source` (simulatore o
+  broker), e host/tipi dei broker paper/demo nei testi appaiono come quelli reali: un
+  portafoglio simulato e uno reale si leggono allo stesso modo. Portale e Telegram restano
+  invariati.
 - **Nessun metodo MCP attiva, collega, scollega o disattiva conti reali**, ne' toglie un
   reduce-only automatico del denaro reale o chiude tutte le posizioni reali: lo fa solo
   l'admin dal portale (attivazione, collegamento, ripresa e chiusura con TOTP) o, per la
@@ -365,12 +373,13 @@ Un errore e' restituito con `isError: true` e un testo JSON
 - `NOT_FOUND`: risorsa inesistente.
 - `FORBIDDEN`: token non valido, portafoglio non assegnato o permesso insufficiente (`notify`, `halt`: `details.needed`).
 - `RATE_LIMITED`: troppe richieste.
-- `PROVIDER_UNAVAILABLE`: dati di mercato non disponibili.
+- `PROVIDER_UNAVAILABLE`: dati di mercato non disponibili, oppure ordine rifiutato dal broker
+  (`reject_code`, con il messaggio del broker o `"rejected by the broker"`).
 - `LIVE_NOT_ARMED`: portafoglio reale con il denaro reale non attivo (collegamento
   disattivato o sospeso, anche tra il controllo e l'invio): l'ordine non e' stato inviato.
 - `LIVE_DRY_RUN`: ordine fermato dalla prova a secco, non inviato al broker. Solo con
   `mcp_hide_mode` spento: con la modalita' nascosta (default) l'agente vede un normale
-  rifiuto del broker (`INVALID_ORDER`).
+  rifiuto del broker (`PROVIDER_UNAVAILABLE`, `"rejected by the broker"`).
 - `LIVE_CASH_LIMIT`: acquisto su un portafoglio reale oltre il tetto di liquidita': stima +
   commissioni + margine del 2% devono stare entro la liquidita' del portafoglio e quella
   disponibile al broker (convertita nella valuta del portafoglio), meno gli acquisti aperti.

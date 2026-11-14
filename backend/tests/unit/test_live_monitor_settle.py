@@ -32,3 +32,31 @@ async def test_settle_retry_failure_does_not_stop_the_tick(monkeypatch):
 
     monkeypatch.setattr(monitor_mod, "settle_disarm_leftovers", boom)
     await LiveMonitor(sessionmaker=None)._settle_disarms()  # logged, no raise
+
+
+async def test_settle_retry_runs_at_most_once_a_minute(monkeypatch):
+    """Final review M2: the retry pass is bounded (once a minute, not every 5 s tick)."""
+    from datetime import UTC, datetime, timedelta
+
+    class _Stop(Exception):
+        pass
+
+    def no_db():  # the reconciliation part of the tick is not under test
+        raise _Stop
+
+    start = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
+    t = [start]
+    calls = []
+
+    async def fake_settle_pass(self):
+        calls.append(int((t[0] - start).total_seconds()))
+
+    monkeypatch.setattr(LiveMonitor, "_settle_disarms", fake_settle_pass)
+    m = LiveMonitor(sessionmaker=no_db, clock=lambda: t[0])
+    for dt in (0, 5, 30, 59, 60, 65, 125):
+        t[0] = start + timedelta(seconds=dt)
+        try:
+            await m.tick()
+        except _Stop:
+            pass
+    assert calls == [0, 60, 125]

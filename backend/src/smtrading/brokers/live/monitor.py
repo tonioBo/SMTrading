@@ -19,9 +19,10 @@ seen). The link's live_state never changes for health. The per-link state (last 
 failure counts, alert flags) is dropped for links no longer live and enabled, and the
 failure/alert state also when no portfolio is linked any more.
 
-Every tick first retries the settlement of a disarm whose phase 2 failed
-(service.settle_disarm_leftovers: a `configured` link whose portfolios still have orders
-from the armed period), alerted once per link until nothing is left on it.
+At most every AUTO_SETTLE_EVERY a tick first retries the settlement of a disarm whose
+phase 2 failed (service.settle_disarm_leftovers: a `configured` link whose portfolios
+still have orders from the armed period, disarmed over a minute ago or with a failed
+settlement), alerted once per link until nothing is left on it.
 
 Single writer: `run` holds a Postgres advisory lock on a dedicated connection (as
 BrokerSync); a worker that cannot take it skips its ticks. Broker I/O never happens
@@ -64,6 +65,7 @@ CREDENTIALS_SUMMARY = "credenziali rifiutate dal broker: controlla le chiavi"
 RATE_LIMIT_ALERT_AFTER = timedelta(minutes=15)
 RATE_LIMIT_SUMMARY = "limite di frequenza del broker da oltre 15 minuti: conto non verificato"
 MONITOR_FAILED_SUMMARY = "controllo del conto reale non riuscito (errore interno)"
+AUTO_SETTLE_EVERY = timedelta(seconds=60)  # bounds the disarm settlement retries
 
 
 class LiveMonitor:
@@ -84,6 +86,7 @@ class LiveMonitor:
         self._auth_alerted: set[UUID] = set()
         self._rate_limited: dict[UUID, tuple[datetime, bool]] = {}  # since, alerted
         self._settle_alerted: set[UUID] = set()  # auto-settled disarms, alerted once
+        self._settle_at: datetime | None = None  # the last settlement retry pass
 
     async def run(self) -> None:
         engine = self._sm.kw["bind"]
@@ -124,7 +127,10 @@ class LiveMonitor:
     async def tick(self) -> int:
         """Settle the leftovers of failed disarms, then reconcile the due live links;
         returns how many were reconciled."""
-        await self._settle_disarms()
+        started = self._clock()
+        if self._settle_at is None or started - self._settle_at >= AUTO_SETTLE_EVERY:
+            self._settle_at = started
+            await self._settle_disarms()
         now = self._clock()
         async with self._sm() as session:
             db_now = await session.scalar(select(func.now()))

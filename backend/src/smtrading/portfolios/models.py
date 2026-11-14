@@ -48,6 +48,10 @@ class Portfolio(Base):
     archived_by: Mapped[str | None] = mapped_column(String(128))
     # the status to restore on unarchive (active, reduce_only or locked)
     archived_prior_status: Mapped[str | None] = mapped_column(String(32))
+    # R8.13: a locked portfolio a live anomaly was recorded on keeps its lock here (status
+    # "locked" and the reason the live one replaced); the TOTP resume restores it
+    live_prior_status: Mapped[str | None] = mapped_column(String(16))
+    live_prior_reason: Mapped[str | None] = mapped_column(String(64))
 
 
 def live_portfolio_ids() -> Select:

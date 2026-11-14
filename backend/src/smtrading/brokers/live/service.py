@@ -39,7 +39,7 @@ from typing import Any
 
 import httpx
 from redis.asyncio import Redis
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.admin.auth import _check_totp
@@ -58,7 +58,7 @@ from smtrading.brokers.live.account import (
 )
 from smtrading.brokers.live.audit import record_live_audit
 from smtrading.brokers.live.gate import LiveClient, make_live_client
-from smtrading.brokers.live.models import LiveState
+from smtrading.brokers.live.models import LiveAudit, LiveState
 from smtrading.brokers.live.protect import (
     live_alert,
     record_live_order_activity,
@@ -83,7 +83,12 @@ from smtrading.events import POST_COMMIT_KEY, dispatch_post_commit, queue_event
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.portfolios.locks import lock_broker_link, lock_live_portfolio, lock_portfolio
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
-from smtrading.portfolios.service import get_cash_balances, is_live_reason, set_portfolio_status
+from smtrading.portfolios.service import (
+    allow_live_resume,
+    get_cash_balances,
+    is_live_reason,
+    set_portfolio_status,
+)
 from smtrading.positions.models import Position
 from smtrading.risk.models import RiskProfile
 from smtrading.telegram.config import is_ready, load_config
@@ -630,6 +635,21 @@ def _leftover_filter(link_id: uuid.UUID):
 
 
 AUTO_SETTLE_REASON = "sistemazione automatica dopo la disattivazione"
+# a disarm settles its own orders (phase 2) right after phase 1: the automatic retry
+# waits this long, unless the last `disarmed` audit says the settlement failed
+AUTO_SETTLE_GRACE = timedelta(seconds=60)
+
+
+def _settle_due(link_id):
+    """SQL: the link's disarm is old enough for the automatic retry, or its last
+    `disarmed` audit row records a failed settlement (`settle_failed`)."""
+    last_failed = (
+        select(LiveAudit.details["settle_failed"].as_boolean())
+        .where(LiveAudit.link_id == link_id, LiveAudit.action == "disarmed")
+        .order_by(LiveAudit.id.desc()).limit(1).scalar_subquery())
+    return or_(BrokerLink.disarmed_at.is_(None),
+               BrokerLink.disarmed_at < func.now() - AUTO_SETTLE_GRACE,
+               last_failed.is_(True))
 
 
 async def settle_disarm_leftovers(sessionmaker: async_sessionmaker, *, redis=None,
@@ -638,7 +658,9 @@ async def settle_disarm_leftovers(sessionmaker: async_sessionmaker, *, redis=Non
     """Automatic retry of a failed disarm settlement (R8.12): every `configured` link
     whose portfolios still have orders from the armed period (claimed, sent or never
     sent, `_leftover_filter`) is settled through `_settle_disarm`, as a second «Disattiva
-    denaro reale» would (idempotent: checked again under the link lock). One alert per
+    denaro reale» would (idempotent: checked again under the link lock). Only a disarm
+    older than AUTO_SETTLE_GRACE or whose settlement failed (`_settle_due`): a disarm
+    still settling its own orders (phase 2) is never raced nor alerted twice. One alert per
     settlement when `alert(link_id)` is true (the caller keeps it to one per episode).
     A failure is logged and left for the next pass. Returns the links settled."""
     async with sessionmaker() as session:
@@ -646,6 +668,7 @@ async def settle_disarm_leftovers(sessionmaker: async_sessionmaker, *, redis=Non
             select(BrokerLink.id).where(
                 BrokerLink.live_state == LiveState.configured,
                 select(Order.id).where(*_leftover_filter(BrokerLink.id)).exists(),
+                _settle_due(BrokerLink.id),
             ).order_by(BrokerLink.name)))
         await session.commit()
     settled: list[uuid.UUID] = []
@@ -654,7 +677,9 @@ async def settle_disarm_leftovers(sessionmaker: async_sessionmaker, *, redis=Non
             async with sessionmaker() as session:
                 link = await _live_link(session, link_id)
                 if link.live_state != LiveState.configured or await session.scalar(
-                        select(Order.id).where(*_leftover_filter(link_id)).limit(1)) is None:
+                        select(Order.id).where(*_leftover_filter(link_id)).limit(1)) is None \
+                        or await session.scalar(select(BrokerLink.id).where(
+                            BrokerLink.id == link_id, _settle_due(link_id))) is None:
                     await session.commit()
                     continue
                 touched = await _settle_disarm(session, link, actor="system",
@@ -761,9 +786,11 @@ async def resume_live_portfolio(
     session: AsyncSession, redis: Redis, portfolio_id: uuid.UUID, *, admin: AdminUser,
     totp: str | None, actor: Actor,
 ) -> Portfolio:
-    """«Ho verificato, riprendi»: a portfolio put in reduce-only by a live anomaly, or a
-    locked one a live anomaly was recorded on (trip_reduce_only, R8.13), goes back to
-    `active` (TOTP). The only path that may (set_portfolio_status allow_live)."""
+    """«Ho verificato, riprendi»: a portfolio put in reduce-only by a live anomaly goes
+    back to `active` (TOTP); a locked one a live anomaly was recorded on
+    (trip_reduce_only, R8.13) goes back to the lock it had before (`locked` with the
+    admin's or the risk engine's reason, live_prior_*), or to `active` when none was
+    recorded. The only path that may (set_portfolio_status allow_live)."""
     _require_totp_enabled(admin)
     pf = await lock_live_portfolio(session, portfolio_id)
     if (pf.status not in (PortfolioStatus.reduce_only, PortfolioStatus.locked)
@@ -772,12 +799,20 @@ async def resume_live_portfolio(
                        "status")
     await _verify_totp(redis, admin, totp)
     reason = pf.reduce_only_reason
-    set_portfolio_status(session, pf, PortfolioStatus.active, allow_live=True)
+    details: dict[str, Any] = {"reason": reason}
+    if (pf.status == PortfolioStatus.locked
+            and pf.live_prior_status == PortfolioStatus.locked.value):
+        allow_live_resume(session, pf)  # back to the lock found by the live anomaly
+        pf.reduce_only_reason, pf.reduce_only_until = pf.live_prior_reason, None
+        details["restored"] = {"status": pf.status, "reason": pf.reduce_only_reason}
+    else:
+        set_portfolio_status(session, pf, PortfolioStatus.active, allow_live=True)
+    pf.live_prior_status = pf.live_prior_reason = None
     await session.flush()
     queue_event(session, "portfolio.status", {"portfolio_id": pf.id, "status": pf.status})
     if pf.broker_link_id is not None:
         await record_live_audit(session, action="resumed", link_id=pf.broker_link_id,
-                                portfolio_id=pf.id, **_who(actor), details={"reason": reason})
+                                portfolio_id=pf.id, **_who(actor), details=details)
     else:
         log.warning("live portfolio %s resumed without a link: no live audit", pf.id)
     return pf

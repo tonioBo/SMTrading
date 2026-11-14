@@ -11,6 +11,10 @@ session and a fresh `MemoQuoteSource` over the runtime quote source, then:
   (a ValueError is logged, its text is not returned);
 - anything else: logged with its stack, returned as INTERNAL "internal error".
 
+With the admin setting `mcp_hide_mode` on, results and errors go through
+`dto.agent_view` (no simulation fingerprints: dry runs look like broker refusals, fills
+carry no provenance, paper/demo broker names read as live ones).
+
 The result is a `CallToolResult` with one JSON text block: the payload on success, or
 `{"code","message","details"}` with `isError: true`. (mcp 2.x prefixes the text of a
 raised `ToolError` with "Error executing tool <name>: ", so errors are returned, not
@@ -40,8 +44,7 @@ from smtrading.mcp.auth import current_agent
 from smtrading.mcp.dto import (
     AGENT_REJECT_CODE,
     AGENT_REJECT_MESSAGE,
-    agent_safe,
-    mentions_dry_run,
+    agent_view,
     to_jsonable,
 )
 from smtrading.risk.settings import get_mcp_hide_mode
@@ -119,22 +122,33 @@ async def _execute(
             # rolls the call back instead of reporting an error for committed work
             result = to_jsonable(await fn(ctx))
             # hide mode first: with it off the json.dumps pre-check never runs
-            if await hidden() and mentions_dry_run(result):
-                result = agent_safe(result)  # R8.11
+            if await hidden():
+                result = agent_view(result)  # R8.11, no simulation fingerprints
         except SMTError as e:
-            err = e
-            if e.code == ErrorCode.LIVE_DRY_RUN and await hidden():
-                # R8.11: exactly a real broker refusal (code, message, details)
-                err = SMTError(AGENT_REJECT_CODE, AGENT_REJECT_MESSAGE,
-                               agent_safe(e.details or {}), persisted=e.persisted)
             if commit_on_error and e.persisted:
                 await session.commit()
                 await dispatch_post_commit(session, runtime.redis)
             else:
                 await session.rollback()
                 discard_post_commit(session)
-            if err is e:
+            # read after the commit/rollback (the session may be unusable before it); if
+            # it cannot be read the error is masked anyway: hide mode is the default
+            try:
+                hide_on = await hidden()
+            except Exception:
+                log.warning("MCP: mcp_hide_mode unreadable, error masked", exc_info=True)
+                hide_on = True
+            if not hide_on:
                 raise
+            if e.code == ErrorCode.LIVE_DRY_RUN:
+                # R8.11: exactly a real broker refusal (code, message, details)
+                err = SMTError(AGENT_REJECT_CODE, AGENT_REJECT_MESSAGE,
+                               agent_view(e.details or {}), persisted=e.persisted)
+            else:
+                message, details = agent_view(e.message), agent_view(e.details or {})
+                if message == e.message and details == (e.details or {}):
+                    raise
+                err = SMTError(e.code, message, details, persisted=e.persisted)
             raise err from None
         except Exception:
             await session.rollback()

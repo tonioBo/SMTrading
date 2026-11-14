@@ -2,8 +2,9 @@
 
 With it on, every live link talks to the in-memory FakeLiveBroker (e2e only): a
 deployment that kept it by mistake would look armed while nothing reaches a broker. Each
-process logs a WARNING and queues one Telegram message in the «live» outbox category
-(never stale-skipped) once per boot. It is written straight to the outbox, not as an
+process logs a WARNING; the worker (the process that trades) also queues one Telegram
+message in the «live» outbox category (never stale-skipped) once per boot, the api only
+logs (one message per deployment, not two). It is written straight to the outbox, not as an
 activity: the agents' activity feed must not hear about it (mcp_hide_mode)."""
 
 import logging
@@ -18,6 +19,7 @@ log = logging.getLogger(__name__)
 FAKE_BROKER_TEXT = ("🔴 REALE · ATTENZIONE: broker finto attivo (live_fake_broker) nel"
                     " processo {process}: gli ordini «reali» vanno al broker in memoria, non"
                     " a un broker vero. Solo per i test e2e: disattivalo e riavvia.")
+TELEGRAM_PROCESS = "worker"  # the only process that queues the Telegram message
 _warned: set[str] = set()
 
 
@@ -34,13 +36,13 @@ def _fake_on() -> bool:
 
 async def warn_if_fake_broker(sessionmaker: async_sessionmaker[AsyncSession], *,
                               process: str) -> bool:
-    """WARNING + one «live» Telegram message, once per boot of `process`, when the
-    `live_fake_broker` setting is on. True when it is on. Never fails the boot."""
+    """WARNING (and, for the worker, one «live» Telegram message once per boot) when
+    the `live_fake_broker` setting is on. True when it is on. Never fails the boot."""
     if not _fake_on():
         return False
     log.warning("live_fake_broker is ON in %s: live links use the in-memory fake broker"
                 " (e2e only)", process)
-    if process in _warned:
+    if process != TELEGRAM_PROCESS or process in _warned:
         return True
     _warned.add(process)
     try:

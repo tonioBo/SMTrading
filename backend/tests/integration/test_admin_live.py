@@ -745,6 +745,38 @@ async def test_disarm_cancelled_in_phase_two_is_recorded_then_reraised(admin, mo
         assert audit is not None and audit.details.get("settle_failed") is True
 
 
+async def test_auto_settle_never_races_a_disarm_still_settling(admin):
+    """Final review M1: between phase 1 (state committed) and phase 2 (orders settled) of
+    a disarm — e.g. dry_run -> configured — the automatic retry does nothing (no
+    «sistemati automaticamente» alert): only a disarm older than the grace period, or
+    whose settlement failed, is retried."""
+    from smtrading.activity.models import Activity
+    from smtrading.brokers.live import service
+
+    link, pf = await _wizard(admin)
+    link_id = uuid.UUID(link["id"])
+    order_id = await _unsent_order(admin, link, pf)
+    async with admin.sm() as s:  # phase 1 of a disarm from dry_run, just committed
+        db_link = await s.get(BrokerLink, link_id)
+        db_link.live_state, db_link.armed_at = "configured", None
+        db_link.disarmed_at = datetime.now(UTC)
+        await s.commit()
+
+    assert await service.settle_disarm_leftovers(admin.sm) == []
+    async with admin.sm() as s:
+        assert (await s.get(Order, order_id)).status == OrderStatus.pending
+        assert [x for x in await s.scalars(select(Activity).where(
+            Activity.type == "live.disarmed")) if x.data.get("auto")] == []
+
+    async with admin.sm() as s:  # phase 2 never happened: retried after the grace
+        (await s.get(BrokerLink, link_id)).disarmed_at = (
+            datetime.now(UTC) - service.AUTO_SETTLE_GRACE - timedelta(seconds=1))
+        await s.commit()
+    assert await service.settle_disarm_leftovers(admin.sm) == [link_id]
+    async with admin.sm() as s:
+        assert (await s.get(Order, order_id)).status == OrderStatus.rejected
+
+
 async def test_failed_disarm_settlement_is_retried_automatically(admin, monkeypatch):
     """R8.12 carry: a configured link whose portfolios still have orders from the armed
     period (never sent, or at the broker without a cancel request) is settled by the

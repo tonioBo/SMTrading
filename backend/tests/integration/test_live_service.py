@@ -760,6 +760,46 @@ async def test_resume_unlocks_a_locked_portfolio_with_a_live_reason(sm, redis, f
     assert row.action == "resumed" and row.details["reason"] == "live_fuse"
 
 
+@pytest.mark.parametrize("before", [
+    (PortfolioStatus.locked, "admin"),  # the admin's lock
+    (PortfolioStatus.locked, None),  # an admin lock without a reason
+    (PortfolioStatus.locked, "broker_liquidation"),  # the risk engine's lock
+    (PortfolioStatus.active, None),
+    (PortfolioStatus.reduce_only, "daily_loss"),
+])
+async def test_resume_after_a_trip_restores_a_prior_lock(sm, redis, fake, before):
+    """Final review M8 (R8.13): a live anomaly on a portfolio locked by the admin or the
+    risk engine must not lose that lock: the TOTP resume puts it back (`locked`, same
+    reason); a portfolio that was not locked goes back to active."""
+    from smtrading.brokers.live.protect import trip_reduce_only
+
+    link_id, pid, admin, totp = await _armed_with_portfolio(sm, redis, fake)
+    status, reason = before
+    async with sm() as s:
+        await s.execute(update(Portfolio).where(Portfolio.id == pid)
+                        .values(status=status, reduce_only_reason=reason))
+        await s.commit()
+    async with sm() as s:
+        await trip_reduce_only(s, pid, cause="health", details={})
+        await s.commit()
+    async with sm() as s:
+        p = await s.get(Portfolio, pid)
+        assert p.reduce_only_reason == "live_health"
+    async with sm() as s:
+        await resume_live_portfolio(s, redis, pid, admin=await s.get(AdminUser, admin.id),
+                                    totp=totp.code(), actor=WHO)
+        await s.commit()
+    async with sm() as s:
+        p = await s.get(Portfolio, pid)
+        if status == PortfolioStatus.locked:
+            assert (p.status, p.reduce_only_reason) == (PortfolioStatus.locked, reason)
+        else:
+            assert (p.status, p.reduce_only_reason) == (PortfolioStatus.active, None)
+        assert p.live_prior_status is None and p.live_prior_reason is None
+    row = (await _audit(sm, link_id))[-1]
+    assert row.action == "resumed" and row.details["reason"] == "live_health"
+
+
 async def test_flatten_creates_reduce_only_market_flagged_orders(sm, redis, fake):
     link_id, pid, admin, totp = await _armed_with_portfolio(sm, redis, fake)
     qs = _qs()

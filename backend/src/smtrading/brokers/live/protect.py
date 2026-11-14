@@ -263,7 +263,8 @@ async def trip_reduce_only(session: AsyncSession, portfolio_id: uuid.UUID, *, ca
       becomes `live_<cause>` and the end is dropped, so no existing path (the midnight
       reset, a PATCH) can clear it; returns True;
     - already reduce_only for a live cause, or locked (the reason becomes live too, the
-      status stays locked): returns False.
+      status stays locked; the lock it replaced is kept in live_prior_status/_reason for
+      the resume to restore, R8.13): returns False.
 
     The critical alert is sent when the status changes and otherwise once per cause per
     hour; each alert is recorded in live_audit (`reduce_only_auto`). `alert=False`: the
@@ -280,9 +281,13 @@ async def trip_reduce_only(session: AsyncSession, portfolio_id: uuid.UUID, *, ca
         portfolio.status = PortfolioStatus.reduce_only
         portfolio.reduce_only_reason = reason
         portfolio.reduce_only_until = None
+        portfolio.live_prior_status = portfolio.live_prior_reason = None
         changed = True
     elif (portfolio.status == PortfolioStatus.locked
           and not is_live_reason(portfolio.reduce_only_reason)):
+        # the admin's or the risk engine's lock is kept for the resume (R8.13)
+        portfolio.live_prior_status = PortfolioStatus.locked.value
+        portfolio.live_prior_reason = portfolio.reduce_only_reason
         portfolio.reduce_only_reason = reason  # unlocking it now needs the TOTP resume
         portfolio.reduce_only_until = None
     await session.flush()
