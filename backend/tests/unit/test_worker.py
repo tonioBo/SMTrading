@@ -95,6 +95,15 @@ class _IdleProcessor:
         await asyncio.sleep(3600)
 
 
+@pytest.fixture(autouse=True)
+def _idle_telegram_loops(monkeypatch):
+    """The real Telegram loops would run against _FakeEngine and fail quietly under
+    `supervise`: every run() test gets idle ones (a test may override them)."""
+    monkeypatch.setattr(worker, "TelegramPlanner", _IdleProcessor)
+    monkeypatch.setattr(worker, "OutboxSender", _IdleProcessor)
+    monkeypatch.setattr(worker, "SummaryScheduler", _IdleProcessor)
+
+
 class _FakeEngine:
     disposed = False
 
@@ -282,8 +291,17 @@ async def test_run_supervises_alert_evaluator(monkeypatch):
 
 
 async def test_run_supervises_telegram_planner_and_sender(monkeypatch):
-    started: dict[str, asyncio.Event] = {"planner": asyncio.Event(), "sender": asyncio.Event()}
+    started: dict[str, asyncio.Event] = {"planner": asyncio.Event(), "sender": asyncio.Event(),
+                                         "summaries": asyncio.Event()}
     seen = {}
+
+    class FakeSummaries:
+        def __init__(self, sessionmaker, **kwargs):
+            seen["summaries"] = sessionmaker
+
+        async def run(self):
+            started["summaries"].set()
+            await asyncio.sleep(3600)
 
     class FakePlanner:
         def __init__(self, sessionmaker, **kwargs):
@@ -300,6 +318,7 @@ async def test_run_supervises_telegram_planner_and_sender(monkeypatch):
         async def run(self):
             started["sender"].set()
             await started["planner"].wait()
+            await started["summaries"].wait()
             signal.raise_signal(signal.SIGTERM)
             await asyncio.sleep(3600)
 
@@ -316,7 +335,8 @@ async def test_run_supervises_telegram_planner_and_sender(monkeypatch):
     monkeypatch.setattr(worker, "JobScheduler", _IdleProcessor)
     monkeypatch.setattr(worker, "TelegramPlanner", FakePlanner)
     monkeypatch.setattr(worker, "OutboxSender", FakeSender)
+    monkeypatch.setattr(worker, "SummaryScheduler", FakeSummaries)
     await asyncio.wait_for(worker.run(), 2)
     assert all(e.is_set() for e in started.values())
-    assert seen["planner"] is seen["sender"]
+    assert seen["planner"] is seen["sender"] is seen["summaries"]
     assert isinstance(seen["http"], worker.httpx.AsyncClient)

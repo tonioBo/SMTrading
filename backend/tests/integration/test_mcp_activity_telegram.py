@@ -171,6 +171,30 @@ async def test_feed_already_sent_for_fill(env):
     assert by_id[unplanned]["already_sent"] is True
 
 
+async def test_feed_hides_archived_portfolio_keeps_cursor(env):
+    """Archiving a portfolio hides its feed items and decisions from the agent; a cursor on
+    one of its rows stays valid."""
+    call, demo = env["call"], env["server"].demo_id
+    err, decided = await call("log_decision", {"kind": "strategy", "summary": "Su Demo",
+                                               "portfolio_id": str(demo)})
+    assert not err, decided
+    [cursor] = await _add_activities(env, 1)  # on Demo
+    async with await env["db"]() as s:
+        await s.execute(text("update portfolios set status = 'archived' where id = :id"),
+                        {"id": demo})
+        newer = Activity(ts=datetime.now(UTC) - timedelta(seconds=10), type="kill_switch",
+                         level="critical", summary="globale", data={})
+        s.add(newer)
+        await s.commit()
+    err, res = await call("get_activity_feed", {"after_id": cursor})
+    assert not err, res
+    assert [i["id"] for i in res["items"]] == [newer.id] and res["next_after_id"] == newer.id
+    err, res = await call("get_activity_feed", {"after_id": cursor - 1})
+    assert not err and cursor not in [i["id"] for i in res["items"]]
+    err, res = await call("get_decisions")
+    assert not err and decided["decision_id"] not in [d["id"] for d in res["decisions"]]
+
+
 # --- send_telegram --------------------------------------------------------------------
 
 

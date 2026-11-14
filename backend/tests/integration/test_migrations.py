@@ -190,3 +190,35 @@ async def test_downgrade_to_0008_and_back(fresh_db):
         )
     await engine.dispose()
     assert diff == []
+
+
+async def test_downgrade_0016_clears_dangling_agent_and_restores_fk(fresh_db):
+    """0016 downgrade: an activity naming an agent that does not exist gets agent_id NULL,
+    then the foreign key is restored; upgrade drops it again."""
+    import asyncio
+    import uuid
+
+    from smtrading.common.db import make_engine
+
+    engine = make_engine(fresh_db)
+    async with engine.begin() as conn:
+        dangling = await conn.scalar(text(
+            "insert into activity (type, level, agent_id, summary, data)"
+            " values ('test.event', 'info', :a, 'x', '{}') returning id"
+        ), {"a": uuid.uuid4()})
+    await engine.dispose()
+
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0015")
+    engine = make_engine(fresh_db)
+    fk = text("select count(*) from pg_constraint where conname = 'activity_agent_id_fkey'")
+    async with engine.connect() as conn:
+        assert await conn.scalar(
+            text("select agent_id from activity where id = :i"), {"i": dangling}) is None
+        assert await conn.scalar(fk) == 1
+    await engine.dispose()
+
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    engine = make_engine(fresh_db)
+    async with engine.connect() as conn:
+        assert await conn.scalar(fk) == 0
+    await engine.dispose()
