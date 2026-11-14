@@ -16,6 +16,7 @@ the gap). Items newer than the cursor may be returned twice: consumers dedupe by
 """
 
 import json
+import math
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
@@ -60,7 +61,28 @@ def _uuid(value: Any) -> uuid.UUID | None:
 
 def _text(value: Any, limit: int) -> str:
     text = "" if value is None else str(getattr(value, "value", value))
-    return text[:limit]
+    return text.replace("\x00", "")[:limit]
+
+
+def jsonb_safe(obj: Any) -> Any:
+    """JSON-safe for a jsonb column whatever comes in: json_safe's conversions, then
+    no NUL characters (Postgres refuses them), non-finite floats and unknown objects
+    as strings. Used for activity data and notification payloads; json_safe itself is
+    unchanged."""
+    from smtrading.events import json_safe  # events imports this module
+
+    if isinstance(obj, str):
+        return obj.replace("\x00", "")
+    if obj is None or isinstance(obj, (bool, int)):
+        return obj
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else str(obj)
+    if isinstance(obj, dict):
+        return {jsonb_safe(str(k)): jsonb_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        return [jsonb_safe(v) for v in obj]
+    safe = json_safe(obj)
+    return jsonb_safe(str(obj)) if safe is obj else jsonb_safe(safe)
 
 
 def record_activity(
@@ -75,10 +97,9 @@ def record_activity(
     is recorded once: the first one wins. Fills are told apart by their fill_id.
 
     It never aborts the business transaction: every field is normalised to fit its
-    column (no foreign key on agent_id), the data made JSON safe (Decimal, UUID,
-    datetime, enums and sets of kill-switch, fill or reset payloads)."""
-    from smtrading.events import json_safe  # events imports this module
-
+    column (no foreign key on agent_id, no NUL characters), the data made JSON safe
+    (Decimal, UUID, datetime, enums and sets of kill-switch, fill or reset payloads;
+    anything else as its str())."""
     data = draft.data if isinstance(draft.data, dict) else {"value": draft.data}
     order_id = data.get("order_id")
     if order_id is not None:
@@ -90,7 +111,7 @@ def record_activity(
     row = Activity(
         type=_text(draft.type, MAX_TYPE), level=_text(draft.level, MAX_LEVEL),
         agent_id=_uuid(agent_id), portfolio_id=_uuid(portfolio_id),
-        summary=_text(draft.summary, MAX_SUMMARY), data=json_safe(data),
+        summary=_text(draft.summary, MAX_SUMMARY), data=jsonb_safe(data),
         telegram=TelegramState.pending.value if draft.direct else None,
     )
     session.add(row)
@@ -232,14 +253,15 @@ async def list_feed(
     next_after_id = the newest id older than FEED_SETTLE_S (None if there is none), so
     rows still settling come again on the next call: consumers dedupe by id. With a
     cursor or `since`, ascending ids, only rows older than FEED_SETTLE_S,
-    next_after_id = the last id returned or the cursor itself. An after_id the viewer
-    cannot see is reported as unknown. Items carry Python values (datetime, UUID):
+    next_after_id = the last id returned or the cursor itself. Any after_id up to the
+    newest id is accepted (a cursor stays valid when its row's portfolio is archived or
+    unassigned, and nothing tells whether a hidden row exists); a larger one is unknown. Items carry Python values (datetime, UUID):
     json_safe them."""
     visible = await _visible(session, Activity, viewer_agent_id)
     settled = Activity.ts <= func.now() - timedelta(seconds=FEED_SETTLE_S)
-    if after_id is not None and await session.scalar(
-        select(Activity.id).where(Activity.id == after_id, visible)
-    ) is None:  # unknown or not visible: the same answer
+    if after_id is not None and (after_id < 0 or after_id > (
+        await session.scalar(select(func.max(Activity.id))) or 0
+    )):  # any id up to the newest is a valid cursor (its row may be hidden since)
         raise _invalid("after_id", "unknown after_id")
     stmt = (
         select(Activity, Agent.name, Portfolio.name)

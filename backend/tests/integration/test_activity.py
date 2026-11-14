@@ -18,7 +18,7 @@ from smtrading.activity.service import (
     log_decision,
     record_activity,
 )
-from smtrading.agents.service import assign_portfolio, create_agent
+from smtrading.agents.service import assign_portfolio, create_agent, unassign_portfolio
 from smtrading.brokers import registry
 from smtrading.brokers.base import BrokerAdapter
 from smtrading.brokers.service import create_link, link_portfolio
@@ -30,6 +30,7 @@ from smtrading.engine.models import OrderSide, OrderStatus, OrderType
 from smtrading.engine.quotesource import FakeQuoteSource
 from smtrading.engine.service import PlaceOrderRequest, place_order, set_kill_switch_and_cancel
 from smtrading.events import discard_post_commit, notify, queue_event
+from smtrading.portfolios.models import PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
 from smtrading.seed import run_seed
 
@@ -291,6 +292,30 @@ async def test_record_activity_normalises_everything(db_session):
     assert (b.summary, b.data, b.telegram) == ("", {"value": "not a dict"}, None)
 
 
+class _Opaque:
+    def __str__(self) -> str:
+        return "opa\x00que"
+
+
+async def test_record_activity_strips_nul_and_stringifies_objects(db_session):
+    p = await _portfolio(db_session)
+    oid = uuid.uuid4()
+    await notify(db_session, portfolio_id=p.id, kind="order.rejected", payload={
+        "order_id": oid, "symbol": "AAPL", "message": "broker\x00 says no", "broker": True,
+    })
+    record_activity(db_session, ActivityDraft(
+        "custom\x00type", ActivityLevel.info, False, "sum\x00mary",
+        {"obj": _Opaque(), "nested": [{"k\x00": "v\x00"}], "n": 1, "ok": True},
+    ), portfolio_id=p.id, agent_id=None)
+    await db_session.flush()
+    rejected = (await _rows(db_session, portfolio_id=p.id, type="order.rejected"))[0]
+    assert rejected.summary == "Ordine rifiutato: AAPL: broker says no"
+    assert rejected.data["message"] == "broker says no"
+    custom = (await _rows(db_session, portfolio_id=p.id, type="customtype"))[0]
+    assert custom.summary == "summary"
+    assert custom.data == {"obj": "opaque", "nested": [{"k": "v"}], "n": 1, "ok": True}
+
+
 # -- decisions -----------------------------------------------------------------------
 
 
@@ -411,18 +436,30 @@ async def test_feed_cursor_contract(db_session):
     with pytest.raises(SMTError) as e:
         await list_feed(db_session, agent.id, after_id=mine[-1] + 10_000, since=None, limit=10)
     assert e.value.code == ErrorCode.INVALID_ORDER and e.value.details["field"] == "after_id"
-
-
-async def test_feed_invisible_after_id_is_unknown(db_session):
-    _p, agent = await _feed_setup(db_session)
-    hidden = await _portfolio(db_session)
-    _deposit(db_session, hidden, 1)
-    await _settle(db_session)
-    hidden_id = (await _rows(db_session, portfolio_id=hidden.id))[-1].id
-    with pytest.raises(SMTError) as e:
-        await list_feed(db_session, agent.id, after_id=hidden_id, since=None, limit=10)
-    assert e.value.code == ErrorCode.INVALID_ORDER and e.value.details["field"] == "after_id"
     assert e.value.message == "unknown after_id"
+
+
+@pytest.mark.parametrize("how", ["archived", "unassigned", "never_visible"])
+async def test_feed_cursor_stays_valid_when_its_row_is_hidden(db_session, how):
+    p, agent = await _feed_setup(db_session)
+    other = await _portfolio(db_session)
+    await assign_portfolio(db_session, agent.id, other.id, "read")
+    hidden = await _portfolio(db_session)
+    cursor_portfolio = hidden if how == "never_visible" else p
+    _deposit(db_session, cursor_portfolio, 1)
+    await _settle(db_session)
+    cursor = (await _rows(db_session, portfolio_id=cursor_portfolio.id))[-1].id
+    if how == "archived":
+        p.status = PortfolioStatus.archived
+    elif how == "unassigned":
+        await unassign_portfolio(db_session, agent.id, p.id)
+    _deposit(db_session, other, 2)
+    await _settle(db_session)
+    newer = (await _rows(db_session, portfolio_id=other.id))[-1].id
+    items, nxt = await list_feed(db_session, agent.id, after_id=cursor, since=None, limit=10)
+    assert [i["id"] for i in items] == [newer] and nxt == newer
+    items, nxt = await list_feed(db_session, agent.id, after_id=nxt, since=None, limit=10)
+    assert items == [] and nxt == newer
 
 
 async def test_feed_first_cursor_is_settled(db_session):

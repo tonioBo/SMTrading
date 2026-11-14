@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, LargeBinary, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, LargeBinary, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,6 +25,9 @@ class BrokerLink(Base):
 
 class Reconciliation(Base):
     __tablename__ = "reconciliations"
+    __table_args__ = (  # the previous reconciliation of a portfolio on a link (0017)
+        Index("ix_reconciliations_link_portfolio_ts", "broker_link_id", "portfolio_id", "ts"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     broker_link_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("broker_links.id"), index=True)

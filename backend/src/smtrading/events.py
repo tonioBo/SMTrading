@@ -18,7 +18,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.activity.mapping import activity_for_event, activity_for_notification
-from smtrading.activity.service import clear_activity_keys, record_activity
+from smtrading.activity.service import clear_activity_keys, jsonb_safe, record_activity
 from smtrading.marketdata.streaming import track, untrack
 from smtrading.risk.models import Notification
 
@@ -61,7 +61,7 @@ async def notify(
     agent_id: str | None = None,
 ) -> Notification:
     n = Notification(
-        portfolio_id=portfolio_id, agent_id=agent_id, kind=kind, payload=json_safe(payload)
+        portfolio_id=portfolio_id, agent_id=agent_id, kind=kind, payload=jsonb_safe(payload)
     )
     session.add(n)
     record_activity(
