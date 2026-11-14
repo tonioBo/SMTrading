@@ -70,6 +70,7 @@ let settings: TelegramSettings = baseSettings;
 let configPuts: Record<string, unknown>[] = [];
 let pausedPuts: unknown[] = [];
 let retries: string[] = [];
+let retryAll = 0;
 let decisionUrls: string[] = [];
 let outboxUrls: string[] = [];
 let agentPatches: unknown[] = [];
@@ -120,6 +121,11 @@ const server = setupServer(
       ],
     });
   }),
+  http.post("*/api/telegram/outbox/retry-failed", () => {
+    retryAll += 1;
+    settings = { ...settings, outbox: { ...settings.outbox, failed: 0 } };
+    return HttpResponse.json({ retried: 1 });
+  }),
   http.post("*/api/telegram/outbox/:id/retry", ({ params }) => {
     retries.push(String(params.id));
     return HttpResponse.json(outboxItem({ id: Number(params.id), status: "pending", attempts: 0 }));
@@ -144,6 +150,7 @@ afterEach(() => {
   configPuts = [];
   pausedPuts = [];
   retries = [];
+  retryAll = 0;
   decisionUrls = [];
   outboxUrls = [];
   agentPatches = [];
@@ -328,7 +335,7 @@ describe("Notifiche", () => {
     const user = userEvent.setup();
     renderApp("/notifiche");
     const c = await connection();
-    expect(c.getByText("I messaggi restano in coda e partono alla ripresa")).toBeInTheDocument();
+    expect(c.getByText(/I messaggi restano in coda e partono alla ripresa/)).toBeInTheDocument();
     const toggle = c.getByRole("switch", { name: "Metti in pausa gli invii" });
     expect(toggle).not.toBeChecked();
     await user.click(toggle);
@@ -340,7 +347,11 @@ describe("Notifiche", () => {
     const user = userEvent.setup();
     renderApp("/notifiche");
     const c = await connection();
-    await user.click(c.getByRole("switch", { name: "Notifiche attive" }));
+    const toggle = c.getByRole("switch", { name: "Notifiche attive" });
+    expect(toggle).toHaveAccessibleDescription(
+      "Disattivando, gli eventi di questo periodo non verranno inviati. Per sospendere temporaneamente usa Pausa: i messaggi restano in coda.",
+    );
+    await user.click(toggle);
     await waitFor(() => expect(configPuts).toEqual([{ enabled: false }]));
   });
 
@@ -360,6 +371,28 @@ describe("Notifiche", () => {
 
     await user.selectOptions(screen.getByLabelText("Stato"), "failed");
     await waitFor(() => expect(outboxUrls.at(-1)).toContain("status=failed"));
+  });
+
+  it("retry all failed calls POST retry-failed, shown only with failed messages", async () => {
+    const user = userEvent.setup();
+    renderApp("/notifiche");
+    const region = within(await screen.findByRole("region", { name: "Ultimi messaggi" }));
+    const button = await region.findByRole("button", { name: "Riprova tutti i falliti" });
+    await user.click(button);
+    await waitFor(() => expect(retryAll).toBe(1));
+    await waitFor(() => expect(region.queryByRole("button", { name: "Riprova tutti i falliti" })).not.toBeInTheDocument());
+  });
+
+  it("skipped messages have their own label", async () => {
+    server.use(
+      http.get("*/api/telegram/outbox", () =>
+        HttpResponse.json({ items: [outboxItem({ id: 5, status: "skipped", last_error: "Non inviato: in pausa da più di 24 ore", sent_at: null })] }),
+      ),
+    );
+    renderApp("/notifiche");
+    const table = await screen.findByRole("table", { name: "Ultimi messaggi" });
+    expect(await within(table).findByText("Scartato")).toBeInTheDocument();
+    expect(within(table).queryByRole("button", { name: "Riprova" })).not.toBeInTheDocument();
   });
 
   it("decisions filter by kind", async () => {

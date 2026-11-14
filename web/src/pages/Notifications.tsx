@@ -6,6 +6,7 @@ import {
   useDecisions,
   useDetectChats,
   useOutbox,
+  useRetryAllFailed,
   useRetryOutbox,
   useSaveTelegramConfig,
   useSendTestMessage,
@@ -39,6 +40,7 @@ const STATUS: Record<OutboxStatus, { label: string; variant: BadgeProps["variant
   sent: { label: "Inviato", variant: "default" },
   failed: { label: "Fallito", variant: "destructive" },
   paused: { label: "In pausa", variant: "warning" },
+  skipped: { label: "Scartato", variant: "outline" },
 };
 const CATEGORY: Record<string, string> = {
   event: "Evento",
@@ -231,12 +233,16 @@ function ConnectionSection({ settings }: { settings: TelegramSettings }) {
           <div className="flex items-center gap-3">
             <Switch
               id="telegram-enabled"
+              aria-describedby="telegram-enabled-note"
               checked={settings.enabled}
               disabled={setEnabled.isPending || (!settings.configured && !settings.enabled)}
               onCheckedChange={(enabled) => setEnabled.mutate({ enabled })}
             />
             <Label htmlFor="telegram-enabled">Notifiche attive</Label>
           </div>
+          <p id="telegram-enabled-note" className="text-xs text-muted">
+            Disattivando, gli eventi di questo periodo non verranno inviati. Per sospendere temporaneamente usa Pausa: i messaggi restano in coda.
+          </p>
           {!settings.configured && <p className="text-xs text-muted">Salva token e ID del gruppo per attivare le notifiche</p>}
           {setEnabled.error && (
             <p role="alert" className="text-loss">
@@ -255,7 +261,7 @@ function ConnectionSection({ settings }: { settings: TelegramSettings }) {
               <Label htmlFor="telegram-paused">Metti in pausa gli invii</Label>
             </div>
             <p id="telegram-paused-note" className="mt-1 text-xs text-muted">
-              I messaggi restano in coda e partono alla ripresa
+              I messaggi restano in coda e partono alla ripresa (quelli non critici in pausa da più di 24 ore vengono scartati)
             </p>
           </div>
           {setPaused.error && (
@@ -338,6 +344,8 @@ function OutboxSection() {
   const [status, setStatus] = useState("");
   const { data, isLoading, isError } = useOutbox(status);
   const retry = useRetryOutbox();
+  const retryAll = useRetryAllFailed();
+  const failed = useTelegram().data?.outbox.failed ?? 0;
   const titleId = useId();
   const columns: Column<OutboxItem>[] = [
     { key: "ts", header: "Data", cell: (m) => <span className="num whitespace-nowrap">{formatDateTime(m.created_at)}</span> },
@@ -367,6 +375,11 @@ function OutboxSection() {
     <Card role="region" aria-labelledby={titleId}>
       <CardHeader className="flex-row flex-wrap items-end justify-between gap-3 space-y-0">
         <CardTitle id={titleId}>Ultimi messaggi</CardTitle>
+        {failed > 0 && (
+          <Button type="button" variant="outline" disabled={retryAll.isPending} onClick={() => retryAll.mutate()}>
+            Riprova tutti i falliti
+          </Button>
+        )}
         <div className="w-44">
           <FormField label="Stato">
             <select className={selectClass} value={status} onChange={(e) => setStatus(e.target.value)}>
@@ -385,6 +398,11 @@ function OutboxSection() {
         {retry.error && (
           <p role="alert" className="mb-2 text-loss">
             {errorMessage(retry.error)}
+          </p>
+        )}
+        {retryAll.error && (
+          <p role="alert" className="mb-2 text-loss">
+            {errorMessage(retryAll.error)}
           </p>
         )}
         <DataTable aria-label="Ultimi messaggi" columns={columns} rows={data?.items} rowKey={(m) => String(m.id)} loading={isLoading} empty="Nessun messaggio" />

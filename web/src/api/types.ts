@@ -650,7 +650,8 @@ export interface Reconciliation {
 
 // --- Telegram notifications (GET /api/telegram, outbox, decisions) -------------------
 
-export type OutboxStatus = "pending" | "sent" | "failed" | "paused";
+/** skipped: paused for more than 24 h and not critical, never sent (old news) */
+export type OutboxStatus = "pending" | "sent" | "failed" | "paused" | "skipped";
 
 export interface TelegramSettings {
   configured: boolean;

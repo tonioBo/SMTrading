@@ -95,6 +95,18 @@ export function useRetryOutbox() {
   });
 }
 
+/** «Riprova tutti i falliti»: every failed message (tests excepted) goes back to the queue. */
+export function useRetryAllFailed() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiFetch<{ retried: number }>("/api/telegram/outbox/retry-failed", { method: "POST" }),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: outboxKey });
+      void qc.invalidateQueries({ queryKey: telegramKey, exact: true });
+    },
+  });
+}
+
 /** Decisions log, newest first, paged with `before_id` («Carica altre»). */
 export function useDecisions(filters: DecisionFilters) {
   return useInfiniteQuery({
