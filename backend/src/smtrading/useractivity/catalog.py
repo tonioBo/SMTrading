@@ -15,6 +15,7 @@ CATEGORIES: dict[str, str] = {
     "live": "Denaro reale",
     "markets": "Mercati",
     "telegram": "Notifiche",
+    "paperclip": "Paperclip",
     "system": "Sistema",
     "other": "Altro",
 }
@@ -111,6 +112,10 @@ LABELS: dict[str, str] = {
     "telegram.paused": "Pausa notifiche Telegram",
     "telegram.retry_failed": "Nuovo invio dei messaggi falliti",
     "telegram.retry": "Nuovo invio di un messaggio",
+    # paperclip
+    "paperclip.config": "Configurazione Paperclip",
+    "paperclip.verify": "Verifica lettura Paperclip",
+    "paperclip.baseline": "Riconferma regole di isolamento Paperclip",
     # system
     "system.backup": "Download del backup",
     "system.app_settings": "Impostazioni dell'app",
@@ -198,6 +203,9 @@ ROUTE_ACTIONS: dict[tuple[str, str], str] = {
     ("PUT", "/api/telegram/paused"): "telegram.paused",
     ("POST", "/api/telegram/outbox/retry-failed"): "telegram.retry_failed",
     ("POST", "/api/telegram/outbox/{outbox_id}/retry"): "telegram.retry",
+    ("PUT", "/api/paperclip/config"): "paperclip.config",
+    ("POST", "/api/paperclip/verify"): "paperclip.verify",
+    ("POST", "/api/paperclip/baseline"): "paperclip.baseline",
 }
 
 LOGIN = ("POST", "/api/auth/login")
