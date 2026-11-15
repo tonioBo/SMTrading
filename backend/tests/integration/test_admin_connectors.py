@@ -305,7 +305,8 @@ async def test_quotes_and_market_status(admin):
 
     ms = (await c.get("/api/markets/status")).json()
     assert [m["market"] for m in ms] == [
-        "NASDAQ", "NYSE", "MTA", "XETRA", "EURONEXT_PARIS", "CRYPTO", "FX"]
+        "NASDAQ", "NYSE", "MTA", "XETRA", "EURONEXT_PARIS", "CRYPTO", "FX", "LSE"]
+    assert [m["market"] for m in ms if not m["tradable"]] == ["LSE"]  # hours only
     crypto = next(m for m in ms if m["market"] == "CRYPTO")
     assert crypto["is_open"] is True
 

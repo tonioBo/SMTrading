@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import logging
 import os
 from collections.abc import Callable
@@ -34,6 +36,7 @@ from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
 from smtrading.common.heartbeat import heartbeat_age_s
 from smtrading.common.logsetup import configure_logging
+from smtrading.instruments.closures import ClosureRefresher
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.mcp.auth import MCP_PATH, McpAuthMiddleware
 from smtrading.mcp.runtime import McpRuntime, get_runtime, set_runtime
@@ -143,6 +146,8 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
         await _register_live_secrets(sessionmaker)
         await warn_if_fake_broker(sessionmaker, process="api")
         await _export_agent_docs(sessionmaker)
+        # manual market closures: loaded now, then every 60 s (an admin write reloads too)
+        closures = asyncio.create_task(ClosureRefresher(sessionmaker).run())
         try:
             async with httpx.AsyncClient() as http:
                 if runtime_factory is not None:
@@ -157,6 +162,9 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
                 async with mcp.session_manager.run():
                     yield
         finally:
+            closures.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await closures
             set_runtime(None)
             await resources.close()
 

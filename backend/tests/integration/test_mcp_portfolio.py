@@ -389,7 +389,8 @@ async def test_fees_schedule_resource(mcp_server, book):
 async def test_markets_hours_resource(mcp_server):
     res = await _read_resource(mcp_server.url, mcp_server.token, "markets://hours")
     by_market = {m["market"]: m for m in res}
-    assert set(by_market) == {"NASDAQ", "NYSE", "MTA", "XETRA", "EURONEXT_PARIS", "CRYPTO", "FX"}
+    assert set(by_market) == {"NASDAQ", "NYSE", "MTA", "XETRA", "EURONEXT_PARIS", "CRYPTO", "FX",
+                              "LSE"}
     assert by_market["CRYPTO"] == {
         "market": "CRYPTO", "is_open": True, "next_open": None, "next_close": None,
     }

@@ -58,6 +58,7 @@ from smtrading.engine.models import (
 from smtrading.engine.quotesource import QuoteSource
 from smtrading.fees.calculator import FeeRuleData, compute_fx_fee, compute_trade_fee
 from smtrading.fees.resolver import load_rules, resolve_rule
+from smtrading.instruments.market_hours import previous_session_open
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.portfolios.models import Portfolio
@@ -303,30 +304,21 @@ class _LastPrice:
         return await self._qs.get_calendar(symbols, start, end)
 
 
-LAST_FILL_MAX_AGE = timedelta(hours=24)
-LAST_FILL_MAX_AGE_WEEKEND = timedelta(hours=72)  # on Saturday, Sunday and Monday
-
-
-def last_fill_max_age(now: datetime) -> timedelta:
-    """«One trading day» for the last-fill fallback: 24 h, 72 h when `now` is a Saturday,
-    a Sunday or a Monday (UTC), so a Friday fill still counts over the weekend."""
-    return LAST_FILL_MAX_AGE_WEEKEND if now.weekday() in (5, 6, 0) else LAST_FILL_MAX_AGE
-
-
-async def _last_price(session: AsyncSession, portfolio: Portfolio, symbol: str,
+async def _last_price(session: AsyncSession, portfolio: Portfolio, instrument: Instrument,
                       now: datetime) -> Decimal | None:
-    """The price of the portfolio's latest fill of `symbol` on an order routed to its
-    (real-money) link, no older than `last_fill_max_age`; paper fills (simulator, or
-    another link) never count."""
+    """The price of the portfolio's latest fill of the instrument on an order routed to
+    its (real-money) link, no older than one trading day of the instrument's market (since
+    `previous_session_open`: calendar holidays and manual closures skipped); paper fills
+    (simulator, or another link) never count."""
     from smtrading.engine.models import Fill
 
     if portfolio.broker_link_id is None:
         return None
     return await session.scalar(
         select(Fill.price).join(Order, Order.id == Fill.order_id)
-        .where(Fill.portfolio_id == portfolio.id, Fill.symbol == symbol,
+        .where(Fill.portfolio_id == portfolio.id, Fill.symbol == instrument.symbol,
                Order.broker_link_id == portfolio.broker_link_id,
-               Fill.created_at >= now - last_fill_max_age(now))
+               Fill.created_at >= previous_session_open(instrument.market, now))
         .order_by(Fill.created_at.desc()).limit(1))
 
 
@@ -363,7 +355,7 @@ async def committed_buys(session: AsyncSession, qs: QuoteSource, *, portfolio: P
             if e.code != ErrorCode.PROVIDER_UNAVAILABLE:
                 raise
             last = None if _at_broker(other) else await _last_price(
-                session, portfolio, other.symbol, now)
+                session, portfolio, instrument, now)
             if last is None:
                 if getattr(qs, "frozen", False):
                     raise

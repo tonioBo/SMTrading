@@ -1,11 +1,12 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
 import { streamStatusKey } from "@/api/hooks/connectors";
-import type { AutoAddSetting, Instrument, InstrumentCreate, InstrumentsPage, MarketStatus, QuotesResponse, UntrackResponse } from "@/api/types";
+import type { AutoAddSetting, Instrument, InstrumentCreate, InstrumentsPage, MarketClosure, MarketClosureCreate, MarketStatus, QuotesResponse, UntrackResponse } from "@/api/types";
 
 export const instrumentsKey = ["instruments"] as const;
 export const marketsStatusKey = ["markets-status"] as const;
 export const autoAddKey = ["instruments-auto-add"] as const;
+export const marketClosuresKey = ["market-closures"] as const;
 export const INSTRUMENTS_PAGE = 100;
 
 export interface InstrumentFilter {
@@ -50,6 +51,30 @@ export function useMarketsStatus() {
     queryFn: () => apiFetch<MarketStatus[]>("/api/markets/status"),
     refetchInterval: 60_000,
   });
+}
+
+export function useMarketClosures() {
+  return useQuery({ queryKey: marketClosuresKey, queryFn: () => apiFetch<MarketClosure[]>("/api/market-closures") });
+}
+
+/** A manual closure changes the market hours at once: both lists are reloaded. */
+function useClosureMutation<T>(mutationFn: (arg: T) => Promise<unknown>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: marketClosuresKey });
+      void qc.invalidateQueries({ queryKey: marketsStatusKey });
+    },
+  });
+}
+
+export function useAddMarketClosure() {
+  return useClosureMutation((body: MarketClosureCreate) => apiFetch<MarketClosure>("/api/market-closures", { method: "POST", body }));
+}
+
+export function useDeleteMarketClosure() {
+  return useClosureMutation((id: number) => apiFetch<{ deleted: number }>(`/api/market-closures/${id}`, { method: "DELETE" }));
 }
 
 export function useTrack() {

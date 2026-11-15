@@ -15,6 +15,8 @@ let posts: unknown[] = [];
 let tracks: unknown[] = [];
 let autoAdd: unknown[] = [];
 let instrumentQueries: string[] = [];
+let closurePosts: unknown[] = [];
+let closureDeletes: string[] = [];
 const server = setupServer(
   ...commonHandlers,
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
@@ -35,8 +37,27 @@ const server = setupServer(
     return HttpResponse.json({ ...body, daily_limit: 25 });
   }),
   http.get("*/api/markets/status", () =>
-    HttpResponse.json([{ market: "XNAS", is_open: true, next_open: null, next_close: "2026-11-13T21:00:00Z" }]),
+    HttpResponse.json([
+      { market: "XNAS", tradable: true, is_open: true, next_open: null, next_close: "2026-11-13T21:00:00Z" },
+      { market: "CRYPTO", tradable: true, is_open: true, next_open: null, next_close: null },
+      { market: "LSE", tradable: false, is_open: false, next_open: "2026-11-16T08:00:00Z", next_close: "2026-11-16T16:30:00Z" },
+    ]),
   ),
+  http.get("*/api/market-closures", () =>
+    HttpResponse.json([
+      { id: 7, market: "XNAS", day: "2026-11-27", kind: "early_close", close_time: "13:00", note: "Dopo il Ringraziamento", created_by: "admin:admin@example.com", created_at: null },
+      { id: 8, market: "LSE", day: "2026-12-01", kind: "closed", close_time: null, note: "", created_by: "admin:admin@example.com", created_at: null },
+    ]),
+  ),
+  http.post("*/api/market-closures", async ({ request }) => {
+    const body = await request.json();
+    closurePosts.push(body);
+    return HttpResponse.json({ id: 9, ...(body as object) });
+  }),
+  http.delete("*/api/market-closures/:id", ({ params }) => {
+    closureDeletes.push(String(params.id));
+    return HttpResponse.json({ deleted: Number(params.id) });
+  }),
   http.get("*/api/quotes", () => HttpResponse.json({ AAPL: { symbol: "AAPL", bid: "189.1", ask: "189.2", last: "189.15", ts: null, provider: "alpaca" } })),
   http.get("*/api/instruments", ({ request }) => {
     instrumentQueries.push(new URL(request.url).search);
@@ -71,6 +92,8 @@ afterEach(() => {
   tracks = [];
   autoAdd = [];
   instrumentQueries = [];
+  closurePosts = [];
+  closureDeletes = [];
 });
 afterAll(() => server.close());
 
@@ -79,7 +102,10 @@ describe("Markets", () => {
     renderApp("/mercati");
     const quote = await screen.findByLabelText("Quota AAPL");
     expect(await within(quote).findByText("189,15")).toBeInTheDocument();
-    expect(await screen.findByText("Aperto")).toBeInTheDocument();
+    const hours = await screen.findByRole("table", { name: "Orari dei mercati" });
+    const lse = (await within(hours).findByText("LSE")).closest("tr")!;
+    expect(within(lse).getByText("Chiuso")).toBeInTheDocument();
+    expect(within(hours).getAllByText("Aperto")).toHaveLength(2);
   });
 
   it("follows and unfollows symbols", async () => {
@@ -143,5 +169,52 @@ describe("Markets", () => {
     await user.click(within(dialog).getByRole("button", { name: "Aggiungi" }));
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]).toMatchObject({ symbol: "NVDA", market: "XNAS", currency: "USD", lot_size: "1", tick_size: "0.01" });
+  });
+
+  it("offers only tradable markets for a new instrument", async () => {
+    const user = userEvent.setup();
+    renderApp("/mercati");
+    await screen.findByRole("table", { name: "Orari dei mercati" });
+    await user.click(await screen.findByRole("button", { name: "Aggiungi strumento" }));
+    const dialog = await screen.findByRole("dialog", { name: "Aggiungi strumento" });
+    const options = within(within(dialog).getByLabelText("Mercato")).getAllByRole("option");
+    expect(options.map((o) => o.textContent)).toEqual(["XNAS", "CRYPTO"]);
+  });
+
+  it("lists closures and adds an early close", async () => {
+    const user = userEvent.setup();
+    renderApp("/mercati");
+    const table = await screen.findByRole("table", { name: "Chiusure straordinarie" });
+    const row = (await within(table).findByText("Dopo il Ringraziamento")).closest("tr")!;
+    expect(within(row).getByText("27/11/2026")).toBeInTheDocument();
+    expect(within(row).getByText("Chiusura anticipata alle 13:00")).toBeInTheDocument();
+    expect(within(row).getByText("admin@example.com")).toBeInTheDocument();
+    expect(within(table).getByText("Chiusa")).toBeInTheDocument();
+
+    const form = screen.getByRole("form", { name: "Nuova chiusura" });
+    const market = within(form).getByLabelText("Mercato");
+    expect(within(market).getAllByRole("option").map((o) => o.textContent)).toEqual(["XNAS", "LSE"]);
+    await user.selectOptions(market, "LSE");
+    await user.type(within(form).getByLabelText("Giorno"), "2026-12-24");
+    await user.selectOptions(within(form).getByLabelText("Tipo"), "early_close");
+    await user.click(within(form).getByRole("button", { name: "Aggiungi chiusura" }));
+    expect(await within(form).findByText("Indica l'ora della chiusura")).toBeInTheDocument();
+    expect(closurePosts).toHaveLength(0);
+    await user.type(within(form).getByLabelText("Ora di chiusura (locale)"), "12:30");
+    await user.type(within(form).getByLabelText("Nota"), " Vigilia ");
+    await user.click(within(form).getByRole("button", { name: "Aggiungi chiusura" }));
+    await waitFor(() => expect(closurePosts).toHaveLength(1));
+    expect(closurePosts[0]).toEqual({ market: "LSE", day: "2026-12-24", kind: "early_close", close_time: "12:30", note: "Vigilia" });
+  });
+
+  it("deletes a closure after confirmation", async () => {
+    const user = userEvent.setup();
+    renderApp("/mercati");
+    const table = await screen.findByRole("table", { name: "Chiusure straordinarie" });
+    await user.click(await within(table).findByRole("button", { name: "Elimina la chiusura LSE del 01/12/2026" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(closureDeletes).toEqual([]);
+    await user.click(within(dialog).getByRole("button", { name: "Elimina" }));
+    await waitFor(() => expect(closureDeletes).toEqual(["8"]));
   });
 });

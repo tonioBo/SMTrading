@@ -1,8 +1,21 @@
-import { Plus } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useStreamStatus } from "@/api/hooks/connectors";
-import { INSTRUMENTS_PAGE, useAutoAdd, useCreateInstrument, useInstruments, useMarketsStatus, useQuotes, useSetAutoAdd, useTrack } from "@/api/hooks/markets";
-import type { AssetClass, Instrument, InstrumentCreate, MarketStatus, Quote, TrackSource } from "@/api/types";
+import {
+  INSTRUMENTS_PAGE,
+  useAddMarketClosure,
+  useAutoAdd,
+  useCreateInstrument,
+  useDeleteMarketClosure,
+  useInstruments,
+  useMarketClosures,
+  useMarketsStatus,
+  useQuotes,
+  useSetAutoAdd,
+  useTrack,
+} from "@/api/hooks/markets";
+import type { AssetClass, Instrument, InstrumentCreate, MarketClosure, MarketClosureCreate, MarketClosureKind, MarketStatus, Quote, TrackSource } from "@/api/types";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { FormField, selectClass } from "@/components/FormField";
 import { PageHeader } from "@/components/PageHeader";
@@ -387,18 +400,166 @@ function HoursSection({ rows }: { rows: MarketStatus[] | undefined }) {
   );
 }
 
+// --- manual closures -----------------------------------------------------------------
+
+/** Markets without an exchange calendar: a manual closure does not apply to them. */
+const NO_CALENDAR_MARKETS = ["CRYPTO", "FX"];
+const MAX_NOTE = 200;
+
+/** "2026-11-27" → "27/11/2026" */
+const formatDay = (day: string) => day.split("-").reverse().join("/");
+
+function closureKindLabel(c: Pick<MarketClosure, "kind" | "close_time">): string {
+  return c.kind === "closed" ? "Chiusa" : `Chiusura anticipata alle ${c.close_time ?? "—"}`;
+}
+
+const authorLabel = (by: string) => (by.startsWith("admin:") ? by.slice(6) : by);
+
+function ClosureForm({ markets }: { markets: string[] }) {
+  const add = useAddMarketClosure();
+  const empty = { market: markets[0] ?? "", day: "", kind: "closed" as MarketClosureKind, close_time: "", note: "" };
+  const [form, setForm] = useState(empty);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const set = (patch: Partial<typeof form>) => setForm((f) => ({ ...f, ...patch }));
+  const market = markets.includes(form.market) ? form.market : (markets[0] ?? "");
+  const serverField = errorField(add.error);
+  const fieldError = (f: string) => errors[f] ?? (add.error && serverField === f ? errorMessage(add.error) : null);
+  const general = add.error && (!serverField || !(serverField in form)) ? errorMessage(add.error) : null;
+
+  function submit(e: FormEvent) {
+    e.preventDefault();
+    const errs: Record<string, string> = {};
+    if (!market) errs.market = "Seleziona un mercato";
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(form.day)) errs.day = "Indica il giorno";
+    if (form.kind === "early_close" && !/^\d{2}:\d{2}$/.test(form.close_time)) errs.close_time = "Indica l'ora della chiusura";
+    if (form.note.trim().length > MAX_NOTE) errs.note = `Massimo ${MAX_NOTE} caratteri`;
+    setErrors(errs);
+    if (Object.keys(errs).length) return;
+    const body: MarketClosureCreate = { market, day: form.day, kind: form.kind, note: form.note.trim() };
+    if (form.kind === "early_close") body.close_time = form.close_time;
+    add.mutate(body, { onSuccess: () => setForm({ ...empty, market }) });
+  }
+
+  return (
+    <form aria-label="Nuova chiusura" onSubmit={submit} noValidate className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <FormField label="Mercato" error={fieldError("market")}>
+        <select className={selectClass} value={market} onChange={(e) => set({ market: e.target.value })}>
+          {markets.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+      </FormField>
+      <FormField label="Giorno" error={fieldError("day")}>
+        <Input type="date" value={form.day} onChange={(e) => set({ day: e.target.value })} />
+      </FormField>
+      <FormField label="Tipo" error={fieldError("kind")}>
+        <select className={selectClass} value={form.kind} onChange={(e) => set({ kind: e.target.value as MarketClosureKind })}>
+          <option value="closed">Chiusa tutto il giorno</option>
+          <option value="early_close">Chiusura anticipata</option>
+        </select>
+      </FormField>
+      {form.kind === "early_close" && (
+        <FormField label="Ora di chiusura (locale)" error={fieldError("close_time")}>
+          <Input type="time" value={form.close_time} onChange={(e) => set({ close_time: e.target.value })} />
+        </FormField>
+      )}
+      <FormField label="Nota" error={fieldError("note")}>
+        <Input value={form.note} maxLength={MAX_NOTE} onChange={(e) => set({ note: e.target.value })} />
+      </FormField>
+      {general && (
+        <p role="alert" className="text-sm text-loss sm:col-span-2 lg:col-span-5">
+          {general}
+        </p>
+      )}
+      <div className="sm:col-span-2 lg:col-span-5">
+        <Button type="submit" size="sm" disabled={add.isPending || markets.length === 0}>
+          <Plus className="mr-1 h-4 w-4" />
+          Aggiungi chiusura
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function ClosuresSection({ markets }: { markets: string[] }) {
+  const closures = useMarketClosures();
+  const remove = useDeleteMarketClosure();
+  const [deleting, setDeleting] = useState<MarketClosure | null>(null);
+  const columns: Column<MarketClosure>[] = [
+    { key: "market", header: "Mercato", sortValue: (c) => c.market, cell: (c) => c.market },
+    { key: "day", header: "Giorno", sortValue: (c) => c.day, cell: (c) => <span className="num">{formatDay(c.day)}</span> },
+    { key: "kind", header: "Tipo", cell: (c) => closureKindLabel(c) },
+    { key: "note", header: "Nota", cell: (c) => c.note || "—" },
+    { key: "by", header: "Autore", cell: (c) => <span className="text-xs">{authorLabel(c.created_by)}</span> },
+    {
+      key: "act",
+      header: "",
+      align: "right",
+      cell: (c) => (
+        <Button type="button" size="sm" variant="outline" aria-label={`Elimina la chiusura ${c.market} del ${formatDay(c.day)}`} onClick={() => setDeleting(c)}>
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      ),
+    },
+  ];
+  return (
+    <Card className="mt-6">
+      <CardHeader>
+        <CardTitle>Chiusure straordinarie</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-sm text-muted">
+          Chiusure o mezze giornate non previste dal calendario della borsa. L&apos;ora è quella locale della borsa; una chiusura non apre mai un giorno festivo.
+        </p>
+        {closures.isError && <p className="text-loss">Impossibile caricare le chiusure</p>}
+        <DataTable
+          aria-label="Chiusure straordinarie"
+          columns={columns}
+          rows={closures.data}
+          rowKey={(c) => String(c.id)}
+          loading={closures.isLoading}
+          empty="Nessuna chiusura straordinaria in programma"
+        />
+        <ClosureForm markets={markets} />
+      </CardContent>
+      {deleting && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) {
+              setDeleting(null);
+              remove.reset();
+            }
+          }}
+          title={`Eliminare la chiusura ${deleting.market} del ${formatDay(deleting.day)}?`}
+          description="Il mercato torna a seguire il calendario della borsa per quel giorno."
+          confirmLabel="Elimina"
+          destructive
+          pending={remove.isPending}
+          error={remove.error ? errorMessage(remove.error) : null}
+          onConfirm={() => remove.mutate(deleting.id, { onSuccess: () => setDeleting(null) })}
+        />
+      )}
+    </Card>
+  );
+}
+
 export default function Markets() {
   const stream = useStreamStatus();
   const hours = useMarketsStatus();
   const tracked = useMemo(() => stream.data?.tracked ?? [], [stream.data]);
   const sources = useMemo(() => stream.data?.tracked_sources ?? {}, [stream.data]);
-  const markets = (hours.data ?? []).map((m) => m.market);
+  const markets = (hours.data ?? []).filter((m) => m.tradable !== false).map((m) => m.market);
+  const closureMarkets = (hours.data ?? []).map((m) => m.market).filter((m) => !NO_CALENDAR_MARKETS.includes(m));
   return (
     <div>
       <PageHeader title="Mercati" />
       <QuotesSection tracked={tracked} />
       <InstrumentsSection sources={sources} markets={markets} />
       <HoursSection rows={hours.data} />
+      <ClosuresSection markets={closureMarkets} />
     </div>
   );
 }

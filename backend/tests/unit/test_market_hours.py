@@ -1,9 +1,24 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.instruments.market_hours import all_market_status, market_status
+from smtrading.instruments.market_hours import (
+    MARKETS,
+    STATUS_MARKETS,
+    Closure,
+    all_market_status,
+    market_status,
+    previous_session_open,
+    set_closures,
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_closures():
+    set_closures([])
+    yield
+    set_closures([])
 
 
 def utc(*args) -> datetime:
@@ -62,7 +77,7 @@ def test_naive_datetime_rejected():
 
 def test_all_market_status():
     names = {s.market for s in all_market_status(utc(2026, 11, 11, 15, 0))}
-    assert names == {"NASDAQ", "NYSE", "MTA", "XETRA", "EURONEXT_PARIS", "CRYPTO", "FX"}
+    assert names == {"NASDAQ", "NYSE", "MTA", "XETRA", "EURONEXT_PARIS", "CRYPTO", "FX", "LSE"}
 
 
 def test_euronext_paris_hours():
@@ -71,3 +86,56 @@ def test_euronext_paris_hours():
     closed = market_status("EURONEXT_PARIS", utc(2026, 11, 11, 17, 0))
     assert not closed.is_open and closed.next_open == utc(2026, 11, 12, 8, 0)
     assert not market_status("EURONEXT_PARIS", utc(2026, 12, 25, 10, 0)).is_open
+
+
+def test_lse_hours_and_boxing_day():
+    assert market_status("LSE", utc(2026, 11, 16, 9, 0)).is_open
+    assert not market_status("LSE", utc(2026, 12, 28, 10, 0)).is_open  # Boxing Day (observed)
+
+
+def test_lse_not_tradable_market():
+    assert "LSE" not in MARKETS
+    assert "LSE" in STATUS_MARKETS
+
+
+def test_manual_closed_day():
+    set_closures([Closure("NYSE", date(2026, 11, 18), "closed", None)])
+    s = market_status("NYSE", utc(2026, 11, 18, 15, 0))
+    assert not s.is_open
+    assert s.next_open == utc(2026, 11, 19, 14, 30)
+    before = market_status("NYSE", utc(2026, 11, 17, 22, 0))  # the evening before
+    assert not before.is_open and before.next_open == utc(2026, 11, 19, 14, 30)
+    assert market_status("NASDAQ", utc(2026, 11, 18, 15, 0)).is_open  # another market
+
+
+def test_manual_early_close():
+    set_closures([Closure("NYSE", date(2026, 11, 18), "early_close", time(12))])  # ET
+    s = market_status("NYSE", utc(2026, 11, 18, 16, 30))
+    assert s.is_open and s.next_close == utc(2026, 11, 18, 17, 0)
+    after = market_status("NYSE", utc(2026, 11, 18, 17, 1))
+    assert not after.is_open and after.next_open == utc(2026, 11, 19, 14, 30)
+    before = market_status("NYSE", utc(2026, 11, 18, 12, 0))  # before the open
+    assert not before.is_open and before.next_open == utc(2026, 11, 18, 14, 30)
+    assert before.next_close == utc(2026, 11, 18, 17, 0)
+
+
+def test_closure_never_opens_a_holiday():
+    set_closures([Closure("NYSE", date(2026, 11, 26), "early_close", time(13))])  # Thanksgiving
+    assert not market_status("NYSE", utc(2026, 11, 26, 16, 0)).is_open
+
+
+def test_previous_session_open():
+    assert previous_session_open("NYSE", utc(2026, 11, 16, 15, 0)) == utc(2026, 11, 13, 14, 30)
+    assert previous_session_open("NYSE", utc(2026, 11, 14, 12, 0)) == utc(2026, 11, 12, 14, 30)
+    assert previous_session_open("NYSE", utc(2026, 11, 27, 15, 0)) == utc(2026, 11, 25, 14, 30)
+    set_closures([Closure("NYSE", date(2026, 11, 25), "closed", None)])
+    assert previous_session_open("NYSE", utc(2026, 11, 27, 15, 0)) == utc(2026, 11, 24, 14, 30)
+    at = utc(2026, 11, 14, 12, 0)
+    assert previous_session_open("CRYPTO", at) == at - timedelta(hours=24)
+
+
+def test_previous_session_open_fx():
+    at = utc(2026, 11, 11, 12, 0)
+    assert previous_session_open("FX", at) == at - timedelta(hours=24)
+    # closed on Saturday: the weekly close (Friday 22:00) minus 24 h
+    assert previous_session_open("FX", utc(2026, 11, 14, 12, 0)) == utc(2026, 11, 12, 22, 0)

@@ -19,6 +19,7 @@ from smtrading.common.db import make_engine
 from smtrading.common.heartbeat import write_heartbeat
 from smtrading.common.logsetup import configure_logging
 from smtrading.engine.processor import OrderProcessor
+from smtrading.instruments.closures import ClosureRefresher
 from smtrading.jobs.scheduler import JobScheduler
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.marketdata.streaming import StreamManager
@@ -108,6 +109,9 @@ async def run() -> None:
             async with asyncio.TaskGroup() as tg:
                 jobs = [
                     tg.create_task(heartbeat(redis)),
+                    tg.create_task(
+                        supervise("market closures", lambda: ClosureRefresher(sessionmaker).run())
+                    ),
                     tg.create_task(
                         supervise("stream manager",
                                   lambda: StreamManager(router, redis, sessionmaker).run())

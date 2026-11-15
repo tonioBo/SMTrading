@@ -3,18 +3,25 @@
 import asyncio
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
-from smtrading.admin.auth import DbSession, RedisClient, require_admin
+from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
 from smtrading.admin.common import _invalid, _transaction
+from smtrading.agents.service import write_audit
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.instruments.closures import (
+    MarketClosure,
+    add_closure,
+    delete_closure,
+    refresh_closures,
+)
 from smtrading.instruments.discovery import DAILY_LIMIT, auto_add_enabled, set_auto_add
 from smtrading.instruments.market_hours import MARKETS, all_market_status
 from smtrading.instruments.models import AssetClass, Instrument, InstrumentSource
@@ -53,6 +60,14 @@ class InstrumentCreateIn(BaseModel):
     tick_size: str | int = "0.01"
     shortable: bool = False
     provider_symbols: dict[str, str] = {}
+
+
+class ClosureIn(BaseModel):
+    market: str
+    day: date
+    kind: str
+    close_time: time | None = None
+    note: str = ""
 
 
 class AutoAddIn(BaseModel):
@@ -281,9 +296,68 @@ async def markets_status() -> list[dict]:
     return [
         {
             "market": s.market,
+            "tradable": s.market in MARKETS,  # LSE: hours only
             "is_open": s.is_open,
             "next_open": to_jsonable(s.next_open),
             "next_close": to_jsonable(s.next_close),
         }
         for s in all_market_status(datetime.now(UTC))
     ]
+
+
+# ------------------------------------------------------------------ manual closures
+
+
+def _closure_dto(c: MarketClosure) -> dict[str, Any]:
+    return {
+        "id": c.id, "market": c.market, "day": c.day.isoformat(), "kind": c.kind,
+        "close_time": c.close_time.strftime("%H:%M") if c.close_time is not None else None,
+        "note": c.note, "created_by": c.created_by, "created_at": to_jsonable(c.created_at),
+    }
+
+
+@router.get("/market-closures")
+async def list_closures(
+    session: DbSession, from_: Annotated[date | None, Query(alias="from")] = None
+) -> list[dict]:
+    """The manual closures from `from` (default: today, UTC) on, by day then market."""
+    since = from_ or datetime.now(UTC).date()
+    rows = await session.scalars(select(MarketClosure).where(MarketClosure.day >= since)
+                                 .order_by(MarketClosure.day, MarketClosure.market))
+    return [_closure_dto(c) for c in rows]
+
+
+@router.post("/market-closures")
+async def create_closure(body: ClosureIn, session: DbSession, redis: RedisClient,
+                         admin: CurrentAdmin) -> dict:
+    try:
+        async with _transaction(session, redis):
+            closure = await add_closure(
+                session, market=body.market.strip().upper(), day=body.day, kind=body.kind,
+                close_time=body.close_time, note=body.note, by=f"admin:{admin.email}")
+            dto = _closure_dto(closure)
+            await write_audit(
+                session, agent_id=None, method="admin:market_closure.add",
+                params={"closure_id": closure.id, "market": closure.market,
+                        "day": dto["day"], "kind": closure.kind,
+                        "close_time": dto["close_time"], "note": closure.note,
+                        "by": admin.email},
+                outcome="ok", latency_ms=0,
+            )
+    except IntegrityError:  # a concurrent insert of the same market and day won the race
+        raise _invalid("day", "esiste già una chiusura per questo mercato e giorno") from None
+    await refresh_closures(session)  # this process applies it at once
+    return dto
+
+
+@router.delete("/market-closures/{closure_id}")
+async def remove_closure(closure_id: int, session: DbSession, redis: RedisClient,
+                         admin: CurrentAdmin) -> dict:
+    async with _transaction(session, redis):
+        await delete_closure(session, closure_id)
+        await write_audit(
+            session, agent_id=None, method="admin:market_closure.delete",
+            params={"closure_id": closure_id, "by": admin.email}, outcome="ok", latency_ms=0,
+        )
+    await refresh_closures(session)
+    return {"deleted": closure_id}

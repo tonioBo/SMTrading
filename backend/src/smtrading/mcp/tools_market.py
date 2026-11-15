@@ -17,7 +17,12 @@ from sqlalchemy import select
 from smtrading.agents.models import AgentPortfolio
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.instruments.discovery import Unsupported, auto_add_enabled, classify_hit
-from smtrading.instruments.market_hours import MARKETS, all_market_status, market_status
+from smtrading.instruments.market_hours import (
+    MARKETS,
+    STATUS_MARKETS,
+    all_market_status,
+    market_status,
+)
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.instruments.service import canonical_symbol
 from smtrading.marketdata.indicators_service import IndicatorSpec, compute_indicators
@@ -227,7 +232,10 @@ def _market_status(market: Any) -> Any:
     now = datetime.now(UTC)
     if market is None:
         return all_market_status(now)
-    return market_status(_str(market, "market").upper(), now)
+    mk = _str(market, "market").upper()
+    if mk not in STATUS_MARKETS:  # LSE: hours only, not a tradable market
+        raise SMTError(ErrorCode.NOT_FOUND, f"unknown market {mk!r}", {"market": mk})
+    return market_status(mk, now)
 
 
 def _specs(indicators: Any) -> list[IndicatorSpec]:
@@ -370,7 +378,7 @@ def register(mcp: MCPServer) -> None:
     @mcp.tool(structured_output=False)
     async def get_market_status(market: str | None = None) -> CallToolResult:
         """Open/closed status and next open/close of a market (NASDAQ, NYSE, MTA, XETRA,
-        EURONEXT_PARIS, CRYPTO, FX), or of all markets when omitted."""
+        EURONEXT_PARIS, CRYPTO, FX, LSE), or of all markets when omitted."""
         return await run_tool("get_market_status", {"market": market},
                               lambda ctx: _async(_market_status, market))
 

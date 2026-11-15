@@ -620,9 +620,33 @@ export type QuotesResponse = Record<string, Quote | { error: string }>;
 
 export interface MarketStatus {
   market: string;
+  /** false for a market shown for its hours only (LSE): no instruments can be added. */
+  tradable: boolean;
   is_open: boolean;
   next_open: string | null;
   next_close: string | null;
+}
+
+export type MarketClosureKind = "closed" | "early_close";
+
+export interface MarketClosure {
+  id: number;
+  market: string;
+  day: string;
+  kind: MarketClosureKind;
+  /** "HH:MM", local time of the exchange; early_close only. */
+  close_time: string | null;
+  note: string;
+  created_by: string;
+  created_at: string | null;
+}
+
+export interface MarketClosureCreate {
+  market: string;
+  day: string;
+  kind: MarketClosureKind;
+  close_time?: string;
+  note: string;
 }
 
 export interface VerifyChainResult {

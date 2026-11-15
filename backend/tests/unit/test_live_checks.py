@@ -402,8 +402,8 @@ async def test_another_orders_missing_quote_never_refuses_this_one(maker, qs):
 
 async def test_last_fill_fallback_ignores_paper_and_old_fills(maker, qs, caplog):
     """FR2: the fallback price is a fill of this link's orders no older than one trading
-    day (24 h; 72 h on Saturday, Sunday and Monday). A paper fill (before linking) or an
-    older one is not used: at placement the other order is skipped, with a warning."""
+    day (since the previous session's open). A paper fill (before linking) or an older
+    one is not used: at placement the other order is skipped, with a warning."""
     import logging
 
     pid, link_id = await _portfolio(maker, qs, held=1)  # the fill's order is not the link's
@@ -414,25 +414,38 @@ async def test_last_fill_fallback_ignores_paper_and_old_fills(maker, qs, caplog)
     assert "no price for the cash cap estimate" in caplog.text
     await _check(maker, qs, pid, est_value=D(900))  # the other not counted
     await _fills_of_the_link(maker, pid, link_id, created_at=NOW - timedelta(hours=25))
-    assert await _committed(maker, qs) == 0  # Tuesday: older than 24 h
+    assert await _committed(maker, qs) == 0  # Monday 14:00: before Monday's open
     await _fills_of_the_link(maker, pid, link_id, created_at=NOW - timedelta(hours=23))
     assert await _committed(maker, qs) > 0
 
 
-async def test_last_fill_fallback_spans_the_weekend(maker, qs):
-    """FR2: on a Monday a Friday-afternoon fill (65 h old) still prices the other buy."""
+async def test_last_fill_uses_trading_day(maker, qs):
+    """FR2: «one trading day» is the market's calendar (previous_session_open): on Monday
+    15:00 UTC a Friday 15:00 fill still prices the other buy, a Thursday one does not;
+    a holiday is skipped."""
     from smtrading.risk.live_checks import committed_buys
 
     monday = datetime(2026, 11, 16, 15, 0, tzinfo=UTC)
     pid, link_id = await _portfolio(maker, qs, held=1)
-    await _fills_of_the_link(maker, pid, link_id, created_at=monday - timedelta(hours=65))
+    await _fills_of_the_link(maker, pid, link_id,
+                             created_at=datetime(2026, 11, 13, 15, 0, tzinfo=UTC))
     await _market_buy(maker, pid, link_id)
     qs._quotes.pop("AAPL")
     async with maker() as s:
         portfolio = await s.get(Portfolio, pid)
         assert await committed_buys(s, qs, portfolio=portfolio, now=monday) > 0
+    await _fills_of_the_link(maker, pid, link_id,
+                             created_at=datetime(2026, 11, 12, 15, 0, tzinfo=UTC))
+    async with maker() as s:
+        portfolio = await s.get(Portfolio, pid)
+        assert await committed_buys(s, qs, portfolio=portfolio, now=monday) == 0
+    # the Friday after Thanksgiving: a Wednesday fill (48 h old) is one trading day old
+    await _fills_of_the_link(maker, pid, link_id,
+                             created_at=datetime(2026, 11, 25, 15, 0, tzinfo=UTC))
+    async with maker() as s:
+        portfolio = await s.get(Portfolio, pid)
         assert await committed_buys(s, qs, portfolio=portfolio,
-                                    now=monday + timedelta(hours=8)) == 0  # 73 h
+                                    now=datetime(2026, 11, 27, 15, 0, tzinfo=UTC)) > 0
 
 
 async def test_claimed_other_buy_without_quote_has_no_fallback(maker, qs, caplog):
