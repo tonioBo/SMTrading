@@ -15,6 +15,7 @@ import itertools
 import json
 import re
 import threading
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -105,7 +106,7 @@ class FakeLiveBroker:
         self.etoro_fail_close_after: int | None = None  # closes accepted before a 500
         # RateLimit-Remaining of the market-data answers (None: no quota headers)
         self.market_data_remaining: int | None = None
-        self.calls: list[tuple[str, str]] = []
+        self.calls: deque[tuple[str, str]] = deque(maxlen=1000)  # the latest requests
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
 

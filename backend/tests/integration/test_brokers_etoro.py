@@ -208,7 +208,7 @@ async def test_notional_amount_only_usd(adapter, fake, sent):
     before = len(fake.calls)
     bo = await adapter.place_order(eur_notional, sap)
     assert (bo.status, bo.message) == ("rejected", QTY_ONLY_MESSAGE)
-    assert not [c for c in fake.calls[before:] if c[0] == "POST"]
+    assert not [c for c in list(fake.calls)[before:] if c[0] == "POST"]
     # a sell by amount cannot be a position close
     sell_amount = _order(side=OrderSide.sell, qty=None, notional=Decimal(100))
     assert adapter.unsupported_reason(sell_amount, _inst()) == QTY_ONLY_MESSAGE
@@ -335,6 +335,12 @@ async def test_lookup_leveraged_or_unreal_order_is_rejected(asset, plain, mock, 
         ("GET", A.INFO_V1 + "/../real/pnl"),
         ("GET", A.INFO_V1 + "//pnl"),
         ("GET", A.INFO_V1 + "/%2e%2e/real/pnl"),
+        ("GET", A.INFO_V1 + "/%252e%252e/real/pnl"),  # double-encoded
+        ("GET", A.INFO_V1 + "/%2E%2E/real/pnl"),  # uppercase
+        ("GET", A.INFO_V1 + "%2F..%2Freal/pnl"),
+        ("GET", A.INFO_V1 + "/pnl%20"),
+        ("GET", A.INFO_V1 + "\\..\\real/pnl"),
+        ("GET", A.INFO_V1 + "/close-orders/1%3F"),
     ],
 )
 async def test_demo_adapter_cannot_call_real_path(method, path, adapter, fake):
@@ -343,7 +349,11 @@ async def test_demo_adapter_cannot_call_real_path(method, path, adapter, fake):
         await adapter._request(method, path, body={"x": 1} if method == "POST" else None)
     assert e.value.code == ErrorCode.FORBIDDEN
     assert e.value.message == "percorso non ammesso per questo collegamento"
-    assert fake.calls == before
+    assert list(fake.calls) == before
+
+
+def test_fake_calls_are_bounded(fake):
+    assert fake.calls.maxlen == 1000
 
 
 async def test_demo_paths_all_contain_demo(adapter, fake):
@@ -390,7 +400,8 @@ async def test_account_currency_not_usd_fails(plain, mock):
 
 @pytest.mark.parametrize(
     "change",
-    [{"leverage": 2}, {"isBuy": False}, {"settlementTypeID": 2}, {"mirrorID": 12}],
+    [{"leverage": 2}, {"isBuy": False}, {"settlementTypeID": 2}, {"mirrorID": 12},
+     {"mirrorID": None}],  # None: the field is left out (fail-closed)
 )
 async def test_nonconforming_position_marks_leveraged(change, plain, mock):
     data = _fixture("etoro_pnl.json")
@@ -400,6 +411,7 @@ async def test_nonconforming_position_marks_leveraged(change, plain, mock):
                       "openRate": 400, "amount": 1200, "leverage": 1, "mirrorId": 0,
                       "settlementTypeId": 1, **{k.replace("ID", "Id"): v
                                                 for k, v in change.items()}})
+    positions[-1] = {k: v for k, v in positions[-1].items() if v is not None}
     mock.get(PNL).mock(return_value=httpx.Response(200, json=data))
     a = EtoroDemoAdapter(dict(CFG), plain)
     snap = await a.get_account()
@@ -575,6 +587,44 @@ async def test_eligibility_request_body(adapter, fake, sent):
     calls = len(fake.calls)
     await adapter.prepare([_inst("AAPL"), _inst("MSFT")])  # cached for 24 h
     assert len(fake.calls) == calls
+
+
+@pytest.mark.parametrize("status", [400, 422])
+async def test_open_rejection_without_body_message_has_one(status, plain, mock):
+    mock.get(SEARCH).mock(return_value=httpx.Response(200, json={"items": [_search_item()]}))
+    mock.post(ELIGIBILITY).mock(return_value=httpx.Response(200, json=_eligibility()))
+    mock.post(ETORO_URL + A.EXEC_V2 + "/orders").mock(
+        return_value=httpx.Response(status, content=b"<html>"))
+    bo = await EtoroDemoAdapter(dict(CFG), plain).place_order(_order(), _inst())
+    assert (bo.status, bo.message) == ("rejected", f"etoro: HTTP {status}")
+
+
+async def test_close_rejection_without_body_message_has_one(adapter, fake, monkeypatch):
+    await _buy(adapter, 1)
+    monkeypatch.setattr(fake, "_etoro_close",
+                        lambda env, pid, body: httpx.Response(422, json={}))
+    bo = await adapter.place_order(_order(side=OrderSide.sell, qty=Decimal(1)), _inst())
+    assert (bo.status, bo.message) == ("rejected", "etoro: HTTP 422")
+
+
+async def test_lookup_without_asset_is_rejected(plain, mock, caplog):
+    data = {k: v for k, v in _fixture("etoro_order_lookup.json").items() if k != "asset"}
+    mock.get(ETORO_URL + A.INFO_V2 + "/orders:lookup", params={"orderId": "77"}).mock(
+        return_value=httpx.Response(200, json=data))
+    a = EtoroDemoAdapter(dict(CFG), plain)
+    with caplog.at_level("WARNING", logger="smtrading.brokers.etoro"):
+        first = await a.get_order("77")
+        second = await a.get_order("77")
+    assert first.status == second.status == "rejected"
+    assert len([r for r in caplog.records if "without asset" in r.getMessage()]) == 1
+
+
+async def test_lookup_filled_without_executions_stays_accepted(plain, mock):
+    data = {**_fixture("etoro_order_lookup.json"), "positionExecutions": []}
+    mock.get(ETORO_URL + A.INFO_V2 + "/orders:lookup", params={"orderId": "77"}).mock(
+        return_value=httpx.Response(200, json=data))
+    bo = await EtoroDemoAdapter(dict(CFG), plain).get_order("77")
+    assert (bo.status, bo.filled_qty, bo.avg_fill_price) == ("accepted", Decimal(0), None)
 
 
 async def test_open_rejected_by_broker_400(plain, mock):
