@@ -502,6 +502,56 @@ describe("PortfolioDetail", () => {
     expect(placed).toEqual(previews);
   });
 
+  it("a real order sends the TOTP, which is not kept in the mutation cache", async () => {
+    current = { ...portfolio, mode: "reale", live_state: "armed", broker_link_id: "l1" };
+    const placed: unknown[] = [];
+    server.use(
+      http.get("*/api/instruments", () =>
+        HttpResponse.json({
+          items: [{ symbol: "MSFT", name: "Microsoft", asset_class: "us_equity", market: "US", currency: "USD", lot_size: "1", tick_size: "0.01", shortable: true, active: true, provider_symbols: {}, source: "catalog", added_by: null }],
+          total: 1,
+          offset: 0,
+          limit: 10,
+        }),
+      ),
+      http.post("*/api/portfolios/p1/orders/preview", () =>
+        HttpResponse.json({
+          ok: true,
+          code: null,
+          message: null,
+          estimated_price: "400",
+          estimated_notional_eur: "370",
+          estimated_fee: { rule_id: "f1", amount: "1", currency: "EUR" },
+          estimated_fx_fee_eur: "0",
+          buying_power_after_eur: "16629",
+          real: true,
+          currency: "EUR",
+        }),
+      ),
+      http.post("*/api/portfolios/p1/orders", async ({ request }) => {
+        placed.push(await request.json());
+        return HttpResponse.json({ ...openOrder, id: "o9" });
+      }),
+    );
+    const user = await openTab("Ordini");
+    await user.click(await screen.findByRole("button", { name: "Nuovo ordine" }));
+    const dialog = screen.getByRole("dialog", { name: "Nuovo ordine" });
+    await user.type(within(dialog).getByLabelText("Simbolo"), "ms");
+    await user.click(await within(dialog).findByRole("button", { name: /MSFT/ }));
+    await user.type(within(dialog).getByLabelText("Quantità"), "1");
+    await user.click(within(dialog).getByRole("button", { name: "Anteprima" }));
+    await within(dialog).findByLabelText("Anteprima dell'ordine");
+    await user.click(within(dialog).getByRole("button", { name: "Invia" }));
+    const confirm = await screen.findByRole("dialog", { name: "🔴 Ordine con denaro reale" });
+    await user.type(within(confirm).getByLabelText("Codice TOTP"), "246810");
+    await user.click(within(confirm).getByRole("button", { name: "Invia ordine reale" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(placed).toEqual([{ symbol: "MSFT", side: "buy", type: "market", tif: "gtc", qty: "1", totp: "246810" }]);
+    await waitFor(() =>
+      expect(JSON.stringify(queryClient!.getMutationCache().getAll().map((m) => m.state.variables))).not.toContain("246810"),
+    );
+  });
+
   it("shows the broker state of routed orders and marks the simulated ones", async () => {
     current = { ...portfolio, broker_link_id: "b1" };
     server.use(

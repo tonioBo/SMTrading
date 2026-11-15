@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { toast } from "sonner";
+import { ApiError } from "@/api/client";
 import { useInstrumentSearch } from "@/api/hooks/markets";
 import { newKey, usePlaceOrder, usePreviewOrder } from "@/api/hooks/portfolios";
 import type { Instrument, OrderInput, OrderPreview, OrderType, Portfolio, TimeInForce } from "@/api/types";
@@ -9,13 +10,15 @@ import { LiveOrderConfirm } from "@/components/LiveOrderConfirm";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { AMBIGUOUS_AMOUNT_MESSAGE, amountError, normalizeAmount } from "@/lib/decimal";
+import { AMBIGUOUS_AMOUNT_MESSAGE, amountError, multiplyDecimal, normalizeAmount } from "@/lib/decimal";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatMoney } from "@/lib/format";
-import { ORDER_TYPE_LABELS } from "@/lib/labels";
+import { ORDER_TYPE_LABELS, TIF_LABELS } from "@/lib/labels";
+import { isTotpMissing } from "@/lib/live";
 
 const ORDER_TYPES: OrderType[] = ["market", "limit", "stop", "stop_limit", "trailing_stop"];
-const TIF_LABELS: Record<TimeInForce, string> = { gtc: "Fino a revoca (gtc)", day: "Giornaliero (day)" };
+const TIFS: TimeInForce[] = ["gtc", "day"];
+const NOW_REAL_MESSAGE = "Il portafoglio ora è collegato al denaro reale: rifai l'anteprima";
 const NEEDS_LIMIT: ReadonlySet<OrderType> = new Set(["limit", "stop_limit"]);
 const NEEDS_STOP: ReadonlySet<OrderType> = new Set(["stop", "stop_limit"]);
 
@@ -81,6 +84,19 @@ interface Previewed {
   result: OrderPreview;
   /** the Idempotency-Key of this previewed order, reused by its retries */
   key: string;
+  /** the instrument's currency */
+  currency: string;
+}
+
+/** The server asked for the TOTP (a code refused, or TOTP not enabled). */
+const isTotpError = (err: unknown) => errorField(err) === "totp" || isTotpMissing(err);
+/** A 4xx is the server's final word on this order: a retry needs a fresh preview (and key). */
+const isDefinitive = (err: unknown) => err instanceof ApiError && err.status >= 400 && err.status < 500;
+
+/** The estimated amount in the instrument currency: the notional as entered, else qty × price. */
+function estimatedAmount(p: Previewed): { value: string; currency: string; eurEstimate: string | null } | null {
+  const value = p.body.notional ?? (p.body.qty && p.result.estimated_price ? multiplyDecimal(p.body.qty, p.result.estimated_price) : null);
+  return value ? { value, currency: p.currency, eurEstimate: p.result.estimated_notional_eur } : null;
 }
 
 /** The instrument picker: a search on the catalogue (GET /api/instruments), no instrument is created. */
@@ -100,26 +116,28 @@ function SymbolPicker({ selected, error, onPick }: { selected: Instrument | null
           }}
         />
       </FormField>
-      {searching && data && (
-        <ul aria-label="Strumenti trovati" className="max-h-40 overflow-y-auto rounded-md border border-border text-sm">
-          {data.items.length === 0 && !isFetching && <li className="px-3 py-1.5 text-muted">Nessuno strumento trovato</li>}
-          {data.items.map((i) => (
-            <li key={i.symbol}>
-              <button
-                type="button"
-                className="flex w-full justify-between gap-4 px-3 py-1.5 text-left hover:bg-border/40"
-                onClick={() => {
-                  setText(i.symbol);
-                  onPick(i);
-                }}
-              >
-                <span className="font-medium">{i.symbol}</span>
-                <span className="truncate text-muted">{i.name}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      <div aria-live="polite">
+        {searching && data && (
+          <ul aria-label="Strumenti trovati" className="max-h-40 overflow-y-auto rounded-md border border-border text-sm">
+            {data.items.length === 0 && !isFetching && <li className="px-3 py-1.5 text-muted">Nessuno strumento trovato</li>}
+            {data.items.map((i) => (
+              <li key={i.symbol}>
+                <button
+                  type="button"
+                  className="flex w-full justify-between gap-4 px-3 py-1.5 text-left hover:bg-border/40"
+                  onClick={() => {
+                    setText(i.symbol);
+                    onPick(i);
+                  }}
+                >
+                  <span className="font-medium">{i.symbol}</span>
+                  <span className="truncate text-muted">{i.name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
@@ -164,6 +182,8 @@ export function OrderForm({ portfolio, onClose }: { portfolio: Portfolio; onClos
   const [errors, setErrors] = useState<FieldErrors>({});
   const [previewed, setPreviewed] = useState<Previewed | null>(null);
   const [confirming, setConfirming] = useState(false);
+  /** shown when a send without TOTP found the portfolio real */
+  const [notice, setNotice] = useState<string | null>(null);
 
   const built = buildOrder(draft);
   const currentJson = built.body ? JSON.stringify(built.body) : null;
@@ -172,7 +192,8 @@ export function OrderForm({ portfolio, onClose }: { portfolio: Portfolio; onClos
   const serverError = place.error ?? preview.error;
   const serverField = errorField(serverError);
   const fieldError = (f: Field) => errors[f] ?? (serverField === f ? errorMessage(serverError) : undefined);
-  const generalError = serverError && !(serverField && FIELDS.has(serverField)) ? errorMessage(serverError) : null;
+  const generalError =
+    notice ?? (serverError && !(serverField && FIELDS.has(serverField)) && !isTotpError(serverError) ? errorMessage(serverError) : null);
 
   function edit(patch: Partial<Draft>) {
     setDraft((d) => {
@@ -182,6 +203,7 @@ export function OrderForm({ portfolio, onClose }: { portfolio: Portfolio; onClos
       return next;
     });
     setErrors({});
+    setNotice(null);
     setPreviewed(null);
     preview.reset();
     place.reset();
@@ -194,8 +216,10 @@ export function OrderForm({ portfolio, onClose }: { portfolio: Portfolio; onClos
     }
     const body = built.body;
     const json = JSON.stringify(body);
+    const currency = draft.instrument?.currency ?? portfolio.base_currency;
     place.reset();
-    preview.mutate(body, { onSuccess: (result) => setPreviewed({ json, body, result, key: newKey() }) });
+    setNotice(null);
+    preview.mutate(body, { onSuccess: (result) => setPreviewed({ json, body, result, key: newKey(), currency }) });
   }
 
   function send(totp?: string) {
@@ -207,13 +231,28 @@ export function OrderForm({ portfolio, onClose }: { portfolio: Portfolio; onClos
           toast.success(`Ordine inviato: ${previewed.body.side === "buy" ? "acquisto" : "vendita"} ${previewed.body.symbol}`);
           onClose();
         },
+        onError: (err) => {
+          if (!totp && isTotpError(err)) {
+            // linked to a real-money broker after the preview: preview again, then the TOTP
+            setPreviewed(null);
+            setNotice(NOW_REAL_MESSAGE);
+          } else if (isDefinitive(err) && errorField(err) !== "totp") {
+            // refused for good (the rejected order may be stored): a retry needs a fresh preview;
+            // network errors and 5xx keep the preview and its key for a safe retry
+            setPreviewed(null);
+            setConfirming(false);
+          }
+        },
       },
     );
   }
 
+  function close() {
+    if (!place.isPending) onClose();
+  }
+
   if (confirming && previewed) {
     const b = previewed.body;
-    const notional = previewed.result.estimated_notional_eur;
     return (
       <LiveOrderConfirm
         portfolioName={portfolio.name}
@@ -228,11 +267,13 @@ export function OrderForm({ portfolio, onClose }: { portfolio: Portfolio; onClos
           trail_percent: b.trail_pct,
           trail_amount: b.trail_amount,
           tif: b.tif,
+          currency: previewed.currency,
         }}
-        amount={notional ? { value: notional, currency: "EUR" } : null}
+        amount={estimatedAmount(previewed)}
         pending={place.isPending}
         error={place.error}
         onClose={() => {
+          if (place.isPending) return;
           place.reset();
           setConfirming(false);
         }}
@@ -243,7 +284,7 @@ export function OrderForm({ portfolio, onClose }: { portfolio: Portfolio; onClos
 
   const ccy = draft.instrument?.currency;
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
+    <Dialog open onOpenChange={(o) => !o && close()}>
       <DialogContent className="max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Nuovo ordine</DialogTitle>
@@ -320,27 +361,37 @@ export function OrderForm({ portfolio, onClose }: { portfolio: Portfolio; onClos
           )}
           <FormField label="Durata">
             <select className={selectClass} value={draft.tif} onChange={(e) => edit({ tif: e.target.value as TimeInForce })}>
-              {(Object.keys(TIF_LABELS) as TimeInForce[]).map((t) => (
+              {TIFS.map((t) => (
                 <option key={t} value={t}>
                   {TIF_LABELS[t]}
                 </option>
               ))}
             </select>
           </FormField>
-          {previewed && <PreviewSummary result={previewed.result} currency={ccy ?? previewed.result.currency} />}
+          {previewed && <PreviewSummary result={previewed.result} currency={previewed.currency} />}
           {generalError && (
             <p role="alert" className="text-sm text-loss">
               {generalError}
             </p>
           )}
+          {!canSend && !place.isPending && (
+            <p id="order-send-hint" className="text-right text-xs text-muted">
+              Fai prima l'anteprima
+            </p>
+          )}
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose} disabled={place.isPending}>
+            <Button type="button" variant="outline" onClick={close} disabled={place.isPending}>
               Annulla
             </Button>
             <Button type="submit" variant="outline" disabled={preview.isPending || place.isPending}>
               Anteprima
             </Button>
-            <Button type="button" disabled={!canSend} onClick={() => (previewed?.result.real ? setConfirming(true) : send())}>
+            <Button
+              type="button"
+              disabled={!canSend}
+              aria-describedby={canSend || place.isPending ? undefined : "order-send-hint"}
+              onClick={() => (previewed?.result.real ? setConfirming(true) : send())}
+            >
               Invia
             </Button>
           </DialogFooter>

@@ -103,6 +103,7 @@ describe("OrderForm", () => {
     await user.type(within(dialog).getByLabelText("Quantità"), "2,5");
     const send = within(dialog).getByRole("button", { name: "Invia" });
     expect(send).toBeDisabled();
+    expect(within(dialog).getByText("Fai prima l'anteprima")).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "Anteprima" }));
     const shown = await within(dialog).findByLabelText("Anteprima dell'ordine");
     expect(shown).toHaveTextContent("Prezzo stimato190,50 $");
@@ -111,6 +112,7 @@ describe("OrderForm", () => {
     expect(shown).toHaveTextContent("Liquidità dopo l'ordine16.473,70 €");
     expect(previews).toEqual([{ symbol: "AAPL", side: "buy", type: "market", tif: "gtc", qty: "2.5" }]);
     expect(send).toBeEnabled();
+    expect(within(dialog).queryByText("Fai prima l'anteprima")).not.toBeInTheDocument();
     await user.click(send);
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(places).toEqual([
@@ -144,6 +146,7 @@ describe("OrderForm", () => {
     const { user, dialog } = setup();
     await user.type(within(dialog).getByLabelText("Simbolo"), "zzz");
     expect(await within(dialog).findByText("Nessuno strumento trovato")).toBeInTheDocument();
+    expect(within(dialog).getByText("Nessuno strumento trovato").closest("[aria-live]")).toHaveAttribute("aria-live", "polite");
     await user.type(within(dialog).getByLabelText("Quantità"), "1");
     await user.click(within(dialog).getByRole("button", { name: "Anteprima" }));
     expect(within(dialog).getByLabelText("Simbolo")).toHaveAccessibleDescription("Scegli uno strumento dal catalogo");
@@ -200,7 +203,9 @@ describe("OrderForm", () => {
     await within(dialog).findByLabelText("Anteprima dell'ordine");
     await user.click(within(dialog).getByRole("button", { name: "Invia" }));
     const confirm = await screen.findByRole("dialog", { name: "🔴 Ordine con denaro reale" });
-    expect(within(confirm).getByLabelText("Riepilogo dell'ordine")).toHaveTextContent("Importo stimato525,30 €");
+    const summary = within(confirm).getByLabelText("Riepilogo dell'ordine");
+    expect(summary).toHaveTextContent("Importo stimato381,00 $≈ 525,30 € (stima)"); // 2 × 190,5 $
+    expect(summary).toHaveTextContent("DurataFino a revoca (gtc)");
     const send = within(confirm).getByRole("button", { name: "Invia ordine reale" });
     expect(send).toBeDisabled();
     expect(places).toEqual([]);
@@ -233,5 +238,105 @@ describe("OrderForm", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(places.map((p) => (p.body as { totp: string }).totp)).toEqual(["111111", "222222"]);
     expect(places[0].key).toBe(places[1].key);
+  });
+
+  async function previewed(user: ReturnType<typeof userEvent.setup>, dialog: HTMLElement, qty = "2") {
+    await pickAapl(user, dialog);
+    await user.type(within(dialog).getByLabelText("Quantità"), qty);
+    await user.click(within(dialog).getByRole("button", { name: "Anteprima" }));
+    await within(dialog).findByLabelText("Anteprima dell'ordine");
+  }
+
+  it("a real notional order shows the controvalore as entered", async () => {
+    preview = { ...okPreview, real: true };
+    const { user, dialog } = setup();
+    await pickAapl(user, dialog);
+    await user.selectOptions(within(dialog).getByLabelText("Ordine per"), "notional");
+    await user.type(within(dialog).getByLabelText("Controvalore"), "500");
+    await user.click(within(dialog).getByRole("button", { name: "Anteprima" }));
+    await within(dialog).findByLabelText("Anteprima dell'ordine");
+    await user.click(within(dialog).getByRole("button", { name: "Invia" }));
+    const confirm = await screen.findByRole("dialog", { name: "🔴 Ordine con denaro reale" });
+    const summary = within(confirm).getByLabelText("Riepilogo dell'ordine");
+    expect(summary).toHaveTextContent("Controvalore500,00 $");
+    expect(summary).toHaveTextContent("Importo stimato500,00 $≈ 525,30 € (stima)");
+  });
+
+  it("a send that turns out to need the TOTP asks for a new preview", async () => {
+    placeResponse = () =>
+      HttpResponse.json({ code: "FORBIDDEN", message: "codice TOTP obbligatorio", details: { field: "totp" } }, { status: 403 });
+    const { user, onClose, dialog } = setup();
+    await previewed(user, dialog);
+    await user.click(within(dialog).getByRole("button", { name: "Invia" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Il portafoglio ora è collegato al denaro reale: rifai l'anteprima");
+    expect(within(dialog).queryByText("codice TOTP obbligatorio")).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("Anteprima dell'ordine")).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Invia" })).toBeDisabled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("a definitive refusal requires a fresh preview with a new key", async () => {
+    placeResponse = () =>
+      HttpResponse.json({ code: "INSUFFICIENT_BUYING_POWER", message: "insufficient buying power", details: { order_id: "o8" } }, { status: 400 });
+    const { user, onClose, dialog } = setup();
+    await previewed(user, dialog);
+    await user.click(within(dialog).getByRole("button", { name: "Invia" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("insufficient buying power");
+    expect(within(dialog).getByRole("button", { name: "Invia" })).toBeDisabled();
+    placeResponse = () => HttpResponse.json({ id: "o9", status: "new" });
+    await user.click(within(dialog).getByRole("button", { name: "Anteprima" }));
+    await within(dialog).findByLabelText("Anteprima dell'ordine");
+    await user.click(within(dialog).getByRole("button", { name: "Invia" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(places).toHaveLength(2);
+    expect(places[0].key).not.toBe(places[1].key);
+  });
+
+  it("a server error keeps the preview and the key for a retry", async () => {
+    placeResponse = () => HttpResponse.json({ code: "INTERNAL", message: "errore temporaneo", details: null }, { status: 500 });
+    const { user, onClose, dialog } = setup();
+    await previewed(user, dialog);
+    await user.click(within(dialog).getByRole("button", { name: "Invia" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("errore temporaneo");
+    placeResponse = () => HttpResponse.json({ id: "o9", status: "new" });
+    await user.click(within(dialog).getByRole("button", { name: "Invia" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(places).toHaveLength(2);
+    expect(places[0].key).toBe(places[1].key);
+  });
+
+  it("a real order refused for good goes back to the form for a fresh preview", async () => {
+    preview = { ...okPreview, real: true };
+    placeResponse = () => HttpResponse.json({ code: "RISK_LIMIT_EXCEEDED", message: "limite superato", details: { order_id: "o8" } }, { status: 400 });
+    const { user, dialog } = setup();
+    await previewed(user, dialog);
+    await user.click(within(dialog).getByRole("button", { name: "Invia" }));
+    const confirm = await screen.findByRole("dialog", { name: "🔴 Ordine con denaro reale" });
+    await user.type(within(confirm).getByLabelText("Codice TOTP"), "123456");
+    await user.click(within(confirm).getByRole("button", { name: "Invia ordine reale" }));
+    const form = await screen.findByRole("dialog", { name: "Nuovo ordine" });
+    expect(within(form).getByRole("alert")).toHaveTextContent("limite superato");
+    expect(within(form).getByRole("button", { name: "Invia" })).toBeDisabled();
+  });
+
+  it("does not close while the order is being sent", async () => {
+    let release: () => void = () => undefined;
+    let arrived = false;
+    server.use(
+      http.post("*/api/portfolios/p1/orders", async () => {
+        arrived = true;
+        await new Promise<void>((r) => (release = r));
+        return HttpResponse.json({ id: "o9", status: "new" });
+      }),
+    );
+    const { user, onClose, dialog } = setup();
+    await previewed(user, dialog);
+    await user.click(within(dialog).getByRole("button", { name: "Invia" }));
+    await waitFor(() => expect(arrived).toBe(true));
+    await user.keyboard("{Escape}");
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Nuovo ordine" })).toBeInTheDocument();
+    release();
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   });
 });

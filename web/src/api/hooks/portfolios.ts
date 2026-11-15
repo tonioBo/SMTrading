@@ -190,6 +190,7 @@ export function usePlaceOrder(portfolioId: string) {
   return useMutation({
     mutationFn: ({ body, key }: { body: OrderInput; key: string }) =>
       apiFetch<Order>(`/api/portfolios/${portfolioId}/orders`, { method: "POST", body, idempotencyKey: key }),
+    gcTime: 0, // the variables may hold the TOTP code: never kept in the mutation cache
     // a refused order is stored too (rejected): reload the orders either way
     onSettled: invalidate,
   });

@@ -30,6 +30,22 @@ export function subtractDecimal(a: string, b: string): string | null {
   return (negative ? "-" : "") + int + (frac ? "." + frac : "");
 }
 
+/** a × b as a plain decimal string (trailing zeros stripped); null on invalid input. */
+export function multiplyDecimal(a: string, b: string): string | null {
+  const x0 = a.trim();
+  const y0 = b.trim();
+  const x = toScaled(x0, fracLen(x0));
+  const y = toScaled(y0, fracLen(y0));
+  if (x === null || y === null) return null;
+  const places = fracLen(x0) + fracLen(y0);
+  const product = x * y;
+  const negative = product < 0n;
+  const digits = (negative ? -product : product).toString().padStart(places + 1, "0");
+  const int = digits.slice(0, digits.length - places);
+  const frac = digits.slice(digits.length - places).replace(/0+$/, "");
+  return (negative && /[1-9]/.test(int + frac) ? "-" : "") + int + (frac ? "." + frac : "");
+}
+
 export const AMBIGUOUS_AMOUNT_MESSAGE = "Usa la virgola per i decimali (es. 10.000,00)";
 export const INVALID_AMOUNT_MESSAGE = "Importo non valido";
 

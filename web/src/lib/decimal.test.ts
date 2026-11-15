@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AMBIGUOUS_AMOUNT_MESSAGE, amountError, normalizeAmount, subtractDecimal, toInputDecimal } from "@/lib/decimal";
+import { AMBIGUOUS_AMOUNT_MESSAGE, amountError, multiplyDecimal, normalizeAmount, subtractDecimal, toInputDecimal } from "@/lib/decimal";
 
 describe("subtractDecimal", () => {
   it("subtracts plain decimal strings exactly", () => {
@@ -15,6 +15,19 @@ describe("subtractDecimal", () => {
 
   it("returns null for non-decimal input", () => {
     expect(subtractDecimal("abc", "1")).toBeNull();
+  });
+});
+
+describe("multiplyDecimal", () => {
+  it("multiplies plain decimal strings exactly", () => {
+    expect(multiplyDecimal("2", "190.5")).toBe("381");
+    expect(multiplyDecimal("0.1", "0.2")).toBe("0.02");
+    expect(multiplyDecimal("-1.5", "3")).toBe("-4.5");
+    expect(multiplyDecimal("0", "-3")).toBe("0");
+  });
+
+  it("returns null for non-decimal input", () => {
+    expect(multiplyDecimal("1e3", "2")).toBeNull();
   });
 });
 

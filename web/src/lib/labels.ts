@@ -20,3 +20,6 @@ export const ORDER_TYPE_LABELS: Record<string, string> = {
   stop_limit: "Stop limite",
   trailing_stop: "Trailing stop",
 };
+
+/** Italian names of the order durations (engine TimeInForce). */
+export const TIF_LABELS: Record<string, string> = { gtc: "Fino a revoca (gtc)", day: "Giornaliero (day)" };
