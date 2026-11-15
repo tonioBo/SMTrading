@@ -1,7 +1,11 @@
 import asyncio
 import logging
 import math
+import os
 import struct
+import tempfile
+import threading
+import time
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
@@ -24,6 +28,67 @@ from smtrading.marketdata.types import (
 log = logging.getLogger(__name__)
 MAX_CONCURRENT_CALLS = 4
 _NO_INFO_QUOTE_TYPES = frozenset({"CURRENCY", "CRYPTOCURRENCY"})
+_RETRY_DELAY_S = 0.5
+_CACHE_DIR = os.path.join(tempfile.gettempdir(), "py-yfinance")
+_session_lock = threading.Lock()
+_shared_session: Any = None
+
+
+def _session() -> Any:
+    """The one curl_cffi session every yfinance call goes through, forced to HTTP/1.1:
+    Yahoo's HTTP/2 endpoint intermittently fails with curl (16) framing errors. yfinance keeps a
+    process-wide YfData singleton that adopts the session of each call, so per-thread sessions
+    would keep swapping its cookie jar: one shared session (curl_cffi keeps a curl handle per
+    thread) is the safe choice."""
+    global _shared_session
+    with _session_lock:
+        if _shared_session is None:
+            import yfinance as yf
+            from curl_cffi import CurlHttpVersion
+            from curl_cffi import requests as curl_requests
+
+            try:  # the default cache dir is not writable in the container
+                os.makedirs(_CACHE_DIR, exist_ok=True)
+                yf.set_tz_cache_location(_CACHE_DIR)
+            except OSError as exc:
+                log.info("yahoo: tz cache unavailable (%s)", exc)
+            _shared_session = curl_requests.Session(
+                impersonate="chrome", http_version=CurlHttpVersion.V1_1
+            )
+        return _shared_session
+
+
+def _transient(exc: BaseException) -> bool:
+    """A curl transport failure (HTTP/2 framing, reset, timeout...), not an HTTP status."""
+    from curl_cffi import CurlError
+    from curl_cffi.const import CurlECode
+
+    code = getattr(exc, "code", 0)
+    return isinstance(exc, CurlError) and code not in (0, CurlECode.HTTP_RETURNED_ERROR)
+
+
+def _attempt(fn: Any, retry_if: Any = None) -> Any:
+    """fn(), retried once after a transient curl error or when retry_if(result) holds (yfinance
+    swallows transport errors in history/fast_info and reports an empty, "possibly delisted"
+    result). A symbol that is really unknown comes back the same way on the retry."""
+    try:
+        out = fn()
+    except Exception as exc:
+        if not _transient(exc):
+            raise
+        log.info("yahoo: transient error, retrying once: %s", exc)
+    else:
+        if retry_if is None or not retry_if(out):
+            return out
+    time.sleep(_RETRY_DELAY_S)
+    return fn()
+
+
+def _ticker(sym: str) -> Any:
+    import yfinance as yf
+
+    return yf.Ticker(sym, session=_session())
+
 
 INTERVALS = {
     Timeframe.m1: "1m",
@@ -153,18 +218,16 @@ class _YF:
         return str(value)
 
     def fast_info(self, sym: str) -> dict:
-        import yfinance as yf
+        def once() -> dict:
+            fi = _ticker(sym).fast_info
+            return self._clean({k: fi[k] for k in fi})
 
-        fi = yf.Ticker(sym).fast_info
-        return self._clean({k: fi[k] for k in fi})
+        return _attempt(once, lambda d: d.get("lastPrice") is None)
 
     def history(self, sym: str, interval: str, start: datetime, end: datetime) -> list[dict]:
-        import yfinance as yf
-
-        df = yf.Ticker(sym).history(interval=interval, start=start, end=end, auto_adjust=False)
-        rows = []
-        for ts, r in df.iterrows():
-            rows.append(
+        def once() -> list[dict]:
+            df = _ticker(sym).history(interval=interval, start=start, end=end, auto_adjust=False)
+            return [
                 self._clean(
                     {
                         "ts": ts.to_pydatetime().astimezone(UTC),
@@ -175,40 +238,42 @@ class _YF:
                         "volume": r["Volume"],
                     }
                 )
-            )
-        return rows
+                for ts, r in df.iterrows()
+            ]
+
+        return _attempt(once, lambda rows: not rows)
 
     def info(self, sym: str) -> dict:
-        import yfinance as yf
-
-        return self._clean(yf.Ticker(sym).info)
+        return _attempt(lambda: self._clean(_ticker(sym).info))
 
     def news(self, sym: str) -> list[dict]:
-        import yfinance as yf
-
-        return self._clean(yf.Ticker(sym).news)
+        return _attempt(lambda: self._clean(_ticker(sym).news))
 
     def calendar(self, sym: str) -> dict:
-        import yfinance as yf
-
-        return self._clean(yf.Ticker(sym).calendar)
+        return _attempt(lambda: self._clean(_ticker(sym).calendar))
 
     def dividends(self, sym: str) -> list[dict]:
-        import yfinance as yf
+        def once() -> list[dict]:
+            s = _ticker(sym).dividends
+            return [{"date": d.date().isoformat(), "amount": self._clean(v)} for d, v in s.items()]
 
-        s = yf.Ticker(sym).dividends
-        return [{"date": d.date().isoformat(), "amount": self._clean(v)} for d, v in s.items()]
+        return _attempt(once)
 
     def splits(self, sym: str) -> list[dict]:
-        import yfinance as yf
+        def once() -> list[dict]:
+            s = _ticker(sym).splits
+            return [{"date": d.date().isoformat(), "ratio": self._clean(v)} for d, v in s.items()]
 
-        s = yf.Ticker(sym).splits
-        return [{"date": d.date().isoformat(), "ratio": self._clean(v)} for d, v in s.items()]
+        return _attempt(once)
 
     def search(self, q: str) -> list[dict]:
         import yfinance as yf
 
-        return self._clean(yf.Search(q, max_results=20, news_count=0).quotes)
+        return _attempt(
+            lambda: self._clean(
+                yf.Search(q, max_results=20, news_count=0, session=_session()).quotes
+            )
+        )
 
     def screen(self, query: dict) -> list[dict]:
         import yfinance as yf
@@ -220,7 +285,8 @@ class _YF:
                 ops = [ops[0], float(ops[1])]
             return yf.EquityQuery(node["operator"].lower(), ops)
 
-        res = yf.screen(build(query["query"]), size=query["limit"])
+        q = build(query["query"])
+        res = _attempt(lambda: yf.screen(q, size=query["limit"], session=_session()))
         return self._clean(res.get("quotes", []))
 
 
