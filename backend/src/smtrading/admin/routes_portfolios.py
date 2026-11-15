@@ -40,6 +40,7 @@ from smtrading.admin.schemas import (
     ResetIn,
     ReverseIn,
 )
+from smtrading.agents.service import write_audit
 from smtrading.brokers.models import BrokerLink
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.fingerprints import name_warning
@@ -382,9 +383,17 @@ async def get_orders(
 
 
 @router.post("/orders/{order_id}/cancel")
-async def cancel(order_id: UUID, session: DbSession, redis: RedisClient) -> dict:
+async def cancel(
+    order_id: UUID, admin: CurrentAdmin, session: DbSession, redis: RedisClient
+) -> dict:
     async with _transaction(session, redis):
         order = await cancel_order(session, order_id, by="admin")
+        await write_audit(
+            session, agent_id=None, method="admin:order.cancel",
+            params={"order_id": order.id, "portfolio_id": order.portfolio_id,
+                    "symbol": order.symbol, "status": order.status, "by": admin.email},
+            outcome="ok", latency_ms=0,
+        )
         out = _order_dto(order)
     return out
 
