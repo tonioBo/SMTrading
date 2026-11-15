@@ -54,3 +54,18 @@ def test_daily_costs_drops_oldest_partial_day_and_uses_local_tz():
     # a complete history (fewer runs than the limit) keeps its oldest day
     full = daily_costs(runs, "Europe/Rome", truncated=False)
     assert full[(date(2026, 11, 12), "a1")].api_usd == Decimal(9)
+
+
+def test_real_shaped_run():
+    """A heartbeat run as Paperclip returns it: the top-level costUsd is null, the amounts
+    are in usageJson, startedAt has milliseconds and a Z."""
+    run = {"id": "r1", "companyId": "c", "agentId": "a1", "status": "succeeded",
+           "inputTokens": "1200", "totalTokens": None, "costUsd": None,
+           "startedAt": "2026-11-15T09:12:33.123Z", "finishedAt": "2026-11-15T09:13:01.456Z",
+           "usageJson": {"model": "m", "biller": "b", "costUsd": 0.31,
+                         "cacheAdjustedCostUsd": 0.12, "billingType": "subscription_included",
+                         "costUsdExact": None, "inputTokens": 1200}}
+    out = daily_costs([run], "Europe/Rome", truncated=False)
+    row = out[(date(2026, 11, 15), "a1")]
+    assert (row.api_usd, row.subscription_usd, row.other_usd, row.runs) == (
+        Decimal(0), Decimal("0.12"), Decimal(0), 1)

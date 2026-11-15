@@ -42,7 +42,18 @@ DEFAULT_STATE: dict[str, Any] = {
     "alerted_signature": None,
     "key_expires_at": None,  # ISO text, None = no expiry (or not known)
     "expiry_alerted": None,  # the key_expires_at value already notified
+    # "config": the company or URL changed, the next snapshot is the new baseline (notified)
+    "rebaseline_reason": None,
 }
+# reset when the company or the URL changes: the old baseline describes another company
+_CONFIG_RESET = {
+    "baseline": None, "baseline_at": None, "isolation": "unknown",
+    "changes": {"removed": [], "changed": [], "added": []}, "alerted_signature": None,
+    "consecutive_errors": 0, "error_alerted": False, "last_error": None,
+    "key_expires_at": None, "expiry_alerted": None, "rebaseline_reason": "config",
+}
+# reset when the board key changes: the expiry was the old key's
+_KEY_RESET = {"key_expires_at": None, "expiry_alerted": None}
 
 
 @dataclass
@@ -52,14 +63,13 @@ class PaperclipConfig:
     board_key: str | None = None
     enabled: bool = False
     agent_map: dict[str, str] = field(default_factory=dict)  # paperclip id -> smt agent id
-    board_key_id: str | None = None  # the key's id in Paperclip (for its expiry)
     unreadable: bool = False  # a stored key could not be decrypted (e.g. new master key)
 
     def __repr__(self) -> str:  # the key never reaches a log through a repr
         key = MASK if self.board_key else None
         return (f"PaperclipConfig(base_url={self.base_url!r}, company_id={self.company_id!r}, "
                 f"board_key={key!r}, enabled={self.enabled!r}, agent_map={self.agent_map!r}, "
-                f"board_key_id={self.board_key_id!r}, unreadable={self.unreadable!r})")
+                f"unreadable={self.unreadable!r})")
 
     @property
     def complete(self) -> bool:
@@ -107,17 +117,29 @@ async def load_config(session: AsyncSession) -> PaperclipConfig:
         board_key=key,
         enabled=bool(raw.get("enabled")),
         agent_map={str(k): str(v) for k, v in agent_map.items()},
-        board_key_id=_str_or_none(raw.get("board_key_id")),
         unreadable=unreadable,
     )
 
 
 async def save_config(session: AsyncSession, *, base_url: str | None, company_id: str | None,
-                      board_key: str | None, enabled: bool, agent_map: dict[str, str], by: str,
-                      board_key_id: str | None = None) -> PaperclipConfig:
-    """`board_key=None` keeps the stored key. Writes the admin audit (never the key)."""
+                      board_key: str | None, enabled: bool, agent_map: dict[str, str], by: str
+                      ) -> PaperclipConfig:
+    """`board_key=None` keeps the stored key. Writes the admin audit (never the key).
+
+    In the same transaction: a change of company or URL of an existing configuration
+    resets the reader state (the next snapshot is the new baseline, notified once); a new
+    key forgets the old key's expiry."""
     raw = await _raw(session, SETTINGS_KEY)
     raw = raw if isinstance(raw, dict) else {}
+    baseline_reset = any(
+        _str_or_none(raw.get(k)) is not None and _str_or_none(raw.get(k)) != new
+        for k, new in (("company_id", company_id), ("base_url", base_url)))
+    reset = ({**_CONFIG_RESET} if baseline_reset else {}) | (
+        _KEY_RESET if board_key is not None else {})
+    if reset:
+        state = await load_state(session, for_update=True)
+        state.update(copy.deepcopy(reset))
+        await save_state(session, state)
     key_enc = raw.get("board_key_enc")
     if board_key is not None:
         register_secret(board_key)
@@ -126,7 +148,6 @@ async def save_config(session: AsyncSession, *, base_url: str | None, company_id
         "base_url": base_url,
         "company_id": company_id,
         "board_key_enc": key_enc,
-        "board_key_id": board_key_id,
         "enabled": bool(enabled),
         "agent_map": dict(agent_map),
     }
@@ -137,7 +158,8 @@ async def save_config(session: AsyncSession, *, base_url: str | None, company_id
         session, agent_id=None, method="admin:paperclip.config",
         params={"by": by, "base_url": base_url, "company_id": company_id,
                 "enabled": bool(enabled), "agent_map": dict(agent_map),
-                "board_key_id": board_key_id, "board_key_changed": board_key is not None},
+                "board_key_changed": board_key is not None,
+                "baseline_reset": baseline_reset},
         outcome="ok", latency_ms=0,
     )
     return await load_config(session)
@@ -149,7 +171,6 @@ def config_dto(cfg: PaperclipConfig) -> dict[str, Any]:
         "company_id": cfg.company_id,
         "enabled": cfg.enabled,
         "board_key_masked": mask_value(cfg.board_key) if cfg.board_key else None,
-        "board_key_id": cfg.board_key_id,
         "agent_map": cfg.agent_map,
         "error": "configurazione illeggibile: reinserisci la chiave board"
                  if cfg.unreadable else None,

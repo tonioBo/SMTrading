@@ -57,7 +57,6 @@ class PaperclipConfigIn(BaseModel):
     base_url: str | None = None
     company_id: str | None = None
     board_key: str | None = None
-    board_key_id: str | None = None
     enabled: bool | None = None
     agent_map: dict[str, str] | None = None
 
@@ -118,6 +117,7 @@ async def _status(session: AsyncSession) -> dict[str, Any]:
         "last_error": state["last_error"],
         "consecutive_errors": state["consecutive_errors"],
         "baseline_at": state["baseline_at"],
+        "rebaseline_reason": state["rebaseline_reason"],
         "baseline_count": len(state["baseline"] or []),
         "key_expires_at": state["key_expires_at"],
         "key_expiring": key_expiring(state, datetime.now(UTC)),
@@ -165,8 +165,6 @@ async def put_paperclip_config(
         base_url = _base_url(body.base_url) if "base_url" in fields else cur.base_url
         company_id = _text("company_id", body.company_id) if "company_id" in fields \
             else cur.company_id
-        key_id = _text("board_key_id", body.board_key_id) if "board_key_id" in fields \
-            else cur.board_key_id
         board_key = _board_key(body.board_key) if body.board_key else None
         agent_map = await _agent_map(session, body.agent_map) \
             if body.agent_map is not None else cur.agent_map
@@ -176,7 +174,7 @@ async def put_paperclip_config(
                                       "attivare la lettura")
         cfg = await save_config(session, base_url=base_url, company_id=company_id,
                                 board_key=board_key, enabled=enabled, agent_map=agent_map,
-                                by=admin.email, board_key_id=key_id)
+                                by=admin.email)
     return config_dto(cfg)
 
 

@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 
 POLICY_KEYS = ("id", "policyType", "selectors", "conditions", "config", "priority",
                "enabled", "name")
-ISOLATION_NAME = re.compile(r"^Isolate .*SMTrading")
+ISOLATION_NAME = re.compile(r"^Isolate .* SMTrading$")
 NO_POLICIES = ("nessuna regola di isolamento trovata: controlla l'id azienda e i permessi "
                "della chiave")
 ERRORS_BEFORE_ALERT = 3
@@ -47,9 +47,20 @@ ClientFactory = Callable[[PaperclipConfig], PaperclipClient]
 
 # -- policies (pure) ------------------------------------------------------------------
 
+def _sorted_lists(value: Any) -> Any:
+    """Lists sorted at any depth (their order is not a change of the policy)."""
+    if isinstance(value, dict):
+        return {k: _sorted_lists(v) for k, v in value.items()}
+    if isinstance(value, list):
+        items = [_sorted_lists(v) for v in value]
+        return sorted(items, key=lambda v: json.dumps(v, sort_keys=True, default=str))
+    return value
+
+
 def normalize_policy(p: dict) -> dict:
     out = {k: p.get(k) for k in POLICY_KEYS}
     out["id"] = str(p.get("id") or p.get("policyId") or "")
+    out["selectors"] = _sorted_lists(out["selectors"])
     return out
 
 
@@ -89,7 +100,17 @@ def isolation_text(changes: dict[str, list[str]]) -> str:
 
 def set_baseline(state: dict, policies: list[dict], now: datetime) -> None:
     state.update(baseline=policies, baseline_at=now.isoformat(), isolation="ok",
-                 changes={"removed": [], "changed": [], "added": []}, alerted_signature=None)
+                 changes={"removed": [], "changed": [], "added": []}, alerted_signature=None,
+                 rebaseline_reason=None)
+
+
+def rebaseline_text(count: int) -> str:
+    return (f"ℹ️ Paperclip: configurazione cambiata, nuova fotografia delle regole di "
+            f"isolamento ({count} regole). Controllala in Paperclip.")
+
+
+RECOVERED_TEXT = "🟢 Paperclip di nuovo raggiungibile."
+ISOLATION_OK_TEXT = "🟢 Regole di isolamento di nuovo come da fotografia"
 
 
 # -- key expiry -------------------------------------------------------------------------
@@ -104,26 +125,26 @@ def _parse_ts(value: Any) -> datetime | None:
     return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
 
 
-async def _key_expiry(client: PaperclipClient, cfg: PaperclipConfig) -> tuple[bool, str | None]:
-    """(known, expiresAt ISO or None). Best-effort: any failure is «not known»."""
+async def _key_expiry(client: PaperclipClient) -> tuple[bool, str | None]:
+    """(known, expiresAt ISO or None). The key id is `keyId` of `cli-auth/me`; a key id
+    missing from `board-api-keys` is known with no expiry (a stale value is cleared).
+    Best-effort: a failed request is «not known» (the stored value is kept)."""
     try:
-        key_id = cfg.board_key_id or await client.current_key_id()
+        key_id = await client.current_key_id()
         if not key_id:
             return False, None
-        for k in await client.board_api_keys():
-            if str(k.get("id")) == key_id:
-                ts = _parse_ts(k.get("expiresAt"))
-                return True, ts.isoformat() if ts else None
+        keys = await client.board_api_keys()
     except PaperclipError:
-        pass
-    return False, None
+        return False, None
+    for k in keys:
+        if str(k.get("id")) == key_id:
+            ts = _parse_ts(k.get("expiresAt"))
+            return True, ts.isoformat() if ts else None
+    return True, None
 
 
-def expiry_text(expires: datetime, now: datetime) -> str:
+def expiry_text(expires: datetime) -> str:
     when = expires.astimezone(ZoneInfo(get_settings().tz)).strftime("%d/%m/%Y")
-    if expires <= now:
-        return (f"🔴 Paperclip: la chiave board è scaduta il {when}. Creane una nuova e "
-                f"aggiornala nel portale.")
     return (f"🟠 Paperclip: la chiave board scade il {when}. Creane una nuova e aggiornala "
             f"nel portale.")
 
@@ -182,7 +203,7 @@ class PaperclipReader:
                          for a in await client.agents() if a.get("id") and a.get("name")}
             except PaperclipError:
                 names = {}  # the id stands for the name
-            expiry_known, expires_at = await _key_expiry(client, cfg)
+            expiry_known, expires_at = await _key_expiry(client)
         return {"runs": runs, "policies": isolation_policies(policies), "names": names,
                 "expiry_known": expiry_known, "expires_at": expires_at}
 
@@ -203,6 +224,9 @@ class PaperclipReader:
         async with self._sm() as session, session.begin():
             state = await load_state(session, for_update=True)
             await _upsert_costs(session, fetched["runs"], fetched["names"])
+            if state["error_alerted"]:
+                await enqueue(session, source="system", category="system", level="info",
+                              text=RECOVERED_TEXT)
             state.update(consecutive_errors=0, error_alerted=False, last_error=None,
                          last_ok_at=now.isoformat())
             await self._check_isolation(session, state, fetched["policies"], now)
@@ -215,6 +239,9 @@ class PaperclipReader:
                                policies: list[dict], now: datetime) -> None:
         if state["baseline"] is None:
             if policies:
+                if state.get("rebaseline_reason") == "config":
+                    await enqueue(session, source="system", category="system", level="info",
+                                  text=rebaseline_text(len(policies)))
                 set_baseline(state, policies, now)
             else:
                 state.update(isolation="unknown", last_error=NO_POLICIES)
@@ -222,6 +249,9 @@ class PaperclipReader:
         changes = diff_policies(state["baseline"], policies)
         state["changes"] = changes
         if not (changes["removed"] or changes["changed"]):
+            if state["isolation"] == "changed":
+                await enqueue(session, source="system", category="system", level="info",
+                              text=ISOLATION_OK_TEXT)
             state.update(isolation="ok", alerted_signature=None)
             return
         state["isolation"] = "changed"
@@ -238,9 +268,8 @@ class PaperclipReader:
         expires = _parse_ts(expires_at)
         if expires is None:
             return
-        await enqueue(session, source="system", category="system",
-                      level="critical" if expires <= now else "warning",
-                      text=expiry_text(expires, now))
+        await enqueue(session, source="system", category="system", level="warning",
+                      text=expiry_text(expires))
         state["expiry_alerted"] = expires_at
 
 
