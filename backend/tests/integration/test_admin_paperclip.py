@@ -27,8 +27,13 @@ CID = "comp-1"
 KEY = "pcp_board_CANARY0001"
 KEY2 = "pcp_board_CANARY0002"
 API = f"{BASE}/api/companies/{CID}"
-POLICY = {"id": "p1", "name": "Isolate trader SMTrading", "policyType": "deny",
-          "selectors": {}, "conditions": {}, "config": {}, "priority": 1, "enabled": True}
+POLICY = {"id": "p1", "companyId": CID, "name": "Isolate Trader SMTrading",
+          "description": None, "policyType": "block", "priority": 10, "enabled": True,
+          "selectors": {"agentId": "0b6f3c8e-1d2a-4f5b-9c7d-111111111111",
+                        "connectionIds": ["c1"]},
+          "conditions": None, "config": None, "createdByAgentId": None,
+          "createdByUserId": "u1", "createdAt": "2026-11-01T10:00:00.000Z",
+          "updatedAt": "2026-11-01T10:00:00.000Z"}
 
 
 def _respx():
@@ -40,10 +45,13 @@ def _mock(router, policies=None, agents=None):
         {"id": "pa1", "name": "TRADER"}, {"id": "pa2", "name": "Ghost"},
         {"id": "pa3", "name": "renamed-in-paperclip"}]))
     router.get(f"{API}/tools/policies").mock(return_value=httpx.Response(
-        200, json=policies if policies is not None else [POLICY]))
+        200, json={"policies": policies if policies is not None else [POLICY]}))
     router.get(f"{API}/heartbeat-runs").mock(return_value=httpx.Response(200, json=[]))
-    router.get(f"{BASE}/api/cli-auth/me").mock(return_value=httpx.Response(404))
-    router.get(f"{BASE}/api/board-api-keys").mock(return_value=httpx.Response(404))
+    router.get(f"{BASE}/api/cli-auth/me").mock(
+        return_value=httpx.Response(200, json={"userId": "u1", "keyId": "k1"}))
+    router.get(f"{BASE}/api/board-api-keys").mock(return_value=httpx.Response(200, json=[
+        {"id": "k1", "name": "smtrading", "createdAt": "2026-11-01T10:00:00.000Z",
+         "lastUsedAt": None, "revokedAt": None, "expiresAt": None}]))
 
 
 async def _agent(sm, name) -> Agent:
@@ -72,7 +80,7 @@ async def test_config_key_masked_and_kept_when_omitted(admin):
     body = r.json()
     assert body["board_key_masked"] == "••••0001"
     assert (body["base_url"], body["company_id"], body["enabled"]) == (BASE, CID, True)
-    assert KEY not in r.text
+    assert KEY not in r.text and "board_key_id" not in body
     r = await _put(admin, company_id="comp-2")  # the key is not sent: kept
     assert r.status_code == 200 and r.json()["board_key_masked"] == "••••0001"
     async with admin.sm() as s:
@@ -99,6 +107,11 @@ async def test_config_key_masked_and_kept_when_omitted(admin):
     dump = json.dumps([a.params for a in audits]) + json.dumps([a.summary for a in activity])
     assert KEY not in dump and KEY2 not in dump and "SECRETVALUE" not in dump
     assert sorted(a.params["board_key_changed"] for a in audits) == [False, True, True]
+    # only the company change (an existing config) resets the baseline
+    assert sorted(a.params["baseline_reset"] for a in audits) == [False, False, True]
+    assert all("board_key_id" not in a.params for a in audits)
+    async with admin.sm() as s:
+        assert (await load_state(s))["rebaseline_reason"] == "config"
 
 
 async def test_verify_reports_agents_and_matches(admin):

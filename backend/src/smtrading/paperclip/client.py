@@ -89,9 +89,6 @@ class PaperclipClient:
     def _company_path(self, tail: str) -> str:
         return f"/api/companies/{self._company}/{tail}"
 
-    async def costs_by_agent(self, from_: str | None = None, to: str | None = None) -> Any:
-        return await self._get(self._company_path("costs/by-agent"), {"from": from_, "to": to})
-
     async def heartbeat_runs(self, limit: int = MAX_RUNS) -> list[dict]:
         body = await self._get(self._company_path("heartbeat-runs"), {"limit": limit})
         return [r for r in unwrap_list(body, "runs") if isinstance(r, dict)]
@@ -105,16 +102,11 @@ class PaperclipClient:
         return [p for p in unwrap_list(body, "policies") if isinstance(p, dict)]
 
     async def current_key_id(self) -> str | None:
-        """The id of the key in use (`GET /api/cli-auth/me`), when Paperclip tells it."""
+        """The id of the key in use: `keyId` of `GET /api/cli-auth/me`."""
         body = await self._get("/api/cli-auth/me")
-        if not isinstance(body, dict):
-            return None
-        for name in ("keyId", "apiKeyId", "boardApiKeyId"):
-            if body.get(name):
-                return str(body[name])
-        key = body.get("key") or body.get("apiKey")
-        return str(key["id"]) if isinstance(key, dict) and key.get("id") else None
+        key_id = body.get("keyId") if isinstance(body, dict) else None
+        return str(key_id) if key_id else None
 
     async def board_api_keys(self) -> list[dict]:
         body = await self._get("/api/board-api-keys")
-        return [k for k in unwrap_list(body, "keys") if isinstance(k, dict)]
+        return [k for k in unwrap_list(body) if isinstance(k, dict)]
