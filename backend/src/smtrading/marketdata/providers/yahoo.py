@@ -1,9 +1,7 @@
 import asyncio
 import logging
 import math
-import os
 import struct
-import tempfile
 import threading
 import time
 from datetime import UTC, date, datetime
@@ -29,7 +27,6 @@ log = logging.getLogger(__name__)
 MAX_CONCURRENT_CALLS = 4
 _NO_INFO_QUOTE_TYPES = frozenset({"CURRENCY", "CRYPTOCURRENCY"})
 _RETRY_DELAY_S = 0.5
-_CACHE_DIR = os.path.join(tempfile.gettempdir(), "py-yfinance")
 _session_lock = threading.Lock()
 _shared_session: Any = None
 
@@ -43,15 +40,11 @@ def _session() -> Any:
     global _shared_session
     with _session_lock:
         if _shared_session is None:
-            import yfinance as yf
             from curl_cffi import CurlHttpVersion
             from curl_cffi import requests as curl_requests
 
-            try:  # the default cache dir is not writable in the container
-                os.makedirs(_CACHE_DIR, exist_ok=True)
-                yf.set_tz_cache_location(_CACHE_DIR)
-            except OSError as exc:
-                log.info("yahoo: tz cache unavailable (%s)", exc)
+            # No yf.set_tz_cache_location: yfinance's sqlite caches raise "database is
+            # locked" under our concurrent threads; the unwritable default leaves them off.
             _shared_session = curl_requests.Session(
                 impersonate="chrome", http_version=CurlHttpVersion.V1_1
             )

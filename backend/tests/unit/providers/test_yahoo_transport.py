@@ -154,3 +154,11 @@ def test_search_and_screen_use_the_shared_session(monkeypatch):
     y.search("spy")
     y.screen({"query": {"operator": "EQ", "operands": ["region", "us"]}, "limit": 5})
     assert seen == {"search": yahoo._session(), "screen": yahoo._session()}
+
+
+def test_session_does_not_enable_yfinance_sqlite_caches(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(yf, "set_tz_cache_location", lambda d: calls.append(d))
+    monkeypatch.setattr(yahoo, "_shared_session", None)
+    yahoo._session()
+    assert calls == []  # sqlite caches lock up under concurrent threads ("database is locked")
