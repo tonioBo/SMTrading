@@ -6,6 +6,7 @@ import { ChangePasswordSection } from "@/components/ChangePasswordSection";
 import { KillSwitchIndicator } from "@/components/KillSwitchIndicator";
 import { ModeBanner } from "@/components/ModeBanner";
 import { NewVersionBanner } from "@/components/NewVersionBanner";
+import { PaperclipBanner } from "@/components/PaperclipBanner";
 import { Logo } from "@/components/Logo";
 import { Sidebar } from "@/components/Sidebar";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -191,6 +192,7 @@ export function Layout() {
         </header>
         <NewVersionBanner />
         <ModeBanner />
+        <PaperclipBanner />
         <main className="flex-1 overflow-auto p-4 md:p-6">
           <Outlet />
         </main>

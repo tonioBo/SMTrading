@@ -5,6 +5,7 @@ import { useAppSettings } from "@/api/hooks/risk";
 import { useBackups, useDownloadBackup, useSaveMcpHideMode, useSaveTimezone, useVerifyIntegrity } from "@/api/hooks/system";
 import type { BackupFile } from "@/api/types";
 import { ChangePasswordSection } from "@/components/ChangePasswordSection";
+import { PaperclipSection } from "@/components/PaperclipSection";
 import { SessionsSection } from "@/components/SessionsSection";
 import { TotpSection } from "@/components/TotpSection";
 import { UsersSection } from "@/components/UsersSection";
@@ -167,6 +168,7 @@ export default function Settings() {
         </CardContent>
       </Card>
       {data && <McpHideModeSection initial={data.mcp_hide_mode} />}
+      <PaperclipSection />
       <ChangePasswordSection />
       <TotpSection />
       <SessionsSection />

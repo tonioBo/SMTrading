@@ -1075,3 +1075,73 @@ export interface ActivityCatalog {
   actions: { key: string; label: string; category: string }[];
   outcomes: { key: ActivityOutcome; label: string }[];
 }
+
+// --- Paperclip (read-only reader: agent costs, isolation rules) ------------------------------
+
+export interface PaperclipConfig {
+  base_url: string | null;
+  company_id: string | null;
+  enabled: boolean;
+  /** "••••abcd" when a board key is stored; the key itself never leaves the server */
+  board_key_masked: string | null;
+  /** Paperclip agent id → SMTrading agent id */
+  agent_map: Record<string, string>;
+  /** set when the stored key cannot be read: it must be entered again */
+  error: string | null;
+}
+
+/** PUT /api/paperclip/config: only the fields being changed; no `board_key` keeps the stored one. */
+export interface PaperclipConfigPatch {
+  base_url?: string;
+  company_id?: string;
+  board_key?: string;
+  enabled?: boolean;
+  agent_map?: Record<string, string>;
+}
+
+export interface PaperclipVerifyResult {
+  ok: boolean;
+  agents: { id: string; name: string | null; smt_agent: { id: string; name: string } | null }[];
+  policies_count: number;
+  error: string | null;
+}
+
+export type PaperclipIsolation = "ok" | "changed" | "unknown" | "off";
+
+export interface PaperclipStatus {
+  enabled: boolean;
+  isolation: PaperclipIsolation;
+  changes: { removed: string[]; changed: string[]; added: string[] };
+  last_ok_at: string | null;
+  last_error: string | null;
+  consecutive_errors: number;
+  baseline_at: string | null;
+  baseline_count: number;
+  key_expires_at: string | null;
+  /** the board key expires within 7 days (or has expired) */
+  key_expiring: boolean;
+}
+
+export type AgentCostPeriod = "day" | "week" | "month";
+
+export interface AgentCostRow {
+  agent_id: string;
+  name: string;
+  paperclip_name: string | null;
+  /** USD decimals as strings, as Paperclip reports them */
+  api_usd: string;
+  subscription_usd: string;
+  other_usd: string;
+  runs: number;
+  orders: number;
+  portfolios: { id: string; name: string; permission: string; return_pct: string | null }[];
+}
+
+export interface AgentCosts {
+  currency: "USD";
+  from: string;
+  to: string;
+  last_read_at: string | null;
+  agents: AgentCostRow[];
+  unmatched: { paperclip_agent_id: string; name: string | null; api_usd: string; subscription_usd: string; other_usd: string }[];
+}
