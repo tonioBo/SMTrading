@@ -25,6 +25,7 @@ from smtrading.marketdata.router import MarketDataRouter
 from smtrading.marketdata.streaming import StreamManager
 from smtrading.paperclip.reader import PaperclipReader
 from smtrading.telegram.planner import TelegramPlanner
+from smtrading.telegram.preopen import PreopenCheck
 from smtrading.telegram.sender import OutboxSender
 from smtrading.telegram.summaries import SummaryScheduler
 from smtrading.watch.evaluator import AlertEvaluator
@@ -153,6 +154,10 @@ async def run() -> None:
                                              lambda: SummaryScheduler(sessionmaker).run())),
                     tg.create_task(supervise("paperclip reader",
                                              lambda: PaperclipReader(sessionmaker).run())),
+                    tg.create_task(
+                        supervise("pre-open check",
+                                  lambda: PreopenCheck(sessionmaker, router, redis).run())
+                    ),
                 ]
                 await stop.wait()
                 log.info("shutdown requested")

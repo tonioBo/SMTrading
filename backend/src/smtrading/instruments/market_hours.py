@@ -133,6 +133,28 @@ def all_market_status(at: datetime) -> list[MarketStatus]:
     return [market_status(m, at) for m in STATUS_MARKETS]
 
 
+def manual_closure(market: str, day: date) -> Closure | None:
+    """The admin's manual closure of `market` on its local date `day`, if any."""
+    return _closures.get((market, day))
+
+
+def session_on(market: str, day: date) -> tuple[datetime, datetime, bool] | None:
+    """The session of an exchange on its local date `day`, manual closures applied:
+    (open, close, early) in UTC, `early` when it closes before its regular time (a
+    calendar early close or a manual one); None when it does not trade that day."""
+    cal = _calendar(CALENDARS[market])
+    ts = pd.Timestamp(day)
+    if not cal.is_session(ts):
+        return None
+    session_open = cal.session_open(ts)
+    close = _session_close(market, cal, session_open)
+    if close <= session_open:
+        return None  # closed all day by the admin
+    regular = cal.session_close(ts)
+    early = close < regular or ts in cal.early_closes
+    return _to_py(session_open), _to_py(close), bool(early)
+
+
 def previous_session_open(market: str, at: datetime) -> datetime:
     """«One trading day» back: the open of the session before the last one started at or
     before `at` (calendar holidays and manually closed days skipped). CRYPTO: `at` - 24 h;

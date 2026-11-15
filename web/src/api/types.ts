@@ -583,11 +583,25 @@ export interface InterestRate {
 
 export type AssetClass = "us_equity" | "eu_equity" | "crypto" | "forex";
 
+/** Weekly goal line of the Telegram summaries; `pct` a decimal string ("2.0"). */
+export interface WeeklyGoal {
+  on: boolean;
+  pct: string;
+}
+
+/** Pre-open Telegram check, Monday to Friday; `at` local time "HH:MM". */
+export interface PreopenCheck {
+  on: boolean;
+  at: string;
+}
+
 export interface AppSettings {
   stale_quote_s: Record<string, number>;
   default_spread_bps: Record<string, number>;
   timezone: string;
   mcp_hide_mode: boolean;
+  weekly_goal?: WeeklyGoal;
+  preopen_check?: PreopenCheck;
 }
 
 export interface Connector {

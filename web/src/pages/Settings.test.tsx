@@ -19,11 +19,14 @@ let totpCalls: { action: string; body: unknown }[] = [];
 let meCalls = 0;
 let pwForbidden = false;
 let tzPuts: unknown[] = [];
+let meRole: "admin" | "viewer" = "admin";
+const extras = () => ({ weekly_goal: { on: true, pct: "2.0" }, preopen_check: { on: true, at: "08:45" } });
+let stored: Record<string, unknown> = extras();
 const server = setupServer(
   ...commonHandlers,
   http.get("*/api/auth/me", () => {
     meCalls += 1;
-    return HttpResponse.json({ email: "admin@example.com", totp_enabled: totpEnabled });
+    return HttpResponse.json({ email: "admin@example.com", totp_enabled: totpEnabled, role: meRole });
   }),
   http.post("*/api/auth/totp/setup", () =>
     HttpResponse.json({ secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/SMTrading:admin%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=SMTrading" }),
@@ -42,11 +45,14 @@ const server = setupServer(
     return HttpResponse.json({ ok: true });
   }),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
-  http.get("*/api/settings/app", () => HttpResponse.json({ stale_quote_s: {}, default_spread_bps: {}, timezone: "Europe/Rome", mcp_hide_mode: true })),
+  http.get("*/api/settings/app", () => HttpResponse.json({ stale_quote_s: {}, default_spread_bps: {}, timezone: "Europe/Rome", mcp_hide_mode: true, ...stored })),
   http.put("*/api/settings/app", async ({ request }) => {
-    const body = await request.json();
+    const body = (await request.json()) as Record<string, unknown>;
     tzPuts.push(body);
-    return HttpResponse.json({ stale_quote_s: {}, default_spread_bps: {}, ...(body as object) });
+    for (const key of ["weekly_goal", "preopen_check"]) {
+      if (body[key]) stored = { ...stored, [key]: { ...(stored[key] as object), ...(body[key] as object) } };
+    }
+    return HttpResponse.json({ stale_quote_s: {}, default_spread_bps: {}, ...body, ...stored });
   }),
   http.get("*/api/system/backups", () =>
     HttpResponse.json([{ name: "smtrading-2026-11-12.sql.gz", size_bytes: 3 * 1024 * 1024, modified_at: "2026-11-12T03:00:00Z" }]),
@@ -58,6 +64,8 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
   server.resetHandlers();
   tzPuts = [];
+  meRole = "admin";
+  stored = extras();
   pwPosts = [];
   pwForbidden = false;
   totpEnabled = false;
@@ -138,6 +146,43 @@ describe("Settings", () => {
     expect(box).toBeChecked();
     await user.click(box);
     await waitFor(() => expect(tzPuts).toEqual([{ mcp_hide_mode: false }]));
+  });
+
+  it("saves the weekly goal and the pre-open check", async () => {
+    const user = userEvent.setup();
+    renderApp("/impostazioni");
+    const goalBox = await screen.findByLabelText(/Mostra l'obiettivo nel riepilogo/);
+    expect(goalBox).toBeChecked();
+    const pct = screen.getByLabelText("Obiettivo (%)");
+    expect(pct).toHaveValue("2.0");
+    await user.clear(pct);
+    await user.type(pct, "2,5");
+    await user.click(screen.getByRole("button", { name: "Salva obiettivo" }));
+    await waitFor(() => expect(tzPuts).toEqual([{ weekly_goal: { pct: "2.5" } }]));
+
+    const time = screen.getByLabelText("Orario");
+    expect(time).toHaveValue("08:45");
+    await user.clear(time);
+    await user.type(time, "09:10");
+    await user.click(screen.getByRole("button", { name: "Salva orario" }));
+    await waitFor(() => expect(tzPuts).toHaveLength(2));
+    expect(tzPuts[1]).toEqual({ preopen_check: { at: "09:10" } });
+
+    await user.click(screen.getByLabelText(/Invia il controllo pre-apertura/));
+    await waitFor(() => expect(tzPuts[2]).toEqual({ preopen_check: { on: false } }));
+    await waitFor(() => expect(screen.getByLabelText(/Invia il controllo pre-apertura/)).not.toBeChecked());
+  });
+
+  it("shows the Telegram extras read-only to a viewer", async () => {
+    meRole = "viewer";
+    renderApp("/impostazioni");
+    const goalBox = await screen.findByLabelText(/Mostra l'obiettivo nel riepilogo/);
+    await waitFor(() => expect(goalBox).toBeDisabled());
+    expect(screen.getByLabelText(/Invia il controllo pre-apertura/)).toBeDisabled();
+    expect(screen.getByText("Obiettivo: +2,0% a settimana")).toBeInTheDocument();
+    expect(screen.getByText("Orario: 08:45")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Salva obiettivo" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Salva orario" })).not.toBeInTheDocument();
   });
 
   it("validates the new password client-side", async () => {

@@ -551,6 +551,40 @@ async def test_app_settings(admin):
     assert (await c.get("/api/settings/app")).json() == body
 
 
+async def test_app_settings_weekly_goal_and_preopen(admin):
+    c = admin.client
+    got = (await c.get("/api/settings/app")).json()
+    assert got["weekly_goal"] == {"on": True, "pct": "2.0"}
+    assert got["preopen_check"] == {"on": True, "at": "08:45"}
+
+    r = await c.put("/api/settings/app", json={"weekly_goal": {"pct": "2.5"},
+                                               "preopen_check": {"at": "09:05"}})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["weekly_goal"] == {"on": True, "pct": "2.5"}
+    assert body["preopen_check"] == {"on": True, "at": "09:05"}
+    r = await c.put("/api/settings/app", json={"weekly_goal": {"on": False},
+                                               "preopen_check": {"on": False}})
+    body = r.json()
+    assert body["weekly_goal"] == {"on": False, "pct": "2.5"}
+    assert body["preopen_check"] == {"on": False, "at": "09:05"}
+
+    from smtrading.telegram.preopen_settings import load_preopen_settings
+    from smtrading.telegram.weekly_goal import load_weekly_goal
+
+    async with admin.sm() as s:  # the worker reads the stored values
+        goal = await load_weekly_goal(s)
+        pre = await load_preopen_settings(s)
+    assert (goal.on, goal.pct) == (False, Decimal("2.5"))
+    assert (pre.on, pre.at.isoformat()) == (False, "09:05:00")
+
+    for bad in ({"weekly_goal": {"pct": "0"}}, {"weekly_goal": {"pct": "x"}},
+                {"weekly_goal": {"pct": "150"}}, {"preopen_check": {"at": "24:00"}},
+                {"preopen_check": {"at": "nove"}}, {"weekly_goal": {"pct": "1.234"}}):
+        assert (await c.put("/api/settings/app", json=bad)).status_code == 400, bad
+    assert (await c.get("/api/settings/app")).json() == body
+
+
 # --- kill switch ---------------------------------------------------------------------
 
 

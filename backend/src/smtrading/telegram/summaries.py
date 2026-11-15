@@ -42,6 +42,7 @@ from smtrading.telegram.config import is_ready, load_config
 from smtrading.telegram.outbox import enqueue
 from smtrading.telegram.quiet import QUIET_START
 from smtrading.telegram.render import PREFIX, split_message
+from smtrading.telegram.weekly_goal import goal_lines
 
 log = logging.getLogger(__name__)
 
@@ -286,7 +287,8 @@ def _window(kind: Kind, now: datetime, zone: ZoneInfo) -> datetime:
 async def build_summary(session: AsyncSession, kind: Kind, now: datetime, *,
                         tz: str | None = None) -> Parts:
     """The daily (from local midnight) or weekly (last 7 days) summary: executed and
-    rejected orders, critical and warning events, the decisions of the period grouped by
+    rejected orders, critical and warning events, the weekly goal line (when on, see
+    `weekly_goal`), the decisions of the period grouped by
     kind (one plain line each, see `decision_line`) and the portfolio
     ranking as a `pre` block, split into messages of at most 4096 characters. Archived
     portfolios are left out."""
@@ -324,6 +326,7 @@ async def build_summary(session: AsyncSession, kind: Kind, now: datetime, *,
         (f"Ordini eseguiti: {len(filled)} · rifiutati: {len(rejected)} · "
          f"eventi critici: {len(critical)} · avvisi: {len(warnings)}"),
     ]
+    lines += await goal_lines(session, now, zone)
     lines += _section(f"{PREFIX['executed']}Ordini eseguiti", filled)
     lines += _section(f"{PREFIX['warning']}Ordini rifiutati", rejected)
     lines += _section(f"{PREFIX['critical']}Eventi critici", critical)

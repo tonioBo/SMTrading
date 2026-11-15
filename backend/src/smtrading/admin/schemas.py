@@ -208,14 +208,26 @@ class InterestRateIn(BaseModel):
     annual_pct: Num
 
 
+class WeeklyGoalIn(BaseModel):
+    on: StrictBool | None = None
+    pct: Num | None = None
+
+
+class PreopenCheckIn(BaseModel):
+    on: StrictBool | None = None
+    at: str | None = None  # HH:MM, local time
+
+
 class AppSettingsIn(BaseModel):
     """Per asset class maps and the default timezone; absent fields are left unchanged,
-    a present map is merged class by class."""
+    a present map is merged class by class (and so are `weekly_goal`, `preopen_check`)."""
 
     stale_quote_s: dict[str, StrictInt] | None = None
     default_spread_bps: dict[str, StrictInt] | None = None
     timezone: str | None = None
     mcp_hide_mode: StrictBool | None = None
+    weekly_goal: WeeklyGoalIn | None = None
+    preopen_check: PreopenCheckIn | None = None
 
 
 class KillSwitchIn(BaseModel):
