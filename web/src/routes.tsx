@@ -1,6 +1,7 @@
 import { Navigate, type RouteObject } from "react-router-dom";
 import { Layout } from "@/components/Layout";
 import { RouteError } from "@/components/RouteError";
+import ActivityLog from "@/pages/ActivityLog";
 import AgentDetail from "@/pages/AgentDetail";
 import AgentDocs from "@/pages/AgentDocs";
 import Agents from "@/pages/Agents";
@@ -43,6 +44,7 @@ export const routes: RouteObject[] = [
           { path: "notifiche", element: <Notifications /> },
           { path: "mercati", element: <Markets /> },
           { path: "log-mcp", element: <McpLog /> },
+          { path: "registro-attivita", element: <ActivityLog /> },
           { path: "impostazioni", element: <Settings /> },
           { path: "*", element: <Navigate to="/" replace /> },
         ],

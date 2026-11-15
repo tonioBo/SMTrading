@@ -936,3 +936,44 @@ export interface LiveAuditFilters {
   portfolio_id: string;
   action: string;
 }
+
+/** «Registro attività»: one state-changing request of a person, or an access event. */
+export type ActivityOutcome = "ok" | "denied" | "error";
+
+export interface ActivityRow {
+  id: number;
+  ts: string;
+  request_id: string;
+  user_id: string | null;
+  email: string | null;
+  role: UserRole | null;
+  action: string;
+  action_label: string;
+  category: string;
+  category_label: string;
+  method: string;
+  route: string;
+  target: Record<string, string>;
+  outcome: ActivityOutcome;
+  status: number | null;
+  error_code: string | null;
+  error_message: string | null;
+  ip: string | null;
+  user_agent: string | null;
+  summary: Record<string, unknown>;
+}
+
+export interface ActivityFilters {
+  email: string;
+  category: string;
+  outcome: string;
+  /** yyyy-mm-dd, inclusive (Europe/Rome days) */
+  from: string;
+  to: string;
+}
+
+export interface ActivityCatalog {
+  categories: { key: string; label: string }[];
+  actions: { key: string; label: string; category: string }[];
+  outcomes: { key: ActivityOutcome; label: string }[];
+}

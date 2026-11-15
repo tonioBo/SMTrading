@@ -56,6 +56,7 @@ describe("Layout", () => {
       "Notifiche",
       "Mercati",
       "Log MCP",
+      "Registro attività",
       "Impostazioni",
     ]);
     expect(screen.getByText("Trading", { exact: false })).toBeInTheDocument();
