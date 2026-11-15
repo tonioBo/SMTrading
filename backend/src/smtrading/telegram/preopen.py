@@ -21,7 +21,10 @@ What is checked:
 5. broker links: every enabled link in `status` error (its short last error), and the
    real-money links armed or in dry run whose account data (`last_snapshot_at`, kept by
    the LiveMonitor) is missing or older than LIVE_SNAPSHOT_MAX_AGE.
-(Paperclip reader status: added once the reader of Task 8 is on this branch.)
+6. the Paperclip reader, only when it is enabled: unreachable (at least
+   ERRORS_BEFORE_ALERT failed reads in a row, with its short last error) or its isolation
+   policies not `ok` (changed, not verified, not active), with a short reason; a disabled
+   reader adds nothing.
 The text is always split with `render.split_message`, every part queued in the same
 transaction, so it never exceeds Telegram's limit.
 
@@ -50,6 +53,8 @@ from smtrading.common.heartbeat import heartbeat_age_s
 from smtrading.engine.quotesource import QuoteSource
 from smtrading.instruments.market_hours import manual_closure, session_on
 from smtrading.jobs.runs import job_done, run_job_once
+from smtrading.paperclip import config as paperclip_config
+from smtrading.paperclip.reader import ERRORS_BEFORE_ALERT as PAPERCLIP_ERRORS
 from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
 from smtrading.positions.models import Position
 from smtrading.risk import halts
@@ -210,7 +215,33 @@ async def _database_problems(session: AsyncSession,
         if names:
             problems.append(f"{label}: {capped(names)}")
     problems += await _link_problems(session, now)
+    problems += await _paperclip_problems(session)
     return problems, await _symbols(session)
+
+
+async def _paperclip_problems(session: AsyncSession) -> list[str]:
+    """The Paperclip reader line(s): nothing while the reader is disabled."""
+    if not (await paperclip_config.load_config(session)).enabled:
+        return []
+    state = await paperclip_config.load_state(session)
+    errors = int(state.get("consecutive_errors") or 0)
+    isolation = state.get("isolation")
+    changes = state.get("changes") or {}
+    changed = (f"Isolamento Paperclip cambiato: {len(changes.get('removed') or [])} regole "
+               f"rimosse, {len(changes.get('changed') or [])} modificate")
+    if errors >= PAPERCLIP_ERRORS:
+        reason = _short(state.get("last_error"))
+        out = [f"Paperclip non raggiungibile da {errors} letture"
+               + (f": {reason}" if reason else "")]
+        return out + [changed] if isolation == "changed" else out
+    if isolation == "ok":
+        return []
+    if isolation == "changed":
+        return [changed]
+    if isolation == "off":
+        return ["Isolamento Paperclip non attivo"]
+    reason = _short(state.get("last_error")) or "nessuna lettura riuscita"
+    return [f"Isolamento Paperclip non verificato: {reason}"]
 
 
 async def _link_problems(session: AsyncSession, now: datetime) -> list[str]:

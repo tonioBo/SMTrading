@@ -367,3 +367,61 @@ async def test_broker_link_health(env):
     assert problems[0].endswith("…") and len(problems[0]) < 140
     assert problems[1] == "• Collegamento broker Mai letto: nessun dato del conto"
     assert problems[2] == "• Collegamento broker T212 reale: dati del conto fermi da 45 min"
+
+
+async def _paperclip(sm, *, enabled: bool, **state) -> None:
+    from smtrading.paperclip.config import DEFAULT_STATE, SETTINGS_KEY, STATE_KEY
+
+    await _setting(sm, SETTINGS_KEY, {"base_url": "http://paperclip.local", "company_id": "c1",
+                                      "enabled": enabled, "agent_map": {}})
+    await _setting(sm, STATE_KEY, {**DEFAULT_STATE, **state})
+
+
+async def _preopen_problems(env, clock) -> list[str]:
+    """One run of the check (the day forgotten first); the caller holds the locks."""
+    sm, _, redis = env
+    async with sm() as s:
+        await s.execute(text("delete from job_runs"))
+        await s.execute(text("delete from telegram_outbox"))
+        await s.commit()
+    await write_heartbeat(redis)
+    await _check(env, FakeQuoteSource(), clock).tick()
+    [msg] = await _outbox(sm)
+    return [ln for ln in msg.text.split("\n") if ln.startswith("• ")]
+
+
+async def test_paperclip_reader_line(env):
+    sm, engine, _ = env
+    await _configure(sm)
+    async with Locks(engine):
+        await _paperclip_cases(env, Clock(rome(MON, 8, 45)))
+
+
+async def _paperclip_cases(env, clock) -> None:
+    sm, _, _ = env
+    # disabled: nothing, whatever the state says
+    await _paperclip(sm, enabled=False, consecutive_errors=9, isolation="off",
+                     last_error="boom")
+    assert await _preopen_problems(env, clock) == []
+    # enabled and healthy: nothing
+    await _paperclip(sm, enabled=True, isolation="ok")
+    assert await _preopen_problems(env, clock) == []
+    # enabled, 2 failed reads: not yet unreachable (isolation still ok)
+    await _paperclip(sm, enabled=True, isolation="ok", consecutive_errors=2,
+                     last_error="timeout")
+    assert await _preopen_problems(env, clock) == []
+    # enabled, 3 failed reads: unreachable, with the short reason
+    await _paperclip(sm, enabled=True, isolation="ok", consecutive_errors=3,
+                     last_error="HTTP 503  da Paperclip\n" + "x" * 300)
+    [line] = await _preopen_problems(env, clock)
+    assert line.startswith("• Paperclip non raggiungibile da 3 letture: HTTP 503 da Paperclip x")
+    assert line.endswith("…") and len(line) < 140
+    # isolation changed
+    await _paperclip(sm, enabled=True, isolation="changed",
+                     changes={"removed": ["p1"], "changed": ["p2", "p3"], "added": []})
+    assert await _preopen_problems(env, clock) == [
+        "• Isolamento Paperclip cambiato: 1 regole rimosse, 2 modificate"]
+    # isolation never verified
+    await _paperclip(sm, enabled=True, isolation="unknown", last_error=None)
+    assert await _preopen_problems(env, clock) == [
+        "• Isolamento Paperclip non verificato: nessuna lettura riuscita"]

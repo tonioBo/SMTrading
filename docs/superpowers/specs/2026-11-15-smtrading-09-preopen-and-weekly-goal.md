@@ -19,7 +19,7 @@ Approvato dall'utente il 15/11/2026 sera. Nessuna migrazione: le impostazioni st
   Il sabato e la domenica non parte nulla. Il testo passa sempre da `render.split_message` e ogni parte va in outbox nella stessa transazione, quindi non supera mai il limite di Telegram.
 - **Telegram non pronto:** non si rivendica nulla e il messaggio parte appena Telegram è pronto, entro 2 ore dall'orario impostato. Dopo, il giorno è segnato come fatto e saltato, con un WARNING.
 - **R9:** prima le letture dal database in una sessione breve, poi Redis e quotazioni, senza transazioni aperte.
-- **Paperclip:** il controllo del lettore (stato e isolamento) non c'è ancora, perché il lettore del Task 8 non è su questo ramo. Va aggiunto quando lo si integra.
+- **Paperclip:** solo se il lettore è attivo. È un problema (⚠️) se Paperclip non risponde da almeno 3 letture di fila (con il motivo breve dell'ultimo errore) o se l'isolamento non è `ok` (regole cambiate, non verificato, non attivo). Con il lettore spento non si aggiunge nulla.
 
 ## B) Obiettivo settimanale (`telegram/weekly_goal.py`)
 
