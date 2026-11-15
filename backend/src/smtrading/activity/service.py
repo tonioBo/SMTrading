@@ -240,7 +240,9 @@ async def _visible(session: AsyncSession, model, viewer_agent_id: uuid.UUID):
     if model is Decision:  # global decisions are visible to every agent
         global_ok = model.portfolio_id.is_(None)
     else:
-        global_ok = and_(model.portfolio_id.is_(None), or_(
+        # global live.* alerts (e.g. a link armed before any portfolio is linked) name the
+        # link and are for the admins and Telegram only, never for an agent
+        global_ok = and_(model.portfolio_id.is_(None), ~model.type.like("live.%"), or_(
             model.agent_id.is_(None), model.agent_id == viewer_agent_id,
             model.type.like("decision.%"),
         ))

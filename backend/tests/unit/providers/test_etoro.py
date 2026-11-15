@@ -336,7 +336,7 @@ async def test_health_check(provider):
     await provider.health_check()
     instrument_cache("data").clear()
     route.return_value = httpx.Response(200, json={"items": [_search_item("AAPL.US", 9)]})
-    with pytest.raises(RuntimeError, match="strumento di prova non trovato"):
+    with pytest.raises(RuntimeError, match="strumento di riferimento non trovato"):
         await provider.health_check()
 
 

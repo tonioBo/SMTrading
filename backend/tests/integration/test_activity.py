@@ -598,3 +598,21 @@ async def test_feed_already_sent_flag(db_session):
     flags = {i["id"]: i["already_sent"] for i in items}
     # direct events are SMTrading's job (sent, queued or still to plan): never repeat them
     assert [flags[r.id] for r in rows] == [True, True, True, False, False, False]
+
+
+async def test_global_live_alerts_are_never_visible_to_agents(db_session):
+    """A live.* alert with no portfolio (e.g. arming a link that has none yet) is for the
+    admins and Telegram only: no agent may read it in the feed (it names the link)."""
+    from smtrading.brokers.live.protect import live_alert
+
+    agent, _ = await create_agent(db_session, f"ag-{uuid.uuid4().hex[:6]}")
+    await live_alert(db_session, kind="armed", summary="Denaro reale attivato su Conto X",
+                     portfolio_id=None, link_id=None, data={"link_name": "Conto X"})
+    record_activity(db_session, ActivityDraft("system.note", ActivityLevel.info, False,
+                                              "nota globale", {}),
+                    portfolio_id=None, agent_id=None)
+    await _settle(db_session)
+    items, _ = await list_feed(db_session, agent.id, limit=50)
+    types = [i["type"] for i in items]
+    assert not any(t.startswith("live.") for t in types)
+    assert "system.note" in types  # other global rows stay visible

@@ -254,5 +254,5 @@ class EtoroProvider(DataProvider):
 
     async def health_check(self) -> None:
         if await self._search("AAPL") is None:
-            raise RuntimeError("etoro: strumento di prova non trovato")
+            raise RuntimeError("etoro: strumento di riferimento non trovato")
 
