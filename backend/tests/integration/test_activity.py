@@ -374,6 +374,50 @@ async def test_log_decision_writes_activity(db_session):
                       "details": {"pct": "12.5"}}
 
 
+async def test_log_decision_structured_fields_roundtrip(db_session):
+    agent = await _agent(db_session)
+    d = await log_decision(
+        db_session, agent.id, kind="approval", summary="Ok all'acquisto",
+        outcome="approvata", reason="  rischio entro i limiti  ", subject=" Acquisto AAPL ",
+    )
+    assert (d.outcome, d.reason, d.subject) == (
+        "approvata", "rischio entro i limiti", "Acquisto AAPL")
+    fresh = (await list_decisions(db_session, viewer_agent_id=None, agent_id=agent.id))[0]
+    assert (fresh.outcome, fresh.reason, fresh.subject) == (
+        "approvata", "rischio entro i limiti", "Acquisto AAPL")
+    a = (await _rows(db_session, agent_id=agent.id))[0]
+    assert a.data == {"decision_id": d.id, "symbols": [], "details": {},
+                      "outcome": "approvata", "reason": "rischio entro i limiti",
+                      "subject": "Acquisto AAPL"}
+
+
+async def test_log_decision_without_new_fields_unchanged(db_session):
+    agent = await _agent(db_session)
+    d = await log_decision(db_session, agent.id, kind="veto", summary="No leva",
+                           reason="   ", subject="")
+    assert (d.outcome, d.reason, d.subject) == (None, None, None)
+    a = (await _rows(db_session, agent_id=agent.id))[0]
+    assert a.data == {"decision_id": d.id, "symbols": [], "details": {}}
+
+
+@pytest.mark.parametrize(("kw", "field", "message"), [
+    ({"outcome": "ok"}, "outcome",
+     "outcome must be one of approvata, respinta, sospesa, modificata, informativa"),
+    ({"reason": "x" * 301}, "reason", "reason must be at most 300 characters"),
+    ({"subject": "x" * 201}, "subject", "subject must be at most 200 characters"),
+])
+async def test_log_decision_field_validation(db_session, kw, field, message):
+    agent = await _agent(db_session)
+    with pytest.raises(SMTError) as e:
+        await log_decision(db_session, agent.id, kind="proposal", summary="ok", **kw)
+    assert e.value.code == ErrorCode.INVALID_ORDER
+    assert e.value.details["field"] == field
+    assert e.value.message == message
+    ok = await log_decision(db_session, agent.id, kind="proposal", summary="ok",
+                            reason="x" * 300, subject="y" * 200, outcome=" sospesa ")
+    assert (len(ok.reason), len(ok.subject), ok.outcome) == (300, 200, "sospesa")
+
+
 async def test_list_decisions_filters_and_visibility(db_session):
     mine, hidden = await _portfolio(db_session), await _portfolio(db_session)
     me, other = await _agent(db_session, "me"), await _agent(db_session, "other")

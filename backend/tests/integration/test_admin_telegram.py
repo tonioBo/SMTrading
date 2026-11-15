@@ -482,6 +482,23 @@ async def test_decisions_filters(admin):
     assert (await c.get("/api/decisions?kind=loud")).status_code == 400
 
 
+async def test_admin_decisions_exposes_fields(admin):
+    from smtrading.activity.service import log_decision
+    from smtrading.agents import service as agents
+
+    async with admin.sm() as s:
+        a, _ = await agents.create_agent(s, "Gamma")
+        d1 = await log_decision(s, a.id, kind="approval", summary="ok", outcome="respinta",
+                                reason="troppo rischio", subject="Vendita TSLA")
+        d2 = await log_decision(s, a.id, kind="other", summary="nota")
+        await s.commit()
+    items = (await admin.client.get(f"/api/decisions?agent_id={a.id}")).json()["items"]
+    assert [i["id"] for i in items] == [d2.id, d1.id]
+    assert (items[1]["outcome"], items[1]["reason"], items[1]["subject"]) == (
+        "respinta", "troppo rischio", "Vendita TSLA")
+    assert (items[0]["outcome"], items[0]["reason"], items[0]["subject"]) == (None, None, None)
+
+
 async def test_patch_agent_can_notify_audited(admin):
     c = admin.client
     agent = (await c.post("/api/agents", json={"name": "Notifier"})).json()["agent"]

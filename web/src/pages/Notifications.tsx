@@ -17,6 +17,7 @@ import type {
   Decision,
   DecisionFilters,
   DecisionKind,
+  DecisionOutcome,
   OutboxItem,
   OutboxStatus,
   TelegramChat,
@@ -60,6 +61,13 @@ const DECISION_KIND: Record<DecisionKind, string> = {
   strategy: "Strategia",
   risk_rule: "Regola di rischio",
   other: "Altro",
+};
+const DECISION_OUTCOME: Record<DecisionOutcome, string> = {
+  approvata: "Approvata",
+  respinta: "Respinta",
+  sospesa: "Sospesa",
+  modificata: "Modificata",
+  informativa: "Informativa",
 };
 const TRUNCATE_AT = 120;
 
@@ -434,7 +442,10 @@ function DecisionsSection() {
     { key: "agent", header: "Agente", cell: (d) => d.agent ?? "—" },
     { key: "portfolio", header: "Portafoglio", cell: (d) => d.portfolio ?? "—" },
     { key: "kind", header: "Tipo", cell: (d) => DECISION_KIND[d.kind] ?? d.kind },
+    { key: "outcome", header: "Esito", cell: (d) => (d.outcome ? (DECISION_OUTCOME[d.outcome] ?? d.outcome) : "—") },
+    { key: "subject", header: "Oggetto", cell: (d) => (d.subject ? <TextCell text={d.subject} /> : "—") },
     { key: "summary", header: "Sintesi", cell: (d) => <TextCell text={d.summary} /> },
+    { key: "reason", header: "Motivo", cell: (d) => (d.reason ? <TextCell text={d.reason} /> : "—") },
     { key: "symbols", header: "Simboli", cell: (d) => (d.symbols.length ? <span className="font-mono text-xs">{d.symbols.join(", ")}</span> : "—") },
   ];
   return (

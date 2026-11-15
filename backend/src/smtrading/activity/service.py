@@ -31,6 +31,7 @@ from smtrading.activity.models import (
     ActivityLevel,
     Decision,
     DecisionKind,
+    DecisionOutcome,
     TelegramState,
 )
 from smtrading.agents.models import Agent
@@ -43,6 +44,8 @@ FEED_SETTLE_S = 3
 MAX_SYMBOLS = 50
 MAX_SYMBOL_LEN = 32
 MAX_DETAILS_BYTES = 8192
+MAX_REASON = 300
+MAX_SUBJECT = 200
 MAX_TYPE = 64
 MAX_LEVEL = 16
 # direct events (telegram not NULL) are SMTrading's job: sent, queued, in the night digest or
@@ -160,6 +163,18 @@ def _clean_symbols(symbols: Any) -> list[str]:
     return out
 
 
+def _clean_text(value: Any, field: str, limit: int) -> str | None:
+    """An optional text: stripped, empty -> None, at most `limit` characters."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _invalid(field, f"{field} must be a string")
+    text = value.strip()
+    if len(text) > limit:
+        raise _invalid(field, f"{field} must be at most {limit} characters")
+    return text or None
+
+
 async def log_decision(
     session: AsyncSession,
     agent_id: uuid.UUID,
@@ -169,8 +184,12 @@ async def log_decision(
     portfolio_id: uuid.UUID | None = None,
     symbols: list[str] | None = None,
     details: dict | None = None,
+    outcome: str | None = None,
+    reason: str | None = None,
+    subject: str | None = None,
 ) -> Decision:
-    """Store an agent's decision (append-only) and its activity row."""
+    """Store an agent's decision (append-only) and its activity row. outcome, reason and
+    subject are optional: in the activity data only when set."""
     from smtrading.events import json_safe
 
     if kind not in {k.value for k in DecisionKind}:
@@ -186,12 +205,21 @@ async def log_decision(
     details = json_safe(details)
     if len(json.dumps(details, ensure_ascii=False).encode()) > MAX_DETAILS_BYTES:
         raise _invalid("details", f"details must be at most {MAX_DETAILS_BYTES} bytes of JSON")
+    outcomes = [o.value for o in DecisionOutcome]
+    outcome_ = outcome.strip() or None if isinstance(outcome, str) else outcome
+    if outcome_ is not None and outcome_ not in outcomes:
+        raise _invalid("outcome", "outcome must be one of " + ", ".join(outcomes))
+    structured = {
+        "outcome": outcome_,
+        "reason": _clean_text(reason, "reason", MAX_REASON),
+        "subject": _clean_text(subject, "subject", MAX_SUBJECT),
+    }
     if portfolio_id is not None:
         await require_permission(session, agent_id, portfolio_id, "read")
 
     decision = Decision(
         agent_id=agent_id, portfolio_id=portfolio_id, kind=kind, summary=text,
-        details=details, symbols=clean_symbols,
+        details=details, symbols=clean_symbols, **structured,
     )
     session.add(decision)
     await session.flush()
@@ -199,6 +227,7 @@ async def log_decision(
         session,
         ActivityDraft(f"decision.{kind}", ActivityLevel.info, False, text, {
             "decision_id": decision.id, "symbols": clean_symbols, "details": details,
+            **{k: v for k, v in structured.items() if v is not None},
         }),
         portfolio_id=portfolio_id, agent_id=agent_id,
     )

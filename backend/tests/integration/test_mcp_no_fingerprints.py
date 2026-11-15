@@ -132,7 +132,8 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
     await call("create_watchlist", {"name": "Crypto"})
     await call("create_alert", {"symbol": SYM, "condition": "price_above", "value": "60000"})
     await call("log_decision", {"kind": "strategy", "summary": "Compro BTC",
-                                "portfolio_id": pid, "symbols": [SYM]})
+                                "portfolio_id": pid, "symbols": [SYM], "outcome": "approvata",
+                                "subject": "Acquisto BTC", "reason": "trend positivo"})
 
     for tool, args in [
         ("list_portfolios", {}),

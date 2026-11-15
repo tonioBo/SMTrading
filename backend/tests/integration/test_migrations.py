@@ -222,3 +222,18 @@ async def test_downgrade_0016_clears_dangling_agent_and_restores_fk(fresh_db):
     async with engine.connect() as conn:
         assert await conn.scalar(fk) == 0
     await engine.dispose()
+
+
+async def test_decision_outcome_check(db_session):
+    from smtrading.agents.service import create_agent
+
+    agent, _ = await create_agent(db_session, "outcome-check")
+    ins = (
+        "insert into decisions (agent_id, kind, summary, details, symbols, outcome)"
+        " values (:a, 'other', 'x', '{}', '[]', :o)"
+    )
+    with pytest.raises(DBAPIError, match="ck_decisions_outcome"):
+        async with db_session.begin_nested():
+            await db_session.execute(text(ins), {"a": agent.id, "o": "ok"})
+    for o in ("approvata", "respinta", "sospesa", "modificata", "informativa", None):
+        await db_session.execute(text(ins), {"a": agent.id, "o": o})

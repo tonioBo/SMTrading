@@ -774,6 +774,8 @@ export interface OutboxItem {
 
 export type DecisionKind = "proposal" | "approval" | "veto" | "allocation" | "strategy" | "risk_rule" | "other";
 
+export type DecisionOutcome = "approvata" | "respinta" | "sospesa" | "modificata" | "informativa";
+
 export interface Decision {
   id: number;
   agent: string | null;
@@ -784,6 +786,9 @@ export interface Decision {
   summary: string;
   symbols: string[];
   details: Record<string, unknown>;
+  outcome: DecisionOutcome | null;
+  reason: string | null;
+  subject: string | null;
   created_at: string;
 }
 

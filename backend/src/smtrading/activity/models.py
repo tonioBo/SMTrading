@@ -48,6 +48,17 @@ class DecisionKind(enum.StrEnum):
 _DECISION_KINDS = ",".join(f"'{k.value}'" for k in DecisionKind)
 
 
+class DecisionOutcome(enum.StrEnum):
+    approvata = "approvata"
+    respinta = "respinta"
+    sospesa = "sospesa"
+    modificata = "modificata"
+    informativa = "informativa"
+
+
+_DECISION_OUTCOMES = ",".join(f"'{o.value}'" for o in DecisionOutcome)
+
+
 class Activity(Base):
     __tablename__ = "activity"
     __table_args__ = (
@@ -83,6 +94,9 @@ class Decision(Base):
     __tablename__ = "decisions"
     __table_args__ = (
         CheckConstraint(f"kind in ({_DECISION_KINDS})", name="ck_decisions_kind"),
+        CheckConstraint(
+            f"outcome IS NULL OR outcome in ({_DECISION_OUTCOMES})", name="ck_decisions_outcome"
+        ),
         Index("ix_decisions_portfolio_id", "portfolio_id", "id"),
         Index("ix_decisions_agent_id", "agent_id", "id"),
     )
@@ -96,4 +110,8 @@ class Decision(Base):
     summary: Mapped[str] = mapped_column(String(500))
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     symbols: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    # optional structured fields (0023): how it ended, what it is about, why
+    outcome: Mapped[str | None] = mapped_column(String(16))
+    reason: Mapped[str | None] = mapped_column(String(300))
+    subject: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

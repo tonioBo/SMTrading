@@ -81,7 +81,7 @@ async def test_log_decision_and_get_decisions(env):
         "id": d1["decision_id"], "agent": "test-agent", "agent_id": str(env["server"].agent_id),
         "portfolio": "Demo", "portfolio_id": demo, "kind": "strategy",
         "summary": "Riduco crypto", "symbols": ["BTC-USD"], "details": {"weight": "0.1"},
-        "created_at": d1["created_at"],
+        "outcome": None, "reason": None, "subject": None, "created_at": d1["created_at"],
     }
 
     err, res = await call("get_decisions", {"kind": "veto"})
@@ -99,6 +99,29 @@ async def test_log_decision_and_get_decisions(env):
     assert err and res["details"]["field"] == "limit"
     err, res = await call("log_decision", {"kind": "veto", "summary": "   "})
     assert err and res["details"]["field"] == "summary"
+
+
+async def test_mcp_get_decisions_exposes_fields(env):
+    call = env["call"]
+    err, plain = await call("log_decision", {"kind": "veto", "summary": "No leva"})
+    assert not err, plain
+    err, d = await call("log_decision", {"kind": "approval", "summary": "Ok a AAPL",
+                                         "outcome": "approvata", "subject": "Acquisto AAPL",
+                                         "reason": " rischio basso "})
+    assert not err, d
+    err, res = await call("get_decisions")
+    assert not err, res
+    newest, older = res["decisions"][:2]
+    assert newest["id"] == d["decision_id"]
+    assert (newest["outcome"], newest["subject"], newest["reason"]) == (
+        "approvata", "Acquisto AAPL", "rischio basso")
+    assert older["id"] == plain["decision_id"]
+    assert (older["outcome"], older["subject"], older["reason"]) == (None, None, None)
+    err, res = await call("log_decision", {"kind": "veto", "summary": "x", "outcome": "ok"})
+    assert err and res["code"] == "INVALID_ORDER" and res["details"]["field"] == "outcome"
+    err, res = await call("log_decision", {"kind": "veto", "summary": "x",
+                                           "subject": "s" * 201})
+    assert err and res["details"]["field"] == "subject"
 
 
 async def test_get_decisions_forbidden_portfolio(env):

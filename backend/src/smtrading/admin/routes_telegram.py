@@ -251,7 +251,7 @@ async def get_decisions(
         select(Portfolio.id, Portfolio.name).where(Portfolio.id.in_(pids))
     )).all()) if pids else {}
     fields = ("id", "agent_id", "portfolio_id", "kind", "summary", "symbols", "details",
-              "created_at")
+              "outcome", "reason", "subject", "created_at")
     return {"items": [
         {**{f: to_jsonable(getattr(d, f)) for f in fields},
          "agent": agents.get(d.agent_id), "portfolio": portfolios.get(d.portfolio_id)}

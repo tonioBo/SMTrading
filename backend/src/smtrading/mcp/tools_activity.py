@@ -38,11 +38,12 @@ async def _names(ctx: ToolCtx, model, ids: set) -> dict[uuid.UUID, str]:
 
 
 async def _log_decision(ctx: ToolCtx, kind: Any, summary: Any, portfolio_id: Any,
-                        symbols: Any, details: Any) -> dict:
+                        symbols: Any, details: Any, outcome: Any, reason: Any,
+                        subject: Any) -> dict:
     decision = await activity.log_decision(
         ctx.session, ctx.agent_id, kind=kind, summary=summary,
         portfolio_id=parse_uuid(portfolio_id, "portfolio_id"), symbols=symbols,
-        details=details,
+        details=details, outcome=outcome, reason=reason, subject=subject,
     )
     await ctx.session.refresh(decision, ["created_at"])
     return {"decision_id": decision.id, "created_at": decision.created_at}
@@ -95,18 +96,24 @@ def register(mcp: MCPServer) -> None:
     async def log_decision(
         kind: str, summary: str, portfolio_id: str | None = None,
         symbols: list[str] | None = None, details: dict | None = None,
+        outcome: str | None = None, reason: str | None = None, subject: str | None = None,
     ) -> CallToolResult:
         """Record a decision in SMTrading's permanent decisions log (append-only, shown in
         the web app): {decision_id, created_at}. kind: proposal, approval, veto,
         allocation, strategy, risk_rule or other. summary: 1-500 characters. portfolio_id:
         optional, needs read on it (omit for a global decision). symbols: at most 50.
-        details: an object, at most 8 KB of JSON. Logging a decision sends no Telegram
-        message."""
+        details: an object, at most 8 KB of JSON.
+        outcome: optional, approvata, respinta, sospesa, modificata or informativa.
+        subject: optional, what the decision is about, at most 200 characters.
+        reason: optional, why, at most 300 characters.
+        Logging a decision sends no Telegram message."""
         params = {"kind": kind, "summary": summary, "portfolio_id": portfolio_id,
-                  "symbols": symbols, "details": details}
+                  "symbols": symbols, "details": details, "outcome": outcome,
+                  "reason": reason, "subject": subject}
         return await run_tool(
             "log_decision", params,
-            lambda ctx: _log_decision(ctx, kind, summary, portfolio_id, symbols, details),
+            lambda ctx: _log_decision(ctx, kind, summary, portfolio_id, symbols, details,
+                                      outcome, reason, subject),
         )
 
     @mcp.tool(structured_output=False)
@@ -116,7 +123,8 @@ def register(mcp: MCPServer) -> None:
     ) -> CallToolResult:
         """Decisions visible to the agent (its portfolios' and the global ones), newest
         first: {decisions: [{id, agent, agent_id, portfolio, portfolio_id, kind, summary,
-        symbols, details, created_at}]}. Filters: portfolio_id (needs read), agent (name or
+        symbols, details, outcome, reason, subject, created_at}]} (outcome, reason, subject:
+        null when not given). Filters: portfolio_id (needs read), agent (name or
         id), kind, since (ISO 8601). limit: 1-200 (default 50)."""
         params = {"portfolio_id": portfolio_id, "agent": agent, "kind": kind, "since": since,
                   "limit": limit}

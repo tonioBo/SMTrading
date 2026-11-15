@@ -65,7 +65,7 @@ INSTRUMENT_FIELDS = (
 NOTIFICATION_FIELDS = ("id", "portfolio_id", "kind", "payload", "created_at")
 DECISION_FIELDS = (
     "id", "agent", "agent_id", "portfolio", "portfolio_id", "kind", "summary", "symbols",
-    "details", "created_at",
+    "details", "outcome", "reason", "subject", "created_at",
 )
 ALERT_FIELDS = (
     "id", "symbol", "condition", "value", "ref_price", "status", "note", "created_at",

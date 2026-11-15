@@ -52,6 +52,9 @@ const decision = (over: Partial<Decision>): Decision => ({
   summary: "Comprare AAPL",
   symbols: ["AAPL"],
   details: {},
+  outcome: null,
+  reason: null,
+  subject: null,
   created_at: "2026-11-13T08:00:00Z",
   ...over,
 });
@@ -425,6 +428,27 @@ describe("Notifiche", () => {
     await waitFor(() => expect(within(table).queryByText("Comprare AAPL")).not.toBeInTheDocument());
     expect(decisionUrls.at(-1)).toContain("kind=veto");
     expect(within(table).getByText("Veto su TSLA")).toBeInTheDocument();
+  });
+
+  it("decisions show outcome, subject and reason", async () => {
+    server.use(
+      http.get("*/api/decisions", () =>
+        HttpResponse.json({
+          items: [
+            decision({ id: 20, kind: "approval", outcome: "respinta", subject: "Vendita TSLA", reason: "Troppo rischio" }),
+            decision({ id: 19, summary: "Senza campi" }),
+          ],
+        }),
+      ),
+    );
+    renderApp("/notifiche");
+    const table = await screen.findByRole("table", { name: "Decisioni" });
+    expect(await within(table).findByText("Respinta")).toBeInTheDocument();
+    expect(within(table).getByText("Vendita TSLA")).toBeInTheDocument();
+    expect(within(table).getByText("Troppo rischio")).toBeInTheDocument();
+    for (const h of ["Esito", "Oggetto", "Motivo"]) expect(within(table).getByRole("columnheader", { name: h })).toBeInTheDocument();
+    const plain = within(table).getByText("Senza campi").closest("tr")!;
+    expect(within(plain).getAllByText("—").length).toBeGreaterThanOrEqual(3);
   });
 
   it("loads more decisions with before_id", async () => {
