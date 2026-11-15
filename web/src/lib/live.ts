@@ -1,10 +1,17 @@
 import { ApiError } from "@/api/client";
 import type { LiveKind, LiveState } from "@/api/types";
 
-/** The two real-money kinds, shown with a red border on the Broker page. */
-export const LIVE_KINDS: { value: LiveKind; label: string; broker: string; keys: string[] }[] = [
+/** The real-money kinds, shown with a red border on the Broker page. `labels`: key field labels of the kind (else SECRET_LABELS). */
+export const LIVE_KINDS: { value: LiveKind; label: string; broker: string; keys: string[]; labels?: Record<string, string> }[] = [
   { value: "alpaca_live", label: "Alpaca — denaro reale", broker: "Alpaca", keys: ["key_id", "secret_key"] },
   { value: "t212_live", label: "Trading 212 — denaro reale", broker: "Trading 212", keys: ["api_key", "api_secret"] },
+  {
+    value: "etoro_live",
+    label: "eToro — denaro reale",
+    broker: "eToro",
+    keys: ["api_key", "user_key"],
+    labels: { api_key: "Chiave API (x-api-key)", user_key: "Chiave utente reale (x-user-key)" },
+  },
 ];
 
 export const isLiveKind = (kind: string): boolean => LIVE_KINDS.some((k) => k.value === kind);
@@ -78,7 +85,7 @@ const LIVE_CAUSES: Record<string, string> = {
   cash_shortfall: "liquidità al broker inferiore a quella del portafoglio",
   fuse: "fusibile: troppi ordini reali nell'ultima ora",
   health: "broker non raggiungibile",
-  margin_account: "il conto Alpaca non è più un conto cash (margine attivo)",
+  margin_account: "il conto non è più un conto cash (margine o leva attivi)",
 };
 
 const REDUCE_ONLY_REASONS: Record<string, string> = {

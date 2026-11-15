@@ -44,6 +44,33 @@ function Alert({ children }: { children: ReactNode }) {
 
 /** Minimum permissions and IP restriction, per broker (step 1). */
 function KeysGuide({ kind }: { kind: string }) {
+  if (kind === "etoro_live") {
+    return (
+      <div className="space-y-1 rounded-md border border-border bg-card p-3 text-xs">
+        <p>
+          Crea la chiave utente per l'ambiente <strong>Real</strong> con permesso <strong>Write</strong> e incolla qui la
+          chiave API e la chiave utente di quell'ambiente. Non riusare la chiave del collegamento demo: ogni chiave vale per
+          un solo ambiente.
+        </p>
+        <p>
+          Usa un conto eToro dedicato a SMTrading, senza posizioni, ordini o copy trading: SMTrading apre solo posizioni
+          senza leva e le chiude dal più vecchio.
+        </p>
+        <p>
+          Guida alle chiavi:{" "}
+          <a
+            className="underline"
+            href="https://api-portal.etoro.com/core/getting-started/authentication.md"
+            target="_blank"
+            rel="noreferrer"
+          >
+            portale API di eToro
+          </a>
+          .
+        </p>
+      </div>
+    );
+  }
   if (kind === "t212_live") {
     return (
       <div className="space-y-1 rounded-md border border-border bg-card p-3 text-xs">
@@ -81,12 +108,13 @@ function KeyFields({
   onChange: (k: string, v: string) => void;
   error: unknown;
 }) {
-  const keys = liveKindInfo(kind)?.keys ?? [];
+  const info = liveKindInfo(kind);
+  const keys = info?.keys ?? [];
   const field = errorField(error);
   return (
     <>
       {keys.map((k) => (
-        <FormField key={k} label={SECRET_LABELS[k] ?? k} error={field === k ? errorMessage(error) : null}>
+        <FormField key={k} label={info?.labels?.[k] ?? SECRET_LABELS[k] ?? k} error={field === k ? errorMessage(error) : null}>
           <Input type="password" autoComplete="new-password" value={values[k] ?? ""} onChange={(e) => onChange(k, e.target.value)} />
         </FormField>
       ))}

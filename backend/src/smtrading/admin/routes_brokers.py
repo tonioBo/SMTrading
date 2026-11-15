@@ -47,9 +47,11 @@ from smtrading.admin.routes_live import (
 )
 from smtrading.admin.routes_portfolios import portfolio_dto
 from smtrading.brokers.alpaca_paper import PAPER_URL
+from smtrading.brokers.etoro_core import ETORO_URL
 from smtrading.brokers.live import LIVE_KINDS
 from smtrading.brokers.live.account import LIVE_FIELDS, key_masked, live_secrets
 from smtrading.brokers.live.reconcile import reconcile_live
+from smtrading.brokers.live.service import NOT_DEDICATED_MESSAGE
 from smtrading.brokers.models import BrokerLink, Reconciliation
 from smtrading.brokers.registry import adapter_class
 from smtrading.brokers.service import (
@@ -77,7 +79,11 @@ MAX_RECONCILIATIONS = 500
 KINDS: dict[str, tuple[str, tuple[str, ...]]] = {
     "alpaca_paper": (PAPER_URL, ("key_id", "secret_key")),
     "t212_demo": (DEMO_URL, ("api_key", "api_secret")),
+    "etoro_demo": (ETORO_URL, ("api_key", "user_key")),
 }
+# kinds linked only to an empty (dedicated) account: positions and open orders are read
+# (GET only) when the first portfolio is linked
+DEDICATED_KINDS = frozenset({"etoro_demo"})
 
 BrokerIdem = Annotated[Idempotency, Depends(idempotent("broker"))]
 
@@ -223,7 +229,7 @@ async def post_link(
     async def run() -> dict:
         _refuse_live(body.kind)
         if body.kind not in KINDS:
-            raise _invalid("kind", "tipo di broker non supportato (alpaca_paper, t212_demo)")
+            raise _invalid("kind", f"tipo di broker non supportato ({', '.join(KINDS)})")
         name = _name(body.name)
         config = _clean_config(body.kind, body.config)
         async with _transaction(session, redis):
@@ -332,7 +338,11 @@ async def put_portfolio_link(
 ) -> dict:
     """Link (or unlink, null) a portfolio. The service refuses the change while an order
     of the portfolio is (or may be) at the broker (broker_live: cancel it and wait for the
-    confirmation); routed orders not sent yet go back to the simulator on unlink."""
+    confirmation); routed orders not sent yet go back to the simulator on unlink. The
+    first portfolio of a DEDICATED_KINDS link needs an empty account (read before the
+    transaction)."""
+    if body.broker_link_id is not None:
+        await _require_dedicated(session, body.broker_link_id)
     async with _transaction(session, redis):
         if body.broker_link_id is not None:
             link = await _link(session, body.broker_link_id)
@@ -346,6 +356,33 @@ async def put_portfolio_link(
         portfolio = await link_portfolio(session, portfolio_id, body.broker_link_id)
         out = await portfolio_dto(session, portfolio)
     return out
+
+
+async def _require_dedicated(session: AsyncSession, link_id: UUID) -> None:
+    """A DEDICATED_KINDS link no portfolio uses yet: the account must have no position
+    and no open order (NOT_DEDICATED, field `account`). Broker I/O with no transaction
+    open; a read failure answers PROVIDER_UNAVAILABLE, redacted."""
+    link = await session.get(BrokerLink, link_id)
+    in_use = await session.scalar(
+        select(Portfolio.id).where(Portfolio.broker_link_id == link_id).limit(1))
+    if link is None or link.kind not in DEDICATED_KINDS or in_use is not None \
+            or not link.enabled:
+        await session.commit()
+        return  # nothing to read (or refused with its own message in the transaction)
+    secrets = await _secrets(session, link)
+    try:
+        async with httpx.AsyncClient() as http, \
+                open_adapter(session, link_id, http) as adapter:
+            await session.commit()  # no transaction across the network call
+            account = await asyncio.wait_for(adapter.get_account(), BROKER_TIMEOUT_S)
+    except SMTError as e:
+        await session.rollback()
+        raise _redacted_smterror(e, secrets) from None
+    except Exception as e:  # noqa: BLE001 - the broker could not be read
+        await session.rollback()
+        raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE, _error_text(e, secrets)) from None
+    if account.positions_count or account.open_orders_count:
+        raise _invalid("account", NOT_DEDICATED_MESSAGE)
 
 
 # --- reconciliations -----------------------------------------------------------------

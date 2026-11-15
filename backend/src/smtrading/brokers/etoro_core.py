@@ -36,6 +36,7 @@ from smtrading.brokers.base import (
     BrokerAdapter,
     BrokerOrder,
     BrokerStatus,
+    OutcomeUnknown,
     RateLimited,
 )
 from smtrading.brokers.t212_core import _body, _dec, _jsonable, _num
@@ -365,6 +366,7 @@ class _EtoroProtocol(BrokerAdapter):
     ALLOWED_PREFIXES: ClassVar[tuple[str, ...]]
 
     idempotent_place: ClassVar[bool] = False
+    ACCOUNT_CURRENCY: ClassVar[str | None] = "USD"  # USD accounts only (get_account)
     supported_types: ClassVar[frozenset[OrderType]] = frozenset({OrderType.market})
     supported_asset_classes: ClassVar[frozenset[AssetClass]] = frozenset(
         {AssetClass.us_equity, AssetClass.eu_equity, AssetClass.crypto}
@@ -691,7 +693,10 @@ class _EtoroProtocol(BrokerAdapter):
         message = None
         asset = data.get("asset")
         if not isinstance(asset, dict):
-            # leverage and settlement unknown: fail-closed (only openings are looked up)
+            # leverage and settlement unknown: a real order may be a real position, so its
+            # outcome is unknown (reduce-only); the demo stays fail-closed (rejected)
+            if self.live:
+                raise OutcomeUnknown(f"{self.kind}: order {bid} without asset in the lookup")
             if bid not in _warned_no_asset:
                 _warned_no_asset.add(bid)
                 log.warning("eToro order %s without asset: treated as rejected", bid)
@@ -846,7 +851,7 @@ class _EtoroProtocol(BrokerAdapter):
         return AccountSnapshot(
             account_id=self._account,
             account_type="cash" if conforming else "leveraged",
-            currency="USD",
+            currency=self.ACCOUNT_CURRENCY,
             cash_available=max(cash, Decimal(0)),
             positions_count=len(positions) + len(mirrors),
             open_orders_count=sum(len(cp.get(k, [])) for k in

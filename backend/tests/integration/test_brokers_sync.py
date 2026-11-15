@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import ClassVar
 
+import httpx
 import pytest
 from redis.asyncio import Redis
 from sqlalchemy import select, text
@@ -52,6 +53,7 @@ from smtrading.ledger.models import (
 )
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
+from smtrading.positions.models import Position
 from smtrading.risk import halts
 from smtrading.risk.margin import check_portfolio_margin
 from smtrading.risk.models import Notification, TradingHalt
@@ -1377,3 +1379,170 @@ async def test_broker_sync_releases_the_lock_when_stopped(maker, redis, qs, fres
             )) == 0
     finally:
         await engine.dispose()
+
+
+# --- eToro demo (plan 9 Task 15): the real adapter on the FakeLiveBroker transport ------
+
+ETORO_KEYS = {"api_key": "CANARYAPIKEY0001", "user_key": "CANARYUSERKEY-0002"}
+
+
+async def _etoro_portfolio(maker, cash=100000):
+    async with maker() as s:
+        p = await create_portfolio(
+            s, name=f"P-{uuid.uuid4().hex[:8]}", initial_cash=D(cash), leverage=D(1),
+        )
+        link = await create_link(s, f"L-{uuid.uuid4().hex[:8]}", "etoro_demo",
+                                 dict(ETORO_KEYS))
+        await link_portfolio(s, p.id, link.id)
+        await s.commit()
+        return p.id, link.id
+
+
+@pytest.fixture
+async def etoro():
+    """(fake, http client on its transport): no request ever leaves the process."""
+    from smtrading.brokers.live.fake import FakeLiveBroker
+
+    fake = FakeLiveBroker(price=D(100))
+    async with httpx.AsyncClient(transport=fake.transport()) as http:
+        yield fake, http
+
+
+def _etoro_sync(maker, redis, qs, http, now=OPEN):
+    return BrokerSync(maker, redis, qs, http, clock=Clock(now))
+
+
+def _etoro_fee(fake, fee: Decimal) -> None:
+    """The broker's fee on every execution of the demo orders opened so far."""
+    for record in fake.etoro["demo"].orders.values():
+        for execution in record["positionExecutions"]:
+            execution["openingData"]["fees"] = fee
+
+
+async def test_sync_etoro_demo_buy_fill_with_broker_fee(maker, redis, qs, etoro):
+    """A buy goes out to the eToro demo, is looked up (`get_order`) and filled at the
+    broker's price, with the broker's fee (`BrokerOrder.fees`), not the fee rules'."""
+    fake, http = etoro
+    pid, _ = await _etoro_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, qty=D(2))
+    sync = _etoro_sync(maker, redis, qs, http)
+    await sync.tick()  # sent: the fake fills it at once
+    o = await _order(maker, oid)
+    assert o.broker_replicated and o.broker_order_id
+    _etoro_fee(fake, D("0.42"))
+    for _ in range(2):
+        await sync.tick()
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.filled and o.filled_qty == D(2)
+    assert o.avg_fill_price == D(100)
+    fills = await _fills(maker, oid)
+    assert [(f.qty, f.price, f.source, f.fee_amount, f.fee_currency, f.fee_rule_id)
+            for f in fills] == [(D(2), D(100), "broker", D("0.42"), "USD", None)]
+    paths = [p for m, p in fake.calls if m == "POST" and "/orders" in p]
+    assert paths and all("/demo/" in p for p in paths)
+
+
+async def test_sync_etoro_sell_composite_partial(maker, redis, qs, etoro):
+    """Two buys open two eToro positions (2 + 2); a sell of 3 with no partial close
+    allowed closes the first one whole: `get_order` of the composite id reports the order
+    canceled with 2 filled, recorded as a partial execution."""
+    fake, http = etoro
+    fake.etoro_partial_close = False
+    pid, _ = await _etoro_portfolio(maker)
+    sync = _etoro_sync(maker, redis, qs, http)
+    for _ in range(2):
+        oid = await _place(maker, redis, qs, pid, qty=D(2))
+        for _ in range(3):
+            await sync.tick()
+        assert (await _order(maker, oid)).status == OrderStatus.filled
+    assert len(fake.etoro["demo"].positions) == 2
+
+    sell = await _place(maker, redis, qs, pid, qty=D(3), side=OrderSide.sell)
+    for _ in range(3):
+        await sync.tick()
+    o = await _order(maker, sell)
+    assert o.broker_order_id.startswith("close:")
+    assert o.status == OrderStatus.canceled and o.filled_qty == D(2)
+    assert o.broker_status == "canceled"
+    fills = await _fills(maker, sell)
+    assert [(f.qty, f.price, f.source) for f in fills] == [(D(2), D(100), "broker")]
+    assert [p["units"] for p in fake.etoro["demo"].positions.values()] == [D(2)]
+    async with maker() as s:
+        pos = await s.scalar(select(Position.qty).where(
+            Position.portfolio_id == pid, Position.symbol == "AAPL"))
+    assert pos == D(2)
+
+
+async def _ledger_lines(maker, oid) -> list[tuple[AccountKind, str, Decimal]]:
+    """(account kind, asset, quantity) of the order's journal lines."""
+    from smtrading.ledger.models import JournalLine
+
+    async with maker() as s:
+        return [(k, a, D(q)) for k, a, q in (await s.execute(
+            select(Account.kind, Account.asset, JournalLine.quantity)
+            .join(JournalLine, JournalLine.account_id == Account.id)
+            .join(Journal, Journal.id == JournalLine.journal_id)
+            .where(Journal.order_id == oid)
+        )).all()]
+
+
+async def test_sync_etoro_demo_fee_in_account_currency_for_eur_instrument(
+        maker, redis, qs, etoro, monkeypatch):
+    """eToro accounts are USD-only (ACCOUNT_CURRENCY): the broker's fee on a EUR
+    instrument is recorded in USD, never in the instrument's currency, and booked at the
+    EUR/USD rate (no account snapshot on a demo link)."""
+    from smtrading.brokers.live import fake as fake_module
+
+    fake, http = etoro
+    monkeypatch.setitem(fake_module._ETORO_INSTRUMENTS, "EXS1.DE", 2001)
+    qs.set_quote("EXS1.DE", D("99.90"), D("100.00"), D("99.95"))
+    pid, _ = await _etoro_portfolio(maker)
+    async with maker() as s:
+        order = await place_order(s, qs, PlaceOrderRequest(
+            portfolio_id=pid, symbol="EXS1.DE", side=OrderSide.buy, type=OrderType.market,
+            qty=D(2)), now=OPEN)
+        await s.commit()
+        await dispatch_post_commit(s, redis)
+        oid = order.id
+    sync = _etoro_sync(maker, redis, qs, http)
+    await sync.tick()
+    _etoro_fee(fake, D("0.50"))
+    for _ in range(2):
+        await sync.tick()
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.filled, (o.status, o.reject_message)
+    fills = await _fills(maker, oid)
+    assert [(f.fee_amount, f.fee_currency, f.fee_rule_id) for f in fills] == [
+        (D("0.50"), "USD", None)]
+    lines = await _ledger_lines(maker, oid)
+    assert [(a, q) for k, a, q in lines if k == AccountKind.system_fees] == [
+        ("USD", D("0.50"))]
+    # the fee bought with EUR at EUR/USD 1.25: 0.50 USD = 0.40 EUR, plus 2 x 100 EUR
+    eur_cash = sum(q for k, a, q in lines if k == AccountKind.cash and a == "EUR")
+    assert eur_cash == D("-200.40"), lines
+
+
+async def test_etoro_rejection_text_is_agent_safe(maker, redis, qs, etoro):
+    """A broker refusal whose text gives the demo away (eToro: «Demo account ...») is
+    kept for humans and reads as a plain broker refusal to agents (hide mode)."""
+    from smtrading.brokers.base import BROKER_REJECTED_MESSAGE
+    from smtrading.mcp.dto import agent_view, order_dto, to_jsonable
+
+    fake, _ = etoro
+    text = "Demo account: insufficient virtual funds"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path.endswith("/demo/orders"):
+            return httpx.Response(400, json={"errorMessage": text})
+        return fake.transport().handle_request(request)
+
+    pid, _ = await _etoro_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, qty=D(2))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await _etoro_sync(maker, redis, qs, http).tick()
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.rejected and text in o.reject_message  # humans
+    seen = agent_view(to_jsonable(order_dto(o)))
+    assert seen["reject_message"] == BROKER_REJECTED_MESSAGE
+    note = (await _notes(maker, pid, "order.rejected"))[0]
+    assert agent_view(to_jsonable(note.payload))["message"] == BROKER_REJECTED_MESSAGE

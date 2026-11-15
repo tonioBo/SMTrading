@@ -3,14 +3,22 @@
 LIVE_KINDS: the BrokerLink kinds that move real money.
 LIVE_HOSTS: the hostnames of the live adapters' BASE_URL class constants (computed on
 first use, lazily, to avoid import cycles). Nothing outside brokers/live spells a live
-host: whoever needs one imports LIVE_HOSTS (a test scans the repository for it).
+host: whoever needs one imports LIVE_HOSTS (a test scans the repository for it). The
+eToro host is shared with the demo, so it is not a live host: its guard is the path.
+LIVE_PATHS: the real eToro execution and info prefixes (EtoroLiveAdapter's ClassVars,
+lazily): nothing outside brokers/live spells them (a test scans the repository).
+LIVE_READ_POSTS: the full URLs of the live POSTs that only read (eToro eligibility): the
+live gate passes them like a GET.
+CASH_ONLY_KINDS: the live kinds whose account must report `account_type` "cash" (R8.10:
+no margin, no leverage); any other account type is refused and trips reduce-only.
 """
 
 from urllib.parse import urlsplit
 
 from smtrading.common.errors import ErrorCode, SMTError
 
-LIVE_KINDS = frozenset({"alpaca_live", "t212_live"})
+LIVE_KINDS = frozenset({"alpaca_live", "t212_live", "etoro_live"})
+CASH_ONLY_KINDS = frozenset({"alpaca_live", "etoro_live"})
 GATE_REQUIRED_MESSAGE = "gli adattatori live richiedono il cancello"
 PAPER_LIVE_HOST_MESSAGE = "host di produzione non ammesso per un adattatore paper"
 
@@ -24,11 +32,27 @@ def _live_hosts() -> frozenset[str]:
     )
 
 
+def _live_paths() -> frozenset[str]:
+    from smtrading.brokers.live.etoro_live import EtoroLiveAdapter as A
+
+    return frozenset({A.EXEC_V1, A.EXEC_V2, A.INFO_V1, A.INFO_V2})
+
+
+def _live_read_posts() -> frozenset[str]:
+    from smtrading.brokers.live.etoro_live import EtoroLiveAdapter as A
+
+    return frozenset(A.BASE_URL + path for path in A.READ_ONLY_POSTS)
+
+
+_LAZY = {"LIVE_HOSTS": _live_hosts, "LIVE_PATHS": _live_paths,
+         "LIVE_READ_POSTS": _live_read_posts}
+
+
 def __getattr__(name: str):
-    if name == "LIVE_HOSTS":
-        hosts = _live_hosts()
-        globals()["LIVE_HOSTS"] = hosts
-        return hosts
+    if name in _LAZY:
+        value = _LAZY[name]()
+        globals()[name] = value
+        return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

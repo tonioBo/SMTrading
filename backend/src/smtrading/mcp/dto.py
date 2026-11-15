@@ -18,6 +18,7 @@ from typing import Any
 from smtrading.brokers.base import BROKER_REJECTED_MESSAGE
 from smtrading.brokers.live.protect import order_summary
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.common.fingerprints import FINGERPRINT
 from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import Fill, Order
 from smtrading.instruments.models import Instrument
@@ -250,16 +251,24 @@ def agent_safe(value: Any) -> Any:
 # "broker" for a broker fill) is dropped wherever it appears (fills of get_order /
 # list_orders, order.filled / order.partially_filled activity data), so simulated and
 # real fills look the same; paper/demo broker hosts and kinds in any text (e.g. a
-# transport error kept as the reason of an unknown outcome) read as the live ones; the
-# dry-run masking of `agent_safe` follows. Humans (portal, Telegram) keep everything.
+# transport error kept as the reason of an unknown outcome) read as the live ones; a
+# broker text still giving the simulation away reads as a plain refusal; the dry-run
+# masking of `agent_safe` follows. Humans (portal, Telegram) keep everything.
 _FILL_SOURCES = frozenset({"sim", "broker"})
+# the fields holding a broker's refusal or error text (an order's reject_message, the
+# `message` of an order.rejected notification): one that still matches FINGERPRINT once
+# the broker names are replaced (e.g. eToro's «Demo account ...») reads as a plain
+# broker refusal (AGENT_REJECT_MESSAGE)
+_BROKER_TEXT_KEYS = frozenset({"reject_message", "message"})
 
 
 @functools.cache
 def _broker_texts() -> tuple[tuple[str, str], ...]:
     """(paper/demo text, live text): the hosts come from the adapters' BASE_URL (only
-    brokers/live spells a live host), loaded on first use (no import cycle)."""
+    brokers/live spells a live host), loaded on first use (no import cycle). eToro has
+    one host for both: its demo path prefixes (`/demo`) read as the real ones."""
     from smtrading.brokers.alpaca_paper import AlpacaPaperAdapter
+    from smtrading.brokers.etoro_demo import EtoroDemoAdapter
     from smtrading.brokers.live import hostname
     from smtrading.brokers.live.alpaca_live import AlpacaLiveAdapter
     from smtrading.brokers.live.t212_live import T212LiveAdapter
@@ -268,7 +277,30 @@ def _broker_texts() -> tuple[tuple[str, str], ...]:
     pairs = ((AlpacaPaperAdapter, AlpacaLiveAdapter), (T212DemoAdapter, T212LiveAdapter))
     hosts = tuple((hostname(p.BASE_URL), hostname(live.BASE_URL)) for p, live in pairs)
     kinds = tuple((p.kind, live.kind) for p, live in pairs)
-    return tuple((a, b) for a, b in hosts + kinds if a and b)
+    return tuple((a, b) for a, b in hosts + kinds + _etoro_texts(EtoroDemoAdapter)
+                 if a and b and a != b)
+
+
+_ETORO_LIVE_MODULE = "smtrading.brokers.live.etoro_live"
+
+
+def _etoro_texts(demo) -> tuple[tuple[str, str], ...]:
+    """The eToro demo kind and path prefixes -> the real adapter's (its ClassVars). Until
+    the real adapter exists (plan 9 Task 16) neutral stand-ins derived from the demo ones
+    take their place, so no demo text reaches agents meanwhile: the kind with `_live`,
+    the prefixes without their `/demo` segment."""
+    attrs = ("EXEC_V1", "EXEC_V2", "INFO_V1", "INFO_V2")
+    demo_prefixes = tuple(getattr(demo, a) for a in attrs)
+    try:
+        from smtrading.brokers.live.etoro_live import EtoroLiveAdapter as real
+    except ModuleNotFoundError as e:
+        if e.name != _ETORO_LIVE_MODULE:
+            raise  # a broken import inside the real adapter: never hidden
+        real_kind = demo.kind.removesuffix("_demo") + "_live"
+        real_prefixes = tuple(p.replace("/demo", "") for p in demo_prefixes)
+    else:
+        real_kind, real_prefixes = real.kind, tuple(getattr(real, a) for a in attrs)
+    return ((demo.kind, real_kind), *zip(demo_prefixes, real_prefixes, strict=True))
 
 
 def _scrub(value: Any) -> Any:
@@ -280,8 +312,15 @@ def _scrub(value: Any) -> Any:
     if isinstance(value, list):
         return [_scrub(v) for v in value]
     if isinstance(value, dict):
-        return {k: _scrub(v) for k, v in value.items()
-                if not (k == "source" and v in _FILL_SOURCES)}
+        out = {}
+        for k, v in value.items():
+            if k == "source" and v in _FILL_SOURCES:
+                continue
+            v = _scrub(v)
+            if k in _BROKER_TEXT_KEYS and isinstance(v, str) and FINGERPRINT.search(v):
+                v = AGENT_REJECT_MESSAGE  # a broker's own words gave the demo away
+            out[k] = v
+        return out
     return value
 
 

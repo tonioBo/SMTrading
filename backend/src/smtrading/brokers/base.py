@@ -30,6 +30,12 @@ class RateLimited(RuntimeError):  # retryable, like any RuntimeError
     and the request was not processed."""
 
 
+class OutcomeUnknown(RuntimeError):
+    """A real order's state cannot be read safely (e.g. an eToro lookup without the
+    asset's leverage and settlement): BrokerSync marks its outcome unknown (reduce-only)
+    and keeps reading it; never a rejection."""
+
+
 @dataclass(frozen=True)
 class AccountSnapshot:
     """A read-only view of the broker account (GET requests only)."""
@@ -63,6 +69,9 @@ class BrokerAdapter:
     idempotent_place: ClassVar[bool] = True
     supported_types: ClassVar[frozenset[OrderType]]
     supported_asset_classes: ClassVar[frozenset[AssetClass]]
+    # the account's currency when the broker has only one (eToro: USD), else None (read
+    # from the account snapshot); the currency of the broker's fees
+    ACCOUNT_CURRENCY: ClassVar[str | None] = None
 
     def __init__(self, config: dict, http) -> None:
         self.config = config

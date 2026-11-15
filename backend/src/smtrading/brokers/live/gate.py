@@ -5,7 +5,8 @@ sends through a `LiveGateTransport`. Before every request that is not a read, th
 reads again (in a short session of its own) the link's `live_state`, the linked
 portfolio's status, the kill switch and the order being sent:
 
-- GET/HEAD: always passed on;
+- GET/HEAD: always passed on, like the POSTs that only read (LIVE_READ_POSTS: eToro
+  eligibility, exact URL, never carrying an order);
 - DELETE (a cancel): passed on in every live_state of a live link;
 - POST/PUT/PATCH: only with the link `armed`, the linked portfolio not `locked` and the
   kill switch off; with the kill switch on only an order created by «Chiudi tutte le
@@ -20,9 +21,13 @@ portfolio's status, the kill switch and the order being sent:
 
 A closed gate raises before the inner transport is called: no connection is opened and
 nothing reaches the broker. The order is identified by the request extension
-`smt_order_id` (set by the protocol cores on every order request).
+`smt_order_id` (set by the protocol cores on every order request); an eToro position
+close also carries `smt_close` ({symbol, instrument_id, units}), since its body names
+neither the symbol nor, for a whole position, the units.
 """
 
+import asyncio
+import functools
 import json
 import re
 import uuid
@@ -43,6 +48,7 @@ from smtrading.risk.halts import covering_halt, halt_message, reduces_position
 from smtrading.risk.settings import is_kill_switch_on
 
 ORDER_EXTENSION = "smt_order_id"
+CLOSE_EXTENSION = "smt_close"
 READ_METHODS = frozenset({"GET", "HEAD"})
 NOT_ARMED_MESSAGE = "denaro reale non attivo su questo collegamento"
 KILL_SWITCH_MESSAGE = "kill switch attivo: nessun invio verso il broker reale"
@@ -109,11 +115,63 @@ def _dec(value: Any) -> Decimal | None:
     return d if d.is_finite() else None
 
 
+_ETORO_CLOSE_KEYS = frozenset({"InstrumentID", "InstrumentId", "UnitsToDeduct"})
+
+
+@functools.cache
+def _etoro_close_url() -> tuple[str, re.Pattern[str]]:
+    """(host, path pattern) of the real eToro position close (the adapter's ClassVars)."""
+    from smtrading.brokers.live.etoro_live import EtoroLiveAdapter as A
+
+    host = httpx.URL(A.BASE_URL).host
+    return host, re.compile(rf"{re.escape(A.EXEC_V1)}/market-close-orders/positions/\d+")
+
+
+def _etoro_close_units(request: httpx.Request, body: dict, close: object) -> Decimal | None:
+    """The units of a well-formed real eToro position close, else None: the close
+    endpoint (exact host, no port or userinfo, no query), only the close keys in the
+    body, an integer instrument id equal to the `smt_close` extension's, 0 < units and a
+    partial body's `UnitsToDeduct` equal to those units."""
+    host, path = _etoro_close_url()
+    url = request.url
+    if (url.scheme != "https" or url.host != host or url.port or url.userinfo
+            or url.query or not path.fullmatch(url.path)):
+        return None
+    if not isinstance(close, dict) or not set(body) <= _ETORO_CLOSE_KEYS:
+        return None
+    iid = body.get("InstrumentID", body.get("InstrumentId"))
+    units = _dec(close.get("units"))
+    deduct = body.get("UnitsToDeduct")
+    if (not isinstance(iid, int) or isinstance(iid, bool)
+            or close.get("instrument_id") != iid
+            or units is None or units <= 0
+            or (deduct is not None and _dec(deduct) != units)):
+        return None
+    return units
+
+
+def _etoro_close_matches(request: httpx.Request, body: dict, close: object, order: Any,
+                         prior: Decimal = Decimal(0)) -> bool:
+    """eToro position close of this order: well formed (`_etoro_close_units`), the
+    extension names the order's symbol, the order is a sell, and with the units of its
+    closes already passed (`prior`) no more than the order's open quantity."""
+    units = _etoro_close_units(request, body, close)
+    if units is None or not isinstance(close, dict):
+        return False
+    open_qty = order.qty - (order.filled_qty or Decimal(0))
+    return (close.get("symbol") == order.symbol and order.side == OrderSide.sell
+            and prior + units <= open_qty)
+
+
 def _body_matches(body: dict, order: Any) -> bool:
     """The request is the order's own closing request: same instrument and side, no more
     than the order's quantity. Alpaca: `symbol`, `side`, `qty`; Trading 212: `ticker`
-    (`AAPL_US_EQ`) and a signed `quantity` (negative = sell). Anything else: no match."""
+    (`AAPL_US_EQ`) and a signed `quantity` (negative = sell). An eToro close body is
+    matched by `LiveGateTransport._matches` (it needs the request). Anything else: no
+    match."""
     if order.qty is None:
+        return False
+    if "InstrumentID" in body or "InstrumentId" in body:
         return False
     if "ticker" in body:
         symbol = str(body["ticker"]).split("_")[0]
@@ -130,12 +188,30 @@ def _body_matches(body: dict, order: Any) -> bool:
             and qty is not None and side == order.side and 0 < abs(qty) <= order.qty)
 
 
+def _read_only_post(request: httpx.Request, method: str) -> bool:
+    """A POST to one of LIVE_READ_POSTS (exact URL: no port, no query), carrying no
+    order."""
+    if method != "POST" or ORDER_EXTENSION in request.extensions or request.url.port:
+        return False
+    from smtrading.brokers.live import LIVE_READ_POSTS
+
+    url = request.url
+    if url.userinfo:
+        return False
+    return f"{url.scheme}://{url.host}{url.raw_path.decode('ascii', 'replace')}" \
+        in LIVE_READ_POSTS
+
+
 class LiveGateTransport(httpx.AsyncBaseTransport):
     def __init__(self, inner: httpx.AsyncBaseTransport, sessionmaker: async_sessionmaker,
                  link_id: uuid.UUID):
         self._inner = inner
         self._sm = sessionmaker
         self._link_id = link_id
+        # units of the eToro closes passed per order id: reserved before the request is
+        # sent, never released (an unknown outcome counts as closed)
+        self._close_units: dict[str, Decimal] = {}
+        self._close_lock = asyncio.Lock()  # check and reserve of a close: one at a time
 
     @property
     def link_id(self) -> uuid.UUID:
@@ -143,9 +219,13 @@ class LiveGateTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         method = request.method.upper()
-        if method not in READ_METHODS:
+        if method not in READ_METHODS and not _read_only_post(request, method):
             await request.aread()
-            await self._check(request, method)
+            if CLOSE_EXTENSION in request.extensions:
+                async with self._close_lock:
+                    await self._check(request, method)
+            else:
+                await self._check(request, method)
         return await self._inner.handle_async_request(request)
 
     async def _check(self, request: httpx.Request, method: str) -> None:
@@ -188,16 +268,40 @@ class LiveGateTransport(httpx.AsyncBaseTransport):
                            and order.type == OrderType.market
                            and order.broker_order_id is None  # not acknowledged yet
                            and order.status in OPEN_STATUSES
-                           and _body_matches(_payload(request), order))
+                           and self._matches(request, order))
                 if not flatten:
                     raise LiveGateClosed(ErrorCode.KILL_SWITCH_ACTIVE, KILL_SWITCH_MESSAGE)
             halt = await covering_halt(session, portfolio.id)
             if halt is not None and not await self._passes_halt(session, request, order):
                 # defense in depth: BrokerSync already refuses openings under a halt
                 raise LiveGateClosed(ErrorCode.TRADING_HALTED, halt_message(halt))
+        self._reserve_close(request)  # passed: reserved before the inner transport
 
-    @staticmethod
-    async def _passes_halt(session: Any, request: httpx.Request, order: Any) -> bool:
+    def _matches(self, request: httpx.Request, order: Any) -> bool:
+        """The request body is the order's own closing request (`_body_matches`); an
+        eToro close also within the order's open quantity with the closes already
+        passed for it (cumulative)."""
+        body = _payload(request)
+        if order.qty is None:
+            return False
+        if "InstrumentID" in body or "InstrumentId" in body:
+            prior = self._close_units.get(str(_order_id(request)), Decimal(0))
+            return _etoro_close_matches(request, body,
+                                        request.extensions.get(CLOSE_EXTENSION), order, prior)
+        return _body_matches(body, order)
+
+    def _reserve_close(self, request: httpx.Request) -> None:
+        """An eToro close about to be sent: its units count for its order from now on."""
+        order_id = _order_id(request)
+        body = _payload(request)
+        if order_id is None or not ("InstrumentID" in body or "InstrumentId" in body):
+            return
+        units = _etoro_close_units(request, body, request.extensions.get(CLOSE_EXTENSION))
+        if units is not None:
+            key = str(order_id)
+            self._close_units[key] = self._close_units.get(key, Decimal(0)) + units
+
+    async def _passes_halt(self, session: Any, request: httpx.Request, order: Any) -> bool:
         """Under a halt: reduce_only, live_flatten and liquidation orders, or an order that
         strictly reduces the position (closing side, no more than it: OCO exits, plain
         closes) whose request body is that order."""
@@ -211,7 +315,7 @@ class LiveGateTransport(httpx.AsyncBaseTransport):
             .where(Account.portfolio_id == order.portfolio_id, Account.asset == order.symbol,
                    Account.kind == AccountKind.position)
         ) or Decimal(0)
-        return reduces_position(order, held) and _body_matches(_payload(request), order)
+        return reduces_position(order, held) and self._matches(request, order)
 
     async def aclose(self) -> None:
         await self._inner.aclose()

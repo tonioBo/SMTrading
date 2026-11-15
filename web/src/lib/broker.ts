@@ -3,6 +3,7 @@ import type { BrokerKind } from "@/api/types";
 export const BROKER_KINDS: { value: BrokerKind; label: string; keys: string[] }[] = [
   { value: "alpaca_paper", label: "Alpaca Paper", keys: ["key_id", "secret_key"] },
   { value: "t212_demo", label: "Trading 212 Demo", keys: ["api_key", "api_secret"] },
+  { value: "etoro_demo", label: "eToro — prova", keys: ["api_key", "user_key"] },
 ];
 
 export const brokerKindLabel = (kind: string) => BROKER_KINDS.find((k) => k.value === kind)?.label ?? kind;
@@ -12,6 +13,7 @@ export const SECRET_LABELS: Record<string, string> = {
   secret_key: "Secret key",
   api_key: "API key",
   api_secret: "API secret",
+  user_key: "User key",
 };
 
 /** Order.broker_status: local states (BrokerSync work) and the broker's own states. */

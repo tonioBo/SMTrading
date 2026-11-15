@@ -11,8 +11,9 @@ reale» (`armed`, TOTP) -> one-click disarm (back to `configured`, no TOTP).
   under a lock); a different account behind the same credentials puts the link back in
   `configured` and the linked portfolio in reduce-only (one critical alert,
   `live.account_changed`). Keys replaced while the test ran: its result is discarded.
-  An Alpaca account must be a cash account (multiplier 1, `account_type` "cash"): a
-  margin account fails the test and cannot be armed.
+  An Alpaca or eToro account (CASH_ONLY_KINDS) must be a cash account (`account_type`
+  "cash": Alpaca multiplier 1; eToro only unleveraged long positions, no copy trading):
+  any other account fails the test and cannot be armed.
 - Arming needs the admin TOTP, the three confirmations and the link name, a successful
   read-only test of an empty account from the last 15 minutes, a working Telegram (a
   test message sent in the last 24 hours) and a linked portfolio that passes
@@ -46,7 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from smtrading.admin.auth import check_step_up_totp
 from smtrading.admin.common import MASK, redact
 from smtrading.admin.models import AdminUser
-from smtrading.brokers.live import LIVE_KINDS
+from smtrading.brokers.live import CASH_ONLY_KINDS, LIVE_KINDS
 from smtrading.brokers.live.account import (
     LIVE_FIELDS,
     account_fingerprint,
@@ -106,6 +107,9 @@ DISARM_REASON_MAX = 200
 TOTP_REQUIRED_MESSAGE = "Attiva prima l'autenticazione a due fattori"
 NOT_DEDICATED_MESSAGE = "Il conto non è dedicato: chiudi posizioni e ordini dall'app del broker"
 CASH_ACCOUNT_MESSAGE = "Il conto Alpaca deve essere un conto cash (senza margine)"
+ETORO_CASH_ACCOUNT_MESSAGE = ("Il conto eToro deve avere solo posizioni senza leva, niente"
+                              " posizioni short né copy trading")
+_CASH_ACCOUNT_MESSAGES = {"etoro_live": ETORO_CASH_ACCOUNT_MESSAGE}
 KEYS_CHANGED_MESSAGE = "chiavi sostituite durante il test: ripeti il test"
 FLATTEN_NOT_ARMED_MESSAGE = ("denaro reale non attivo sul collegamento: chiudi le posizioni"
                              " dall'app del broker")
@@ -334,12 +338,12 @@ async def test_live_link(
             await account_changed(session, link, actor)
         details = {**snapshot, "empty": empty, "account_changed": changed}
         if margin:
-            details["error"] = CASH_ACCOUNT_MESSAGE
+            details["error"] = _cash_account_message(kind)
         await record_live_audit(session, action="test_failed" if margin else "test_ok",
                                 link_id=link_id, **_who(actor), details=details)
         await session.commit()
     if margin:
-        raise _invalid(CASH_ACCOUNT_MESSAGE, "account_type",
+        raise _invalid(_cash_account_message(kind), "account_type",
                        account_type=snapshot.get("account_type"))
     return {**snapshot, "empty": empty, "account_changed": changed}
 
@@ -383,8 +387,13 @@ def _test_age_ok(link: BrokerLink, now: datetime) -> bool:
 
 
 def _cash_account(kind: str, snapshot: dict | None) -> bool:
-    """R8.10: an Alpaca live account must be a cash account (multiplier 1)."""
-    return kind != "alpaca_live" or (snapshot or {}).get("account_type") == "cash"
+    """R8.10: the account of a CASH_ONLY_KINDS link must be a cash account (Alpaca:
+    multiplier 1; eToro: every position unleveraged, long, not copied)."""
+    return kind not in CASH_ONLY_KINDS or (snapshot or {}).get("account_type") == "cash"
+
+
+def _cash_account_message(kind: str) -> str:
+    return _CASH_ACCOUNT_MESSAGES.get(kind, CASH_ACCOUNT_MESSAGE)
 
 
 def _require_fresh_empty_test(link: BrokerLink, now: datetime) -> None:
@@ -393,7 +402,7 @@ def _require_fresh_empty_test(link: BrokerLink, now: datetime) -> None:
     if not _is_empty(link.last_account_snapshot):
         raise _invalid(NOT_DEDICATED_MESSAGE, "test")
     if not _cash_account(link.kind, link.last_account_snapshot):
-        raise _invalid(CASH_ACCOUNT_MESSAGE, "account_type")
+        raise _invalid(_cash_account_message(link.kind), "account_type")
 
 
 async def set_dry_run(session: AsyncSession, link_id: uuid.UUID, on: bool, *,
@@ -407,7 +416,7 @@ async def set_dry_run(session: AsyncSession, link_id: uuid.UUID, on: bool, *,
         if not _is_empty(link.last_account_snapshot):
             raise _invalid(NOT_DEDICATED_MESSAGE, "test")
         if not _cash_account(link.kind, link.last_account_snapshot):
-            raise _invalid(CASH_ACCOUNT_MESSAGE, "account_type")
+            raise _invalid(_cash_account_message(link.kind), "account_type")
         link.live_state = LiveState.dry_run
         action = "dry_run_on"
     elif not on and link.live_state == LiveState.dry_run:

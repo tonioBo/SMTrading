@@ -82,12 +82,13 @@ DISARM_REASON = "disattivato dall'admin"
 TELEGRAM_STUCK_AFTER = timedelta(minutes=5)  # a live message not sent by then: not ok
 SNAPSHOT_FIELDS = ("currency", "cash_available", "positions_count", "open_orders_count",
                    "crypto_enabled", "order_types")
-_KEY_FIELDS = ("key_id", "secret_key", "api_key", "api_secret")
+_KEY_FIELDS = ("key_id", "secret_key", "api_key", "api_secret", "user_key")
 
 
 class LiveKeysIn(BaseModel):
     """Alpaca: key_id + secret_key (+ crypto_enabled); Trading 212: api_key + api_secret
-    (+ order_types). `name`/`kind` are required for a new link."""
+    (+ order_types); eToro: api_key + user_key. `name`/`kind` are required for a new
+    link."""
 
     name: str | None = None
     kind: str | None = None
@@ -95,6 +96,7 @@ class LiveKeysIn(BaseModel):
     secret_key: str | None = None
     api_key: str | None = None
     api_secret: str | None = None
+    user_key: str | None = None
     crypto_enabled: bool | None = None
     order_types: list[str] | None = None
 
@@ -221,7 +223,7 @@ async def get_live_links(session: DbSession) -> list[dict]:
 async def post_live_link(body: LiveKeysIn, request: Request, admin: CurrentAdmin,
                          session: DbSession, redis: RedisClient) -> dict:
     if not body.kind or body.kind not in LIVE_KINDS:
-        raise _invalid("kind", "tipo di collegamento reale: alpaca_live o t212_live")
+        raise _invalid("kind", "tipo di collegamento reale: " + ", ".join(sorted(LIVE_KINDS)))
     async with _transaction(session, redis):
         link = await save_live_keys(session, name=body.name or "", kind=body.kind,
                                     config=body.config(), actor=request_actor(request, admin))

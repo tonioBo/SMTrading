@@ -101,6 +101,7 @@ from smtrading.brokers.base import (
     BROKER_REJECTED_MESSAGE,
     BrokerAdapter,
     BrokerOrder,
+    OutcomeUnknown,
     RateLimited,
 )
 from smtrading.brokers.live import LIVE_KINDS
@@ -118,6 +119,7 @@ from smtrading.brokers.live.gate import (
 )
 from smtrading.brokers.live.protect import record_live_order_activity, trip_reduce_only
 from smtrading.brokers.models import BrokerLink, Reconciliation
+from smtrading.brokers.registry import adapter_class
 from smtrading.brokers.service import get_adapter, open_adapter
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.execution import (
@@ -176,6 +178,9 @@ FILL_PRICE_WAIT = timedelta(minutes=10)
 LIQUIDATION_WAIT_NOTIFY = timedelta(minutes=10)
 ADVISORY_LOCK_KEY = 0x534D5442524B  # "SMTBRK"
 UNSUPPORTED = "Ordine non supportato dal broker collegato"
+# demo kinds whose fills take the broker's fee, as their real account does (eToro: the
+# demo reports the fees of the real price list); the others take the fee rules
+BROKER_FEE_DEMO_KINDS = frozenset({"etoro_demo"})
 _SYNCED = tuple(s for s in OrderStatus if s in OPEN_STATUSES - {OrderStatus.held})
 _FINAL = {"canceled": OrderStatus.canceled, "rejected": OrderStatus.rejected,
           "expired": OrderStatus.expired}
@@ -195,18 +200,27 @@ WAIT_TOO_LONG_MESSAGE = ("dati del conto o quotazioni non disponibili da 30 minu
 class _SentRecorder(httpx.AsyncBaseTransport):
     """The inner transport of BrokerSync's live clients: notes the body of every order
     request (non-GET with `smt_order_id`) that passed the gate, i.e. could reach the
-    broker. An order whose request is not noted was never sent."""
+    broker, in order (an eToro sell sends one close per position). An order whose
+    request is not noted was never sent."""
 
     def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
         self._inner = inner
-        self.reached: dict[str, dict] = {}
+        self.reached: dict[str, list[dict]] = {}
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         order_id = request.extensions.get(ORDER_EXTENSION)
         if order_id is not None and request.method.upper() not in READ_METHODS:
             await request.aread()
-            self.reached[str(order_id)] = _payload(request)
+            self.reached.setdefault(str(order_id), []).append(_payload(request))
         return await self._inner.handle_async_request(request)
+
+
+def _sent_payload(sent: list[dict] | None) -> dict | None:
+    """The live audit's request payload: the one request, or {"requests": [...]} for
+    several (an eToro sell closing several positions)."""
+    if not sent:
+        return None
+    return sent[0] if len(sent) == 1 else {"requests": sent}
 
     async def aclose(self) -> None:
         await self._inner.aclose()
@@ -279,11 +293,12 @@ class BrokerSync:
         # real money: one LiveClient per link, kept across passes (the gate reads the
         # state again at every request), with the recorder of what passed the gate
         self._live_clients: dict[UUID, tuple[LiveClient, _SentRecorder]] = {}
-        self._live_kind: dict[UUID, bool] = {}
+        self._link_kinds: dict[UUID, str] = {}
         self._account_read_at: dict[UUID, datetime] = {}
         # real orders waiting for account data / quotes since (kept in memory: a restart
         # starts the wait again, never shorter)
         self._waiting: dict[UUID, datetime] = {}
+        self._unknown_reads: set[UUID] = set()  # orders marked unknown by a read (_get_order)
 
     async def aclose(self) -> None:
         """Closes the per-link LiveClients (run() does it when it ends)."""
@@ -410,16 +425,26 @@ class BrokerSync:
                 make_live_client(self._sm, link_id, inner=recorder), recorder)
         return self._live_clients[link_id]
 
-    async def _is_live(self, session: AsyncSession, link_id: UUID | None) -> bool:
-        """The link moves real money (its kind never changes: cached)."""
+    async def _link_kind(self, session: AsyncSession, link_id: UUID | None) -> str | None:
+        """The link's kind (it never changes: cached), None for no or a missing link."""
         if link_id is None:
-            return False
-        if link_id not in self._live_kind:
+            return None
+        if link_id not in self._link_kinds:
             kind = await session.scalar(select(BrokerLink.kind).where(BrokerLink.id == link_id))
             if kind is None:
-                return False
-            self._live_kind[link_id] = kind in LIVE_KINDS
-        return self._live_kind[link_id]
+                return None
+            self._link_kinds[link_id] = kind
+        return self._link_kinds[link_id]
+
+    async def _is_live(self, session: AsyncSession, link_id: UUID | None) -> bool:
+        """The link moves real money."""
+        return await self._link_kind(session, link_id) in LIVE_KINDS
+
+    async def _broker_fees(self, session: AsyncSession, link_id: UUID | None) -> bool:
+        """A fill takes the broker's fee (`BrokerOrder.fees`): real money and the demo
+        kinds that charge like their real account (BROKER_FEE_DEMO_KINDS)."""
+        kind = await self._link_kind(session, link_id)
+        return kind in LIVE_KINDS or kind in BROKER_FEE_DEMO_KINDS
 
     async def _live_note(self, session: AsyncSession, order: Order, phase: str, *,
                          bo: BrokerOrder | None = None, message: str | None = None,
@@ -472,11 +497,10 @@ class BrokerSync:
             return self._qs
         memo = MemoQuoteSource.wrap(self._qs)
         await prefetch_portfolio(session, memo, row.portfolio_id, symbols=[row.symbol])
-        if bo.fees is not None and await self._is_live(session, row.broker_link_id):
-            link = await session.get(BrokerLink, row.broker_link_id)  # the fee's currency
-            snap = link.last_account_snapshot if link is not None else None
-            if isinstance(snap, dict) and snap.get("currency"):
-                await memo.prefetch([], {(str(snap["currency"]).upper(), EUR)} - {(EUR, EUR)})
+        if bo.fees is not None and await self._broker_fees(session, row.broker_link_id):
+            ccy = await self._account_currency(session, row.broker_link_id)  # the fee's
+            if ccy:
+                await memo.prefetch([], {(ccy, EUR)} - {(EUR, EUR)})
         await session.commit()
         return memo
 
@@ -747,7 +771,8 @@ class BrokerSync:
             else:
                 await self._update(order_id, lambda s, o: self._mark_unknown(s, o, reason))
             return
-        payload = self._live_client(link.id)[1].reached.pop(str(order_id), None) if live else None
+        payload = _sent_payload(
+            self._live_client(link.id)[1].reached.pop(str(order_id), None)) if live else None
         await self._update(order_id, lambda s, o: self._placed(s, o, bo, payload), bo)
         if live and order.side == OrderSide.buy and bo.status != "rejected":
             await self._mark_stale(link.id)
@@ -894,17 +919,30 @@ class BrokerSync:
         order.broker_status = "rejected"  # reached BrokerSync: told by its live.order.* row
         await self._reject(session, order, code, message, phase=phase, payload=payload)
 
+    async def _account_currency(self, session: AsyncSession, link_id: UUID | None
+                                ) -> str | None:
+        """The currency of the link's broker account (that of its fees): the live
+        snapshot's, else the adapter's ACCOUNT_CURRENCY (eToro: USD), else None."""
+        link = await session.get(BrokerLink, link_id) if link_id is not None else None
+        if link is None:
+            return None
+        snap = link.last_account_snapshot
+        if isinstance(snap, dict) and snap.get("currency"):
+            return str(snap["currency"]).upper()
+        try:
+            return adapter_class(link.kind).ACCOUNT_CURRENCY
+        except SMTError:  # a kind with no adapter: no declared currency
+            return None
+
     async def _fee_override(self, session: AsyncSession, order: Order,
                             bo: BrokerOrder) -> tuple[Decimal | None, str | None]:
-        """The broker's fee for this fill of a real order: its cumulative fee for the
+        """The broker's fee for this fill (`_broker_fees` links): its cumulative fee for the
         order (in the account currency) less what earlier fills took, every earlier fee
         converted to that currency first (through EUR, the prefetched memo), or (None,
         None)."""
-        if bo.fees is None or not await self._is_live(session, order.broker_link_id):
+        if bo.fees is None or not await self._broker_fees(session, order.broker_link_id):
             return None, None
-        link = await session.get(BrokerLink, order.broker_link_id)
-        snap = link.last_account_snapshot if link is not None else None
-        ccy = (snap or {}).get("currency") if isinstance(snap, dict) else None
+        ccy = await self._account_currency(session, order.broker_link_id)
         if not ccy:
             ccy = await session.scalar(
                 select(Instrument.currency).where(Instrument.symbol == order.symbol))
@@ -1167,8 +1205,23 @@ class BrokerSync:
         if read is None:
             return
         order, adapter = read
-        bo = await adapter.get_order(order.broker_order_id)
-        await self._update(order_id, lambda s, o: self._apply_same(s, o, bo), bo)
+        bo = await self._get_order(order_id, order, adapter)
+        if bo is not None:
+            await self._update(order_id, lambda s, o: self._apply_same(s, o, bo), bo)
+
+    async def _get_order(self, order_id: UUID, order: Order, adapter: BrokerAdapter
+                         ) -> BrokerOrder | None:
+        """The broker's view of the order; None when it cannot be read safely
+        (OutcomeUnknown: the outcome is marked unknown, reduce-only; read again next pass)."""
+        try:
+            return await adapter.get_order(order.broker_order_id)
+        except OutcomeUnknown as e:
+            log.error("order %s: %s", order_id, e)
+            if order_id not in self._unknown_reads:  # once per process, not every pass
+                reason = str(e)
+                await self._update(order_id, lambda s, o: self._mark_unknown(s, o, reason))
+                self._unknown_reads.add(order_id)
+            return None
 
     async def _cancel(self, order_id: UUID) -> None:
         read = await self._read(order_id)
@@ -1179,8 +1232,9 @@ class BrokerSync:
             await adapter.cancel_order(order.broker_order_id)
         except (RuntimeError, LiveGateClosed) as e:  # read it back anyway: fills (I2)
             log.warning("order %s: broker cancel failed (%s); retried next pass", order_id, e)
-        bo = await adapter.get_order(order.broker_order_id)
-        await self._update(order_id, lambda s, o: self._apply_same(s, o, bo), bo)
+        bo = await self._get_order(order_id, order, adapter)
+        if bo is not None:
+            await self._update(order_id, lambda s, o: self._apply_same(s, o, bo), bo)
 
     async def _apply_same(self, session: AsyncSession, order: Order, bo: BrokerOrder) -> None:
         if order.broker_order_id == bo.broker_order_id:  # not resubmitted meanwhile

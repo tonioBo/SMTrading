@@ -513,10 +513,15 @@ async def test_live_canary_keys_never_leak(admin, caplog):
         "name": "Reale A", "kind": "alpaca_live", "key_id": KEY_ID, "secret_key": SECRET,
         "crypto_enabled": False})).json()
     await call("POST", f"/api/live-links/{alpaca['id']}/test")
+    etoro = (await call("POST", "/api/live-links", json={
+        "name": "Reale E", "kind": "etoro_live", "api_key": KEY_ID, "user_key": SECRET})).json()
+    assert etoro["kind"] == "etoro_live" and etoro["key_masked"] == "••••" + SECRET[-4:], etoro
+    r = await call("POST", f"/api/live-links/{etoro['id']}/test")
+    assert r.status_code == 200 and r.json()["empty"] is True, r.text
 
     # the broker answers 401 echoing the key, the secret and the Basic credential
     admin.fake.unauthorized = True
-    for aid in (alpaca["id"], lid):
+    for aid in (alpaca["id"], etoro["id"], lid):
         r = await call("POST", f"/api/live-links/{aid}/test")
         assert r.status_code == 400 and r.json()["code"] == "PROVIDER_UNAVAILABLE", r.text
         await call("POST", f"/api/broker-links/{aid}/test")

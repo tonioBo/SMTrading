@@ -20,6 +20,7 @@ Allowlist (documented, not scanned):
 
 import dataclasses
 import json
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -39,6 +40,7 @@ from smtrading.seed import run_seed
 D = Decimal
 SYM = "BTC-USD"
 NOW = datetime.now(UTC).replace(microsecond=0)
+ETORO_CANARY = {"api_key": "CANARYETOROAPI0001", "user_key": "CANARYETOROUSER-do-not-use"}
 
 class _Db:
     def __init__(self, url: str) -> None:
@@ -77,10 +79,21 @@ async def _setup(server, flavor: str) -> str:
         main = await s.get(Portfolio, server.demo_id)
         main.name = "Alpha"
         pid = main.id
-        if flavor == "paper_linked":
+        if flavor in ("paper_linked", "etoro_linked", "etoro_live_dry_run"):
+            from smtrading.brokers.live.account import encrypt_live_config
             from smtrading.brokers.models import BrokerLink
 
-            link = BrokerLink(name="Conto", kind="alpaca_paper", status="ok")
+            kind = {"etoro_linked": "etoro_demo",
+                    "etoro_live_dry_run": "etoro_live"}.get(flavor, "alpaca_paper")
+            if kind == "etoro_live":  # a real-money link in dry run (canary keys)
+                link = BrokerLink(
+                    name="Conto", kind=kind, status="ok", live_state="dry_run",
+                    config_encrypted=encrypt_live_config(ETORO_CANARY),
+                    last_account_snapshot={"currency": "USD",
+                                           "cash_available": "1000000"},
+                    last_snapshot_at=datetime.now(UTC))
+            else:
+                link = BrokerLink(name="Conto", kind=kind, status="ok")
             s.add(link)
             await s.flush()
             other = await create_portfolio(s, name="Beta", initial_cash=D(100000))
@@ -170,8 +183,58 @@ async def _read_resource(url: str, token: str, uri: str):
     return json.loads(result.contents[0].text)
 
 
-@pytest.mark.parametrize("flavor", ["simulated", "paper_linked", "etoro_source"])
-async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, flavor, redis_url):
+async def _broker_error_on(server, order_id: str) -> None:
+    """etoro_linked: the order as a failed send to the eToro demo leaves it, its message
+    naming the demo kind and paths (what `agent_view` must turn into the real ones)."""
+    from smtrading.brokers.etoro_demo import EtoroDemoAdapter as A
+    from smtrading.engine.models import Order, OrderStatus
+
+    async with _Db(server.db_url) as s:
+        await s.execute(update(Order).where(Order.id == uuid.UUID(order_id)).values(
+            status=OrderStatus.rejected, reject_code="PROVIDER_UNAVAILABLE",
+            reject_message=f"{A.kind}: HTTP 503 su {A.EXEC_V2}/orders dopo {A.INFO_V1}/pnl"))
+        await s.commit()
+
+
+async def _dry_run_tick(server, monkeypatch, order_id: str) -> None:
+    """etoro_live_dry_run: one BrokerSync pass, as the worker runs it, on the in-memory
+    fake behind the live gate: the market buy is intercepted (LiveDryRun) and rejected
+    LIVE_DRY_RUN, with its `live.order.dry_run` activity."""
+    import os
+
+    from redis.asyncio import Redis
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from smtrading.brokers.live.fake import FakeLiveBroker
+    from smtrading.brokers.sync import BrokerSync
+    from smtrading.engine.models import Order
+
+    fake = FakeLiveBroker(price=D(50000))
+    fake.etoro["real"].credit = D(1000000)
+    monkeypatch.setattr("smtrading.brokers.sync._default_inner", fake.transport)
+    engine = make_engine(server.db_url)
+    redis = Redis.from_url(os.environ["SMT_REDIS_URL"])
+    sync = BrokerSync(async_sessionmaker(engine, expire_on_commit=False), redis,
+                      server.qs, None)
+    try:
+        await sync.tick()
+        async with AsyncSession(engine) as s:
+            order = await s.get(Order, uuid.UUID(order_id))
+    finally:
+        await sync.aclose()
+        await redis.aclose()
+        await engine.dispose()
+    assert (order.reject_code, order.reject_message) == (
+        "LIVE_DRY_RUN", "prova a secco: ordine non inviato"), order.reject_message
+    assert all("/demo/" not in path for _, path in fake.calls), list(fake.calls)
+    writes = [path for method, path in fake.calls if method != "GET"]
+    assert all(path.endswith("/eligibility") for path in writes), writes  # reads only
+
+
+@pytest.mark.parametrize("flavor", ["simulated", "paper_linked", "etoro_source",
+                                    "etoro_linked", "etoro_live_dry_run"])
+async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, flavor,
+                                                        monkeypatch, redis_url):
     _market(mcp_server.qs)
     pid = await _setup(mcp_server, flavor)
     if flavor == "etoro_source":
@@ -187,6 +250,12 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
     _, filled = await call("place_order", {**order, "type": "market"})
     _, resting = await call("place_order", {**order, "type": "limit", "limit_price": "100"})
     await call("place_order", {**order, "type": "market", "qty": "1000"})  # rejected
+    if flavor == "etoro_linked":
+        assert isinstance(filled, dict) and "id" in filled, filled
+        await _broker_error_on(mcp_server, filled["id"])
+    if flavor == "etoro_live_dry_run":
+        assert isinstance(filled, dict) and "id" in filled, filled
+        await _dry_run_tick(mcp_server, monkeypatch, filled["id"])
     await call("preview_order", {**order, "type": "market"})
     if isinstance(resting, dict) and "id" in resting:
         await call("cancel_order", {"order_id": resting["id"]})
@@ -251,6 +320,23 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
         assert "order.filled" in {i["type"] for i in feed["items"]}
         got = next(p for t, p in outputs if t == "get_order" and "fills" in p)
         assert got["fills"], got
+
+    if flavor == "etoro_linked":  # the demo texts were there, and came out as the real ones
+        got = next(p for t, p in outputs if t == "get_order" and "fills" in p)
+        assert got["reject_message"].startswith("etoro_live: HTTP 503 su /api/v2/"), got
+    if flavor == "etoro_live_dry_run":  # the dry run reads as a plain broker refusal
+        got = next(p for t, p in outputs if t == "get_order" and "fills" in p)
+        assert got["status"] == "rejected", got
+        assert (got["reject_code"], got["reject_message"]) == (
+            "PROVIDER_UNAVAILABLE", "rejected by the broker"), got
+        assert "live.order.rejected" in {i["type"] for i in feed["items"]}
+        assert "live.order.dry_run" not in {i["type"] for i in feed["items"]}
+    for tool, payload in outputs:
+        text = json.dumps(payload, ensure_ascii=False)
+        assert "etoro_demo" not in text and "/demo/" not in text, (tool, text[:300])
+        if flavor == "etoro_live_dry_run":
+            assert "etoro_live" not in text, (tool, text[:300])
+            assert all(c not in text for c in ETORO_CANARY.values()), tool
 
     leaks = []
     for tool, payload in outputs:
