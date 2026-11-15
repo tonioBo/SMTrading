@@ -9,6 +9,7 @@ from decimal import Decimal
 import httpx
 import pytest
 import respx
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from smtrading.brokers import registry
@@ -64,6 +65,20 @@ def _order(**kw) -> Order:
             "type": OrderType.market, "tif": TimeInForce.day, "qty": Decimal(1)}
     base.update(kw)
     return Order(**base)
+
+
+async def _stored(sm, link_id: uuid.UUID, order: Order) -> Order:
+    """`order` saved in the link's portfolio (the gate looks the order up)."""
+    async with sm() as s:
+        if await s.get(Instrument, order.symbol) is None:
+            s.add(_inst(order.symbol))
+            await s.flush()
+        order.portfolio_id = await s.scalar(
+            select(Portfolio.id).where(Portfolio.broker_link_id == link_id))
+        order.broker_link_id = link_id
+        s.add(order)
+        await s.commit()
+    return order
 
 
 def _inst(symbol="AAPL", asset_class=AssetClass.us_equity, currency="USD") -> Instrument:
@@ -240,11 +255,12 @@ async def test_fake_broker_only_with_setting(sm, migrated_db, monkeypatch):
             snap = await a.get_account()
             assert (snap.currency, snap.cash_available) == ("USD", Decimal("1000.00"))
             assert (snap.positions_count, snap.open_orders_count) == (0, 0)
-            placed = await a.place_order(_order(), _inst())  # through the armed gate
+            # the gate passes only orders of a linked portfolio (plan 9, Task 11)
+            placed = await a.place_order(await _stored(sm, alpaca_link, _order()), _inst())
             assert placed.status == "filled" and placed.filled_qty == Decimal(1)
             assert await a.get_positions() == {"AAPL": Decimal(1)}
-            limit = await a.place_order(
-                _order(type=OrderType.limit, limit_price=Decimal(1)), _inst())
+            limit = await a.place_order(await _stored(sm, alpaca_link, _order(
+                type=OrderType.limit, limit_price=Decimal(1))), _inst())
             assert (await a.get_account()).open_orders_count == 1
             await a.cancel_order(limit.broker_order_id)
             assert (await a.get_order(limit.broker_order_id)).status == "canceled"

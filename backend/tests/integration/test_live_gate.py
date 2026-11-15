@@ -329,17 +329,19 @@ async def test_flatten_bypass_only_for_an_unsent_order(sm, change):
     assert inner.requests == []
 
 
-async def test_two_linked_portfolios_close_the_gate(sm):
+async def test_two_linked_portfolios_keep_the_gate_open(sm):
+    """Plan 9, Task 11: several portfolios on one link; the order's own portfolio counts
+    (it used to close the gate: 1 link <-> 1 portfolio)."""
     link_id, order_id = await _setup(sm, state="armed")
     async with sm() as s:
-        s.add(Portfolio(name=f"P-{uuid.uuid4().hex[:8]}", broker_link_id=link_id))
+        s.add(Portfolio(name=f"P-{uuid.uuid4().hex[:8]}", broker_link_id=link_id,
+                        status=PortfolioStatus.locked))
         await s.commit()
     inner = Counting()
     async with make_live_client(sm, link_id, inner=inner.transport()) as client:
-        with pytest.raises(LiveGateClosed) as e:
-            await _send(client, "POST", order_id)
-    assert e.value.code == ErrorCode.LIVE_NOT_ARMED
-    assert inner.requests == []
+        r = await _send(client, "POST", order_id)
+    assert r.status_code == 200
+    assert len(inner.requests) == 1
 
 
 async def test_live_client_never_follows_redirects(sm):

@@ -22,12 +22,19 @@ FOR NO KEY UPDATE, then the portfolio through `trip_reduce_only`):
   c other than the account's (`BrokerLink.fx_ref_rates`, missing: no drift). A
   shortfall within the tolerance plus the drift, with no position diff, is an `fx_drift`
   entry: not a diff (the row is ok, never reduce-only), one critical `live.fx_drift`
-  per portfolio and local day. Beyond it, or with a position diff, it is a shortfall as
+  per link and local day. Beyond it, or with a position diff, it is a shortfall as
   above. The reference rates are set to the current ones on every pass whose cash is
   compared and not short (under the link lock);
-- debounce (R8.7): a diff is recorded at once (`Reconciliation(ok=False)`), the portfolio
-  goes reduce-only (`reconcile_diff` / `cash_shortfall`) only when the same diff (by
-  symbol and sign of the difference; cash short) is found again on the next pass;
+- several portfolios per link (plan 9, Task 11): the positions compared are the sum of
+  every linked portfolio's, symbol by symbol; each symbol entry names the portfolios it
+  concerns (`portfolios`: those with a position or an open order at the broker on it,
+  or every linked one for a symbol none has). A portfolio's row holds its symbol entries
+  and the cash entry; a cash shortfall (our cash is the sum of all the quotas) concerns
+  every linked portfolio;
+- debounce (R8.7), symbol by symbol: a diff is recorded at once
+  (`Reconciliation(ok=False)`), a portfolio goes reduce-only (`reconcile_diff` /
+  `cash_shortfall`) only for a diff (by symbol and sign of the difference; cash short)
+  found again in its previous row;
 - an `explained` or `skipped` symbol (or cash) that lasts more than UNEXPLAINED_ALERT_AFTER
   sends one critical `live.reconcile_unexplained` per episode (its `since` is carried in
   the stored rows);
@@ -65,7 +72,7 @@ from smtrading.brokers.live.account import (
     snapshot_record,
 )
 from smtrading.brokers.live.protect import live_alert, trip_reduce_only
-from smtrading.brokers.live.service import account_changed
+from smtrading.brokers.live.service import RECONCILED_AT_KEY, account_changed
 from smtrading.brokers.models import BrokerLink, Reconciliation
 from smtrading.brokers.registry import adapter_class
 from smtrading.engine.models import OPEN_STATUSES, Order, OrderSide, OrderType
@@ -135,6 +142,8 @@ class _State:
     open_sell: dict[str, Decimal] = field(default_factory=dict)
     unbounded: set[str] = field(default_factory=set)
     buys: dict[UUID, _Buy] = field(default_factory=dict)
+    # per symbol, the linked portfolios with a position or an open order at the broker
+    holders: dict[str, set[UUID]] = field(default_factory=dict)
 
 
 async def _read_state(session: AsyncSession, link_id: UUID) -> _State:
@@ -145,14 +154,16 @@ async def _read_state(session: AsyncSession, link_id: UUID) -> _State:
     if not portfolio_ids:
         return state
     rows = await session.execute(
-        select(Account.kind, Account.asset, AccountBalance.balance)
+        select(Account.portfolio_id, Account.kind, Account.asset, AccountBalance.balance)
         .join(AccountBalance, AccountBalance.account_id == Account.id)
         .where(Account.portfolio_id.in_(portfolio_ids),
                Account.kind.in_((AccountKind.position, AccountKind.cash)))
     )
-    for kind, asset, balance in rows:
+    for pid, kind, asset, balance in rows:
         target = state.positions if kind == AccountKind.position else state.cash
         target[asset] = target.get(asset, Decimal(0)) + balance
+        if kind == AccountKind.position and balance != 0:
+            state.holders.setdefault(asset, set()).add(pid)
     state.positions = {s: q for s, q in state.positions.items() if q != 0}
     orders = (await session.execute(
         select(Order, Instrument.currency)
@@ -164,6 +175,8 @@ async def _read_state(session: AsyncSession, link_id: UUID) -> _State:
         )
     )).all()
     for order, currency in orders:
+        if order.portfolio_id in portfolio_ids:
+            state.holders.setdefault(order.symbol, set()).add(order.portfolio_id)
         filled = order.filled_qty or Decimal(0)
         qty = None if order.qty is None else max(order.qty - filled, Decimal(0))
         if qty is None:
@@ -244,7 +257,7 @@ async def reconcile_live(
     sessionmaker: async_sessionmaker[AsyncSession], link_id: UUID, http_factory, *,
     qs: QuoteSource | None = None,
 ) -> Reconciliation | None:
-    """Reconcile a live link (live_state not null) with its linked portfolio; None (no
+    """Reconcile a live link (live_state not null) with its linked portfolios; None (no
     broker call) for any other link or without a linked portfolio. Broker failures raise
     LiveBrokerUnreachable (LiveBrokerRateLimited for HTTP 429). The returned row (the
     first linked portfolio's) is the current outcome; it is stored only on a change or
@@ -296,15 +309,13 @@ async def reconcile_live(
         link.last_account_snapshot = new
         link.last_snapshot_at = await session.scalar(select(func.now()))
         now = link.last_snapshot_at
-        diffs, position_diff, cash = _compare(before, after, broker, snap, money,
-                                              link.fx_ref_rates)
+        diffs, _, cash = _compare(before, after, broker, snap, money, link.fx_ref_rates)
         if cash == _CASH_OK:  # matching: these rates are the new reference
             link.fx_ref_rates = {c: str(r) for c, r in money.rates.items()}
+        link.last_account_snapshot = {**new, RECONCILED_AT_KEY: now.isoformat()}
         rows = []
         for pid in pids:
-            rows.append(await _record(session, link, pid, diffs, now,
-                                      position_diff=position_diff,
-                                      cash_short=cash == _CASH_SHORT,
+            rows.append(await _record(session, link, pid, _entries_of(diffs, pid), now,
                                       fx_drift=cash == _CASH_FX_DRIFT))
         if kind == "alpaca_live" and snap.account_type != "cash":  # R8.10 (no multiplier too)
             for pid in pids:
@@ -351,21 +362,31 @@ def _compare(before: _State, after: _State, broker: dict[str, Decimal],
     diffs: list[dict] = []
     position_diff = False
     unbounded = before.unbounded | after.unbounded
+    linked = set(after.portfolio_ids or before.portfolio_ids)
+
+    def involved(symbol: str) -> list[str]:
+        """The portfolios a symbol entry concerns: its holders, else every linked one
+        (a symbol no portfolio has, on a dedicated account)."""
+        held = (before.holders.get(symbol, set()) | after.holders.get(symbol, set())) & linked
+        return sorted(str(p) for p in (held or linked))
+
     for symbol in sorted(set(after.positions) | set(broker) | unbounded):
         ours, theirs = after.positions.get(symbol, Decimal(0)), broker.get(symbol, Decimal(0))
         if abs(ours - theirs) <= QTY_EPSILON:
             continue
         if symbol in unbounded:
-            diffs.append({"symbol": symbol, "skipped": INFLIGHT})
+            diffs.append({"symbol": symbol, "skipped": INFLIGHT,
+                          "portfolios": involved(symbol)})
             continue
         buy = max(before.open_buy.get(symbol, Decimal(0)), after.open_buy.get(symbol, Decimal(0)))
         sell = max(before.open_sell.get(symbol, Decimal(0)),
                    after.open_sell.get(symbol, Decimal(0)))
         if theirs - buy - QTY_EPSILON <= ours <= theirs + sell + QTY_EPSILON:
             diffs.append({"symbol": symbol, "ours": _num(ours), "broker": _num(theirs),
-                          "explained": INFLIGHT})
+                          "explained": INFLIGHT, "portfolios": involved(symbol)})
             continue
-        diffs.append({"symbol": symbol, "ours": _num(ours), "broker": _num(theirs)})
+        diffs.append({"symbol": symbol, "ours": _num(ours), "broker": _num(theirs),
+                      "portfolios": involved(symbol)})
         position_diff = True
     if money is None:
         diffs.append({"cash": {"skipped": NO_FX}})
@@ -418,20 +439,28 @@ def _pending(entry: dict) -> str | None:
     return "skipped" if "skipped" in entry["cash"] else None
 
 
-def _actionable(diffs: list[dict]) -> list:
-    """What the debounce compares: each position diff as (symbol, sign of ours − broker),
-    not the exact quantities (a fill between two passes must not reset it), and whether
-    cash is short."""
-    out: list = []
-    for d in diffs:
-        if _is_account(d) or _is_fx_drift(d) or _pending(d) is not None:
-            continue
-        if "cash" in d:
-            out.append(["cash"])
-        else:
-            delta = Decimal(d["ours"]) - Decimal(d["broker"])
-            out.append([d["symbol"], 1 if delta > 0 else -1])
-    return out
+def _action_key(d: dict) -> tuple | None:
+    """What the debounce compares for an entry: a position diff as (symbol, sign of ours
+    − broker), not the exact quantities (a fill between two passes must not reset it); a
+    cash shortfall as ("cash",); None for anything that is not a diff."""
+    if _is_account(d) or _is_fx_drift(d) or _pending(d) is not None:
+        return None
+    if "cash" in d:
+        return ("cash",)
+    delta = Decimal(d["ours"]) - Decimal(d["broker"])
+    return (d["symbol"], 1 if delta > 0 else -1)
+
+
+def _actionable(diffs: list[dict]) -> set[tuple]:
+    """The debounce keys of the entries that are diffs (`_action_key`)."""
+    return {k for k in map(_action_key, diffs) if k is not None}
+
+
+def _entries_of(diffs: list[dict], pid: UUID) -> list[dict]:
+    """The entries recorded for a portfolio: the symbol entries that concern it (their
+    `portfolios`) and the cash entry (the cash is the sum of every linked portfolio's)."""
+    key = str(pid)
+    return [d for d in diffs if "symbol" not in d or key in d.get("portfolios", [key])]
 
 
 def _signature(diffs: list[dict]) -> list:
@@ -457,8 +486,11 @@ async def _previous(session: AsyncSession, link_id: UUID, pid: UUID) -> Reconcil
 
 
 async def _record(session: AsyncSession, link: BrokerLink, pid: UUID, diffs: list[dict],
-                  now: datetime, *, position_diff: bool, cash_short: bool,
-                  fx_drift: bool = False) -> Reconciliation:
+                  now: datetime, *, fx_drift: bool = False) -> Reconciliation:
+    """Records the portfolio's entries (`_entries_of`); debounce per symbol (R8.7): only
+    the diffs also found, same key and sign, in the portfolio's previous row are
+    confirmed: a confirmed symbol trips `reconcile_diff`, a confirmed cash shortfall
+    `cash_shortfall` (the details list the confirmed entries only)."""
     previous = await _previous(session, link.id, pid)
     prev_diffs = previous.diffs if previous is not None and isinstance(previous.diffs, list) \
         else []
@@ -476,8 +508,7 @@ async def _record(session: AsyncSession, link: BrokerLink, pid: UUID, diffs: lis
             d = {**d, "since": since.get((_key(d), state)) or now.isoformat()}
         entries.append(d)
     actionable = _actionable(entries)
-    confirmed = bool(actionable) and previous is not None and not previous.ok \
-        and _actionable(prev_diffs) == actionable
+    confirmed = actionable & _actionable(prev_diffs) if previous is not None else set()
     row = Reconciliation(broker_link_id=link.id, portfolio_id=pid, diffs=entries,
                          ok=not actionable)
     changed = previous is None or _signature(prev_diffs) != _signature(entries) \
@@ -485,13 +516,16 @@ async def _record(session: AsyncSession, link: BrokerLink, pid: UUID, diffs: lis
     if changed:
         session.add(row)
         await session.flush()
-    if confirmed:  # the same diff on two passes in a row (R8.7)
-        if position_diff:
+    if confirmed:  # the same diff on two passes in a row (R8.7), symbol by symbol
+        done = [d for d in entries if _action_key(d) in confirmed]
+        if any(k != ("cash",) for k in confirmed):
             await trip_reduce_only(session, pid, cause="reconcile_diff",
-                                   details={"link_id": link.id, "diffs": entries})
-        if cash_short:
+                                   details={"link_id": link.id,
+                                            "diffs": [d for d in done if "symbol" in d]})
+        if ("cash",) in confirmed:
             await trip_reduce_only(session, pid, cause="cash_shortfall",
-                                   details={"link_id": link.id, "diffs": entries})
+                                   details={"link_id": link.id,
+                                            "diffs": [d for d in done if "cash" in d]})
     if actionable:
         log.warning("live link %s: reconciliation differs (%s): %s", link.id,
                     "confirmed" if confirmed else "first pass", entries)
@@ -504,12 +538,14 @@ async def _record(session: AsyncSession, link: BrokerLink, pid: UUID, diffs: lis
 
 async def _fx_drift_alert(session: AsyncSession, link: BrokerLink, pid: UUID, entry: dict,
                           now: datetime) -> None:
-    """One critical `live.fx_drift` per portfolio and local day (its timezone)."""
+    """One critical `live.fx_drift` per link and local day (the timezone of the portfolio
+    recording it), whatever the number of portfolios on the link."""
     portfolio = await session.get(Portfolio, pid)
     tz = ZoneInfo(portfolio.timezone if portfolio is not None else "Europe/Rome")
     midnight = datetime.combine(now.astimezone(tz).date(), time(0), tzinfo=tz)
     sent = await session.scalar(select(Activity.id).where(
-        Activity.type == f"live.{FX_DRIFT_KIND}", Activity.portfolio_id == pid,
+        Activity.type == f"live.{FX_DRIFT_KIND}",
+        Activity.data["link_id"].astext == str(link.id),
         Activity.ts >= midnight).limit(1))
     if sent is not None:
         return

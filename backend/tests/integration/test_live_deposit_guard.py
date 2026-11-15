@@ -152,13 +152,14 @@ async def test_withdraw_always_allowed(admin):
 
 
 async def test_deposit_other_currency_at_current_rate_with_margin(admin):
-    """A EUR portfolio on the USD account with 1000 USD: 1000 / 1.25 x 0.99 = 792 EUR."""
+    """A EUR portfolio on the USD account with 1000 USD: its quota counts each EUR at
+    1.25 x 1.01 (Task 11, brokers.live.quotas), so at most 1000 / 1.2625 = 792.07 EUR."""
     admin.fake.alpaca.cash = D("1000")
     pid = await _portfolio(admin, kind="alpaca_live")
-    _refused(await _deposit(admin, pid, "292.01"))
-    r = await _deposit(admin, pid, "292")
+    _refused(await _deposit(admin, pid, "292.08"))
+    r = await _deposit(admin, pid, "292.07")
     assert r.status_code == 200, r.text
-    assert await _cash(admin, pid) == {"EUR": D(792)}
+    assert await _cash(admin, pid) == {"EUR": D("792.07")}
 
 
 async def test_deposit_without_fx_rate_refused(admin):

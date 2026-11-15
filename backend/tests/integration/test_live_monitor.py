@@ -179,7 +179,8 @@ async def test_position_diff_trips_reduce_only_and_alert(maker, qs, fake):
     fake.alpaca.positions["AAPL"] = D(2)
     row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
     assert not row.ok
-    assert {"symbol": "AAPL", "ours": "0", "broker": "2"} in row.diffs
+    assert {"symbol": "AAPL", "ours": "0", "broker": "2",
+            "portfolios": [str(pid)]} in row.diffs
     assert (await _get(maker, Portfolio, pid)).status == PortfolioStatus.active
     assert await _activities(maker, "live.reduce_only") == []
     assert [r.ok for r in await _reconciliations(maker, link_id)] == [False]
@@ -497,7 +498,8 @@ async def test_band_with_an_open_sell_and_beyond_it(maker, qs, fake):
     fake.alpaca.positions["AAPL"] = D(3)
     for _ in range(2):
         row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
-    assert not row.ok and {"symbol": "AAPL", "ours": "1", "broker": "3"} in row.diffs
+    assert not row.ok and {"symbol": "AAPL", "ours": "1", "broker": "3",
+                           "portfolios": [str(pid)]} in row.diffs
     assert (await _get(maker, Portfolio, pid)).reduce_only_reason == "live_reconcile_diff"
 
 
@@ -805,7 +807,8 @@ async def test_reconcile_survives_an_account_change(maker, qs, fake):
         await s.commit()
     fake.alpaca.positions["AAPL"] = D(2)
     row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)
-    assert not row.ok and {"symbol": "AAPL", "ours": "0", "broker": "2"} in row.diffs
+    assert not row.ok and {"symbol": "AAPL", "ours": "0", "broker": "2",
+                           "portfolios": [str(pid)]} in row.diffs
     assert await _activities(maker, "live.reduce_only") == []  # a first pass only
     fake.alpaca.positions.pop("AAPL")
     row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=qs)

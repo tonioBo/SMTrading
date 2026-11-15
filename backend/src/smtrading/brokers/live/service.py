@@ -9,20 +9,26 @@ reale» (`armed`, TOTP) -> one-click disarm (back to `configured`, no TOTP).
   (masked in every log text of the process).
 - The read-only test does only GET requests, outside any transaction (no network I/O
   under a lock); a different account behind the same credentials puts the link back in
-  `configured` and the linked portfolio in reduce-only (one critical alert,
+  `configured` and every linked portfolio in reduce-only (one critical alert,
   `live.account_changed`). Keys replaced while the test ran: its result is discarded.
   An Alpaca account must be a cash account (multiplier 1, `account_type` "cash"): a
   margin account fails the test and cannot be armed.
 - Arming needs the admin TOTP, the three confirmations and the link name, a successful
   read-only test of an empty account from the last 15 minutes, a working Telegram (a
-  test message sent in the last 24 hours) and a linked portfolio that passes
-  `check_live_portfolio` (its base currency may differ from the account's since plan 9:
-  the cash is compared at the current rate). It never
+  test message sent in the last 24 hours) and linked portfolios that pass
+  `check_live_portfolio` (a base currency may differ from the account's since plan 9).
+  It never
   bypasses the kill switch or a trading halt: the live gate and the pre-trade checks
   still apply.
 - Disarming rejects the never-sent orders through engine.service.reject_broker_order
   (held bracket children canceled, notified, untracked) with one `live.order.rejected`
   each; the others get a cancellation request.
+- Several portfolios may share one real-money link (plan 9, Task 11), each with its cash
+  quota (brokers.live.quotas): linking one needs Σ quotas (the new one included) within
+  the broker's available cash. The first portfolio of a link needs an empty account; the
+  next ones a fresh read-only test (not of an empty account) and an `ok` recent
+  reconciliation of every portfolio already linked. Unlinking is per portfolio, refused
+  with real positions open.
 - Linking a portfolio (allowed in `dry_run` and `armed`), resuming it after an automatic
   reduce-only and «Chiudi tutte le posizioni reali» (`armed` only) need the TOTP too.
 - Lock order (R8.9, portfolios.locks): link (FOR NO KEY UPDATE), portfolio, orders.
@@ -65,7 +71,8 @@ from smtrading.brokers.live.protect import (
     record_live_order_activity,
     trip_reduce_only,
 )
-from smtrading.brokers.models import BrokerLink
+from smtrading.brokers.live.quotas import link_quotas, quotas_total, unassigned
+from smtrading.brokers.models import BrokerLink, Reconciliation
 from smtrading.brokers.registry import adapter_class
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.execution import broker_live
@@ -387,10 +394,12 @@ def _cash_account(kind: str, snapshot: dict | None) -> bool:
     return kind != "alpaca_live" or (snapshot or {}).get("account_type") == "cash"
 
 
-def _require_fresh_empty_test(link: BrokerLink, now: datetime) -> None:
+def _require_fresh_test(link: BrokerLink, now: datetime, *, empty: bool) -> None:
+    """A read-only test of the last LIVE_TEST_MAX_AGE_S on a cash account; with `empty`
+    the account holds no position and no open order too."""
     if not _test_age_ok(link, now) or link.account_fingerprint is None:
         raise _invalid("esegui il test in sola lettura (valido 15 minuti)", "test")
-    if not _is_empty(link.last_account_snapshot):
+    if empty and not _is_empty(link.last_account_snapshot):
         raise _invalid(NOT_DEDICATED_MESSAGE, "test")
     if not _cash_account(link.kind, link.last_account_snapshot):
         raise _invalid(CASH_ACCOUNT_MESSAGE, "account_type")
@@ -448,7 +457,7 @@ async def arm_live_link(
     if link.live_state not in (LiveState.configured, LiveState.dry_run):
         raise _invalid("denaro reale già attivo", "live_state")
     now = _now()
-    _require_fresh_empty_test(link, now)
+    _require_fresh_test(link, now, empty=True)
     config = decrypt_live_config(link)
     snapshot = link.last_account_snapshot or {}
     if link.kind == "alpaca_live" and config.get("crypto_enabled") in (True, "true") \
@@ -471,7 +480,8 @@ async def arm_live_link(
     portfolio_id = portfolios[0].id if portfolios else None
     await record_live_audit(session, action="armed", link_id=link.id,
                             portfolio_id=portfolio_id, **_who(actor),
-                            details={"from": previous})
+                            details={"from": previous,
+                                     "portfolios": [str(p.id) for p in portfolios]})
     await live_alert(session, kind="armed", summary=f"Denaro reale attivato su {link.name}",
                      portfolio_id=portfolio_id, link_id=link.id,
                      data={"link_name": link.name, "by": "admin"})
@@ -710,21 +720,6 @@ async def _dispatch(session: AsyncSession, redis) -> None:
 
 # -- the real portfolio ----------------------------------------------------------------
 
-async def _portfolio_cash_in(session: AsyncSession, portfolio: Portfolio, ccy: str,
-                             qs: QuoteSource | None) -> Decimal:
-    total = Decimal(0)
-    for asset, balance in (await get_cash_balances(session, portfolio.id)).items():
-        if not balance:
-            continue
-        if asset == ccy:
-            total += balance
-            continue
-        if qs is None:
-            raise _invalid("cambio non disponibile per confrontare la liquidità", "cash")
-        total += balance * await qs.get_fx_rate(asset, ccy)
-    return total
-
-
 async def _current_fx_rates(session: AsyncSession, portfolio: Portfolio, link: BrokerLink,
                             qs: QuoteSource) -> dict[str, str]:
     """{currency: units of the account currency per unit} of the portfolio's cash
@@ -760,19 +755,55 @@ async def check_live_portfolio(session: AsyncSession, portfolio: Portfolio, link
     snapshot = link.last_account_snapshot or {}
     if not snapshot:
         raise _invalid("esegui prima il test in sola lettura", "test")
-    broker_ccy = str(snapshot.get("currency") or "")
-    other = await session.scalar(
-        select(Portfolio.id).where(Portfolio.broker_link_id == link.id,
-                                   Portfolio.id != portfolio.id).limit(1))
-    if other is not None:
-        raise _invalid("il collegamento reale è già usato da un altro portafoglio", "link_id")
+    others = [p for p in await _linked_portfolios(session, link.id) if p.id != portfolio.id]
     if not _is_empty(snapshot):
-        raise _invalid(NOT_DEDICATED_MESSAGE, "account")
+        if not others:  # the first portfolio of a link needs an empty account
+            raise _invalid(NOT_DEDICATED_MESSAGE, "account")
+        # the account holds only what SMTrading knows: every linked portfolio reconciled
+        for p in others:
+            if not await _reconciled(session, link, p.id, _now()):
+                raise _invalid("riconciliazione non in regola: verifica il conto prima di"
+                               " collegare un altro portafoglio", "reconcile")
+    broker_ccy = str(snapshot.get("currency") or "").upper()
     broker_cash = Decimal(str(snapshot.get("cash_available") or 0))
-    ours = await _portfolio_cash_in(session, portfolio, broker_ccy, qs)
-    if ours > broker_cash:
-        raise _invalid("la liquidità del portafoglio supera quella disponibile al broker",
-                       "cash", portfolio_cash=ours, broker_cash=broker_cash)
+    try:
+        quotas = await link_quotas(session, qs, link, include=portfolio, currency=broker_ccy)
+    except SMTError as e:
+        if e.code != ErrorCode.PROVIDER_UNAVAILABLE:
+            raise
+        raise _invalid("cambio non disponibile per confrontare la liquidità", "cash") from None
+    total = quotas_total(quotas)
+    if total > broker_cash:
+        raise _invalid("la somma delle quote dei portafogli supera la liquidità disponibile al"
+                       " broker", "cash", quotas_total=total, broker_cash=broker_cash,
+                       unassigned=unassigned(broker_cash, quotas))
+
+
+RECONCILED_AT_KEY = "reconciled_at"  # in last_account_snapshot: the last live reconciliation
+
+
+async def _reconciled(session: AsyncSession, link: BrokerLink, portfolio_id: uuid.UUID,
+                      now: datetime) -> bool:
+    """The portfolio's last reconciliation on the link is `ok` and recent: written in the
+    last LIVE_TEST_MAX_AGE_S, or confirmed by a reconciliation pass in that window (rows
+    are stored only when the outcome changes; every pass stamps the link snapshot with
+    RECONCILED_AT_KEY)."""
+    row = await session.scalar(
+        select(Reconciliation)
+        .where(Reconciliation.broker_link_id == link.id,
+               Reconciliation.portfolio_id == portfolio_id)
+        .order_by(Reconciliation.ts.desc(), Reconciliation.id.desc()).limit(1))
+    if row is None or not row.ok:
+        return False
+    window = timedelta(seconds=LIVE_TEST_MAX_AGE_S)
+    if now - row.ts <= window:
+        return True
+    snap = link.last_account_snapshot if isinstance(link.last_account_snapshot, dict) else {}
+    try:
+        at = datetime.fromisoformat(str(snap.get(RECONCILED_AT_KEY)))
+    except ValueError:
+        return False
+    return at.tzinfo is not None and at >= row.ts and now - at <= window
 
 
 async def link_live_portfolio(
@@ -788,13 +819,17 @@ async def link_live_portfolio(
     if link.live_state not in (LiveState.dry_run, LiveState.armed):
         raise _invalid("avvia la prova a secco o attiva il denaro reale prima di collegare",
                        "live_state")
-    _require_fresh_empty_test(link, _now())
+    first = not any(p.id != pf.id for p in await _linked_portfolios(session, link.id))
+    _require_fresh_test(link, _now(), empty=first)
     await check_live_portfolio(session, pf, link, qs=qs)
     await check_relink(session, pf, link.id)
     await _verify_totp(redis, admin, totp)
     pf = await link_portfolio(session, pf.id, link.id, actor=actor, _allow_live=True)
     if qs is not None:
-        link.fx_ref_rates = await _current_fx_rates(session, pf, link, qs)
+        current = await _current_fx_rates(session, pf, link, qs)
+        refs = link.fx_ref_rates if isinstance(link.fx_ref_rates, dict) and not first else {}
+        # the other portfolios' reference rates are kept (their drift is still measured)
+        link.fx_ref_rates = {**current, **refs}
     await record_live_audit(session, action="portfolio_linked", link_id=link.id,
                             portfolio_id=pf.id, **_who(actor),
                             details={"portfolio_name": pf.name, "live_state": link.live_state})
