@@ -246,3 +246,18 @@ async def test_preset_symbols_in_catalog():
     for name, *_rest in _RISK_PRESETS:
         symbols = _rest[4]
         assert set(symbols) <= catalog, name
+
+
+async def test_seed_does_not_recreate_demo_on_existing_install(db_session):
+    """An install that already has portfolios/agents (the admin removed or renamed the
+    Demo ones) never gets the demo portfolio or agent back on a later seed/migrate."""
+    from smtrading.agents.models import Agent
+    from smtrading.agents.service import create_agent
+    from smtrading.portfolios.service import create_portfolio
+
+    await create_portfolio(db_session, name="Portafoglio Prudente", initial_cash=Decimal(500))
+    await create_agent(db_session, "Risk Manager")
+    assert await run_seed(db_session) is None
+    assert await db_session.scalar(select(Portfolio.id).where(Portfolio.name == "Demo")) is None
+    names = (await db_session.execute(select(Agent.name))).scalars().all()
+    assert names == ["Risk Manager"]
