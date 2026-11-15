@@ -6,6 +6,7 @@ import { useBackups, useDownloadBackup, useSaveMcpHideMode, useSaveTimezone, use
 import type { BackupFile } from "@/api/types";
 import { ChangePasswordSection } from "@/components/ChangePasswordSection";
 import { SessionsSection } from "@/components/SessionsSection";
+import { TelegramExtrasSection } from "@/components/TelegramExtrasSection";
 import { TotpSection } from "@/components/TotpSection";
 import { UsersSection } from "@/components/UsersSection";
 import { DataTable, type Column } from "@/components/DataTable";
@@ -167,6 +168,7 @@ export default function Settings() {
         </CardContent>
       </Card>
       {data && <McpHideModeSection initial={data.mcp_hide_mode} />}
+      {data?.weekly_goal && data.preopen_check && <TelegramExtrasSection goal={data.weekly_goal} preopen={data.preopen_check} />}
       <ChangePasswordSection />
       <TotpSection />
       <SessionsSection />

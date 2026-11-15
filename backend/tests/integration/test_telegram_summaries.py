@@ -26,7 +26,7 @@ from smtrading.events import discard_post_commit
 from smtrading.jobs.runs import job_done
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
-from smtrading.risk.models import EquitySnapshot, SnapshotKind
+from smtrading.risk.models import AppSetting, EquitySnapshot, SnapshotKind
 from smtrading.seed import run_seed
 from smtrading.telegram import config as tg_config
 from smtrading.telegram.client import API_URL
@@ -580,3 +580,60 @@ async def test_weekly_decisions_section(maker):
             "12/03 ✅ Ok al ribilanciamento — generale (Risk)\n") in text
     assert "Troppo vecchia" not in text
     assert "Decisioni della settimana: nessuna" in empty
+
+
+# -- weekly goal -----------------------------------------------------------------------
+
+MON = 8  # Monday 8 March 2027
+
+
+async def _day_open(maker, pid, day: int, equity: str) -> None:
+    async with maker() as s:
+        s.add(EquitySnapshot(portfolio_id=pid, ts=rome(day, 0, 1), kind=SnapshotKind.day_open,
+                             local_date=rome(day, 12).astimezone(ROME).date(),
+                             equity_eur=D(equity), cash_eur=D(equity), exposure_eur=D(0),
+                             margin_used_eur=D(0)))
+        await s.commit()
+
+
+def _goal(text: str) -> list[str]:
+    return [ln for ln in text.splitlines() if ln.startswith("🎯")]
+
+
+async def test_goal_line_in_daily_and_weekly(maker):
+    a = await _portfolio(maker, "Test 260 A")
+    b = await _portfolio(maker, "Test 260 B")  # created on Wednesday: no Monday day_open
+    e = await _portfolio(maker, "Test 260 E")
+    await _day_open(maker, a, 1, "500")  # last week's Monday: ignored
+    await _day_open(maker, a, MON, "600")
+    await _snaps(maker, a, [(rome(MON, 12), "610"), (rome(FRI, 17), "603")])
+    await _snaps(maker, b, [(rome(10, 11), "400"), (rome(11, 15), "401.20")])
+    await _day_open(maker, e, MON, "9000")
+    await _archive(maker, e)
+    async with maker() as s:
+        [(daily, _)] = await build_summary(s, "daily", rome(FRI, 18), tz=TZ)
+        [(weekly, _)] = await build_summary(s, "weekly", rome(FRI, 18, 30), tz=TZ)
+    line = ("🎯 Obiettivo settimana +2%: 1.000,00 → 1.020,00 € — attuale 1.004,20 € "
+            "(+0,42%)")
+    assert _goal(daily) == [line] and _goal(weekly) == [line]
+    assert daily.split("\n")[2] == line  # right under the counts
+
+
+async def test_goal_off_custom_pct_and_missing_data(maker):
+    async with maker() as s:
+        [(text, _)] = await build_summary(s, "daily", rome(FRI, 18), tz=TZ)
+    assert _goal(text) == [
+        "🎯 Obiettivo settimana +2%: dati della settimana non ancora disponibili"]
+    a = await _portfolio(maker, "Test 260 A")
+    await _snaps(maker, a, [(rome(FRI, 9), "100"), (rome(FRI, 17), "99")])
+    async with maker() as s:
+        s.add(AppSetting(key="weekly_goal", value={"on": True, "pct": "1.5"}))
+        await s.commit()
+        [(text, _)] = await build_summary(s, "daily", rome(FRI, 18), tz=TZ)
+        assert _goal(text) == [("🎯 Obiettivo settimana +1,5%: 100,00 → 101,50 € — attuale "
+                                "99,00 € (-1,00%)")]
+        await s.execute(update(AppSetting).where(AppSetting.key == "weekly_goal")
+                        .values(value={"on": False, "pct": "1.5"}))
+        await s.commit()
+        [(text, _)] = await build_summary(s, "daily", rome(FRI, 18), tz=TZ)
+    assert _goal(text) == []
