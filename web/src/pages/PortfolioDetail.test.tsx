@@ -175,7 +175,11 @@ const liveLinkFixture: LiveLink = {
   snapshot: null,
   last_test_at: null,
   health_failures: 0,
-  portfolio: { id: "p1", name: "Alfa" },
+  portfolios: [{ id: "p1", name: "Alfa", status: "active", base_currency: "EUR", quota: "1000.00", positions_count: 0 }],
+  currency: "EUR",
+  broker_cash: "1000",
+  quotas_total: "1000.00",
+  unassigned: "0.00",
 };
 let liveLinks: LiveLink[] = [liveLinkFixture];
 

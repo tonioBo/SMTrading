@@ -24,7 +24,11 @@ const link: LiveLink = {
   snapshot: null,
   last_test_at: "2026-11-14T10:00:00Z",
   health_failures: 0,
-  portfolio: { id: "p1", name: "Reale" },
+  portfolios: [{ id: "p1", name: "Reale", status: "active", base_currency: "EUR", quota: "2000.00", positions_count: 0 }],
+  currency: "EUR",
+  broker_cash: "2000",
+  quotas_total: "2000.00",
+  unassigned: "0.00",
 };
 
 let arms: unknown[] = [];

@@ -28,7 +28,11 @@ const liveLink = (over: Partial<LiveLink> = {}): LiveLink => ({
   snapshot: null,
   last_test_at: null,
   health_failures: 0,
-  portfolio: null,
+  portfolios: [],
+  currency: null,
+  broker_cash: null,
+  quotas_total: null,
+  unassigned: null,
   ...over,
 });
 
@@ -211,15 +215,16 @@ describe("LiveLinkWizard", () => {
     const user = userEvent.setup();
     renderApp("/broker");
     const card = await screen.findByLabelText("Denaro reale Alpaca vero");
-    expect(within(card).getByLabelText("Portafoglio da collegare")).toBeDisabled();
+    expect(within(card).getByRole("button", { name: "Collega un portafoglio" })).toBeDisabled();
     await user.click(within(card).getByRole("button", { name: "Avvia la prova a secco" }));
     expect(await within(card).findByRole("button", { name: "Termina la prova a secco" })).toBeInTheDocument();
-    const select = within(card).getByLabelText("Portafoglio da collegare");
-    await waitFor(() => expect(select).toBeEnabled());
-    expect(within(select).getAllByRole("option").map((o) => o.textContent)).toEqual(["Seleziona…", "Reale"]);
+    const open = within(card).getByRole("button", { name: "Collega un portafoglio" });
+    await waitFor(() => expect(open).toBeEnabled());
+    await user.click(open);
+    const dialog = await screen.findByRole("dialog", { name: "Collegare un portafoglio a Alpaca vero?" });
+    const select = within(dialog).getByLabelText("Portafoglio da collegare");
+    await waitFor(() => expect(within(select).getAllByRole("option").map((o) => o.textContent)).toEqual(["Seleziona…", "Reale"]));
     await user.selectOptions(select, "p1");
-    await user.click(within(card).getByRole("button", { name: "Collega portafoglio" }));
-    const dialog = await screen.findByRole("dialog", { name: "Collegare Reale a Alpaca vero?" });
     const confirm = within(dialog).getByRole("button", { name: "Collega" });
     expect(confirm).toBeDisabled();
     await user.type(within(dialog).getByLabelText("Codice TOTP"), "123456");
