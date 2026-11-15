@@ -937,7 +937,7 @@ export interface AgentDocExportResult {
 
 // --- real money («denaro reale») ------------------------------------------------------
 
-export type LiveKind = "alpaca_live" | "t212_live";
+export type LiveKind = "alpaca_live" | "t212_live" | "etoro_live";
 
 /** The last read-only account snapshot (never the full account ID). */
 export interface LiveSnapshot {
@@ -975,6 +975,7 @@ export interface LiveKeysInput {
   secret_key?: string;
   api_key?: string;
   api_secret?: string;
+  user_key?: string;
   crypto_enabled?: boolean;
 }
 

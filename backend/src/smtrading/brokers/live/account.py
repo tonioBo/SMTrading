@@ -38,6 +38,7 @@ LIVE_AAD = b"broker_live"
 LIVE_FIELDS: dict[str, tuple[str, str, frozenset[str]]] = {
     "alpaca_live": ("key_id", "secret_key", frozenset({"crypto_enabled"})),
     "t212_live": ("api_key", "api_secret", frozenset({"order_types"})),
+    "etoro_live": ("user_key", "api_key", frozenset()),
 }
 
 

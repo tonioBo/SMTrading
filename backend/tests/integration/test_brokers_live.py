@@ -77,9 +77,11 @@ def _live_client() -> LiveClient:
 
 
 def test_registry_knows_the_live_kinds():
-    assert {registry.adapter_class(k) for k in LIVE_KINDS} == {AlpacaLiveAdapter,
-                                                               T212LiveAdapter}
-    assert AlpacaLiveAdapter.live and T212LiveAdapter.live
+    from smtrading.brokers.live.etoro_live import EtoroLiveAdapter
+
+    assert {registry.adapter_class(k) for k in LIVE_KINDS} == {
+        AlpacaLiveAdapter, T212LiveAdapter, EtoroLiveAdapter}
+    assert AlpacaLiveAdapter.live and T212LiveAdapter.live and EtoroLiveAdapter.live
     assert not AlpacaPaperAdapter.live and not T212DemoAdapter.live
     assert T212LiveAdapter.idempotent_place is False
     assert {AlpacaLiveAdapter.BASE_URL.split("//")[1],

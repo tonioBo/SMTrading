@@ -23,4 +23,4 @@ def _load() -> None:
         etoro_demo,
         t212_demo,
     )
-    from smtrading.brokers.live import alpaca_live, t212_live  # noqa: F401
+    from smtrading.brokers.live import alpaca_live, etoro_live, t212_live  # noqa: F401

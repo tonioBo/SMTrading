@@ -45,7 +45,7 @@ CAUSE_TEXT = {
     "cash_shortfall": "liquidità al broker inferiore a quella del portafoglio",
     "fuse": "fusibile: troppi ordini reali nell'ultima ora",
     "health": "broker non raggiungibile",
-    "margin_account": "il conto Alpaca non è più un conto cash (margine attivo)",
+    "margin_account": "il conto non è più un conto cash (margine o leva attivi)",
 }
 
 Phase = Literal["sent", "filled", "partial", "rejected", "canceled", "dry_run"]

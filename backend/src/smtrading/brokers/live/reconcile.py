@@ -28,8 +28,9 @@ FOR NO KEY UPDATE, then the portfolio through `trip_reduce_only`):
   `account_changed` (disarmed, reduce-only, one critical `live.account_changed`); the
   stored fingerprint changes only with a new test; the account-changed row is not a
   diff: the next normal pass is a first pass (as with no previous row);
-- an Alpaca account that is not (or no longer) a cash account (multiplier > 1, or no
-  multiplier reported, R8.10) -> reduce-only (`margin_account`, critical alert);
+- an account of a CASH_ONLY_KINDS link (Alpaca, eToro) that is not (or no longer) a
+  cash account (Alpaca: multiplier > 1 or none reported; eToro: a leveraged, short or
+  copied position, R8.10) -> reduce-only (`margin_account`, critical alert);
 - broker failures raise LiveBrokerUnreachable (`auth` for HTTP 401/403), a broker rate
   limit LiveBrokerRateLimited (not a health failure).
 
@@ -49,6 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.activity.models import Activity
 from smtrading.brokers.base import AccountSnapshot, RateLimited
+from smtrading.brokers.live import CASH_ONLY_KINDS
 from smtrading.brokers.live.account import (
     account_fingerprint,
     decrypt_live_config,
@@ -288,7 +290,7 @@ async def reconcile_live(
         for pid in pids:
             rows.append(await _record(session, link, pid, diffs, now,
                                       position_diff=position_diff, cash_short=cash_short))
-        if kind == "alpaca_live" and snap.account_type != "cash":  # R8.10 (no multiplier too)
+        if kind in CASH_ONLY_KINDS and snap.account_type != "cash":  # R8.10 (no multiplier too)
             for pid in pids:
                 await trip_reduce_only(session, pid, cause="margin_account",
                                        details={"link_id": link_id,

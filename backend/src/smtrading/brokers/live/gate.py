@@ -5,7 +5,8 @@ sends through a `LiveGateTransport`. Before every request that is not a read, th
 reads again (in a short session of its own) the link's `live_state`, the linked
 portfolio's status, the kill switch and the order being sent:
 
-- GET/HEAD: always passed on;
+- GET/HEAD: always passed on, like the POSTs that only read (LIVE_READ_POSTS: eToro
+  eligibility, exact URL, never carrying an order);
 - DELETE (a cancel): passed on in every live_state of a live link;
 - POST/PUT/PATCH: only with the link `armed`, the linked portfolio not `locked` and the
   kill switch off; with the kill switch on only an order created by «Chiudi tutte le
@@ -20,7 +21,9 @@ portfolio's status, the kill switch and the order being sent:
 
 A closed gate raises before the inner transport is called: no connection is opened and
 nothing reaches the broker. The order is identified by the request extension
-`smt_order_id` (set by the protocol cores on every order request).
+`smt_order_id` (set by the protocol cores on every order request); an eToro position
+close also carries `smt_close` ({symbol, instrument_id, units}), since its body names
+neither the symbol nor, for a whole position, the units.
 """
 
 import json
@@ -43,6 +46,7 @@ from smtrading.risk.halts import covering_halt, halt_message, reduces_position
 from smtrading.risk.settings import is_kill_switch_on
 
 ORDER_EXTENSION = "smt_order_id"
+CLOSE_EXTENSION = "smt_close"
 READ_METHODS = frozenset({"GET", "HEAD"})
 NOT_ARMED_MESSAGE = "denaro reale non attivo su questo collegamento"
 KILL_SWITCH_MESSAGE = "kill switch attivo: nessun invio verso il broker reale"
@@ -109,12 +113,35 @@ def _dec(value: Any) -> Decimal | None:
     return d if d.is_finite() else None
 
 
-def _body_matches(body: dict, order: Any) -> bool:
+def _etoro_close_matches(body: dict, close: object, order: Any) -> bool:
+    """eToro position close: the `smt_close` extension names the body's instrument
+    (`InstrumentID`/`InstrumentId`) and the order's symbol, the order is a sell and the
+    units are 0 < units <= the order's quantity (a partial body's `UnitsToDeduct` must be
+    those units)."""
+    if not isinstance(close, dict):
+        return False
+    iid = body.get("InstrumentID", body.get("InstrumentId"))
+    units = _dec(close.get("units"))
+    deduct = body.get("UnitsToDeduct")
+    return (
+        isinstance(iid, int) and not isinstance(iid, bool)
+        and close.get("instrument_id") == iid
+        and close.get("symbol") == order.symbol
+        and order.side == OrderSide.sell
+        and units is not None and 0 < units <= order.qty
+        and (deduct is None or _dec(deduct) == units)
+    )
+
+
+def _body_matches(body: dict, order: Any, close: object = None) -> bool:
     """The request is the order's own closing request: same instrument and side, no more
     than the order's quantity. Alpaca: `symbol`, `side`, `qty`; Trading 212: `ticker`
-    (`AAPL_US_EQ`) and a signed `quantity` (negative = sell). Anything else: no match."""
+    (`AAPL_US_EQ`) and a signed `quantity` (negative = sell); eToro: a position close
+    (`_etoro_close_matches`, with the `smt_close` extension). Anything else: no match."""
     if order.qty is None:
         return False
+    if "InstrumentID" in body or "InstrumentId" in body:
+        return _etoro_close_matches(body, close, order)
     if "ticker" in body:
         symbol = str(body["ticker"]).split("_")[0]
         qty = _dec(body.get("quantity"))
@@ -130,6 +157,22 @@ def _body_matches(body: dict, order: Any) -> bool:
             and qty is not None and side == order.side and 0 < abs(qty) <= order.qty)
 
 
+def _read_only_post(request: httpx.Request, method: str) -> bool:
+    """A POST to one of LIVE_READ_POSTS (exact URL: no port, no query), carrying no
+    order."""
+    if method != "POST" or ORDER_EXTENSION in request.extensions or request.url.port:
+        return False
+    from smtrading.brokers.live import LIVE_READ_POSTS
+
+    url = request.url
+    return f"{url.scheme}://{url.host}{url.raw_path.decode('ascii', 'replace')}" \
+        in LIVE_READ_POSTS
+
+
+def _request_matches(request: httpx.Request, order: Any) -> bool:
+    return _body_matches(_payload(request), order, request.extensions.get(CLOSE_EXTENSION))
+
+
 class LiveGateTransport(httpx.AsyncBaseTransport):
     def __init__(self, inner: httpx.AsyncBaseTransport, sessionmaker: async_sessionmaker,
                  link_id: uuid.UUID):
@@ -143,7 +186,7 @@ class LiveGateTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         method = request.method.upper()
-        if method not in READ_METHODS:
+        if method not in READ_METHODS and not _read_only_post(request, method):
             await request.aread()
             await self._check(request, method)
         return await self._inner.handle_async_request(request)
@@ -188,7 +231,7 @@ class LiveGateTransport(httpx.AsyncBaseTransport):
                            and order.type == OrderType.market
                            and order.broker_order_id is None  # not acknowledged yet
                            and order.status in OPEN_STATUSES
-                           and _body_matches(_payload(request), order))
+                           and _request_matches(request, order))
                 if not flatten:
                     raise LiveGateClosed(ErrorCode.KILL_SWITCH_ACTIVE, KILL_SWITCH_MESSAGE)
             halt = await covering_halt(session, portfolio.id)
@@ -211,7 +254,7 @@ class LiveGateTransport(httpx.AsyncBaseTransport):
             .where(Account.portfolio_id == order.portfolio_id, Account.asset == order.symbol,
                    Account.kind == AccountKind.position)
         ) or Decimal(0)
-        return reduces_position(order, held) and _body_matches(_payload(request), order)
+        return reduces_position(order, held) and _request_matches(request, order)
 
     async def aclose(self) -> None:
         await self._inner.aclose()

@@ -150,6 +150,37 @@ describe("LiveLinkWizard", () => {
     expect(screen.queryByLabelText("Broker Alpaca vero")).not.toBeInTheDocument();
   });
 
+  it("wizard offers etoro live with key guide", async () => {
+    const user = userEvent.setup();
+    renderApp("/broker");
+    await user.click(await screen.findByRole("button", { name: "Nuovo collegamento reale" }));
+    const form = screen.getByRole("form", { name: "Nuovo collegamento denaro reale" });
+    const etoro = within(form).getByLabelText("eToro — denaro reale");
+    expect(etoro.closest("label")).toHaveClass("border-loss");
+    await user.click(etoro);
+    expect(within(form).getByText("Real", { selector: "strong" })).toBeInTheDocument();
+    expect(within(form).getByText("Write", { selector: "strong" })).toBeInTheDocument();
+    expect(within(form).getByText(/Non riusare la chiave del collegamento demo/)).toBeInTheDocument();
+    expect(within(form).getByText(/senza posizioni, ordini o copy trading/)).toBeInTheDocument();
+    expect(within(form).getByRole("link", { name: "portale API di eToro" })).toHaveAttribute(
+      "href",
+      "https://api-portal.etoro.com/core/getting-started/authentication.md",
+    );
+    expect(within(form).queryByLabelText(/Cripto/)).not.toBeInTheDocument();
+    await user.type(within(form).getByLabelText("Nome"), "eToro vero");
+    const api = within(form).getByLabelText("Chiave API (x-api-key)");
+    const userKey = within(form).getByLabelText("Chiave utente reale (x-user-key)");
+    expect(api).toHaveAttribute("type", "password");
+    expect(userKey).toHaveAttribute("type", "password");
+    await user.type(api, "CANARYKEYID0001");
+    await user.type(userKey, CANARY);
+    await user.click(within(form).getByRole("button", { name: "Salva chiavi" }));
+    await waitFor(() =>
+      expect(creates).toEqual([{ name: "eToro vero", kind: "etoro_live", api_key: "CANARYKEYID0001", user_key: CANARY }]),
+    );
+    expect(document.body.textContent).not.toContain(CANARY);
+  });
+
   it("wizard shows read-only test result and requires empty account", async () => {
     links = [liveLink()];
     result = testResult({ positions_count: 2, open_orders_count: 1, empty: false });
