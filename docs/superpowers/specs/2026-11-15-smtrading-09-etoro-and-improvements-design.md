@@ -31,6 +31,7 @@ Tutto in un unico piano, per decisione dell'utente.
    - Aggiungere un controllo permanente che avvisa l'admin quando salva un nome visibile agli agenti contenente queste parole.
 9. **Più portafogli reali su un conto** (aggiunta approvata dall'utente il 2026-11-15): un collegamento reale non è più legato a un solo portafoglio. Ogni portafoglio ha la sua quota del contante del conto (vedi §Più portafogli reali su un conto).
 10. **Modalità con il nome del broker nel portale** (aggiunta approvata dall'utente il 2026-11-15): al posto di «simulazione / paper / reale», per esempio «Alpaca · prova» o «🔴 Trading 212 · reale». Gli agenti non vedono nessun cambiamento (vedi §Etichette delle modalità).
+11. **eToro come fonte di dati di mercato per tutti i portafogli** (decisione dell'utente del 2026-11-15): un connettore `etoro` di quotazioni e barre, in aggiunta alle fonti di oggi, con attivazione e priorità nella pagina «Connettori». Non è legato ai portafogli eToro (vedi §eToro come fonte di dati).
 
 ## Non-obiettivi
 - Interactive Brokers (rimandato).
@@ -170,6 +171,19 @@ Approvato dall'utente il 2026-11-15. Riguarda **solo il portale**.
   - reale: «🔴 Alpaca · reale», «🔴 Trading 212 · reale», «🔴 eToro · reale», con «· prova a secco» o «· sospeso» secondo lo stato del collegamento, come oggi.
 - I conteggi della Dashboard sono per etichetta, per esempio «2 simulati · 1 Alpaca prova · 0 reali».
 - **Agenti:** gli output MCP non cambiano, e `mcp_hide_mode` resta com'è. Un test verifica che le risposte agli agenti siano identiche a prima.
+
+### eToro come fonte di dati
+Decisione dell'utente del 2026-11-15. Le quotazioni eToro diventano una fonte di dati di mercato **generale**, usabile per qualsiasi portafoglio (simulato, prova o reale, su qualsiasi broker), come Yahoo o Twelve Data.
+- **Connettore `etoro`** nel registro dei provider (`marketdata/providers`), con le capacità `quote` e `bars`, per azioni USA e cripto in USD. Le altre classi restano escluse finché la valuta dei prezzi eToro non è verificata.
+- **Chiavi proprie, non quelle dei collegamenti** (scelta del controller): `api_key` e `user_key` nella configurazione del connettore, cifrate come le altre e mostrate solo mascherate. Motivi:
+  - i limiti di frequenza di eToro valgono **per chiave utente**: una chiave condivisa con un collegamento farebbe competere dati e ordini;
+  - basta una chiave con il solo permesso **Read**: anche se trapelasse, non può negoziare;
+  - il connettore vale per tutto SMTrading e sopravvive allo scollegamento di un portafoglio;
+  - le chiavi reali (`etoro_live`) restano usabili solo dietro il cancello del piano 8, mai dal router dei dati.
+- **Solo lettura di dati di mercato:** il connettore può chiamare solo percorsi `GET` sotto `/api/v1/market-data/`, controllati prima di toccare la rete, con lo stesso nucleo HTTP e la stessa mappatura simbolo ↔ instrumentId dell'adattatore eToro.
+- **Priorità:** il connettore nasce **spento** e in fondo alle liste delle priorità di azioni USA e cripto. L'admin lo attiva, inserisce le chiavi, fa «Verifica» e lo sposta in alto se vuole. Nessun cambiamento di comportamento finché non lo fa.
+- **Limiti di frequenza:** si rispettano il limite configurato nel connettore e le intestazioni di eToro. A quota esaurita il connettore non aspetta: il router passa subito alla fonte successiva.
+- **Agenti:** vedono `etoro` come nome della fonte di una quotazione, come oggi vedono `yahoo` o `kraken`. Nessun nome, percorso o messaggio contiene parole da simulazione; il test `test_mcp_no_fingerprints` copre anche questa fonte.
 
 ## Vincoli
 - **Stesso stack e stesse regole del progetto:** TDD, revisione di ogni task, deploy solo da un worktree pulito di HEAD. Con migrazioni, `docker compose run --rm migrate` prima di `up --no-deps`.

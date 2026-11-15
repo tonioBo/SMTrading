@@ -2,16 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** un terzo broker, eToro, in prova (`etoro_demo`) e reale (`etoro_live`, costruito e **spento**), più i miglioramenti della prima settimana: chiusure di borsa manuali e Londra, ordini manuali completi dal portale, più valute nel reale, «Decisioni di oggi» nel riepilogo con campi strutturati di `log_decision`, lettore Paperclip (costi e allarme isolamento) e pulizia dei nomi.
+**Goal:** un terzo broker, eToro, in prova (`etoro_demo`) e reale (`etoro_live`, costruito e **spento**), eToro come fonte di dati di mercato per tutti i portafogli (connettore `etoro`), più i miglioramenti della prima settimana: chiusure di borsa manuali e Londra, ordini manuali completi dal portale, più valute nel reale, «Decisioni di oggi» nel riepilogo con campi strutturati di `log_decision`, lettore Paperclip (costi e allarme isolamento) e pulizia dei nomi.
 
 **Architecture:**
-- **Miglioramenti prima, denaro reale eToro per ultimo.** I Task 1-12 non toccano eToro. I Task 13-15 aggiungono eToro in tre passi: protocollo e demo, poi l'integrazione della demo, poi il reale dietro il cancello del piano 8.
+- **Miglioramenti prima, denaro reale eToro per ultimo.** I Task 1-12 non toccano eToro. I Task 13-16 aggiungono eToro in quattro passi: protocollo e demo, poi eToro come fonte di dati di mercato per tutti i portafogli, poi l'integrazione della demo, poi il reale dietro il cancello del piano 8.
 - **eToro, host condiviso:** demo e reale usano lo stesso host. La guardia non distingue per host ma **per percorso**:
   - il nucleo `_EtoroProtocol` controlla ogni richiesta contro i prefissi ammessi dalla classe concreta, prima di toccare la rete;
   - i prefissi reali sono scritti solo in `brokers/live/etoro_live.py`, e un test scandisce il repository alla ricerca di quei percorsi.
 - **Chiusure manuali:** `market_status` resta sincrono. Legge un registro in memoria del processo (`ClosureBook`), che un compito di API e worker ricarica dal database ogni 60 s; il salvataggio dall'admin lo ricarica subito nell'API.
 - **Più portafogli reali su un conto (Task 11-12):** il vincolo «un collegamento reale ↔ un portafoglio» del piano 8 cade. Ogni portafoglio ha una quota del contante del conto; contante e riconciliazione si controllano per collegamento, la sola chiusura colpisce solo i portafogli coinvolti. Nessuna migrazione: non esiste un vincolo UNIQUE su `portfolios.broker_link_id` (verificato), la regola 1:1 è solo nel codice.
 - **Etichette delle modalità (Task 10):** solo portale. Le DTO admin ricevono campi nuovi; `mode_fields`, che usano anche gli strumenti MCP, non cambia.
+- **eToro come fonte di dati (Task 14):** un provider `etoro` nel registro di `marketdata`, con chiavi proprie nel connettore (non quelle dei collegamenti). Riusa il nucleo HTTP e la cache strumenti del Task 13, ma può chiamare solo `GET` sotto `/api/v1/market-data/`. Nasce spento e in fondo alle priorità.
 - **Paperclip:** un job del worker ogni 5 minuti fa solo richieste `GET`, con un client che rifiuta ogni altro metodo. Gli avvisi vanno direttamente in `telegram_outbox` (categoria `system`), mai nel feed attività, che gli agenti leggono.
 - Il piano parte da `main` 045f598 più i commit dello spec, sul ramo `feat/plan-09-etoro-improvements`.
 
@@ -40,7 +41,8 @@
   - `0024_market_closures.py` (Task 2);
   - `0025_decision_fields.py` (Task 3);
   - `0026_live_fx_ref.py` (Task 7);
-  - `0027_paperclip.py` (Task 8).
+  - `0027_paperclip.py` (Task 8);
+  - `0028_etoro_connector.py` (Task 14, solo dati: riga del connettore e priorità).
   Ognuna ha upgrade e downgrade; `test_migration_matches_models` resta verde.
 - **Nessuna attivazione del reale.**
   - Nessun task crea un collegamento `etoro_live` (o un altro live) nello stack principale, né salva chiavi reali o arma un collegamento.
@@ -54,13 +56,13 @@
   - nessuna parola da simulazione negli output MCP;
   - nuovi codici d'errore solo se indistinguibili da un broker reale;
   - le istruzioni agenti cambiano solo con il testo approvato dall'utente (Task 4) e non citano eToro.
-- **Segreti:** chiavi eToro e chiave board di Paperclip
+- **Segreti:** chiavi eToro (dei collegamenti e del connettore `etoro`) e chiave board di Paperclip
   - sono cifrate (`encrypt_json` con `aad`) e registrate con `register_secret`;
   - non compaiono mai in risposte, log, audit, outbox, `broker_raw`, CSV o MCP;
   - nel portale si vede solo `••••` più le ultime 4 cifre.
 - **Test senza rete:**
   - respx con `assert_all_mocked=True`;
-  - la fixture `_no_live_network` blocca anche l'host eToro (Task 13).
+  - la fixture `_no_live_network` blocca anche l'host eToro (Task 13), quindi anche il provider dati `etoro` (Task 14).
 
 ## Review Focus
 
@@ -89,6 +91,11 @@
    - A non può spendere la quota di B; contante del broker sotto la somma delle quote → sola chiusura per tutti;
    - «Disattiva denaro reale» ferma gli ordini di entrambi; un terzo portafoglio la cui quota supera il contante libero non si collega.
    Test in Task 11.
+7. **Connettore dati `etoro` a quota esaurita** (`RateLimit-Remaining: 0` o un 429 con `Retry-After`). Atteso:
+   - nessuna attesa dentro il router: la chiamata fallisce subito con un errore redatto e il router usa la fonte successiva;
+   - fino al reset nessuna richiesta parte verso eToro (la quota persa non si spreca in tentativi);
+   - le chiavi non compaiono in `last_error`, log o errori verso gli agenti.
+   Test in Task 14.
 
 ---
 
@@ -110,9 +117,10 @@ backend/src/smtrading/
   brokers/etoro_core.py         _EtoroProtocol, ETORO_URL, cache strumenti
   brokers/etoro_demo.py         EtoroDemoAdapter
   brokers/live/etoro_live.py    EtoroLiveAdapter (unico posto con i percorsi reali)
-  brokers/live/fake.py          (+ eToro)
+  brokers/live/fake.py          (+ eToro, + dati di mercato eToro)
+  marketdata/providers/etoro.py EtoroProvider (quote, bars; solo GET market-data)
   cli.py                        (+ names audit|fix)
-backend/migrations/versions/0024_…, 0025_…, 0026_…, 0027_…
+backend/migrations/versions/0024_…, 0025_…, 0026_…, 0027_…, 0028_etoro_connector.py
 web/src/components/OrderForm.tsx, PaperclipBanner.tsx, PaperclipSection.tsx
 web/src/pages/AgentCosts.tsx    web/src/api/hooks/paperclip.ts
 web/src/components/LiveLinkPortfolios.tsx
@@ -125,8 +133,8 @@ web/src/components/LiveLinkPortfolios.tsx
 | C | 7 | migrazione 0026 |
 | D | 8 → 9 | migrazione 0027; 9 solo `web/` |
 | E | 10 → 11 → 12 | etichette delle modalità; più portafogli reali per conto (backend, poi web); nessuna migrazione |
-| F | 13 → 14 → 15 | eToro: demo prima, reale per ultimo |
-| G | 16 | e2e, documentazione, verifica |
+| F | 13 → 14 → 15 → 16 | eToro: protocollo e demo, fonte di dati (migrazione 0028), demo nel portale, reale per ultimo |
+| G | 17 | e2e, documentazione, verifica |
 
 ---
 
@@ -772,7 +780,7 @@ Aggiunta approvata dall'utente il 2026-11-15 (spec §Più portafogli reali su un
   - Scritture (aperture, chiusure, annullamenti): 20.
   - Consultazione degli ordini: 60.
   - Portafoglio: 60.
-  - Dati di mercato: 120.
+  - Dati di mercato: 120 secondo le pagine degli endpoint, 60 secondo la pagina generale (vedi il Task 14, che usa 60).
   - Idoneità: 20.
   - Intestazioni: `RateLimit-Remaining`, `RateLimit-Reset` (secondi). Un 429 ha `Retry-After` (https://api-portal.etoro.com/core/getting-started/rate-limits.md).
 - **Idempotenza:** `x-request-id` è la chiave d'idempotenza dell'apertura e torna come `referenceId`. Un'apertura con esito perso si cerca con `orders:lookup?referenceId=`.
@@ -792,7 +800,7 @@ Aggiunta approvata dall'utente il 2026-11-15 (spec §Più portafogli reali su un
   - **Posizione conforme:** `isBuy`, `leverage == 1`, `settlementTypeID == 1`, `mirrorID == 0`. Nello snapshot `account_type = "cash"` se tutte le posizioni sono conformi, altrimenti `"leveraged"`. Un ordine consultato con `asset.leverage ≠ 1` o `settlementType ≠ real` → `rejected` con un log ERROR.
   - **Simboli:** prima `instrument.provider_symbols["etoro"]`; altrimenti cripto `BTC-USD` → `BTC`; altrimenti il simbolo così com'è. Uno strumento non idoneo (non compra a leva 1 `real`, `isBuyEnabled` falso o non trovato) non è instradabile: «strumento non negoziabile senza leva su questo broker».
 - **Da verificare all'esecuzione**, ciascuno con la sua regola di ripiego:
-  1. **Campi di `close-orders/{orderId}`** (unità eseguite, prezzo, stato). Se mancano unità o prezzo, l'eseguito aspetta (`FILL_PRICE_WAIT`, nessun prezzo inventato) e l'implementer si ferma e lo segnala al controller prima del Task 15.
+  1. **Campi di `close-orders/{orderId}`** (unità eseguite, prezzo, stato). Se mancano unità o prezzo, l'eseguito aspetta (`FILL_PRICE_WAIT`, nessun prezzo inventato) e l'implementer si ferma e lo segnala al controller prima del Task 16.
   2. **Ordine FIFO delle posizioni.** Si usa `openDateTime` se presente nelle posizioni, altrimenti `positionID` crescente.
   3. **Identità del conto per l'impronta.** Si usa l'id utente di `api-reference/identity/get-authenticated-user-profile`, se risponde con un id; altrimenti `sha256(user_key)[:16]` (una chiave vale per un solo conto e ambiente).
   4. **Valute del conto diverse da USD.** Solo `accountCurrencyId == 1` (USD). Un altro valore fa fallire il test del collegamento con «valuta del conto non supportata».
@@ -818,6 +826,13 @@ Aggiunta approvata dall'utente il 2026-11-15 (spec §Più portafogli reali su un
     - è una richiesta non GET su market data.
   - Ogni richiesta d'ordine porta `extensions={"smt_order_id": str(order.id)}`. Una chiusura porta anche `"smt_close": {"symbol", "instrument_id", "units"}`.
   - Cache strumenti per ambiente, come `t212_core.instrument_cache`: simbolo → `{instrument_id, eligible: bool, partial_close: bool}`, TTL 24 h.
+  - **Parti di modulo riusate dal provider dati del Task 14** (senza stato d'adattatore, nessun percorso d'esecuzione):
+    - `MARKET_DATA_PREFIX = "/api/v1/market-data/"`;
+    - `etoro_headers(api_key: str, user_key: str, request_id: str | None = None) -> dict[str, str]` (un `uuid4` nuovo se `request_id` manca);
+    - `instrument_cache(scope: str) -> InstrumentCache`, con `scope` in `"demo"`, `"real"`, `"data"`;
+    - `async def search_instrument(http, headers: dict, symbol: str) -> dict | None`: la `search` con `internalSymbolFull` e la scelta della corrispondenza identica (regola «Strumenti» sopra), oppure None;
+    - `rate_headers(resp) -> tuple[int | None, float | None]`: `RateLimit-Remaining` e `RateLimit-Reset`, oppure `Retry-After` su un 429;
+    - `http_error(resp) -> str`: «etoro: HTTP <codice>» più il messaggio del corpo redatto, mai intestazioni né chiavi.
   - Rate limit: attende `RateLimit-Reset` quando `RateLimit-Remaining == 0` (sleep iniettabile, massimo 60 s); un 429 → `RateLimited`.
   - Errori: 401/403 → `RuntimeError("HTTP 401 …")`; 400/422 in apertura → `BrokerOrder(status="rejected", message=<messaggio redatto>)`.
   - Metodi: `place_order`, `find_order`, `get_order`, `cancel_order`, `get_positions` (solo le posizioni conformi, sommate per simbolo), `get_account` (`AccountSnapshot`, valuta `USD`), `prepare` e `health_check` (GET del portafoglio).
@@ -850,7 +865,103 @@ Aggiunta approvata dall'utente il 2026-11-15 (spec §Più portafogli reali su un
 - [ ] **Step 3:** implementazione → PASS; `uv run pytest tests/integration/test_brokers_t212.py tests/integration/test_brokers_alpaca.py -q` verdi.
 - [ ] **Step 4:** commit `feat(brokers): eToro protocol core with per-path guard, demo adapter, fake eToro server`
 
-### Task 14: eToro demo nel portale, in BrokerSync e per gli agenti
+### Task 14: eToro come fonte di dati di mercato (connettore `etoro`)
+
+Decisione dell'utente del 2026-11-15 (spec §eToro come fonte di dati): le quotazioni e le barre eToro sono una fonte **generale**, usabile per tutti i portafogli, con attivazione e priorità nella pagina «Connettori». Non dipende dai collegamenti eToro.
+
+**Riferimento dati di mercato eToro.** Fonti consultate il 2026-11-15, indice su https://api-portal.etoro.com/llms.txt.
+- **Verificato:**
+  - **Autenticazione:** a ogni richiesta `x-request-id` (UUID) più `x-api-key` e `x-user-key` insieme, oppure `Authorization: Bearer` OAuth, mai entrambi. Nessun accesso con la sola chiave API. Ogni chiave vale per un solo ambiente (Demo o Real); i permessi sono Read o Write (https://api-portal.etoro.com/core/getting-started/authentication.md). Il connettore usa solo la coppia di chiavi.
+  - **Quotazioni:** `GET /api/v1/market-data/instruments/rates?instrumentIds=1,2,3`, al massimo **100** id per chiamata. Risposta `rates[]{instrumentID, bid, ask, lastExecution, conversionRateBid, conversionRateAsk, date, priceRateID}`; i campi `unitMargin*` e `*Discounted` sono obsoleti e non si leggono (https://api-portal.etoro.com/api-reference/market-data/get-instrument-market-rates.md).
+  - Esiste anche `GET /api/v2/market-data/rates` (fino a 1000 id, `results[]{instrumentId, bid, ask, date, quoteType: realtime|delayed}`, 206 se solo una parte è disponibile), senza `lastExecution` (https://api-portal.etoro.com/api-reference/market-data/retrieve-bidask-rates-for-one-or-more-instruments.md). Il piano usa la v1, già citata nel Task 13 e con l'ultimo prezzo.
+  - **Barre:** `GET /api/v1/market-data/instruments/{instrumentId}/history/candles/{direction}/{interval}/{candlesCount}`, senza parametri di data. `direction` = `asc|desc`; `interval` = `OneMinute, FiveMinutes, TenMinutes, FifteenMinutes, ThirtyMinutes, OneHour, FourHours, OneDay, OneWeek`; `candlesCount` al massimo 1000. Risposta `{interval, candles:[{instrumentId, candles:[{instrumentID, fromDate, open, high, low, close, volume}], rangeOpen, …}]}`: maiuscole diverse tra gruppo e candela; `fromDate` ISO 8601, con `Z` negli esempi (https://api-portal.etoro.com/api-reference/market-data/get-instrument-candle-history.md).
+  - **Strumenti:** `GET /api/v1/market-data/search?internalSymbolFull=AAPL&fields=…` (`fields` obbligatorio); può restituire corrispondenze parziali, quindi si accetta solo `internalSymbolFull` identico; gli id non cambiano mai e si mettono in cache (https://api-portal.etoro.com/core/guides/get-instrument-id.md, https://api-portal.etoro.com/api-reference/market-data/search-for-instruments.md). Una ricerca senza risultati risponde 200 con `items` vuoto. Lo schema `Instrument` **non** ha un campo valuta.
+  - **Metadati:** `GET /api/v1/market-data/instruments?instrumentIds=` restituisce `instrumentDisplayDatas[]{instrumentID, instrumentDisplayName, instrumentTypeID, exchangeID, symbolFull, priceSource, …}`, anche qui senza valuta (https://api-portal.etoro.com/api-reference/market-data/get-instrument-display-data.md). Non serve a questo task.
+  - **Limiti:** le pagine degli endpoint indicano **120 richieste ogni 60 s, quota condivisa** tra gli endpoint di market data, con le intestazioni `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` (secondi), `RateLimit-Policy` (`120;w=60`) e `Retry-After` su un 429. La pagina generale dice invece **60 al minuto** per le letture `GET`, dati di mercato compresi, **per chiave utente**, su finestra mobile di 1 minuto (https://api-portal.etoro.com/core/getting-started/rate-limits.md). Le due fonti non coincidono: il piano usa la più prudente, 60.
+  - WebSocket di quotazioni e candele esistono (`core/websocket/…`), ma non si usano in questo task (niente `stream`).
+- **Da verificare all'esecuzione**, ciascuno con la sua regola di ripiego:
+  1. **Una chiave Demo con permesso Read legge i dati di mercato.** La guida del connettore consiglia una chiave **Demo, Read**: non tocca denaro. Se «Verifica» risponde 401/403 con una chiave Demo valida, la guida passa a una chiave **Real, Read**: il connettore resta limitato ai `GET` di market data, quindi non può leggere il portafoglio né negoziare.
+  2. **Valuta dei prezzi.** Nessuno schema ha la valuta. Si accetta una quotazione solo se `conversionRateBid` e `conversionRateAsk` mancano o valgono 1 (prezzo già in USD); altrimenti la quotazione si salta. Per questo il connettore copre solo azioni USA e cripto in USD.
+  3. **`date` delle quotazioni ritardate.** Se per le azioni USA `date` è l'ora del prezzo, `STALE_QUOTE` fa il resto. Se invece è l'ora della risposta e i prezzi sono ritardati, l'implementer lo segnala al controller e il connettore resta in fondo alle priorità delle azioni USA.
+  4. **`fromDate` senza fuso.** Se arriva senza `Z` né offset, si legge come UTC.
+  5. **Id degli strumenti uguali tra Demo e Real.** La cache dati è separata (`instrument_cache("data")`) e non si scambia con quella dei collegamenti, quindi la risposta non cambia il codice.
+
+**Decisioni del piano:**
+- **Chiavi proprie, non quelle dei collegamenti eToro:**
+  - i limiti valgono per chiave utente: una chiave condivisa farebbe competere dati e ordini;
+  - basta il permesso Read;
+  - il connettore vale per tutti i portafogli e sopravvive allo scollegamento;
+  - le chiavi `etoro_live` restano solo dietro il cancello del piano 8.
+- **Configurazione:** `api_key` e `user_key` nel connettore, cifrate da `update_connector` come le altre e mostrate solo mascherate (`••••` più le ultime 4 cifre).
+- **Il router non aspetta:** a quota esaurita il provider fallisce subito e il router passa alla fonte successiva. A differenza del Task 13, nessuna `sleep`.
+- **Nasce spento e in fondo alle priorità** di `us_equity` e `crypto` per `quote` e `bars`. Finché l'admin non lo attiva, niente cambia.
+
+**Files:**
+- Create:
+  - `marketdata/providers/etoro.py`;
+  - `backend/migrations/versions/0028_etoro_connector.py`;
+  - test: `tests/unit/providers/test_etoro.py`, `tests/fixtures/marketdata/etoro_search.json`, `etoro_rates.json`, `etoro_candles.json` (forme del riferimento sopra).
+- Modify:
+  - backend: `marketdata/providers/__init__.py` (import), `marketdata/provider.py` (`config_fields`), `connectors/service.py` (`DEFAULT_PRIORITIES`), `admin/routes_connectors.py` (`config_fields` nella DTO), `brokers/live/fake.py` (rates e candele sui due ambienti);
+  - test: `tests/integration/test_connectors_service.py`, `tests/integration/test_admin_connectors.py`, `tests/integration/test_router.py`, `tests/integration/test_mcp_no_fingerprints.py` (variante `etoro_source`);
+  - web: `web/src/api/types.ts` (`Connector.config_fields`), `web/src/pages/Connectors.tsx` (campi da `config_fields`, etichette e guida eToro), `web/src/pages/Connectors.test.tsx`.
+
+**Interfaces — Consumes:** Task 13 (`ETORO_URL`, `MARKET_DATA_PREFIX`, `etoro_headers`, `instrument_cache`, `search_instrument`, `rate_headers`, `http_error`); router, `acquire` e connettori esistenti (`marketdata/router.py`, `marketdata/ratelimit.py`, `connectors/service.py`).
+
+**Interfaces — Produces:**
+- **`DataProvider.config_fields: ClassVar[tuple[str, ...]] = ()`:** i campi di configurazione che il portale mostra anche se vuoti. La DTO del connettore aggiunge `config_fields: list[str]`; `secret_keys` comprende anche i `config_fields` con `is_secret`. Gli altri provider non cambiano: `requires_key` continua ad aggiungere `api_key`.
+- **`@register class EtoroProvider(DataProvider)`** in `marketdata/providers/etoro.py`:
+  - `name = "etoro"`, `capabilities = {quote, bars}`, `asset_classes = {us_equity, crypto}`, `requires_key = True`, `config_fields = ("api_key", "user_key")`, `default_rate_limit_per_min = 60`;
+  - `_default_symbol`: `us_equity` → il simbolo; `crypto` `XXX-USD` → `XXX`; il resto → `ProviderUnsupported`. L'override è `instrument.provider_symbols["etoro"]`, la stessa chiave del broker (Task 13), modificabile nella pagina Mercati;
+  - `_get(path, params)`, l'unico punto che tocca la rete:
+    - prima della rete: `path` deve iniziare con `MARKET_DATA_PREFIX`, altrimenti `RuntimeError("etoro: percorso non ammesso")`; il metodo è sempre `GET` (il modulo non ha altri metodi);
+    - senza `api_key` o `user_key` → `ProviderUnsupported("request without API key")`, come Finnhub;
+    - quota: registro di modulo `_blocked_until[sha256(user_key)[:16]]`. Se è nel futuro → `RuntimeError("etoro: rate limited")` senza rete. Dopo una risposta con `RateLimit-Remaining == 0` si blocca fino a `RateLimit-Reset`; un 429 blocca fino a `Retry-After` e fallisce. Blocco massimo 60 s;
+    - 401/403 → `RuntimeError("etoro: chiave non valida")`; altri ≥ 400 → `RuntimeError(http_error(resp))`; `httpx.RequestError` → `RuntimeError(f"etoro: request failed: {type(exc).__name__}")` (`from None`);
+    - JSON letto con `parse_float=Decimal`.
+  - `_instrument_ids(pairs)`: id dalla cache `instrument_cache("data")`, TTL 24 h. Al massimo `MAX_LOOKUPS_PER_CALL = 10` ricerche nuove per chiamata, con `search_instrument`; gli altri simboli restano senza quotazione in questo giro. Un simbolo non trovato o `isDelisted` entra in una cache negativa per 1 h.
+  - `get_quotes(items)`: id a blocchi di 100 su `instruments/rates`. Per ogni `rates[]` con `instrumentID` noto: `Quote(bid, ask, last=lastExecution, ts=date, provider="etoro")`. Si salta la voce se `lastExecution` manca o è ≤ 0, se `date` manca (mai `now()`, come gli altri provider), o se un `conversionRate*` presente è diverso da 1 (regola 2).
+  - `get_bars(symbol, ps, timeframe, start, end)`:
+    - `INTERVALS = {1m: OneMinute, 5m: FiveMinutes, 15m: FifteenMinutes, 1h: OneHour, 1d: OneDay, 1wk: OneWeek}`;
+    - `count = ceil((now − start) / durata) + 1`. Oltre 1000 → `ProviderUnsupported("range")`: il router passa alla fonte successiva;
+    - una sola richiesta `…/history/candles/desc/{interval}/{count}`. Si leggono le candele del gruppo con `instrumentId` uguale (entrambe le maiuscole), si tengono quelle con `start ≤ fromDate < end`, in ordine crescente, con `Decimal`. Si saltano le candele con OHLC mancante;
+    - strumento non trovato → `ProviderUnsupported`.
+  - `health_check()`: `search_instrument("AAPL")`; senza risultato → `RuntimeError("etoro: strumento di prova non trovato")`.
+- **`connectors/service.py`:** `"etoro"` **in coda** a `DEFAULT_PRIORITIES` per `(us_equity, quote)`, `(us_equity, bars)`, `(crypto, quote)`, `(crypto, bars)`. Non è in `DEFAULT_ENABLED`; `_ALL_CONNECTORS` lo include da sé.
+- **`0028_etoro_connector.py`** (solo dati, `down_revision = "0027"`):
+  - upgrade: inserisce la riga `connectors` `etoro` spenta (`ON CONFLICT DO NOTHING`); aggiunge `"etoro"` in coda alle quattro righe di `provider_priorities` che esistono e non lo contengono già. I valori di `asset_class` e `capability` sono quelli scritti da `str_enum`, da controllare su `0003_connectors.py`. Il seed non lo farebbe, perché non tocca le righe esistenti;
+  - downgrade: toglie `"etoro"` da tutte le righe di priorità e cancella la riga del connettore.
+- **`FakeLiveBroker`** (Task 13): risponde anche a `instruments/rates` e a `history/candles/…` per AAPL, MSFT e BTC, con `conversionRate*` 1 e `date` dato dal fake; `market_data_remaining: int | None` configurabile per le intestazioni di quota. Gli stessi percorsi rispondono su tutti e due gli ambienti.
+- **Portale, pagina «Connettori»:**
+  - i campi della scheda sono l'unione delle chiavi di `config_masked` e di `config_fields`;
+  - etichette «Chiave API (x-api-key)» e «Chiave utente (x-user-key)»;
+  - sotto la scheda `etoro`, la guida: «chiave dedicata, ambiente Demo, permesso Read; non riusare le chiavi dei collegamenti», con il link a https://api-portal.etoro.com/core/getting-started/authentication.md;
+  - priorità e limite al minuto con i controlli che ci sono già (riordino nella matrice, campo «limite»).
+- **Agenti:** il nome della fonte `etoro` compare nelle quotazioni come gli altri. Gli errori del provider non contengono percorsi né parole da simulazione: il modulo non scrive mai `/demo/`.
+
+- [ ] **Step 1: test falliti** (`tests/unit/providers/test_etoro.py` con respx, `assert_all_mocked=True`, chiavi canarino `CANARYAPIKEY0001` e `CANARYUSERKEY-do-not-use`)
+  - `test_headers_and_market_data_path_only`: intestazioni `x-api-key`, `x-user-key`, `x-request-id` (UUID) su ogni richiesta;
+  - `test_non_market_data_path_refused_before_network`: un percorso `/api/v1/trading/…` forzato su `_get` → errore e nessuna richiesta;
+  - `test_symbol_mapping_us_crypto_override`;
+  - `test_instrument_lookup_exact_match_and_cache`: la ricerca restituisce `AAPL` e `AAPL.US`, si sceglie l'identico; la seconda chiamata non ricerca; un simbolo assente non si ricerca prima di 1 h;
+  - `test_lookups_capped_per_call`;
+  - `test_quotes_batch_of_100_and_mapping`: 150 simboli → due richieste, `last = lastExecution`, `ts = date`;
+  - `test_quote_skipped_without_date_or_non_usd_conversion`;
+  - `test_bars_interval_count_and_window`: `1h` su 3 giorni → `OneHour`, `count` corretto, solo le candele nella finestra, in ordine crescente, maiuscole miste;
+  - `test_bars_over_1000_candles_unsupported`;
+  - `test_ratelimit_remaining_zero_blocks_without_sleep` e `test_429_retry_after_blocks` (Review Focus 7): nessuna `sleep`, la chiamata seguente fallisce senza rete fino al reset;
+  - `test_errors_redacted_no_keys`: 401, 500 e `ConnectError` → messaggi senza chiavi, senza intestazioni, senza `demo`.
+- [ ] **Step 2: test falliti** (integrazione)
+  - `test_connectors_service`: `etoro` seminato spento e in coda alle quattro priorità;
+  - `test_admin_connectors`: `config_fields` e `secret_keys` di `etoro`, chiavi mascherate in lettura, «Verifica» sul fake con le chiavi canarino, nessuna chiave in `last_error` né nei log (`caplog`);
+  - `test_router`: con `etoro` attivo e primo, una quotazione AAPL arriva da `etoro`; con quota esaurita il router usa subito la fonte successiva;
+  - migrazione: upgrade e downgrade di `0028` su un database con priorità già modificate dall'admin (l'ordine dell'admin resta, `etoro` va solo in coda); `test_migration_matches_models` verde;
+  - `test_mcp_no_fingerprints[etoro_source]`: la fonte delle quotazioni del fixture è `etoro`, nessuna parola vietata e nessun `/demo/` negli output.
+- [ ] **Step 3:** `uv run pytest tests/unit/providers/test_etoro.py tests/integration/test_connectors_service.py tests/integration/test_admin_connectors.py tests/integration/test_router.py tests/integration/test_mcp_no_fingerprints.py -q` → FAIL.
+- [ ] **Step 4:** implementazione, web compreso (test Vitest `etoro connector shows api and user key fields masked with guide`) → PASS; `uv run pytest -q` e `npm --prefix web test -- --run` verdi.
+- [ ] **Step 5:** commit `feat(marketdata): eToro market-data provider (quotes, bars) as a general connector`. Il connettore resta **spento**: le chiavi e l'attivazione sono dell'utente, dalla pagina «Connettori», dopo il deploy.
+
+### Task 15: eToro demo nel portale, in BrokerSync e per gli agenti
 
 **Files:**
 - Modify:
@@ -868,7 +979,7 @@ Aggiunta approvata dall'utente il 2026-11-15 (spec §Più portafogli reali su un
 - **`_broker_texts`:** coppie in più:
   - il kind `etoro_demo` → `etoro_live`;
   - i prefissi demo → i reali, presi dalle ClassVar `EXEC_V1/EXEC_V2/INFO_V1/INFO_V2` delle due classi;
-  - import pigro di `brokers.live.etoro_live`: finché il Task 15 non esiste, la coppia dei kind si salta (nessun errore).
+  - import pigro di `brokers.live.etoro_live`: finché il Task 16 non esiste, la coppia dei kind si salta (nessun errore).
 - **BrokerSync:** nessun percorso nuovo. Il test conferma che una vendita composta passa da `get_order` fino a `canceled` con il parziale e che le commissioni vengono da `BrokerOrder.fees`.
 
 - [ ] **Step 1: test falliti**
@@ -882,7 +993,7 @@ Aggiunta approvata dall'utente il 2026-11-15 (spec §Più portafogli reali su un
 - [ ] **Step 4:** PASS; `uv run pytest -q` e `npm --prefix web test -- --run` verdi.
 - [ ] **Step 5:** commit `feat(brokers): eToro demo links in the portal, dedicated account check, agent-safe texts`
 
-### Task 15: eToro reale dietro il cancello (costruito, spento)
+### Task 16: eToro reale dietro il cancello (costruito, spento)
 
 **Files:**
 - Create: `brokers/live/etoro_live.py`, `tests/integration/test_etoro_live.py`
@@ -941,7 +1052,7 @@ Aggiunta approvata dall'utente il 2026-11-15 (spec §Più portafogli reali su un
 - [ ] **Step 4:** PASS; `uv run pytest -q` e `npm --prefix web test -- --run` verdi; `git grep -n "etoro_live" -- backend/src | grep -v brokers/live` mostra solo i registri attesi (`__init__`, `account`, `registry`, `dto`, `routes_live`).
 - [ ] **Step 5:** commit `feat(live): eToro real-money adapter behind the live gate, per-path guards, wizard option`
 
-### Task 16: E2E, documentazione e verifica finale
+### Task 17: E2E, documentazione e verifica finale
 
 **Files:**
 - Create: `web/e2e/orders.spec.ts`
@@ -962,6 +1073,7 @@ Aggiunta approvata dall'utente il 2026-11-15 (spec §Più portafogli reali su un
   - «Pulizia dei nomi» (`names audit|fix`);
   - «Più portafogli reali su un conto»: quote, contante non assegnato, sola chiusura per simbolo o per tutti, controlli validi per tutto il collegamento;
   - «Etichette delle modalità» (solo portale, gli agenti non vedono nulla);
+  - «eToro come fonte di dati»: connettore `etoro` per tutti i portafogli, chiave dedicata Demo e Read (o Real e Read, se la Demo non legge i dati), solo azioni USA e cripto in USD, spento e in coda finché l'admin non lo attiva e lo riordina;
   - la checklist di attivazione del piano 8, con `etoro_live` tra i kind. Nessun percorso d'esecuzione reale scritto fuori da `docs/`.
 - **`docs/paperclip-mcp.md`:**
   - i campi `outcome`, `reason` e `subject` di `log_decision`;
@@ -975,8 +1087,8 @@ Aggiunta approvata dall'utente il 2026-11-15 (spec §Più portafogli reali su un
   1. `cd backend && uv run pytest -q` → verde, nessun test live o eToro saltato;
   2. `npm --prefix web test -- --run`, `npm --prefix web run lint` e `npm --prefix web run build` → verdi;
   3. `uv run pytest tests/unit/test_live_hosts_guard.py tests/integration/test_mcp_no_fingerprints.py -q` → PASS;
-  4. deploy da un worktree pulito di HEAD: `docker compose run --rm migrate`, poi `docker compose up -d --no-build --no-deps api worker web`; `alembic current` = `0027`;
-  5. `docker compose exec -T api smtrading live status` → «nessun collegamento live»; `SELECT count(*) FROM broker_links WHERE kind='etoro_live'` → 0;
+  4. deploy da un worktree pulito di HEAD: `docker compose run --rm migrate`, poi `docker compose up -d --no-build --no-deps api worker web`; `alembic current` = `0028`;
+  5. `docker compose exec -T api smtrading live status` → «nessun collegamento live»; `SELECT count(*) FROM broker_links WHERE kind='etoro_live'` → 0; `SELECT enabled FROM connectors WHERE name='etoro'` → `false`, salvo attivazione fatta dall'utente;
   6. `docker compose exec -T api python -m smtrading.cli names audit` → elenco consegnato al controller, **nessun** `fix`;
   7. `git grep -l 'CANARY' -- ':!backend/tests' ':!docs' ':!web/e2e'` → nessun risultato; `git status --porcelain` pulito.
 - [ ] **Step 4:** commit `docs: eToro, market closures, manual orders, multi-currency, Paperclip reader; e2e`
