@@ -28,7 +28,8 @@ class DataProvider:
     capabilities: ClassVar[frozenset[Capability]] = frozenset()
     asset_classes: ClassVar[frozenset[AssetClass]] = frozenset()
     requires_key: ClassVar[bool] = False
-    # config fields the portal shows even when empty (`requires_key` adds `api_key`)
+    # config fields the portal shows even when empty and the connector test requires
+    # (none declared: `requires_key` stands for one `api_key`)
     config_fields: ClassVar[tuple[str, ...]] = ()
     default_rate_limit_per_min: ClassVar[int] = 60
 

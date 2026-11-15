@@ -95,6 +95,7 @@ class AlpacaProvider(DataProvider):
     capabilities = frozenset({Capability.quote, Capability.bars, Capability.stream, Capability.news})
     asset_classes = frozenset({AssetClass.us_equity, AssetClass.crypto})
     requires_key = True
+    config_fields = ("key_id", "secret_key")  # the Alpaca account's API keys
     default_rate_limit_per_min = 200
 
     def _default_symbol(self, symbol: str, asset_class: AssetClass) -> str:

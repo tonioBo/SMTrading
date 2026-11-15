@@ -42,6 +42,7 @@ def test_registered_and_metadata():
     assert RevolutXProvider.capabilities == {Capability.quote}
     assert RevolutXProvider.asset_classes == {AssetClass.crypto}
     assert RevolutXProvider.requires_key is True
+    assert RevolutXProvider.config_fields == ("api_key", "private_key_pem")
     assert RevolutXProvider.default_rate_limit_per_min == 60
 
 

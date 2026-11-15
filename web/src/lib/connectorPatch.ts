@@ -4,9 +4,10 @@ import type { Connector, ConnectorPatch } from "@/api/types";
 export const isSecret = (connector: Connector, key: string) => connector.secret_keys.includes(key);
 export const isScalar = (v: unknown): v is string | number | null => v === null || typeof v === "string" || typeof v === "number";
 
-/** The fields the card shows although the stored config lacks them: `config_fields`, and `api_key` when the connector requires a key. */
+/** The fields the card shows although the stored config lacks them: `config_fields`, or `api_key` when the connector requires a key and declares none. */
 export function emptyFields(connector: Connector): string[] {
-  const wanted = [...(connector.config_fields ?? []), ...(connector.requires_key ? ["api_key"] : [])];
+  const declared = connector.config_fields ?? [];
+  const wanted = declared.length ? declared : connector.requires_key ? ["api_key"] : [];
   return [...new Set(wanted)].filter((k) => !(k in connector.config_masked));
 }
 

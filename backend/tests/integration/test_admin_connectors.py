@@ -581,3 +581,26 @@ async def test_etoro_connector_keys_masked_verified_on_fake(admin, monkeypatch, 
     for text in (r.text, json.dumps(listed), caplog.text,
                  json.dumps([[a.summary, a.error_message] for a in activity])):
         assert ETORO_API_KEY not in text and ETORO_USER_KEY not in text
+
+
+async def test_alpaca_connector_needs_key_id_and_secret_key(admin):
+    """The Alpaca data connector reads `key_id` and `secret_key` (not `api_key`): the
+    portal shows both (secret, masked) and the test names the missing ones."""
+    c = admin.client
+    row = next(x for x in (await c.get("/api/connectors")).json() if x["name"] == "alpaca")
+    assert row["config_fields"] == ["key_id", "secret_key"]
+    assert row["secret_keys"] == ["key_id", "secret_key"]  # no stray api_key field
+    revolutx = next(x for x in (await c.get("/api/connectors")).json()
+                    if x["name"] == "revolutx")
+    assert revolutx["config_fields"] == ["api_key", "private_key_pem"]
+
+    r = await c.post("/api/connectors/alpaca/test")
+    assert r.status_code == 400, r.text
+    assert r.json()["message"] == "configurazione incompleta: inserisci Key ID e Secret Key"
+
+    r = await c.patch("/api/connectors/alpaca", json={"config": {"key_id": "PKTEST12345678"}})
+    assert r.status_code == 200, r.text
+    assert r.json()["config_masked"]["key_id"] == "••••5678"
+    r = await c.post("/api/connectors/alpaca/test")
+    assert r.status_code == 400
+    assert r.json()["message"] == "configurazione incompleta: inserisci Secret Key"

@@ -49,6 +49,7 @@ def test_registered_and_metadata():
         Capability.quote, Capability.bars, Capability.stream, Capability.news}
     assert AlpacaProvider.asset_classes == {AssetClass.us_equity, AssetClass.crypto}
     assert AlpacaProvider.requires_key is True
+    assert AlpacaProvider.config_fields == ("key_id", "secret_key")  # read by _credentials
     assert AlpacaProvider.default_rate_limit_per_min == 200
 
 

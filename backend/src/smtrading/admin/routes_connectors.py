@@ -55,6 +55,15 @@ class PriorityIn(BaseModel):
     providers: list[str]
 
 
+# the portal's labels of the declared config fields (the connector test names them)
+FIELD_LABELS = {"key_id": "Key ID", "secret_key": "Secret Key", "api_key": "Chiave API",
+                "user_key": "Chiave utente", "private_key_pem": "Chiave privata (PEM)"}
+
+
+def _and(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} e {items[-1]}"
+
+
 async def _connector(session: DbSession, name: str) -> Connector:
     c = await session.get(Connector, name)
     if c is None:
@@ -66,12 +75,13 @@ async def _dto(session: DbSession, c: Connector) -> dict[str, Any]:
     cls = PROVIDERS.get(c.name)
     config = mask_config(await get_connector_config(session, c.name))
     requires_key = bool(cls and cls.requires_key)
-    # the fields the portal shows even when empty (requires_key adds api_key client-side)
+    # the fields the portal shows even when empty (requires_key adds api_key client-side
+    # when the provider declares none)
     config_fields = list(getattr(cls, "config_fields", ())) if cls else []
     # the top-level config keys the web app treats as secrets (never re-derived client-side)
     secret_keys = sorted(
         {k for k in config if is_secret(k)}
-        | ({"api_key"} if requires_key else set())
+        | ({"api_key"} if requires_key and not config_fields else set())
         | {k for k in config_fields if is_secret(k)}
     )
     return {
@@ -128,6 +138,10 @@ async def test_connector(name: str, session: DbSession, redis: RedisClient) -> d
         raise _invalid("name", "connettore non implementato")
     ok, error = True, None
     config = await get_connector_config(session, name)
+    missing = [FIELD_LABELS.get(k, k) for k in getattr(cls, "config_fields", ())
+               if not config.get(k)]
+    if missing:
+        raise _invalid("config", "configurazione incompleta: inserisci " + _and(missing))
     secrets = secret_values(config)
     try:
         async with httpx.AsyncClient() as http:

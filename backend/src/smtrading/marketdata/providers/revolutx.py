@@ -67,6 +67,7 @@ class RevolutXProvider(DataProvider):
     capabilities = frozenset({Capability.quote})
     asset_classes = frozenset({AssetClass.crypto})
     requires_key = True
+    config_fields = ("api_key", "private_key_pem")
     default_rate_limit_per_min = 60
 
     def _credentials(self) -> tuple[str, str]:

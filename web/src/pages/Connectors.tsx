@@ -25,6 +25,8 @@ const HEALTH_LABELS: Record<string, string> = { ok: "Operativo", error: "Errore"
 /** Field labels of a connector (the config key otherwise). */
 const FIELD_LABELS: Record<string, Record<string, string>> = {
   etoro: { api_key: "Chiave API (x-api-key)", user_key: "Chiave utente (x-user-key)" },
+  alpaca: { key_id: "Key ID", secret_key: "Secret Key" },
+  revolutx: { api_key: "Chiave API", private_key_pem: "Chiave privata (PEM)" },
 };
 const ETORO_AUTH_URL = "https://api-portal.etoro.com/core/getting-started/authentication.md";
 
@@ -139,6 +141,9 @@ function ConnectorCard({ connector }: { connector: Connector }) {
               <Input value={rate} inputMode="numeric" onChange={(e) => setRate(e.target.value)} />
             </FormField>
             {connector.name === "etoro" && <EtoroGuide />}
+            {connector.name === "alpaca" && (
+              <p className="text-xs text-muted">Le stesse chiavi del conto Alpaca (Paper va bene).</p>
+            )}
           </>
         )}
 

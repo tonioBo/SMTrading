@@ -48,6 +48,15 @@ const server = setupServer(
         config_fields: ["api_key", "user_key"],
         secret_keys: ["api_key", "user_key"],
       }),
+      connector({
+        name: "alpaca",
+        enabled: false,
+        capabilities: ["bars", "news", "quote", "stream"],
+        asset_classes: ["crypto", "us_equity"],
+        config_masked: {},
+        config_fields: ["key_id", "secret_key"],
+        secret_keys: ["key_id", "secret_key"],
+      }),
     ]),
   ),
   http.patch("*/api/connectors/:name", async ({ request, params }) => {
@@ -55,7 +64,14 @@ const server = setupServer(
     patches.push({ name: String(params.name), body });
     return HttpResponse.json(connector({ name: params.name, rate_limit_per_min: body.rate_limit_per_min ?? 60 }));
   }),
-  http.post("*/api/connectors/:name/test", () => HttpResponse.json({ ok: false, error: "timeout", checked_at: "2026-11-13T10:00:00Z" })),
+  http.post("*/api/connectors/:name/test", ({ params }) =>
+    params.name === "alpaca"
+      ? HttpResponse.json(
+          { code: "INVALID_ORDER", message: "configurazione incompleta: inserisci Key ID e Secret Key", details: { field: "config" } },
+          { status: 400 },
+        )
+      : HttpResponse.json({ ok: false, error: "timeout", checked_at: "2026-11-13T10:00:00Z" }),
+  ),
   http.get("*/api/provider-priorities", () =>
     HttpResponse.json([
       { asset_class: "us_equity", capability: "quote", providers: ["alpaca", "finnhub", "yahoo"] },
@@ -150,6 +166,27 @@ describe("Connectors", () => {
     await user.click(within(card).getByRole("button", { name: "Salva" }));
     await waitFor(() => expect(patches).toHaveLength(1));
     expect(patches[0]).toEqual({ name: "etoro", body: { config: { user_key: "USERKEY123" } } });
+  });
+
+  it("alpaca connector shows Key ID and Secret Key (no api_key) and names missing keys on test", async () => {
+    const user = userEvent.setup();
+    renderApp("/connettori");
+    const card = await screen.findByLabelText("Connettore alpaca");
+    const keyId = within(card).getByLabelText("Key ID");
+    const secret = within(card).getByLabelText("Secret Key");
+    expect(keyId).toHaveAttribute("type", "password");
+    expect(secret).toHaveAttribute("type", "password");
+    expect(within(card).queryByLabelText("api_key")).not.toBeInTheDocument();
+    expect(within(card).getByText("Le stesse chiavi del conto Alpaca (Paper va bene).")).toBeInTheDocument();
+
+    await user.click(within(card).getByRole("button", { name: "Testa connessione" }));
+    expect(await within(card).findByText(/configurazione incompleta: inserisci Key ID e Secret Key/)).toBeInTheDocument();
+
+    await user.type(keyId, "PKTEST1");
+    await user.type(secret, "SECRET1");
+    await user.click(within(card).getByRole("button", { name: "Salva" }));
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toEqual({ name: "alpaca", body: { config: { key_id: "PKTEST1", secret_key: "SECRET1" } } });
   });
 
   it("marks unimplemented connectors and disables the switch", async () => {
