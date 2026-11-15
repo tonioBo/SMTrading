@@ -677,7 +677,7 @@ export default function PortfolioDetail() {
       <PageHeader title={portfolio?.name ?? "Portafoglio"}>
         {portfolio && (
           <div className="flex items-center gap-2">
-            <PortfolioModeBadge mode={portfolio.mode} liveState={portfolio.live_state} />
+            <PortfolioModeBadge mode={portfolio.mode} liveState={portfolio.live_state} label={portfolio.mode_label} />
             <PortfolioStatusBadge status={portfolio.status} />
           </div>
         )}

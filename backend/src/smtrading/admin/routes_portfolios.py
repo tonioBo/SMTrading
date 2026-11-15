@@ -63,7 +63,7 @@ from smtrading.mcp.dto import (
 )
 from smtrading.performance.service import get_performance
 from smtrading.portfolios.locks import lock_live_portfolio
-from smtrading.portfolios.mode import mode_fields
+from smtrading.portfolios.mode import admin_mode_fields
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.queries import day_pnl, list_portfolio_journals
 from smtrading.portfolios.service import (
@@ -182,10 +182,10 @@ PORTFOLIO_FIELDS = (
 
 
 def _portfolio_dto(p: Portfolio, link: BrokerLink | None = None) -> dict[str, Any]:
-    """PORTFOLIO_FIELDS plus `mode` and `live_state` (from `link`, the portfolio's broker
-    link: `reale` only for an armed real-money link)."""
+    """PORTFOLIO_FIELDS plus `mode`, `live_state`, `broker_kind` and `mode_label` (from
+    `link`, the portfolio's broker link: `reale` only for an armed real-money link)."""
     out = {f: to_jsonable(getattr(p, f)) for f in PORTFOLIO_FIELDS}
-    out.update(to_jsonable(mode_fields(p, link)))
+    out.update(to_jsonable(admin_mode_fields(p, link)))
     return out
 
 

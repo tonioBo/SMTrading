@@ -61,11 +61,22 @@ export interface DashboardPortfolio {
   status: string;
   mode: PortfolioMode;
   live_state?: LiveState | null;
+  /** the link's kind (alpaca_paper, t212_live…), null without a broker */
+  broker_kind: string | null;
+  /** the mode with the broker's name: «SMTrading (simulato)», «Alpaca · prova», «🔴 Trading 212 · reale»… */
+  mode_label: string;
   equity_eur: string | null;
   day_pnl_eur: string | null;
   day_pnl_pct: string | null;
   stale_symbols: string[];
   error: string | null;
+}
+
+export interface ModeCount {
+  label: string;
+  count: number;
+  /** a real-money link (any live_state) */
+  live: boolean;
 }
 
 export interface DashboardConnector {
@@ -90,6 +101,8 @@ export interface Dashboard {
   portfolios: DashboardPortfolio[];
   /** non-archived portfolios per mode */
   modes: Record<PortfolioMode, number>;
+  /** non-archived portfolios per mode_label: simulated, then practice/demo, then real money */
+  mode_counts: ModeCount[];
   connectors: DashboardConnector[];
   margin_alerts: MarginAlert[];
   kill_switch: boolean;
@@ -126,6 +139,10 @@ export interface Portfolio {
   mode: PortfolioMode;
   /** the real-money link's state (configured | dry_run | armed), null otherwise */
   live_state?: LiveState | null;
+  /** the link's kind (alpaca_paper, t212_live…), null without a broker */
+  broker_kind: string | null;
+  /** the mode with the broker's name (see DashboardPortfolio.mode_label) */
+  mode_label: string;
   timezone: string;
   risk_profile_id: string | null;
   reduce_only_reason: string | null;
@@ -381,6 +398,8 @@ export interface AgentPortfolioLink {
   archived?: boolean;
   mode?: PortfolioMode;
   live_state?: LiveState | null;
+  broker_kind?: string | null;
+  mode_label?: string;
 }
 
 export interface AgentWatchlist {

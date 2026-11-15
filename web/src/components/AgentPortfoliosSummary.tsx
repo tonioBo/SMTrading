@@ -44,7 +44,7 @@ export function AgentPortfoliosSummary({ agentName, portfolios }: { agentName: s
               <tr key={p.portfolio_id} className="border-t border-border">
                 <td className="py-1 pr-2">{p.portfolio_name}</td>
                 <td className="py-1 pr-2">{p.permission === "trade" ? "Trade" : "Lettura"}</td>
-                <td className="py-1">{p.mode ? <PortfolioModeBadge mode={p.mode} liveState={p.live_state} /> : "—"}</td>
+                <td className="py-1">{p.mode ? <PortfolioModeBadge mode={p.mode} liveState={p.live_state} label={p.mode_label} /> : "—"}</td>
               </tr>
             ))}
           </tbody>

@@ -56,10 +56,10 @@ export function ModeBanner() {
     text = "Attenzione: almeno un portafoglio opera con denaro reale";
     tone = "border-loss/40 bg-loss/15 text-loss";
   } else if (paper > 0) {
-    text = "Simulazione e paper trading (conti demo) – nessun denaro reale";
+    text = "SMTrading (simulato) e conti di prova dei broker – nessun denaro reale";
     tone = "border-warn/40 bg-warn/15 text-warn";
   } else {
-    text = "Simulazione – denaro virtuale, prezzi di mercato reali";
+    text = "SMTrading (simulato) – denaro virtuale, prezzi di mercato reali";
     tone = "border-gain/40 bg-gain/15 text-gain";
   }
   return (

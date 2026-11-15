@@ -164,16 +164,23 @@ function LiveFeed() {
   );
 }
 
-function ModeCounts({ modes }: { modes: DashboardData["modes"] }) {
+/** «2 simulati · 1 Alpaca prova · 0 reali»: one entry per mode_label, «0 reali» without real money. */
+function ModeCounts({ counts }: { counts: DashboardData["mode_counts"] }) {
+  const entries = counts.map(({ label, count, live }) => ({
+    key: label,
+    count,
+    text: label === MODE_INFO.simulazione.label ? (count === 1 ? "simulato" : "simulati") : label.replaceAll(" · ", " "),
+    live,
+  }));
+  if (!entries.some((e) => e.live)) entries.push({ key: "reali", count: 0, text: "reali", live: true });
   return (
-    <ul aria-label="Portafogli per modalità" className="mt-1 flex flex-wrap gap-x-3 text-xs font-normal text-muted">
-      {(["simulazione", "paper", "reale"] as const)
-        .filter((m) => m !== "reale" || modes[m] > 0)
-        .map((m) => (
-          <li key={m}>
-            {MODE_INFO[m].icon} {MODE_INFO[m].label.toLowerCase()}: <span className="num">{modes[m] ?? 0}</span>
-          </li>
-        ))}
+    <ul aria-label="Portafogli per modalità" className="mt-1 flex flex-wrap gap-x-1 text-xs font-normal text-muted">
+      {entries.map((e, i) => (
+        <li key={e.key}>
+          {i > 0 && " · "}
+          <span className="num">{e.count}</span> {e.text}
+        </li>
+      ))}
     </ul>
   );
 }
@@ -203,7 +210,7 @@ function PortfolioTable({ portfolios }: { portfolios: DashboardData["portfolios"
                     <Link to={`/portafogli/${p.id}`} className="text-accent hover:underline">
                       {p.name}
                     </Link>
-                    <PortfolioModeBadge mode={p.mode} liveState={p.live_state} className="ml-2" />
+                    <PortfolioModeBadge mode={p.mode} liveState={p.live_state} label={p.mode_label} className="ml-2" />
                     {p.error && <span className="ml-2 text-xs text-loss">valutazione non disponibile</span>}
                     {p.stale_symbols.length > 0 && <span className="ml-2 text-xs text-warn">quotazioni non aggiornate</span>}
                   </TableCell>
@@ -247,7 +254,7 @@ export default function Dashboard() {
             </Kpi>
             <Kpi title="Portafogli">
               <span className="num">{data.portfolios.length}</span>
-              <ModeCounts modes={data.modes} />
+              <ModeCounts counts={data.mode_counts} />
             </Kpi>
             <Kpi title="Worker">
               {(() => {

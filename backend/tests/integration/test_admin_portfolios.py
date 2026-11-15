@@ -615,3 +615,34 @@ async def test_portfolio_save_returns_name_warning(admin):
     assert r.json()["name_warning"] == "gli agenti vedranno questo nome"
     r = await c.patch(f"/api/portfolios/{warned['id']}", json={"name": "Beta"})
     assert r.json()["name_warning"] is None
+
+
+async def test_admin_portfolio_dto_has_mode_label(admin):
+    """The portal DTO names the broker (mode_label, broker_kind); mode/live_state as before."""
+    from smtrading.brokers.live.account import encrypt_live_config
+    from smtrading.brokers.models import BrokerLink
+    from smtrading.portfolios.models import Portfolio
+
+    c = admin.client
+    sim = await _create(c)
+    real = await _create(c)
+    async with admin.sm() as s:
+        link = BrokerLink(
+            name="Conto", kind="t212_live", live_state="dry_run", health_failures=0,
+            config_encrypted=encrypt_live_config(
+                {"api_key": "CANARYKEYID0001", "api_secret": "CANARYSECRET-do-not-use"}),
+        )
+        s.add(link)
+        await s.flush()
+        (await s.get(Portfolio, uuid.UUID(real["id"]))).broker_link_id = link.id
+        await s.commit()
+
+    listed = {p["id"]: p for p in (await c.get("/api/portfolios")).json()}
+    fields = ("mode", "live_state", "broker_kind", "mode_label")
+    assert tuple(listed[sim["id"]][f] for f in fields) == (
+        "simulazione", None, None, "SMTrading (simulato)")
+    expected_real = ("paper", "dry_run", "t212_live", "🔴 Trading 212 · reale · prova a secco")
+    assert tuple(listed[real["id"]][f] for f in fields) == expected_real
+    got = (await c.get(f"/api/portfolios/{real['id']}")).json()
+    assert tuple(got[f] for f in fields) == expected_real
+    assert sim["mode_label"] == "SMTrading (simulato)" and sim["broker_kind"] is None

@@ -56,10 +56,14 @@ const dashboard: Dashboard = {
   day_pnl_eur: "-250.5",
   day_pnl_pct: "-1.99",
   portfolios: [
-    { id: "p1", name: "Alfa", status: "active", mode: "simulazione", equity_eur: "10000", day_pnl_eur: "-250.5", day_pnl_pct: "-2.4", stale_symbols: [], error: null },
-    { id: "p2", name: "Beta", status: "active", mode: "paper", equity_eur: "2345.6", day_pnl_eur: "10", day_pnl_pct: "0.4", stale_symbols: [], error: null },
+    { id: "p1", name: "Alfa", status: "active", mode: "simulazione", broker_kind: null, mode_label: "SMTrading (simulato)", equity_eur: "10000", day_pnl_eur: "-250.5", day_pnl_pct: "-2.4", stale_symbols: [], error: null },
+    { id: "p2", name: "Beta", status: "active", mode: "paper", broker_kind: "alpaca_paper", mode_label: "Alpaca · prova", equity_eur: "2345.6", day_pnl_eur: "10", day_pnl_pct: "0.4", stale_symbols: [], error: null },
   ],
   modes: { simulazione: 1, paper: 1, reale: 0 },
+  mode_counts: [
+    { label: "SMTrading (simulato)", count: 1, live: false },
+    { label: "Alpaca · prova", count: 1, live: false },
+  ],
   connectors: [{ name: "binance", enabled: true, health_status: "ok", last_checked_at: null }],
   margin_alerts: [
     { id: 1, portfolio_id: "p1", kind: "margin_warning", payload: {}, created_at: "2026-11-12T10:00:00Z" },
@@ -165,14 +169,37 @@ describe("Dashboard", () => {
     server.use(http.get("*/api/dashboard/modes", () => HttpResponse.json(dashboard.modes)));
     renderApp("/");
     const counts = await screen.findByRole("list", { name: "Portafogli per modalità" });
-    expect(within(counts).getByText(/simulazione:/)).toHaveTextContent("simulazione: 1");
-    expect(within(counts).getByText(/paper:/)).toHaveTextContent("paper: 1");
-    expect(within(counts).queryByText(/reale/)).toBeNull();
-    expect(screen.getByLabelText(/Modalità: simulazione\./)).toBeInTheDocument();
-    expect(screen.getByLabelText(/Modalità: paper\./)).toBeInTheDocument();
+    expect(counts).toHaveTextContent("1 simulato · 1 Alpaca prova · 0 reali");
+    expect(screen.getByLabelText(/^Modalità: SMTrading \(simulato\)\./)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Modalità: Alpaca · prova\./)).toBeInTheDocument();
     expect(await screen.findByRole("status", { name: "Modalità di trading" })).toHaveTextContent(
-      "Simulazione e paper trading (conti demo) – nessun denaro reale",
+      "SMTrading (simulato) e conti di prova dei broker – nessun denaro reale",
     );
+  });
+
+  it("dashboard counts per broker label", async () => {
+    current = {
+      ...dashboard,
+      mode_counts: [
+        { label: "SMTrading (simulato)", count: 2, live: false },
+        { label: "Alpaca · prova", count: 1, live: false },
+      ],
+    };
+    const { unmount } = renderApp("/");
+    const counts = await screen.findByRole("list", { name: "Portafogli per modalità" });
+    expect(counts).toHaveTextContent("2 simulati · 1 Alpaca prova · 0 reali");
+    current = {
+      ...dashboard,
+      mode_counts: [
+        { label: "Trading 212 · demo", count: 1, live: false },
+        { label: "🔴 Alpaca · reale · sospeso", count: 1, live: true },
+      ],
+    };
+    unmount();
+    renderApp("/");
+    const live = await screen.findByRole("list", { name: "Portafogli per modalità" });
+    expect(live).toHaveTextContent("1 Trading 212 demo · 1 🔴 Alpaca reale sospeso");
+    expect(live).not.toHaveTextContent("0 reali");
   });
 
   it("says simulation only when no portfolio has a broker, and flags real money in red", async () => {
@@ -180,7 +207,7 @@ describe("Dashboard", () => {
     server.use(http.get("*/api/dashboard/modes", () => HttpResponse.json(current.modes)));
     const { unmount } = renderApp("/");
     expect(await screen.findByRole("status", { name: "Modalità di trading" })).toHaveTextContent(
-      "Simulazione – denaro virtuale, prezzi di mercato reali",
+      "SMTrading (simulato) – denaro virtuale, prezzi di mercato reali",
     );
     unmount();
     current = { ...dashboard, modes: { simulazione: 1, paper: 0, reale: 1 } };

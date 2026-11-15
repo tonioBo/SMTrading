@@ -37,7 +37,13 @@ from smtrading.common.money import quantize_money
 from smtrading.connectors.models import Connector
 from smtrading.mcp.dto import to_jsonable
 from smtrading.performance.service import MAX_SERIES_POINTS, PERIODS, SPANS, downsample
-from smtrading.portfolios.mode import PortfolioMode, mode_fields, portfolio_links
+from smtrading.portfolios.mode import (
+    PortfolioMode,
+    admin_mode_fields,
+    mode_counts,
+    mode_fields,
+    portfolio_links,
+)
 from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
 from smtrading.portfolios.queries import day_pnl_detail
 from smtrading.positions.models import Position
@@ -83,7 +89,7 @@ async def dashboard(session: DbSession, redis: RedisClient, qs: Quotes) -> dict[
     for p in portfolios:
         item: dict[str, Any] = {
             "id": str(p.id), "name": p.name, "status": to_jsonable(p.status),
-            **to_jsonable(mode_fields(p, links.get(p.broker_link_id))),
+            **to_jsonable(admin_mode_fields(p, links.get(p.broker_link_id))),
             "equity_eur": None, "day_pnl_eur": None, "day_pnl_pct": None,
             "stale_symbols": [], "error": None,
         }
@@ -131,6 +137,7 @@ async def dashboard(session: DbSession, redis: RedisClient, qs: Quotes) -> dict[
         "day_pnl_pct": to_jsonable(total_pct),
         "portfolios": items,
         "modes": modes,
+        "mode_counts": mode_counts((p, links.get(p.broker_link_id)) for p in portfolios),
         "connectors": [
             {"name": name, "enabled": enabled, "health_status": health,
              "last_checked_at": to_jsonable(checked)}

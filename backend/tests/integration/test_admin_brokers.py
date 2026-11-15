@@ -360,6 +360,28 @@ async def test_portfolio_mode_follows_the_broker_link(admin, fake_alpaca):
     assert {p["id"]: p["mode"] for p in dash["portfolios"]}[pf["id"]] == "paper"
 
 
+async def test_dashboard_mode_counts(admin, fake_alpaca):
+    """Seeded Demo + 1 more simulated, 1 on Alpaca paper: counts grouped by mode_label."""
+    c = admin.client
+    link = await _link(c)
+    await _portfolio(c)
+    pf = await _portfolio(c)
+    r = await c.put(f"/api/portfolios/{pf['id']}/broker-link",
+                    json={"broker_link_id": link["id"]})
+    assert r.status_code == 200 and r.json()["mode_label"] == "Alpaca · prova"
+    assert r.json()["broker_kind"] == "alpaca_paper"
+    dash = (await c.get("/api/dashboard")).json()
+    assert dash["mode_counts"] == [
+        {"label": "SMTrading (simulato)", "count": 2, "live": False},
+        {"label": "Alpaca · prova", "count": 1, "live": False},
+    ]
+    row = {p["id"]: p for p in dash["portfolios"]}[pf["id"]]
+    assert (row["mode"], row["broker_kind"], row["mode_label"]) == (
+        "paper", "alpaca_paper", "Alpaca · prova")
+    assert dash["modes"] == {"simulazione": 2, "paper": 1, "reale": 0}
+    assert (await c.get("/api/dashboard/modes")).json() == dash["modes"]
+
+
 class SMTFailAlpaca(FakeAlpaca):
     """The adapter itself raises an SMTError whose text carries the key."""
 

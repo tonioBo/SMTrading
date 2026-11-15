@@ -25,7 +25,7 @@ from smtrading.agents.service import write_audit
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.fingerprints import name_warning
 from smtrading.mcp.dto import parse_ts, to_jsonable
-from smtrading.portfolios.mode import mode_fields, portfolio_links
+from smtrading.portfolios.mode import admin_mode_fields, portfolio_links
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 
 router = APIRouter(prefix="/api", tags=["agents"], dependencies=[Depends(require_admin)])
@@ -69,7 +69,7 @@ async def _agent_dtos(session: AsyncSession, agents_: list[Agent]) -> list[dict[
                 "portfolio_name": portfolio.name,
                 "permission": link.permission,
                 "archived": portfolio.status == PortfolioStatus.archived,
-                **to_jsonable(mode_fields(portfolio, broker)),
+                **to_jsonable(admin_mode_fields(portfolio, broker)),
             }
         )
     return [

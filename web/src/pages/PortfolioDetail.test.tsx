@@ -55,6 +55,8 @@ const portfolio: Portfolio = {
   slippage_bps: 5,
   status: "active",
   mode: "simulazione",
+  broker_kind: null,
+  mode_label: "SMTrading (simulato)",
   timezone: "Europe/Rome",
   risk_profile_id: "r1",
   reduce_only_reason: null,
@@ -603,7 +605,7 @@ describe("PortfolioDetail", () => {
   });
 
   it("resume and flatten ask for totp", async () => {
-    current = { ...portfolio, mode: "reale", live_state: "armed", broker_link_id: "l1", status: "reduce_only", reduce_only_reason: "live_reconcile" };
+    current = { ...portfolio, mode: "reale", live_state: "armed", broker_kind: "t212_live", mode_label: "🔴 Trading 212 · reale", broker_link_id: "l1", status: "reduce_only", reduce_only_reason: "live_reconcile" };
     const resumes: unknown[] = [];
     const flattens: unknown[] = [];
     server.use(
@@ -620,7 +622,7 @@ describe("PortfolioDetail", () => {
     const user = userEvent.setup();
     renderApp("/portafogli/p1");
     const panel = await screen.findByRole("region", { name: "Denaro reale" });
-    expect(screen.getByLabelText(/^Modalità: reale\./)).toHaveTextContent("🔴REALE");
+    expect(screen.getByLabelText(/^Modalità: 🔴 Trading 212 · reale\./).textContent).toBe("🔴 Trading 212 · reale");
 
     await user.click(within(panel).getByRole("button", { name: "Ho verificato, riprendi" }));
     let dialog = await screen.findByRole("dialog", { name: "Riprendere il portafoglio reale?" });
@@ -642,10 +644,10 @@ describe("PortfolioDetail", () => {
   });
 
   it("a real portfolio suspended by a live anomaly has no Sblocca, and trailing stops carry the note", async () => {
-    current = { ...portfolio, mode: "paper", live_state: "dry_run", broker_link_id: "l1", status: "reduce_only", reduce_only_reason: "live_order_unknown" };
+    current = { ...portfolio, mode: "paper", live_state: "dry_run", broker_kind: "alpaca_live", mode_label: "🔴 Alpaca · reale · prova a secco", broker_link_id: "l1", status: "reduce_only", reduce_only_reason: "live_order_unknown" };
     server.use(http.get("*/api/portfolios/p1/orders", () => HttpResponse.json([{ ...openOrder, type: "trailing_stop" }])));
     const user = await openTab("Rischio");
-    expect(screen.getByLabelText(/^Modalità: reale · prova\./)).toHaveTextContent("🔴REALE · PROVA");
+    expect(screen.getByLabelText(/^Modalità: 🔴 Alpaca · reale · prova a secco\./).textContent).toBe("🔴 Alpaca · reale · prova a secco");
     expect(await screen.findByText("Anomalia del denaro reale: esito sconosciuto di un ordine", { selector: "dd" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sblocca" })).not.toBeInTheDocument();
     const panel = screen.getByRole("region", { name: "Denaro reale" });

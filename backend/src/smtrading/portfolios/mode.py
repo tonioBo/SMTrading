@@ -68,3 +68,48 @@ def mode_fields(portfolio: Portfolio, link: BrokerLink | None) -> dict:
                                link.live_state if link else None),
         "live_state": live_state_of(link),
     }
+
+
+# The portal's names for the mode (admin DTOs only: agents never see these, see
+# mcp/tools_portfolio.py, which keeps mode_fields).
+BROKER_NAMES = {"alpaca": "Alpaca", "t212": "Trading 212", "etoro": "eToro"}  # kind prefix
+PRACTICE_WORD = {"alpaca_paper": "prova", "t212_demo": "demo", "etoro_demo": "demo"}
+SIMULATED_LABEL = "SMTrading (simulato)"
+_LIVE_SUFFIX = {"dry_run": " · prova a secco", "configured": " · sospeso"}
+
+
+def mode_label(portfolio: Portfolio, link: BrokerLink | None) -> str:
+    """What the portal shows for the portfolio's mode, with the broker's name:
+    «SMTrading (simulato)», «Alpaca · prova», «🔴 Trading 212 · reale · sospeso»…
+    An unknown kind is shown as it is."""
+    if link is None:
+        return SIMULATED_LABEL
+    name = BROKER_NAMES.get(link.kind.split("_", 1)[0])
+    if name is None:
+        return link.kind
+    if link.kind in PRACTICE_WORD:
+        return f"{name} · {PRACTICE_WORD[link.kind]}"
+    if link.kind in LIVE_KINDS:
+        return f"🔴 {name} · reale{_LIVE_SUFFIX.get(link.live_state, '')}"
+    return link.kind
+
+
+def admin_mode_fields(portfolio: Portfolio, link: BrokerLink | None) -> dict:
+    """mode_fields plus the portal-only `broker_kind` and `mode_label`."""
+    return {
+        **mode_fields(portfolio, link),
+        "broker_kind": link.kind if link else None,
+        "mode_label": mode_label(portfolio, link),
+    }
+
+
+def mode_counts(rows) -> list[dict]:
+    """`[{label, count, live}]` of (portfolio, link) pairs grouped by mode_label: the
+    simulated ones first, then practice/demo alphabetically, then real-money ones."""
+    counts: dict[str, list] = {}
+    for portfolio, link in rows:
+        label = mode_label(portfolio, link)
+        entry = counts.setdefault(label, [0, link is None, live_state_of(link) is not None])
+        entry[0] += 1
+    order = sorted(counts.items(), key=lambda kv: (not kv[1][1], kv[1][2], kv[0]))
+    return [{"label": label, "count": n, "live": live} for label, (n, _, live) in order]

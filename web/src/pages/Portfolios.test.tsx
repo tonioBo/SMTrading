@@ -28,6 +28,8 @@ function portfolio(id: string, name: string, extra: Partial<Portfolio> = {}): Po
     slippage_bps: 0,
     status: "active",
     mode: "simulazione",
+    broker_kind: null,
+    mode_label: "SMTrading (simulato)",
     timezone: "Europe/Rome",
     risk_profile_id: null,
     reduce_only_reason: null,

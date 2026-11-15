@@ -592,3 +592,60 @@ async def test_dry_run_rejection_is_agent_safe(mcp_server, mcp_call, book, monke
     await _set_hide_mode(mcp_server.db_url, False)
     _, got = await mcp_call(url, token, "get_order", {"order_id": order_id})
     assert got["reject_code"] == "LIVE_DRY_RUN"
+
+
+async def test_agent_payloads_unchanged_by_mode_labels(mcp_server, mcp_call, book):
+    """The portal's broker-name labels never reach the agents: list_portfolios and
+    get_portfolio carry no mode_label/broker_kind nor their texts, with mcp_hide_mode on
+    and off; where `mode` shows it is the one of mode_fields."""
+    from smtrading.agents.models import AgentPortfolio
+    from smtrading.brokers.live.account import encrypt_live_config
+    from smtrading.brokers.models import BrokerLink
+    from smtrading.portfolios.mode import mode_fields
+
+    url, token = mcp_server.url, mcp_server.token
+    async with _Db(mcp_server.db_url) as s:
+        demo = await s.get(Portfolio, mcp_server.demo_id)
+        demo.name = "Principale"  # stays simulated (the seeded name "Demo" would match)
+        paper_link = BrokerLink(name="Conto A", kind="alpaca_paper", health_failures=0,
+                                config_encrypted=b"unused")
+        live_link = BrokerLink(
+            name="Conto B", kind="t212_live", live_state="dry_run", health_failures=0,
+            config_encrypted=encrypt_live_config(
+                {"api_key": "CANARYKEYID0001", "api_secret": "CANARYSECRET-do-not-use"}),
+        )
+        s.add_all([paper_link, live_link])
+        await s.flush()
+        second = await create_portfolio(s, name="Secondo", initial_cash=D(1000))
+        third = await create_portfolio(s, name="Terzo", initial_cash=D(1000))
+        second.broker_link_id, third.broker_link_id = paper_link.id, live_link.id
+        agent_id = (await s.scalar(select(AgentPortfolio.agent_id).where(
+            AgentPortfolio.portfolio_id == mcp_server.demo_id)))
+        s.add_all([AgentPortfolio(agent_id=agent_id, portfolio_id=p.id, permission="read")
+                   for p in (second, third)])
+        await s.commit()
+        discard_post_commit(s)
+        expected = {
+            str(p.id): mode_fields(p, link)["mode"].value
+            for p, link in ((demo, None), (second, paper_link), (third, live_link))
+        }
+
+    for hide in (True, False):
+        await _set_hide_mode(mcp_server.db_url, hide)
+        is_error, listed = await mcp_call(url, token, "list_portfolios")
+        assert not is_error, listed
+        assert {p["id"] for p in listed} == set(expected)
+        payloads = [listed]
+        for pid, mode in expected.items():
+            is_error, got = await mcp_call(url, token, "get_portfolio", {"portfolio_id": pid})
+            assert not is_error, got
+            payloads.append(got)
+            for p in (got, next(x for x in listed if x["id"] == pid)):
+                assert "mode_label" not in p and "broker_kind" not in p, p
+                if "mode" in p:
+                    assert p["mode"] == mode, p
+                else:
+                    assert hide, p
+        text = json.dumps(payloads, ensure_ascii=False)
+        for word in ("SMTrading (simulato)", "Alpaca", "· prova", "· demo", "Trading 212"):
+            assert word not in text, (hide, word, text)

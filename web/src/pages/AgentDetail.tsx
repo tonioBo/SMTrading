@@ -116,7 +116,7 @@ export default function AgentDetail() {
                       {p.archived && <span className="ml-2 text-xs text-muted">(archiviato)</span>}
                     </td>
                     <td className="py-1.5 pr-3">{p.permission === "trade" ? "Trade" : "Lettura"}</td>
-                    <td className="py-1.5">{p.mode ? <PortfolioModeBadge mode={p.mode} liveState={p.live_state} /> : "—"}</td>
+                    <td className="py-1.5">{p.mode ? <PortfolioModeBadge mode={p.mode} liveState={p.live_state} label={p.mode_label} /> : "—"}</td>
                   </tr>
                 ))}
               </tbody>

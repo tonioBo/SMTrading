@@ -160,7 +160,7 @@ describe("Layout", () => {
 
   it("shows the mode banner from the modes endpoint, and a neutral notice if it fails", async () => {
     renderApp("/");
-    expect(await screen.findByText("Simulazione – denaro virtuale, prezzi di mercato reali")).toBeInTheDocument();
+    expect(await screen.findByText("SMTrading (simulato) – denaro virtuale, prezzi di mercato reali")).toBeInTheDocument();
   });
 
   it("banner red with count and telegram warning", async () => {
@@ -209,8 +209,16 @@ describe("Layout", () => {
       http.get("*/api/live/status", () => HttpResponse.json({ armed_count: 0, dry_run_count: 1, portfolios: [], telegram_ok: false })),
     );
     renderApp("/");
-    expect(await screen.findByText("Simulazione – denaro virtuale, prezzi di mercato reali")).toBeInTheDocument();
+    expect(await screen.findByText("SMTrading (simulato) – denaro virtuale, prezzi di mercato reali")).toBeInTheDocument();
     expect(screen.queryByText(/Telegram non funziona/)).not.toBeInTheDocument();
+  });
+
+  it("banner simulated and practice text", async () => {
+    server.use(http.get("*/api/dashboard/modes", () => HttpResponse.json({ simulazione: 1, paper: 2, reale: 0 })));
+    renderApp("/");
+    const banner = await screen.findByRole("status", { name: "Modalità di trading" });
+    expect(banner).toHaveTextContent("SMTrading (simulato) e conti di prova dei broker – nessun denaro reale");
+    expect(banner.className).toContain("text-warn");
   });
 
   it("falls back to a neutral notice when the modes cannot be read", async () => {
