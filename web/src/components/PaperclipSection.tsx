@@ -28,6 +28,9 @@ function StatusLine({ status }: { status: PaperclipStatus | undefined }) {
           Ultima lettura: {status.last_ok_at ? formatDateTime(status.last_ok_at) : "mai"}
         </p>
       )}
+      {status.rebaseline_reason === "config" && (
+        <p className="text-muted">Configurazione cambiata: nuova fotografia delle regole al prossimo controllo</p>
+      )}
       {status.key_expiring && <p className="text-warn">{expiryText(status.key_expires_at, "La chiave board")}</p>}
     </div>
   );

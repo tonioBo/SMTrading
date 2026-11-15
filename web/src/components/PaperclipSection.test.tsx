@@ -40,6 +40,7 @@ function baseStatus(): PaperclipStatus {
     last_error: null,
     consecutive_errors: 0,
     baseline_at: "2026-11-10T10:00:00Z",
+    rebaseline_reason: null,
     baseline_count: 4,
     key_expires_at: null,
     key_expiring: false,
@@ -177,6 +178,14 @@ describe("PaperclipSection", () => {
     const region = await section();
     expect(await within(region).findByText(/Errore di lettura: HTTP 401/)).toBeInTheDocument();
     expect(within(region).getByText(/La chiave board scade il/)).toBeInTheDocument();
+  });
+
+  it("shows the rebaseline note after a configuration change", async () => {
+    config = baseConfig();
+    status = { ...baseStatus(), isolation: "unknown", baseline_at: null, baseline_count: 0, rebaseline_reason: "config" };
+    renderApp("/impostazioni");
+    const region = await section();
+    expect(await within(region).findByText("Configurazione cambiata: nuova fotografia delle regole al prossimo controllo")).toBeInTheDocument();
   });
 
   it("viewer sees the configuration without edit controls", async () => {

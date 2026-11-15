@@ -1116,6 +1116,8 @@ export interface PaperclipStatus {
   last_error: string | null;
   consecutive_errors: number;
   baseline_at: string | null;
+  /** "config": the company or the URL changed, the next read takes the new rules snapshot */
+  rebaseline_reason: string | null;
   baseline_count: number;
   key_expires_at: string | null;
   /** the board key expires within 7 days (or has expired) */

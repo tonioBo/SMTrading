@@ -9,7 +9,7 @@ export const commonHandlers = [
   http.get("*/api/paperclip/status", () =>
     HttpResponse.json({
       enabled: false, isolation: "off", changes: { removed: [], changed: [], added: [] }, last_ok_at: null, last_error: null,
-      consecutive_errors: 0, baseline_at: null, baseline_count: 0, key_expires_at: null, key_expiring: false,
+      consecutive_errors: 0, baseline_at: null, rebaseline_reason: null, baseline_count: 0, key_expires_at: null, key_expiring: false,
     }),
   ),
   http.get("*/api/paperclip/config", () =>

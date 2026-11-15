@@ -25,6 +25,7 @@ function baseStatus(): PaperclipStatus {
     last_error: null,
     consecutive_errors: 0,
     baseline_at: "2026-11-10T10:00:00Z",
+    rebaseline_reason: null,
     baseline_count: 4,
     key_expires_at: null,
     key_expiring: false,
