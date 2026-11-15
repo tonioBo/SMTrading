@@ -19,8 +19,8 @@ portfolios that are not archived, plus the fills of the period.
 
 import asyncio
 import logging
+import re
 import uuid
-from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
@@ -32,6 +32,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.activity.models import Activity, ActivityLevel, Decision, TelegramState
+from smtrading.agents.models import Agent
 from smtrading.common.config import get_settings
 from smtrading.engine.models import Fill
 from smtrading.jobs.runs import run_job_once
@@ -67,11 +68,19 @@ JOBS = (
     Job("telegram.weekly", "weekly", time(18, 30), weekday=4),
 )
 
-_DECISION_LABELS = {
-    "proposal": "proposta", "approval": "approvazione", "veto": "veto",
-    "allocation": "allocazione", "strategy": "strategia", "risk_rule": "regola di rischio",
-    "other": "altro",
-}
+DECISION_GROUPS = (
+    (("strategy",), "Strategie"), (("risk_rule",), "Rischio"),
+    (("allocation",), "Allocazioni"), (("veto", "approval", "proposal"), "Veti e approvazioni"),
+    (("other",), "Altro"),
+)
+OUTCOME_ICON = {"approvata": "✅", "respinta": "❌", "sospesa": "⏸", "modificata": "✏️",
+                "informativa": "ℹ️"}
+_KIND_ICON = {"approval": "✅", "veto": "❌"}  # decisions without an outcome
+DECISION_LINES = 15  # decision lines per summary, then "… e altre N"
+SUMMARY_SUBJECT = 120  # a summary used as the subject is cut to this length
+REF_MAX = 20
+_INTERNAL_IDS = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|#\d+", re.IGNORECASE)
 _DIGEST_GROUPS = (
     (ActivityLevel.critical, "Eventi critici"), (ActivityLevel.warning, "Avvisi"),
     (ActivityLevel.executed, "Ordini eseguiti"), (ActivityLevel.info, "Altri eventi"),
@@ -172,6 +181,63 @@ def _section(title: str, lines: list[str], limit: int | None = SECTION_LINES) ->
     return out
 
 
+def _plain(text: str | None) -> str:
+    """One line, without internal ids (uuids, `#<number>`)."""
+    return _one_line(_INTERNAL_IDS.sub("", text or ""))
+
+
+def decision_line(d: Decision, agent: str, portfolio: str | None) -> str:
+    """One decision for people (pure): `✅ STR-001 · <subject> — <portfolio> — <reason>
+    (<agent>)`. Without a subject the summary, cut to 120 characters; without a reason
+    that segment is left out; internal ids never appear."""
+    icon = OUTCOME_ICON.get(d.outcome or "") or _KIND_ICON.get(d.kind, "•")
+    ref = (d.details or {}).get("ref")
+    ref = _one_line(ref) if isinstance(ref, str) and len(ref) <= REF_MAX else ""
+    subject = _plain(d.subject)
+    if not subject:
+        subject = _plain(d.summary)
+        if len(subject) > SUMMARY_SUBJECT:
+            subject = subject[:SUMMARY_SUBJECT - 1].rstrip() + "…"
+    reason = _plain(d.reason)
+    where = _one_line(portfolio) if portfolio else "generale"
+    return (f"{icon} {ref + ' · ' if ref else ''}{subject} — {where}"
+            f"{' — ' + reason if reason else ''} ({_one_line(agent)})")
+
+
+async def _decision_section(session: AsyncSession, kind: Kind, since: datetime,
+                            now: datetime, zone: ZoneInfo) -> list[str]:
+    """«🧭 Decisioni di oggi (N)» (or «della settimana»), grouped by kind, decisions of
+    archived portfolios left out; at most 15 lines, then «… e altre N»."""
+    rows = (await session.execute(
+        select(Decision, Agent.name, Portfolio.name)
+        .join(Agent, Agent.id == Decision.agent_id)
+        .outerjoin(Portfolio, Portfolio.id == Decision.portfolio_id)
+        .where(Decision.created_at >= since, Decision.created_at <= now,
+               or_(Decision.portfolio_id.is_(None),
+                   Decision.portfolio_id.in_(live_portfolio_ids())))
+        .order_by(Decision.created_at, Decision.id)
+    )).all()
+    label = "di oggi" if kind == "daily" else "della settimana"
+    if not rows:
+        return [f"Decisioni {label}: nessuna"]
+    out = [f"🧭 Decisioni {label} ({len(rows)})"]
+    shown = 0
+    for kinds, title in DECISION_GROUPS:
+        group = [r for r in rows if r[0].kind in kinds]
+        if not group or shown >= DECISION_LINES:
+            continue
+        out.append(title)
+        for d, agent, portfolio in group[:DECISION_LINES - shown]:
+            line = decision_line(d, agent, portfolio)
+            if kind == "weekly":
+                line = f"{d.created_at.astimezone(zone):%d/%m} {line}"
+            out.append(line)
+            shown += 1
+    if len(rows) > shown:
+        out.append(f"… e altre {len(rows) - shown}")
+    return out
+
+
 async def build_digest(session: AsyncSession, now: datetime, *,
                        tz: str | None = None) -> Parts | None:
     """The night digest of the activity rows marked `digest`, or None when there are none.
@@ -220,7 +286,8 @@ def _window(kind: Kind, now: datetime, zone: ZoneInfo) -> datetime:
 async def build_summary(session: AsyncSession, kind: Kind, now: datetime, *,
                         tz: str | None = None) -> Parts:
     """The daily (from local midnight) or weekly (last 7 days) summary: executed and
-    rejected orders, critical and warning events, decisions by kind and the portfolio
+    rejected orders, critical and warning events, the decisions of the period grouped by
+    kind (one plain line each, see `decision_line`) and the portfolio
     ranking as a `pre` block, split into messages of at most 4096 characters. Archived
     portfolios are left out."""
     zone = ZoneInfo(tz or get_settings().tz)
@@ -246,14 +313,6 @@ async def build_summary(session: AsyncSession, kind: Kind, now: datetime, *,
     warnings = lines_of(lambda a: a.level == ActivityLevel.warning
                         and a.type not in ("order.filled", "order.rejected"))
 
-    decisions = Counter(dict((await session.execute(
-        select(Decision.kind, func.count())
-        .where(Decision.created_at >= since, Decision.created_at <= now,
-               or_(Decision.portfolio_id.is_(None),
-                   Decision.portfolio_id.in_(live_portfolio_ids())))
-        .group_by(Decision.kind)
-    )).all()))
-
     today = now.astimezone(zone)
     if kind == "daily":
         head = f"📊 Riepilogo giornaliero — {today:%d/%m/%Y}"
@@ -270,13 +329,7 @@ async def build_summary(session: AsyncSession, kind: Kind, now: datetime, *,
     lines += _section(f"{PREFIX['critical']}Eventi critici", critical)
     lines += _section(f"{PREFIX['warning']}Avvisi", warnings)
     lines.append("")
-    if decisions:
-        by_kind = " · ".join(
-            f"{_DECISION_LABELS.get(k, k)} {n}"
-            for k, n in sorted(decisions.items(), key=lambda kv: (-kv[1], kv[0])))
-        lines.append(f"Decisioni degli agenti ({decisions.total()}): {by_kind}")
-    else:
-        lines.append("Decisioni degli agenti: nessuna")
+    lines += await _decision_section(session, kind, since, now, zone)
     period = "1d" if kind == "daily" else "1w"
     lines += ["", "Classifica: rendimento e drawdown delle ultime 24 ore, operazioni di oggi"
               if kind == "daily" else "Classifica degli ultimi 7 giorni"]

@@ -125,3 +125,64 @@ def test_split_long_pre_block_gets_an_entity_in_every_part():
         covered.append(block)
     assert "\n".join(covered) == table
     assert parts[0][0].startswith("🟢 Riepilogo giornaliero")
+
+
+# -- «Decisioni di oggi» lines (telegram/summaries.py) ----------------------------------
+
+
+def _decision(**kw):
+    from smtrading.activity.models import Decision
+
+    base = {"kind": "strategy", "summary": "Decisione", "details": {}, "outcome": None,
+            "reason": None, "subject": None}
+    base.update(kw)
+    return Decision(**base)
+
+
+def test_decision_line_full():
+    from smtrading.telegram.summaries import decision_line
+
+    d = _decision(outcome="approvata", details={"ref": "STR-001"},
+                  subject="incrocio medie mobili 10/30 su SPY, QQQ e DIA",
+                  reason="trend confermato")
+    assert decision_line(d, "CEO", "Prudente") == (
+        "✅ STR-001 · incrocio medie mobili 10/30 su SPY, QQQ e DIA — Prudente — "
+        "trend confermato (CEO)")
+
+
+def test_decision_line_fallback_summary_no_ids():
+    from smtrading.telegram.summaries import decision_line
+
+    uid = "3f2a9c1e-1b2c-4d5e-8f90-123456789abc"
+    summary = f"Approvo la proposta #42 ({uid}) " + "x" * 200
+    line = decision_line(_decision(kind="proposal", summary=summary[:200]), "Risk", None)
+    assert uid not in line and "#42" not in line
+    assert line.startswith("• ") and line.endswith(" — generale (Risk)")
+    subject = line[len("• "):-len(" — generale (Risk)")]
+    assert len(subject) == 120 and subject.endswith("…")
+    upper = decision_line(_decision(summary=f"Vedi {uid.upper()}"), "Risk", None)
+    assert upper == "• Vedi — generale (Risk)"
+
+
+def test_decision_line_icons_and_ref():
+    from smtrading.telegram.summaries import OUTCOME_ICON, decision_line
+
+    assert OUTCOME_ICON == {"approvata": "✅", "respinta": "❌", "sospesa": "⏸",
+                            "modificata": "✏️", "informativa": "ℹ️"}
+    assert decision_line(_decision(kind="approval"), "A", None).startswith("✅ Decisione")
+    assert decision_line(_decision(kind="veto"), "A", None).startswith("❌ Decisione")
+    assert decision_line(_decision(kind="veto", outcome="sospesa"), "A", None
+                         ).startswith("⏸ Decisione")
+    # a ref longer than 20 characters, or not a text, is left out
+    assert decision_line(_decision(details={"ref": "R" * 21}), "A", "P") == (
+        "• Decisione — P (A)")
+    assert decision_line(_decision(details={"ref": 7}), "A", "P") == "• Decisione — P (A)"
+
+
+def test_decision_groups():
+    from smtrading.telegram.summaries import DECISION_GROUPS
+
+    assert DECISION_GROUPS == (
+        (("strategy",), "Strategie"), (("risk_rule",), "Rischio"),
+        (("allocation",), "Allocazioni"), (("veto", "approval", "proposal"), "Veti e approvazioni"),
+        (("other",), "Altro"))

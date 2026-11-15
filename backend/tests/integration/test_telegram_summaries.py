@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from smtrading.activity.models import Activity, Decision
 from smtrading.activity.service import log_decision
-from smtrading.agents.service import create_agent
+from smtrading.agents.service import assign_portfolio, create_agent
 from smtrading.common.db import make_engine
 from smtrading.engine.execution import execute_fill
 from smtrading.engine.models import Fill, OrderSide, OrderType
@@ -113,6 +113,19 @@ async def _archive(maker, pid) -> None:
     async with maker() as s:
         await s.execute(update(Portfolio).where(Portfolio.id == pid)
                         .values(status=PortfolioStatus.archived))
+        await s.commit()
+
+
+async def _decisions(maker, rows: list[dict], *, at: datetime, agent: str = "CEO") -> None:
+    """Decisions logged by `agent`, `at` + 1 minute each in the given order."""
+    async with maker() as s:
+        a, _ = await create_agent(s, agent)
+        for pid in {kw["portfolio_id"] for kw in rows if kw.get("portfolio_id")}:
+            await assign_portfolio(s, a.id, pid, "read")
+        for i, kw in enumerate(rows):
+            d = await log_decision(s, a.id, **kw)
+            d.created_at = at + timedelta(minutes=i)
+        discard_post_commit(s)
         await s.commit()
 
 
@@ -254,7 +267,8 @@ async def test_daily_summary_at_1800_once(maker):
     assert "10:15 Ordine eseguito: buy 1 AAPL" in text
     assert "Test 250 A" in text and "Ordine rifiutato: TSLA" in text
     assert "Kill switch attivo" in text and "Ieri" not in text
-    assert "Decisioni degli agenti (3): proposta 2 · veto 1" in text
+    assert "🧭 Decisioni di oggi (3)\nVeti e approvazioni\n• Compra AAPL — generale (Analyst)\n" in text
+    assert "• Compra MSFT — generale (Analyst)\n❌ No — generale (Analyst)" in text
     [pre] = msg.entities
     table = text[len(text) - pre["length"]:]  # no emoji inside the table
     assert pre["type"] == "pre" and pre["offset"] == utf16_len(text) - pre["length"]
@@ -359,11 +373,13 @@ async def test_summary_leaves_out_archived_portfolios(maker):
                     portfolio_id=live)
     await _activity(maker, summary="Ordine eseguito: archiviato", ts=rome(FRI, 10),
                     portfolio_id=gone)
+    await _decisions(maker, [{"kind": "strategy", "summary": "Strategia archiviata",
+                              "portfolio_id": gone}], at=rome(FRI, 11))
     await _archive(maker, gone)
     async with maker() as s:
         [(text, _)] = await build_summary(s, "daily", rome(FRI, 18), tz=TZ)
     assert "vivo" in text and "archiviato" not in text and "Vecchio" not in text
-    assert "Decisioni degli agenti: nessuna" in text
+    assert "Decisioni di oggi: nessuna" in text and "Strategia archiviata" not in text
 
 
 async def test_long_summary_split_with_pre_entities(maker):
@@ -505,3 +521,62 @@ async def test_digest_without_events_sends_nothing(maker):
     async with maker() as s:
         assert await build_digest(s, rome(FRI, 7), tz=TZ) is None
         assert await job_done(s, "telegram.digest", "2027-03-12")
+
+
+async def test_daily_summary_groups_decisions(maker):
+    pid = await _portfolio(maker, "Prudente")
+    await _decisions(maker, [
+        {"kind": "veto", "summary": "Veto su TSLA", "portfolio_id": pid,
+         "outcome": "respinta", "subject": "acquisto TSLA", "reason": "troppo volatile"},
+        {"kind": "strategy", "summary": "s1", "portfolio_id": pid, "outcome": "approvata",
+         "subject": "incrocio medie mobili 10/30 su SPY, QQQ e DIA",
+         "reason": "trend confermato", "details": {"ref": "STR-001"}},
+        {"kind": "risk_rule", "summary": "Stop loss al 5% per tutti", "outcome": "informativa"},
+        {"kind": "strategy", "summary": "Momentum su NVDA", "portfolio_id": pid},
+    ], at=rome(FRI, 9))
+    await _decisions(maker, [{"kind": "strategy", "summary": "Ieri"}], at=rome(THU, 20),
+                     agent="Analyst")
+    async with maker() as s:
+        [(text, _)] = await build_summary(s, "daily", rome(FRI, 18), tz=TZ)
+    assert "Ieri" not in text
+    assert ("\n🧭 Decisioni di oggi (4)\n"
+            "Strategie\n"
+            "✅ STR-001 · incrocio medie mobili 10/30 su SPY, QQQ e DIA — Prudente — "
+            "trend confermato (CEO)\n"
+            "• Momentum su NVDA — Prudente (CEO)\n"
+            "Rischio\n"
+            "ℹ️ Stop loss al 5% per tutti — generale (CEO)\n"
+            "Veti e approvazioni\n"
+            "❌ acquisto TSLA — Prudente — troppo volatile (CEO)\n") in text
+    assert "Allocazioni" not in text and "Altro" not in text
+
+
+async def test_decisions_capped_at_15(maker):
+    await _decisions(maker, [{"kind": "other", "summary": f"Decisione n.{i:02d}"}
+                             for i in range(18)], at=rome(FRI, 9))
+    async with maker() as s:
+        [(text, _)] = await build_summary(s, "daily", rome(FRI, 18), tz=TZ)
+    assert "🧭 Decisioni di oggi (18)\nAltro\n" in text
+    shown = [ln for ln in text.splitlines() if ln.startswith("• Decisione n.")]
+    assert len(shown) == 15 and shown[-1].startswith("• Decisione n.14")
+    assert "• Decisione n.14 — generale (CEO)\n… e altre 3\n" in text
+
+
+async def test_weekly_decisions_section(maker):
+    await _decisions(maker, [{"kind": "allocation", "summary": "Più peso su ETF",
+                              "outcome": "modificata"}], at=rome(9, 10))
+    await _decisions(maker, [{"kind": "approval", "summary": "Ok al ribilanciamento"}],
+                     at=rome(FRI, 10), agent="Risk")
+    await _decisions(maker, [{"kind": "other", "summary": "Troppo vecchia"}],
+                     at=rome(4, 10), agent="Old")
+    async with maker() as s:
+        [(text, _)] = await build_summary(s, "weekly", rome(FRI, 18, 30), tz=TZ)
+        [(empty, _)] = await build_summary(s, "weekly", rome(FRI, 18, 30) + timedelta(days=30),
+                                           tz=TZ)
+    assert ("🧭 Decisioni della settimana (2)\n"
+            "Allocazioni\n"
+            "09/03 ✏️ Più peso su ETF — generale (CEO)\n"
+            "Veti e approvazioni\n"
+            "12/03 ✅ Ok al ribilanciamento — generale (Risk)\n") in text
+    assert "Troppo vecchia" not in text
+    assert "Decisioni della settimana: nessuna" in empty
