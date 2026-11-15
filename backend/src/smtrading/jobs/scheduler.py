@@ -37,6 +37,7 @@ from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfol
 from smtrading.risk.daily_loss import reset_daily
 from smtrading.risk.margin import margin_sweep
 from smtrading.risk.models import JobRun
+from smtrading.useractivity.throttle import flush_suppressed
 
 log = logging.getLogger("smtrading.jobs.scheduler")
 
@@ -47,6 +48,7 @@ DAY_OPEN_INTERVAL_S = 60
 MARGIN_SWEEP_INTERVAL_S = 60
 SNAPSHOT_INTERVAL_S = 300
 RECONCILE_INTERVAL_S = 300
+ACTIVITY_FLUSH_INTERVAL_S = 60  # the coalesced rows of the anonymous rate limit
 DAILY_RETRY_S = 300
 CATCH_UP_DAYS = 7
 
@@ -91,6 +93,11 @@ class JobScheduler:
             "equity snapshots", SNAPSHOT_INTERVAL_S, now,
             lambda: take_snapshots(self._sm, self._qs, clock=self._clock),
         )
+        if self._redis is not None:
+            await self._every(
+                "activity log suppressed rows", ACTIVITY_FLUSH_INTERVAL_S, now,
+                lambda: flush_suppressed(self._sm, self._redis),
+            )
         if self._http is not None:
             await self._every(
                 "broker reconciliation", RECONCILE_INTERVAL_S, now,

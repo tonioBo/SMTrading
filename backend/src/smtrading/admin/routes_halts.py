@@ -10,13 +10,13 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
+from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_access
 from smtrading.admin.common import _transaction
 from smtrading.agents.service import write_audit
 from smtrading.mcp.dto import to_jsonable
 from smtrading.risk import halts
 
-router = APIRouter(prefix="/api", tags=["halts"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api", tags=["halts"], dependencies=[Depends(require_access)])
 
 HISTORY_LIMIT = 50
 

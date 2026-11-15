@@ -14,6 +14,7 @@ from starlette.routing import Route
 
 import smtrading.models  # noqa: F401  (complete mapper registry before any session)
 from smtrading.admin.errors import install_error_handlers
+from smtrading.admin.routes_activity_log import router as activity_log_router
 from smtrading.admin.routes_agent_docs import router as agent_docs_router
 from smtrading.admin.routes_agents import router as agents_router
 from smtrading.admin.routes_auth import router as auth_router
@@ -22,13 +23,16 @@ from smtrading.admin.routes_connectors import router as connectors_router
 from smtrading.admin.routes_dashboard import router as dashboard_router
 from smtrading.admin.routes_fees import router as fees_router
 from smtrading.admin.routes_halts import router as halts_router
+from smtrading.admin.routes_live import emergency_router as live_emergency_router
 from smtrading.admin.routes_live import router as live_router
 from smtrading.admin.routes_markets import router as markets_router
 from smtrading.admin.routes_orders import router as orders_router
 from smtrading.admin.routes_portfolios import router as portfolios_router
+from smtrading.admin.routes_risk import emergency_router as risk_emergency_router
 from smtrading.admin.routes_risk import router as risk_router
 from smtrading.admin.routes_system import router as system_router
 from smtrading.admin.routes_telegram import router as telegram_router
+from smtrading.admin.routes_users import router as users_router
 from smtrading.admin.routes_watch import router as watch_router
 from smtrading.admin.ws import router as ws_router
 from smtrading.agentdocs import export as agent_docs_export
@@ -42,6 +46,7 @@ from smtrading.marketdata.router import MarketDataRouter
 from smtrading.mcp.auth import MCP_PATH, McpAuthMiddleware
 from smtrading.mcp.runtime import McpRuntime, get_runtime, set_runtime
 from smtrading.mcp.server import build_mcp, build_mcp_endpoint
+from smtrading.useractivity.recorder import ActivityMiddleware
 
 log = logging.getLogger(__name__)
 HEARTBEAT_MAX_AGE_S = 30.0
@@ -175,6 +180,8 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     # raw ASGI routes (all methods) at /mcp and /mcp/: no slash redirect either way
     app.router.routes.append(Route(MCP_PATH, endpoint=mcp_endpoint))
     app.router.routes.append(Route(MCP_PATH + "/", endpoint=mcp_endpoint))
+    # every unsafe /api request of a person goes to the «Registro attività»
+    app.add_middleware(ActivityMiddleware)
     app.add_middleware(McpAuthMiddleware, get_sessionmaker=lambda: get_runtime().sessionmaker)
     app.add_middleware(_BuildHeader)
     install_error_handlers(app)
@@ -185,15 +192,19 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(agent_docs_router)
     app.include_router(fees_router)
     app.include_router(risk_router)
+    app.include_router(risk_emergency_router)
     app.include_router(halts_router)
     app.include_router(connectors_router)
     app.include_router(brokers_router)
     app.include_router(live_router)
+    app.include_router(live_emergency_router)
     app.include_router(markets_router)
     app.include_router(system_router)
     app.include_router(dashboard_router)
     app.include_router(watch_router)
     app.include_router(telegram_router)
+    app.include_router(users_router)
+    app.include_router(activity_log_router)
     app.include_router(ws_router)
 
     @app.get("/health")

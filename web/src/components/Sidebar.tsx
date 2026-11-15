@@ -9,18 +9,22 @@ import {
   Landmark,
   LayoutDashboard,
   Percent,
+  ScrollText,
   Settings,
   ShieldAlert,
   Wallet,
   type LucideIcon,
 } from "lucide-react";
 import { NavLink } from "react-router-dom";
+import { useIsAdmin } from "@/api/hooks/auth";
 import { cn } from "@/lib/utils";
 
 interface NavItem {
   to: string;
   label: string;
   icon: LucideIcon;
+  /** hidden from a «Sola lettura» user */
+  adminOnly?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -36,6 +40,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/notifiche", label: "Notifiche", icon: Bell },
   { to: "/mercati", label: "Mercati", icon: Globe },
   { to: "/log-mcp", label: "Log MCP", icon: FileText },
+  { to: "/registro-attivita", label: "Registro attività", icon: ScrollText, adminOnly: true },
   { to: "/impostazioni", label: "Impostazioni", icon: Settings },
 ];
 
@@ -46,9 +51,10 @@ interface SidebarProps {
 }
 
 export function Sidebar({ collapsed = false, label = "Navigazione principale" }: SidebarProps) {
+  const admin = useIsAdmin();
   return (
     <nav aria-label={label} className={cn("flex flex-col gap-1", collapsed ? "p-2" : "p-3")}>
-      {NAV_ITEMS.map(({ to, label: text, icon: Icon }) => (
+      {NAV_ITEMS.filter((item) => admin || !item.adminOnly).map(({ to, label: text, icon: Icon }) => (
         <NavLink
           key={to}
           to={to}

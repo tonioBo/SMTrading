@@ -217,4 +217,17 @@ describe("Markets", () => {
     await user.click(within(dialog).getByRole("button", { name: "Elimina" }));
     await waitFor(() => expect(closureDeletes).toEqual(["8"]));
   });
+
+  it("shows the closures to a viewer without the form and the delete buttons", async () => {
+    server.use(
+      http.get("*/api/auth/me", () =>
+        HttpResponse.json({ email: "vera@example.com", totp_enabled: false, role: "viewer", must_change_password: false }),
+      ),
+    );
+    renderApp("/mercati");
+    const table = await screen.findByRole("table", { name: "Chiusure straordinarie" });
+    expect(await within(table).findByText("Dopo il Ringraziamento")).toBeInTheDocument();
+    expect(within(table).queryByRole("button", { name: /Elimina la chiusura/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("form", { name: "Nuova chiusura" })).not.toBeInTheDocument();
+  });
 });

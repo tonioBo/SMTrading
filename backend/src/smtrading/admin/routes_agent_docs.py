@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
+from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_access
 from smtrading.admin.common import _transaction
 from smtrading.admin.idempotency import Idempotency, idempotent
 from smtrading.agentdocs import export, service
@@ -20,7 +20,7 @@ from smtrading.agents.service import write_audit
 from smtrading.common.errors import ErrorCode
 
 router = APIRouter(prefix="/api/agent-docs", tags=["agent-docs"],
-                   dependencies=[Depends(require_admin)])
+                   dependencies=[Depends(require_access)])
 
 DocIdem = Annotated[Idempotency, Depends(idempotent("agent-docs"))]
 

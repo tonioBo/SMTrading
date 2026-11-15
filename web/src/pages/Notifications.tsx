@@ -35,6 +35,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
+import { AdminFieldset, AdminOnly } from "@/components/AdminOnly";
 
 const STATUS: Record<OutboxStatus, { label: string; variant: BadgeProps["variant"] }> = {
   pending: { label: "In coda", variant: "secondary" },
@@ -374,9 +375,11 @@ function OutboxSection() {
       header: <span className="sr-only">Azioni</span>,
       cell: (m) =>
         m.status === "failed" ? (
-          <Button type="button" size="sm" variant="outline" disabled={retry.isPending} onClick={() => retry.mutate(m.id)}>
-            Riprova
-          </Button>
+          <AdminOnly>
+            <Button type="button" size="sm" variant="outline" disabled={retry.isPending} onClick={() => retry.mutate(m.id)}>
+              Riprova
+            </Button>
+          </AdminOnly>
         ) : null,
     },
   ];
@@ -385,9 +388,11 @@ function OutboxSection() {
       <CardHeader className="flex-row flex-wrap items-end justify-between gap-3 space-y-0">
         <CardTitle id={titleId}>Ultimi messaggi</CardTitle>
         {failed > 0 && (
-          <Button type="button" variant="outline" disabled={retryAll.isPending} onClick={() => retryAll.mutate()}>
-            Riprova tutti i falliti
-          </Button>
+          <AdminOnly>
+            <Button type="button" variant="outline" disabled={retryAll.isPending} onClick={() => retryAll.mutate()}>
+              Riprova tutti i falliti
+            </Button>
+          </AdminOnly>
         )}
         <div className="w-44">
           <FormField label="Stato">
@@ -505,7 +510,11 @@ export default function Notifications() {
       <PageHeader title="Notifiche" />
       {isError && <p className="text-loss">Impossibile caricare le impostazioni di Telegram</p>}
       {isLoading && <p className="text-sm text-muted">Caricamento…</p>}
-      {data && <ConnectionSection settings={data} />}
+      {data && (
+        <AdminFieldset>
+          <ConnectionSection settings={data} />
+        </AdminFieldset>
+      )}
       <GuideSection settings={data} />
       <OutboxSection />
       <DecisionsSection />

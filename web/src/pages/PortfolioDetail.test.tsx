@@ -457,6 +457,17 @@ describe("PortfolioDetail", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
+  it("a viewer sees the orders without Nuovo ordine", async () => {
+    server.use(
+      http.get("*/api/auth/me", () =>
+        HttpResponse.json({ email: "vera@example.com", totp_enabled: false, role: "viewer", must_change_password: false }),
+      ),
+    );
+    await openTab("Ordini");
+    await screen.findByText("MSFT");
+    expect(screen.queryByRole("button", { name: "Nuovo ordine" })).not.toBeInTheDocument();
+  });
+
   it("opens the order form from Nuovo ordine and sends a previewed order", async () => {
     const previews: unknown[] = [];
     const placed: unknown[] = [];

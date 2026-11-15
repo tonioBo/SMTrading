@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { errorMessage } from "@/lib/errors";
 import { formatQty } from "@/lib/format";
+import { AdminOnly } from "@/components/AdminOnly";
 
 const CONDITIONS: Record<string, string> = {
   price_above: "prezzo sopra",
@@ -80,10 +81,12 @@ export function AgentWatchSection({ agentId }: { agentId: string }) {
             <div key={w.id} aria-label={`Watchlist ${w.name}`} className="rounded-md border border-border p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="font-medium">{w.name}</span>
-                <Button size="sm" variant="outline" aria-label={`Elimina watchlist ${w.name}`} onClick={() => setPending({ kind: "watchlist", watchlist: w })}>
-                  <Trash2 />
-                  Elimina
-                </Button>
+                <AdminOnly>
+                  <Button size="sm" variant="outline" aria-label={`Elimina watchlist ${w.name}`} onClick={() => setPending({ kind: "watchlist", watchlist: w })}>
+                    <Trash2 />
+                    Elimina
+                  </Button>
+                </AdminOnly>
               </div>
               {w.symbols.length === 0 ? (
                 <p className="mt-2 text-xs text-muted">Nessun simbolo</p>
@@ -92,14 +95,16 @@ export function AgentWatchSection({ agentId }: { agentId: string }) {
                   {w.symbols.map((s) => (
                     <li key={s} className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-0.5 font-mono text-xs">
                       {s}
-                      <button
-                        type="button"
-                        aria-label={`Rimuovi ${s} da ${w.name}`}
-                        className="text-muted hover:text-fg"
-                        onClick={() => setPending({ kind: "symbol", watchlist: w, symbol: s })}
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
+                      <AdminOnly>
+                        <button
+                          type="button"
+                          aria-label={`Rimuovi ${s} da ${w.name}`}
+                          className="text-muted hover:text-fg"
+                          onClick={() => setPending({ kind: "symbol", watchlist: w, symbol: s })}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </AdminOnly>
                     </li>
                   ))}
                 </ul>
@@ -120,9 +125,11 @@ export function AgentWatchSection({ agentId }: { agentId: string }) {
                 </span>
                 <span className="flex items-center gap-2">
                   <Badge variant="secondary">attivo</Badge>
-                  <Button size="sm" variant="outline" aria-label={`Annulla alert ${a.symbol}`} onClick={() => setPending({ kind: "alert", alert: a })}>
-                    Annulla
-                  </Button>
+                  <AdminOnly>
+                    <Button size="sm" variant="outline" aria-label={`Annulla alert ${a.symbol}`} onClick={() => setPending({ kind: "alert", alert: a })}>
+                      Annulla
+                    </Button>
+                  </AdminOnly>
                 </span>
               </li>
             ))}

@@ -18,6 +18,7 @@ import {
 } from "@/lib/agentDocs";
 import { formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { AdminOnly } from "@/components/AdminOnly";
 
 const TAG_CLASS: Record<TagKind, string> = {
   plain: "border-border text-muted",
@@ -100,9 +101,11 @@ function ExportStatus() {
       <p role="status" className={cn("text-xs", bad ? "text-loss" : "text-muted")}>
         {text}
       </p>
-      <Button size="sm" variant="outline" disabled={run.isPending} onClick={() => run.mutate()}>
-        Esporta ora
-      </Button>
+      <AdminOnly>
+        <Button size="sm" variant="outline" disabled={run.isPending} onClick={() => run.mutate()}>
+          Esporta ora
+        </Button>
+      </AdminOnly>
     </div>
   );
 }
@@ -200,9 +203,11 @@ function DocPane({ slug, title }: { slug: string; title: string }) {
                 </Button>
               </>
             )}
-            <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
-              Modifica
-            </Button>
+            <AdminOnly>
+              <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
+                Modifica
+              </Button>
+            </AdminOnly>
             <Button size="sm" variant="outline" aria-expanded={showVersions} onClick={() => setShowVersions((v) => !v)}>
               Versioni
             </Button>

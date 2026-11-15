@@ -56,6 +56,17 @@ def _clear_settings_cache():
 
 
 @pytest.fixture(autouse=True)
+def _reset_activity_alert():
+    """The «Registro attività» failure alert goes out once per process until a row is
+    written again: every test starts with it armed."""
+    from smtrading.useractivity import recorder
+
+    recorder._alerted = False
+    yield
+    recorder._alerted = False
+
+
+@pytest.fixture(autouse=True)
 def _reset_t212_caches():
     """The Trading 212 instrument caches and rate-limit blocks are process-wide: reset in
     place (modules alias the cache objects) around every test, so what one test loaded

@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
+import { AdminOnly } from "@/components/AdminOnly";
 
 const REASON_MAX = 500;
 const GLOBAL = "";
@@ -84,7 +85,9 @@ export function HaltSection() {
           Finché un blocco è attivo gli ordini che aumentano l&apos;esposizione sono rifiutati (TRADING_HALTED); chiusure, riduzioni, stop loss e take profit
           continuano. Di solito lo imposta il CEO via MCP.
         </p>
-        <HaltForm />
+        <AdminOnly>
+          <HaltForm />
+        </AdminOnly>
         {isError && <p className="text-loss">Impossibile caricare i blocchi</p>}
         {data && (
           <>

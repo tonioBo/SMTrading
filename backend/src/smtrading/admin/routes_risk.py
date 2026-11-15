@@ -12,7 +12,14 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from smtrading.admin.auth import DbSession, RedisClient, require_admin
+from smtrading.admin.auth import (
+    CurrentUser,
+    DbSession,
+    RedisClient,
+    require_access,
+    require_user,
+    viewer_forbidden,
+)
 from smtrading.admin.common import _invalid, _transaction
 from smtrading.admin.schemas import (
     AppSettingsIn,
@@ -21,6 +28,7 @@ from smtrading.admin.schemas import (
     RiskProfileCreateIn,
     RiskProfilePatchIn,
 )
+from smtrading.agents.service import write_audit
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.fingerprints import name_warning
 from smtrading.common.money import decimal_to_str
@@ -36,7 +44,9 @@ from smtrading.risk.settings import (
     is_kill_switch_on,
 )
 
-router = APIRouter(prefix="/api", tags=["risk"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api", tags=["risk"], dependencies=[Depends(require_access)])
+# protective actions every user may take, viewers included: the kill switch towards «on»
+emergency_router = APIRouter(prefix="/api", tags=["risk"], dependencies=[Depends(require_user)])
 
 MAX_NAME_LEN = 128
 MAX_DESCRIPTION_LEN = 500
@@ -304,11 +314,23 @@ async def get_kill_switch(session: DbSession) -> dict:
     return {"on": await is_kill_switch_on(session)}
 
 
-@router.post("/kill-switch")
-async def post_kill_switch(body: KillSwitchIn, session: DbSession, redis: RedisClient) -> dict:
-    """The `kill_switch` event goes out after the commit (post-commit dispatch)."""
+@emergency_router.post("/kill-switch")
+async def post_kill_switch(
+    body: KillSwitchIn, user: CurrentUser, session: DbSession, redis: RedisClient
+) -> dict:
+    """The `kill_switch` event goes out after the commit (post-commit dispatch). A viewer
+    may only turn it on. Who flipped it is in the audit log (`admin:kill_switch`); the
+    events keep `by="admin"` (agents never see portal emails)."""
+    if not body.on and not user.is_admin:
+        raise viewer_forbidden()
     async with _transaction(session, redis):
         canceled = await set_kill_switch_and_cancel(
             session, body.on, cancel_open=body.cancel_open, by="admin"
+        )
+        await write_audit(
+            session, agent_id=None, method="admin:kill_switch",
+            params={"by": user.email, "role": user.role, "on": body.on,
+                    "cancel_open": body.cancel_open, "canceled": canceled},
+            outcome="ok", latency_ms=0,
         )
     return {"on": body.on, "canceled": canceled}

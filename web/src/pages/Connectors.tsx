@@ -13,6 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { errorMessage } from "@/lib/errors";
 import { buildConnectorPatch, isScalar, isSecret } from "@/lib/connectorPatch";
 import { formatDateTime } from "@/lib/format";
+import { AdminFieldset } from "@/components/AdminOnly";
 
 const ASSET_CLASS_LABELS: Record<AssetClass, string> = {
   us_equity: "Azioni USA",
@@ -215,7 +216,9 @@ function PrioritySection() {
                   return cell ? (
                     <div key={cap}>
                       <p className="mb-1 text-xs uppercase text-muted">{cap}</p>
-                      <PriorityCell priority={cell} />
+                      <AdminFieldset>
+                        <PriorityCell priority={cell} />
+                      </AdminFieldset>
                     </div>
                   ) : null;
                 })}
@@ -238,7 +241,9 @@ export default function Connectors() {
       {isLoading && <p className="text-muted">Caricamento…</p>}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {data?.map((c) => (
-          <ConnectorCard key={c.name} connector={c} />
+          <AdminFieldset key={c.name}>
+            <ConnectorCard connector={c} />
+          </AdminFieldset>
         ))}
       </div>
       <PrioritySection />

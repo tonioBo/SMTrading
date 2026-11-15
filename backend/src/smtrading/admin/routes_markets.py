@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
-from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
+from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_access
 from smtrading.admin.common import _invalid, _transaction
 from smtrading.agents.service import write_audit
 from smtrading.common.errors import ErrorCode, SMTError
@@ -35,7 +35,7 @@ from smtrading.marketdata.streaming import (
 )
 from smtrading.mcp.dto import instrument_dto, parse_decimal, parse_enum, quote_dto, to_jsonable
 
-router = APIRouter(prefix="/api", tags=["markets"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api", tags=["markets"], dependencies=[Depends(require_access)])
 
 MAX_TRACK_SYMBOLS = 100
 MAX_QUOTE_SYMBOLS = 50

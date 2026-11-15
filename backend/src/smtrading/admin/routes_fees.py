@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from smtrading.admin.auth import DbSession, RedisClient, require_admin
+from smtrading.admin.auth import DbSession, RedisClient, require_access
 from smtrading.admin.common import Quotes, _invalid, _transaction
 from smtrading.admin.schemas import (
     FeeRuleCreateIn,
@@ -29,7 +29,7 @@ from smtrading.instruments.models import AssetClass
 from smtrading.mcp.dto import parse_decimal, parse_enum, to_jsonable
 from smtrading.portfolios.models import Portfolio
 
-router = APIRouter(prefix="/api", tags=["fees"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api", tags=["fees"], dependencies=[Depends(require_access)])
 
 MAX_NAME_LEN = 128
 MAX_PRIORITY = 1_000_000

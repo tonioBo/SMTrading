@@ -7,12 +7,24 @@ Sessions live in Redis at `adm:sess:{id}` as JSON {admin_id, csrf, created_at, f
 (password hash + TOTP state): changing either invalidates every session issued before. The session id travels in the httpOnly
 `smt_session` cookie; the CSRF token in the JS-readable `smt_csrf` cookie, which the web
 app echoes in `X-CSRF-Token` on every non-GET/HEAD/OPTIONS request.
+
+Roles: `require_user` admits every active user (reads, and the few actions a viewer may
+take), `require_admin` only admins; `require_access`, the admin routers' default, admits
+every user on reads and only admins on unsafe methods. A disabled user's sessions are
+refused (and destroyed); a user with `must_change_password` gets PASSWORD_CHANGE_REQUIRED
+everywhere except me, logout and the password change (`require_session_user`).
+
+Step-up TOTP (`check_step_up_totp`): attempts are counted before the code is verified
+(`adm:totp_fail:{id}`); 5 wrong codes in 15 minutes lock the user's step-up checks for 15
+minutes, a success clears the count.
 """
 
 import asyncio
 import hashlib
 import json
+import logging
 import secrets
+import string
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -31,6 +43,11 @@ from smtrading.admin.models import AdminUser
 from smtrading.common.config import get_settings
 from smtrading.common.crypto import decrypt_json, encrypt_json
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.common.logsetup import register_secret
+from smtrading.useractivity import context as activity
+from smtrading.useractivity.recorder import bind_session
+
+log = logging.getLogger(__name__)
 
 SESSION_COOKIE = "smt_session"
 CSRF_COOKIE = "smt_csrf"
@@ -42,6 +59,15 @@ LOGIN_FAIL_WINDOW_S = 15 * 60
 MIN_PASSWORD_LEN = 10
 TOTP_ISSUER = "SMTrading"
 TOTP_USED_TTL_S = 90  # covers valid_window=1 (previous, current, next 30s step)
+TOTP_FAIL_LIMIT = 5
+TOTP_FAIL_WINDOW_S = 15 * 60  # also the lockout after the 5th failure
+TOTP_LOCKED_MESSAGE = "troppi codici TOTP errati, riprova tra 15 minuti"
+TEMP_PASSWORD_LEN = 20
+# no look-alike characters (0/O, 1/l/I): the password is read off a screen and typed
+_TEMP_ALPHABET = "".join(c for c in string.ascii_letters + string.digits if c not in "0O1lI")
+VIEWER_FORBIDDEN_MESSAGE = "azione non consentita: utente in sola lettura"
+PASSWORD_CHANGE_MESSAGE = "devi cambiare la password temporanea prima di continuare"
+DISABLED_MESSAGE = "utente disattivato"
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 # nginx tags each request with its entry point: the plain-http local one (127.0.0.1:3000)
 # or the LAN one. Login failures are counted per entry, so failures from the LAN cannot
@@ -109,6 +135,14 @@ def _totp_ok(secret: str | None, code: str | None) -> bool:
     return pyotp.TOTP(secret).verify(code.strip(), valid_window=1)
 
 
+def generate_temp_password() -> str:
+    """A server-generated temporary password, shown once. Registered with the log filter:
+    it is masked in any log text of this process."""
+    password = "".join(secrets.choice(_TEMP_ALPHABET) for _ in range(TEMP_PASSWORD_LEN))
+    register_secret(password)
+    return password
+
+
 async def _check_totp(redis: Redis, user: AdminUser, code: str | None) -> None:
     """Verify `code` against the stored secret; a code is accepted once (replay guard)."""
     if not _totp_ok(_totp_secret(user), code):
@@ -116,6 +150,37 @@ async def _check_totp(redis: Redis, user: AdminUser, code: str | None) -> None:
     used_key = f"adm:totp_used:{user.id}:{code.strip()}"
     if not await redis.set(used_key, "1", nx=True, ex=TOTP_USED_TTL_S):
         raise SMTError(ErrorCode.FORBIDDEN, "codice TOTP già usato")
+
+
+def _totp_fail_key(user: AdminUser) -> str:
+    return f"adm:totp_fail:{user.id}"
+
+
+async def check_step_up_totp(redis: Redis, user: AdminUser, code: str | None) -> None:
+    """`_check_totp` for a step-up (an action confirmed with a code, not the login, which
+    has its own limit). Every attempt is counted first, atomically (INCR, then the window
+    with EXPIRE NX), and only then verified: beyond TOTP_FAIL_LIMIT attempts within
+    TOTP_FAIL_WINDOW_S the code is not even checked (RATE_LIMITED), so parallel requests
+    cannot try more than TOTP_FAIL_LIMIT codes. The 5th failure restarts the window: a
+    15-minute lockout. A failure is logged (never the code); a success clears the count.
+    Redis only."""
+    key = _totp_fail_key(user)
+    async with redis.pipeline(transaction=True) as pipe:
+        pipe.incr(key)
+        pipe.expire(key, TOTP_FAIL_WINDOW_S, nx=True)
+        count, _ = await pipe.execute()
+    count = int(count)
+    if count > TOTP_FAIL_LIMIT:
+        raise SMTError(ErrorCode.RATE_LIMITED, TOTP_LOCKED_MESSAGE)
+    if not _totp_ok(_totp_secret(user), code):
+        if count == TOTP_FAIL_LIMIT:
+            await redis.expire(key, TOTP_FAIL_WINDOW_S)  # a full lockout from this failure
+            activity.note_event("auth.totp_lockout")
+        log.warning("wrong step-up TOTP code for admin user %s (%d/%d)", user.id, count,
+                    TOTP_FAIL_LIMIT)
+        raise _bad_totp()
+    await redis.delete(key)
+    await _check_totp(redis, user, code)  # the replay guard
 
 
 async def _count_attempt(redis: Redis, email: str, entry: str) -> int:
@@ -195,6 +260,8 @@ async def login(
     ok = await verify_password(user.password_hash if user else _DUMMY_HASH, password)
     if user is None or not ok:
         raise _bad_credentials()
+    if user.disabled_at is not None:  # told only with the right password
+        raise SMTError(ErrorCode.FORBIDDEN, DISABLED_MESSAGE)
     if user.totp_enabled:
         if not totp:
             raise SMTError(
@@ -221,14 +288,14 @@ async def totp_enable(redis: Redis, user: AdminUser, code: str) -> None:
         raise SMTError(ErrorCode.INVALID_ORDER, "TOTP già attivo", {"field": "totp"})
     if user.totp_secret_encrypted is None:
         raise SMTError(ErrorCode.INVALID_ORDER, "TOTP non configurato", {"field": "totp"})
-    await _check_totp(redis, user, code)
+    await check_step_up_totp(redis, user, code)
     user.totp_enabled = True
 
 
 async def totp_disable(redis: Redis, user: AdminUser, code: str) -> None:
     if not user.totp_enabled:
         raise SMTError(ErrorCode.INVALID_ORDER, "TOTP non attivo", {"field": "totp"})
-    await _check_totp(redis, user, code)
+    await check_step_up_totp(redis, user, code)
     user.totp_enabled = False
     user.totp_secret_encrypted = None
 
@@ -242,7 +309,13 @@ async def change_password(user: AdminUser, current: str, new: str) -> None:
             f"la nuova password deve avere almeno {MIN_PASSWORD_LEN} caratteri",
             {"field": "new"},
         )
+    if user.must_change_password and new == current:
+        raise SMTError(
+            ErrorCode.INVALID_ORDER, "la nuova password deve essere diversa da quella temporanea",
+            {"field": "new"},
+        )
     user.password_hash = await hash_password(new)
+    user.must_change_password = False
 
 
 # --- FastAPI dependencies ----------------------------------------------------------------
@@ -250,6 +323,7 @@ async def change_password(user: AdminUser, current: str, new: str) -> None:
 
 async def get_db(request: Request) -> AsyncIterator[AsyncSession]:
     async with request.app.state.sessionmaker() as session:
+        bind_session(session)  # its first commit carries the activity row (useractivity)
         yield session
 
 
@@ -268,7 +342,8 @@ async def load_admin_session(
     (never beyond the absolute lifetime).
 
     A session past its absolute lifetime, issued before the admin's password or TOTP state
-    changed (fingerprint mismatch), or whose admin is gone, is destroyed and gives None."""
+    changed (fingerprint mismatch), or whose admin is gone or disabled, is destroyed and
+    gives None."""
     if not session_id:
         return None
     key = _session_key(session_id)
@@ -283,7 +358,8 @@ async def load_admin_session(
         await destroy_session(redis, session_id, admin_id)
         return None
     user = await db.get(AdminUser, admin_id)
-    if user is None or data.get("fp") != credentials_fingerprint(user):
+    if (user is None or user.disabled_at is not None
+            or data.get("fp") != credentials_fingerprint(user)):
         await destroy_session(redis, session_id, admin_id)
         return None
     if renew:
@@ -291,17 +367,20 @@ async def load_admin_session(
     return user, data
 
 
-async def require_admin(request: Request, session: DbSession, redis: RedisClient) -> AdminUser:
-    """The logged-in admin. Renews the session TTL; checks CSRF on unsafe methods.
+async def require_session_user(
+    request: Request, session: DbSession, redis: RedisClient
+) -> AdminUser:
+    """The logged-in user, any role, even with a temporary password to change (only for
+    me and the password change). Renews the session TTL; checks CSRF on unsafe methods.
 
-    A session issued before the admin's password or TOTP state changed is revoked (401).
-
-    The session id is left on `request.state.admin_session_id` (for logout)."""
+    A session issued before the user's password or TOTP state changed, or of a disabled
+    user, is revoked (401). The session id is left on `request.state.admin_session_id`."""
     session_id = request.cookies.get(SESSION_COOKIE)
     loaded = await load_admin_session(redis, session, session_id, renew=True)
     if loaded is None:
         raise NotAuthenticated()
     user, data = loaded
+    activity.note_actor(user)
     if request.method not in _SAFE_METHODS:
         sent = request.headers.get(CSRF_HEADER, "")
         if not secrets.compare_digest(sent.encode(), data["csrf"].encode()):
@@ -310,4 +389,36 @@ async def require_admin(request: Request, session: DbSession, redis: RedisClient
     return user
 
 
+async def require_user(
+    user: Annotated[AdminUser, Depends(require_session_user)],
+) -> AdminUser:
+    """Any active user (admin or viewer) whose password is not a temporary one."""
+    if user.must_change_password:
+        raise SMTError(ErrorCode.PASSWORD_CHANGE_REQUIRED, PASSWORD_CHANGE_MESSAGE)
+    return user
+
+
+def viewer_forbidden() -> SMTError:
+    return SMTError(ErrorCode.FORBIDDEN, VIEWER_FORBIDDEN_MESSAGE, {"role_required": "admin"})
+
+
+async def require_admin(user: Annotated[AdminUser, Depends(require_user)]) -> AdminUser:
+    """An admin, whatever the method."""
+    if not user.is_admin:
+        raise viewer_forbidden()
+    return user
+
+
+async def require_access(
+    request: Request, user: Annotated[AdminUser, Depends(require_user)]
+) -> AdminUser:
+    """The admin routers' default: reads (GET/HEAD/OPTIONS) for every user, unsafe
+    methods for admins only."""
+    if request.method not in _SAFE_METHODS and not user.is_admin:
+        raise viewer_forbidden()
+    return user
+
+
+SessionUser = Annotated[AdminUser, Depends(require_session_user)]
+CurrentUser = Annotated[AdminUser, Depends(require_user)]
 CurrentAdmin = Annotated[AdminUser, Depends(require_admin)]

@@ -42,7 +42,7 @@ from redis.asyncio import Redis
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from smtrading.admin.auth import _check_totp
+from smtrading.admin.auth import check_step_up_totp
 from smtrading.admin.common import MASK, redact
 from smtrading.admin.models import AdminUser
 from smtrading.brokers.live import LIVE_KINDS
@@ -209,7 +209,7 @@ def _require_totp_enabled(admin: AdminUser) -> None:
 
 async def _verify_totp(redis: Redis, admin: AdminUser, totp: str | None) -> None:
     try:
-        await _check_totp(redis, admin, totp)
+        await check_step_up_totp(redis, admin, totp)
     except SMTError as e:
         raise SMTError(e.code, e.message, {**(e.details or {}), "field": "totp"}) from None
 

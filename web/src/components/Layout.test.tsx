@@ -56,9 +56,13 @@ describe("Layout", () => {
       "Notifiche",
       "Mercati",
       "Log MCP",
+      "Registro attività",
       "Impostazioni",
     ]);
     expect(screen.getByText("Trading", { exact: false })).toBeInTheDocument();
+    const logo = screen.getByTestId("app-logo"); // brand mark next to the name, decorative
+    expect(logo).toHaveAttribute("aria-hidden", "true");
+    expect(logo.parentElement).toHaveTextContent("SMTrading");
     expect(await screen.findByText("Trading attivo")).toBeInTheDocument();
   });
 

@@ -847,3 +847,42 @@ async def test_cli_disarm_is_two_phase(admin, monkeypatch):
                                "orders": None, "settled": False}
     async with admin.sm() as s:
         assert (await s.get(BrokerLink, uuid.UUID(link["id"]))).live_state == "configured"
+
+
+async def test_step_up_totp_failures_lock_out(admin, caplog):
+    """5 wrong step-up codes in 15 minutes: even the right code is refused for 15 minutes
+    (RATE_LIMITED); a warning per failure, never the code; a success clears the count."""
+    c = admin.client
+    _link, pf = await _wizard(admin)
+    async with admin.sm() as s:
+        p = await s.get(Portfolio, uuid.UUID(pf["id"]))
+        p.status, p.reduce_only_reason = PortfolioStatus.reduce_only, "live_fuse"
+        await s.commit()
+    path = f"/api/portfolios/{pf['id']}/live-resume"
+    wrong = "000000" if admin.codes.totp.now() != "000000" else "111111"
+    caplog.set_level(logging.WARNING)
+    for _ in range(5):
+        r = await c.post(path, json={"totp": wrong})
+        assert r.status_code == 403 and r.json()["details"]["field"] == "totp"
+    r = await c.post(path, json={"totp": await admin.codes.code()})
+    assert r.status_code == 429, r.text
+    assert r.json()["code"] == "RATE_LIMITED"
+    assert r.json()["message"] == "troppi codici TOTP errati, riprova tra 15 minuti"
+    failures = [rec for rec in caplog.records if "TOTP" in rec.getMessage()]
+    assert len(failures) >= 5
+    assert all(wrong not in rec.getMessage() for rec in caplog.records)
+    redis = Redis.from_url(admin.redis_url)
+    try:
+        key = f"adm:totp_fail:{admin.codes.admin_id}"
+        assert 0 < await redis.ttl(key) <= 15 * 60
+        await redis.delete(key)  # the lockout is over
+        await redis.set(key, "4", ex=900)  # 4 failures so far: a success clears them
+    finally:
+        await redis.aclose()
+    r = await c.post(path, json={"totp": await admin.codes.code()})
+    assert r.status_code == 200, r.text
+    redis = Redis.from_url(admin.redis_url)
+    try:
+        assert await redis.get(f"adm:totp_fail:{admin.codes.admin_id}") is None
+    finally:
+        await redis.aclose()

@@ -25,7 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
+from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_access
 from smtrading.admin.common import Quotes, _invalid, _transaction
 from smtrading.admin.idempotency import RESET_IN_FLIGHT_TTL_S, Idempotency, idempotent
 from smtrading.admin.portfolio_ops import (
@@ -77,7 +77,7 @@ from smtrading.risk.models import RiskProfile
 from smtrading.valuation.service import value_portfolio
 
 log = logging.getLogger("smtrading.admin.portfolios")
-router = APIRouter(prefix="/api", tags=["portfolios"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api", tags=["portfolios"], dependencies=[Depends(require_access)])
 
 MIN_LEVERAGE, MAX_LEVERAGE = Decimal(1), Decimal(10)
 MAX_SLIPPAGE_BPS = 10_000

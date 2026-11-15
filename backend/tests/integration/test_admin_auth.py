@@ -135,7 +135,8 @@ async def test_login_then_me(admin_app, admin_user):
     client, sm = admin_app
     r = await _login(client, admin_user.email.upper())  # email is case-insensitive
     assert r.status_code == 200
-    assert r.json() == {"email": admin_user.email, "totp_enabled": False}
+    assert r.json() == {"email": admin_user.email, "totp_enabled": False, "role": "admin",
+                        "must_change_password": False}
     set_cookie = r.headers.get_list("set-cookie")
     session_cookie = next(c for c in set_cookie if c.startswith("smt_session="))
     csrf_cookie = next(c for c in set_cookie if c.startswith("smt_csrf="))
@@ -145,7 +146,7 @@ async def test_login_then_me(admin_app, admin_user):
 
     me = await client.get("/api/auth/me")
     assert me.status_code == 200
-    assert me.json() == {"email": admin_user.email, "totp_enabled": False}
+    assert me.json() == r.json()
 
     from smtrading.admin.models import AdminUser
 

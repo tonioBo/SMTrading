@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from smtrading.agents.models import Agent, AgentPortfolio, McpAuditLog
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
+from smtrading.useractivity.context import current_request_id
 
 log = logging.getLogger("smtrading.agents")
 
@@ -380,7 +381,11 @@ async def write_audit(
     outcome: str,
     latency_ms: int,
 ) -> None:
-    """Append an audit row. Never raises: failures are logged (inside a savepoint)."""
+    """Append an audit row. Never raises: failures are logged (inside a savepoint).
+    An `admin:*` row written for a portal request carries its activity `request_id`
+    (the link to its «Registro attività» row)."""
+    if method.startswith("admin:") and (request_id := current_request_id()) is not None:
+        params = {**params, "request_id": request_id}
     try:
         row = McpAuditLog(
             agent_id=agent_id,

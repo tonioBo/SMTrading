@@ -28,6 +28,8 @@ import { BROKER_KINDS, LINK_STATUS_LABELS, SECRET_LABELS, brokerKindLabel } from
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatDateTime, formatQty } from "@/lib/format";
 import { isLiveKind } from "@/lib/live";
+import { AdminFieldset, AdminOnly } from "@/components/AdminOnly";
+import { useIsAdmin } from "@/api/hooks/auth";
 
 const PAPER_NOTE = "Solo conti paper/demo: nessun denaro reale";
 
@@ -281,6 +283,7 @@ function BrokerPositions({ link }: { link: BrokerLink }) {
 function LinkCard({ link }: { link: BrokerLink }) {
   const patch = usePatchBrokerLink();
   const test = useTestBrokerLink();
+  const admin = useIsAdmin();
   return (
     <Card aria-label={`Broker ${link.name}`}>
       <CardHeader className="flex-row items-start justify-between gap-2 space-y-0">
@@ -293,7 +296,7 @@ function LinkCard({ link }: { link: BrokerLink }) {
         <Switch
           aria-label={`Attiva ${link.name}`}
           checked={link.enabled}
-          disabled={patch.isPending}
+          disabled={patch.isPending || !admin}
           onCheckedChange={(enabled) => patch.mutate({ id: link.id, patch: { enabled } })}
         />
       </CardHeader>
@@ -303,11 +306,13 @@ function LinkCard({ link }: { link: BrokerLink }) {
           {!link.enabled && <Badge variant="outline">Disattivato</Badge>}
         </div>
         {link.last_error && <p className="text-xs text-loss">Ultimo errore: {link.last_error}</p>}
-        <SecretsForm link={link} />
+        {admin && <SecretsForm link={link} />}
         <div className="space-y-2">
-          <Button type="button" size="sm" variant="outline" onClick={() => test.mutate(link.id)} disabled={test.isPending}>
-            Prova connessione
-          </Button>
+          <AdminOnly>
+            <Button type="button" size="sm" variant="outline" onClick={() => test.mutate(link.id)} disabled={test.isPending}>
+              Prova connessione
+            </Button>
+          </AdminOnly>
           {test.data && (
             <p role="status" className={test.data.ok ? "text-sm text-gain" : "text-sm text-loss"}>
               {test.data.ok ? "Connessione riuscita" : `Test fallito: ${test.data.error ?? "errore sconosciuto"}`}
@@ -319,7 +324,9 @@ function LinkCard({ link }: { link: BrokerLink }) {
             </p>
           )}
         </div>
-        <PortfolioLinks link={link} />
+        <AdminFieldset>
+          <PortfolioLinks link={link} />
+        </AdminFieldset>
         <BrokerPositions link={link} />
       </CardContent>
     </Card>
@@ -360,9 +367,11 @@ function Reconciliations({ link }: { link: BrokerLink }) {
     <Card>
       <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
         <CardTitle className="text-base">Riconciliazioni · {link.name}</CardTitle>
-        <Button type="button" size="sm" variant="outline" onClick={() => run.mutate()} disabled={run.isPending || !link.enabled}>
-          Riconcilia ora
-        </Button>
+        <AdminOnly>
+          <Button type="button" size="sm" variant="outline" onClick={() => run.mutate()} disabled={run.isPending || !link.enabled}>
+            Riconcilia ora
+          </Button>
+        </AdminOnly>
       </CardHeader>
       <CardContent className="space-y-2">
         {run.error && (
@@ -403,10 +412,12 @@ function LiveSection() {
           Denaro reale
         </h2>
         {!creating && (
-          <Button size="sm" variant="destructive" onClick={() => setCreating(true)}>
-            <Plus className="mr-1 h-4 w-4" aria-hidden />
-            Nuovo collegamento reale
-          </Button>
+          <AdminOnly>
+            <Button size="sm" variant="destructive" onClick={() => setCreating(true)}>
+              <Plus className="mr-1 h-4 w-4" aria-hidden />
+              Nuovo collegamento reale
+            </Button>
+          </AdminOnly>
         )}
       </div>
       <p className="mb-4 text-sm text-muted">
@@ -436,10 +447,12 @@ export default function Brokers() {
     <div>
       <PageHeader title="Broker">
         {!creating && (
-          <Button size="sm" onClick={() => setCreating(true)}>
-            <Plus className="mr-1 h-4 w-4" aria-hidden />
-            Nuovo collegamento
-          </Button>
+          <AdminOnly>
+            <Button size="sm" onClick={() => setCreating(true)}>
+              <Plus className="mr-1 h-4 w-4" aria-hidden />
+              Nuovo collegamento
+            </Button>
+          </AdminOnly>
         )}
       </PageHeader>
       <p role="note" className="mb-6 flex items-center gap-2 rounded-md border border-warn bg-warn/10 px-3 py-2 text-sm font-medium">

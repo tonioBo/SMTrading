@@ -110,7 +110,7 @@ class Decision(Base):
     summary: Mapped[str] = mapped_column(String(500))
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     symbols: Mapped[list[str]] = mapped_column(JSONB, default=list)
-    # optional structured fields (0023): how it ended, what it is about, why
+    # optional structured fields (0025): how it ended, what it is about, why
     outcome: Mapped[str | None] = mapped_column(String(16))
     reason: Mapped[str | None] = mapped_column(String(300))
     subject: Mapped[str | None] = mapped_column(String(200))

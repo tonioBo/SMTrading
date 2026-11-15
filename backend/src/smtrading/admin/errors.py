@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from smtrading.common.errors import ErrorCode, SMTError
 
 _STATUS = {ErrorCode.NOT_FOUND: 404, ErrorCode.FORBIDDEN: 403, ErrorCode.RATE_LIMITED: 429,
-           ErrorCode.VERSION_CONFLICT: 409}
+           ErrorCode.VERSION_CONFLICT: 409, ErrorCode.PASSWORD_CHANGE_REQUIRED: 403}
 
 
 class NotAuthenticated(Exception):

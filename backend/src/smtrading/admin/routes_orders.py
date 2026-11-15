@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
+from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_access
 from smtrading.admin.common import Quotes, _transaction
 from smtrading.admin.idempotency import Idempotency, idempotent
 from smtrading.admin.routes_portfolios import _order_dto, _portfolio
@@ -36,7 +36,7 @@ from smtrading.mcp.dto import parse_enum, to_jsonable
 from smtrading.portfolios.locks import lock_live_portfolio
 from smtrading.risk.live_checks import live_link_of
 
-router = APIRouter(prefix="/api", tags=["orders"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api", tags=["orders"], dependencies=[Depends(require_access)])
 
 
 class OrderIn(BaseModel):

@@ -6,11 +6,13 @@ import { Markdown } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
 import { errorMessage } from "@/lib/errors";
 import { formatBytes, formatDateTime } from "@/lib/format";
+import { useIsAdmin } from "@/api/hooks/auth";
 
 const author = (a: string) => (a === "seed" ? "testo iniziale" : a);
 
 /** «Versioni»: every version of a document, newest first; view one, restore one. */
 export function AgentDocVersions({ slug, currentVersion }: { slug: string; currentVersion: number }) {
+  const admin = useIsAdmin();
   const { data: versions, isError } = useAgentDocVersions(slug, true);
   const [viewing, setViewing] = useState<number | null>(null);
   const [restoring, setRestoring] = useState<number | null>(null);
@@ -55,7 +57,7 @@ export function AgentDocVersions({ slug, currentVersion }: { slug: string; curre
               >
                 {viewing === v.version ? "Chiudi" : "Visualizza"}
               </Button>
-              {v.version !== currentVersion && (
+              {v.version !== currentVersion && admin && (
                 <Button
                   variant="outline"
                   size="sm"

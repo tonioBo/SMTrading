@@ -1,8 +1,34 @@
 /** Admin API payloads. Decimals are strings on the wire. */
 
+export type UserRole = "admin" | "viewer";
+
+/** The logged-in user (/api/auth/me). `role` and `must_change_password` may be missing
+ * from an older server: treated as an admin without a password to change. */
 export interface AdminUser {
   email: string;
   totp_enabled: boolean;
+  role?: UserRole;
+  must_change_password?: boolean;
+}
+
+/** A portal user in «Impostazioni → Utenti» (/api/users). */
+export interface PortalUser {
+  id: string;
+  email: string;
+  role: UserRole;
+  totp_enabled: boolean;
+  must_change_password: boolean;
+  active: boolean;
+  disabled_at: string | null;
+  last_login_at: string | null;
+  created_at: string;
+  created_by: string | null;
+}
+
+/** Create and password-reset answers: the temporary password is shown once. */
+export interface PortalUserWithPassword {
+  user: PortalUser;
+  temp_password: string;
 }
 
 export interface LoginRequest {
@@ -1000,4 +1026,52 @@ export interface LiveAuditFilters {
   link_id: string;
   portfolio_id: string;
   action: string;
+}
+
+/** «Registro attività»: one state-changing request of a person, or an access event. */
+/** `pending`: only the provisional row of a request whose final row is missing. */
+export type ActivityOutcome = "ok" | "denied" | "error" | "pending";
+
+export interface ActivityRow {
+  id: number;
+  ts: string;
+  request_id: string;
+  user_id: string | null;
+  email: string | null;
+  role: UserRole | null;
+  action: string;
+  action_label: string;
+  category: string;
+  category_label: string;
+  method: string;
+  route: string;
+  target: Record<string, string>;
+  outcome: ActivityOutcome;
+  status: number | null;
+  error_code: string | null;
+  error_message: string | null;
+  ip: string | null;
+  user_agent: string | null;
+  summary: Record<string, unknown>;
+  provisional: boolean;
+  /** provisional rows of the same request hidden behind this final row */
+  provisional_rows: number;
+}
+
+export interface ActivityFilters {
+  /** part of an email, any case */
+  email: string;
+  /** only rows without a user (failed logins, requests without a session) */
+  anonymous: boolean;
+  category: string;
+  outcome: string;
+  /** yyyy-mm-dd, inclusive (Europe/Rome days) */
+  from: string;
+  to: string;
+}
+
+export interface ActivityCatalog {
+  categories: { key: string; label: string }[];
+  actions: { key: string; label: string; category: string }[];
+  outcomes: { key: ActivityOutcome; label: string }[];
 }

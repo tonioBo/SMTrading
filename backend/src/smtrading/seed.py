@@ -84,15 +84,16 @@ async def run_seed(
             )
         )
 
-    if await session.scalar(
-        select(Portfolio.id).where(Portfolio.name == DEMO_PORTFOLIO_NAME)
-    ) is None:
+    # The demo portfolio and agent only on a fresh install: an existing install (whose admin
+    # may have archived, renamed or deleted them) never gets them back on a later seed.
+    fresh = await session.scalar(select(Portfolio.id).limit(1)) is None
+    if fresh:
         await create_portfolio(
             session, name=DEMO_PORTFOLIO_NAME, initial_cash=Decimal(100000), base_currency="EUR"
         )
     await seed_connectors(session)
     await _seed_risk(session)
-    token = await _seed_demo_agent(session)
+    token = await _seed_demo_agent(session) if fresh else None
     await seed_agent_docs(session, agent_docs_dir or DEFAULT_DOCS_DIR)
     if admin is not None:
         await seed_admin(session, *admin)

@@ -25,6 +25,23 @@ class PasswordChangeIn(BaseModel):
 class AdminOut(BaseModel):
     email: str
     totp_enabled: bool
+    role: str
+    must_change_password: bool
+
+
+class UserCreateIn(BaseModel):
+    email: ShortStr
+    role: ShortStr
+    totp: TotpCode | None = None  # the actor's code, needed to create an admin
+
+
+class UserRoleIn(BaseModel):
+    role: ShortStr
+    totp: TotpCode | None = None  # the actor's code, needed to promote to admin
+
+
+class StepUpIn(BaseModel):
+    totp: TotpCode | None = None  # the actor's code, needed to reset an admin's password
 
 
 class TotpSetupOut(BaseModel):

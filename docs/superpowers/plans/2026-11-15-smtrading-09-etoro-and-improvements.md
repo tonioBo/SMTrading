@@ -36,11 +36,11 @@
   - ogni commit termina con `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`;
   - deploy solo da un worktree pulito su HEAD;
   - con migrazioni: prima `docker compose run --rm migrate`, poi `docker compose up -d --no-build --no-deps <servizi>`.
-- **Migrazioni lineari dopo `0021_live_prior_lock.py`**, nell'ordine dei task:
-  - `0022_market_closures.py` (Task 2);
-  - `0023_decision_fields.py` (Task 3);
-  - `0024_live_fx_ref.py` (Task 7);
-  - `0025_paperclip.py` (Task 8).
+- **Migrazioni lineari dopo `0023_user_activity.py`** (main ha `0022_admin_user_roles.py` e `0023_user_activity.py`), nell'ordine dei task:
+  - `0024_market_closures.py` (Task 2);
+  - `0025_decision_fields.py` (Task 3);
+  - `0026_live_fx_ref.py` (Task 7);
+  - `0027_paperclip.py` (Task 8).
   Ognuna ha upgrade e downgrade; `test_migration_matches_models` resta verde.
 - **Nessuna attivazione del reale.**
   - Nessun task crea un collegamento `etoro_live` (o un altro live) nello stack principale, né salva chiavi reali o arma un collegamento.
@@ -112,7 +112,7 @@ backend/src/smtrading/
   brokers/live/etoro_live.py    EtoroLiveAdapter (unico posto con i percorsi reali)
   brokers/live/fake.py          (+ eToro)
   cli.py                        (+ names audit|fix)
-backend/migrations/versions/0022_…, 0023_…, 0024_…, 0025_…
+backend/migrations/versions/0024_…, 0025_…, 0026_…, 0027_…
 web/src/components/OrderForm.tsx, PaperclipBanner.tsx, PaperclipSection.tsx
 web/src/pages/AgentCosts.tsx    web/src/api/hooks/paperclip.ts
 web/src/components/LiveLinkPortfolios.tsx
@@ -120,10 +120,10 @@ web/src/components/LiveLinkPortfolios.tsx
 
 | Ondata | Task | Note |
 |---|---|---|
-| A | 1 → 2 → 3 → 4 | in sequenza (migrazioni 0022, 0023) |
+| A | 1 → 2 → 3 → 4 | in sequenza (migrazioni 0024, 0025) |
 | B | 5 → 6 | 6 solo `web/` |
-| C | 7 | migrazione 0024 |
-| D | 8 → 9 | migrazione 0025; 9 solo `web/` |
+| C | 7 | migrazione 0026 |
+| D | 8 → 9 | migrazione 0027; 9 solo `web/` |
 | E | 10 → 11 → 12 | etichette delle modalità; più portafogli reali per conto (backend, poi web); nessuna migrazione |
 | F | 13 → 14 → 15 | eToro: demo prima, reale per ultimo |
 | G | 16 | e2e, documentazione, verifica |
@@ -168,7 +168,7 @@ web/src/components/LiveLinkPortfolios.tsx
 ### Task 2: Londra, chiusure manuali, regola «un giorno di borsa»
 
 **Files:**
-- Create: `instruments/closures.py`, `migrations/versions/0022_market_closures.py`, `tests/integration/test_market_closures.py`
+- Create: `instruments/closures.py`, `migrations/versions/0024_market_closures.py`, `tests/integration/test_market_closures.py`
 - Modify:
   - backend: `instruments/market_hours.py`, `models.py` (registro), `admin/routes_markets.py`, `mcp/tools_market.py` (validazione del mercato in `get_market_status`), `worker/main.py`, `api/main.py` (lifespan), `risk/live_checks.py`;
   - web: `web/src/pages/Markets.tsx`, `web/src/api/hooks/markets.ts`;
@@ -235,7 +235,7 @@ web/src/components/LiveLinkPortfolios.tsx
 ### Task 3: Campi strutturati di `log_decision`
 
 **Files:**
-- Create: `migrations/versions/0023_decision_fields.py`
+- Create: `migrations/versions/0025_decision_fields.py`
 - Modify: `activity/models.py`, `activity/service.py`, `mcp/tools_activity.py`, `mcp/dto.py` (`DECISION_FIELDS`), `admin/routes_telegram.py` (`GET /api/decisions`), `web/src/api/types.ts`, la tabella delle decisioni nel web (dove si usa `api/hooks/telegram.ts`)
 - Test: `tests/integration/test_activity.py`, `tests/integration/test_mcp_activity_telegram.py`, `tests/integration/test_migrations.py`
 
@@ -397,7 +397,7 @@ web/src/components/LiveLinkPortfolios.tsx
 ### Task 7: Più valute nel reale
 
 **Files:**
-- Create: `migrations/versions/0024_live_fx_ref.py`
+- Create: `migrations/versions/0026_live_fx_ref.py`
 - Modify: `brokers/models.py` (`BrokerLink.fx_ref_rates`), `brokers/live/service.py` (`check_live_portfolio`, `link_live_portfolio`), `risk/live_checks.py` (`check_live_cash`), `brokers/live/reconcile.py`, `brokers/sync.py` (solo: vendite live senza cambio)
 - Test: `tests/integration/test_live_service.py`, `tests/unit/test_live_checks.py`, `tests/integration/test_live_monitor.py`, `tests/integration/test_live_sync.py`
 
@@ -463,7 +463,7 @@ web/src/components/LiveLinkPortfolios.tsx
   L'implementer annota nel report le risposte reali che ha letto.
 
 **Files:**
-- Create: `paperclip/__init__.py`, `paperclip/config.py`, `paperclip/client.py`, `paperclip/models.py`, `paperclip/reader.py`, `admin/routes_paperclip.py`, `migrations/versions/0025_paperclip.py`
+- Create: `paperclip/__init__.py`, `paperclip/config.py`, `paperclip/client.py`, `paperclip/models.py`, `paperclip/reader.py`, `admin/routes_paperclip.py`, `migrations/versions/0027_paperclip.py`
 - Create (test): `tests/unit/test_paperclip_costs.py`, `tests/integration/test_paperclip_reader.py`, `tests/integration/test_admin_paperclip.py`
 - Modify: `worker/main.py` (`supervise("paperclip reader", …)`), `api/main.py` (router), `models.py`
 
@@ -975,7 +975,7 @@ Aggiunta approvata dall'utente il 2026-11-15 (spec §Più portafogli reali su un
   1. `cd backend && uv run pytest -q` → verde, nessun test live o eToro saltato;
   2. `npm --prefix web test -- --run`, `npm --prefix web run lint` e `npm --prefix web run build` → verdi;
   3. `uv run pytest tests/unit/test_live_hosts_guard.py tests/integration/test_mcp_no_fingerprints.py -q` → PASS;
-  4. deploy da un worktree pulito di HEAD: `docker compose run --rm migrate`, poi `docker compose up -d --no-build --no-deps api worker web`; `alembic current` = `0025`;
+  4. deploy da un worktree pulito di HEAD: `docker compose run --rm migrate`, poi `docker compose up -d --no-build --no-deps api worker web`; `alembic current` = `0027`;
   5. `docker compose exec -T api smtrading live status` → «nessun collegamento live»; `SELECT count(*) FROM broker_links WHERE kind='etoro_live'` → 0;
   6. `docker compose exec -T api python -m smtrading.cli names audit` → elenco consegnato al controller, **nessun** `fix`;
   7. `git grep -l 'CANARY' -- ':!backend/tests' ':!docs' ':!web/e2e'` → nessun risultato; `git status --porcelain` pulito.

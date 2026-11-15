@@ -16,6 +16,7 @@ import { errorField, errorMessage } from "@/lib/errors";
 import { buildTiers, type TierRow } from "@/lib/feeTiers";
 import { assetClassLabel } from "@/lib/labels";
 import { formatDecimal, formatMoney, formatQty } from "@/lib/format";
+import { AdminOnly } from "@/components/AdminOnly";
 
 const ASSET_CLASSES: AssetClass[] = ["us_equity", "eu_equity", "crypto", "forex"];
 const SCOPE_LABEL: Record<FeeScope, string> = { global: "globale", asset_class: "classe di asset", portfolio: "portafoglio" };
@@ -450,24 +451,26 @@ export default function Fees() {
       header: "Azioni",
       align: "right",
       cell: (r) => (
-        <div className="flex justify-end gap-1">
-          <Button size="sm" variant="outline" aria-label={`Modifica ${r.name}`} onClick={() => setEditing(r)}>
-            <Pencil />
-            Modifica
-          </Button>
-          {r.active && (
-            <Button
-              size="sm"
-              variant="outline"
-              aria-label={`Disattiva ${r.name}`}
-              disabled={deactivate.isPending}
-              onClick={() => deactivate.mutate(r.id)}
-            >
-              <PowerOff />
-              Disattiva
+        <AdminOnly>
+          <div className="flex justify-end gap-1">
+            <Button size="sm" variant="outline" aria-label={`Modifica ${r.name}`} onClick={() => setEditing(r)}>
+              <Pencil />
+              Modifica
             </Button>
-          )}
-        </div>
+            {r.active && (
+              <Button
+                size="sm"
+                variant="outline"
+                aria-label={`Disattiva ${r.name}`}
+                disabled={deactivate.isPending}
+                onClick={() => deactivate.mutate(r.id)}
+              >
+                <PowerOff />
+                Disattiva
+              </Button>
+            )}
+          </div>
+        </AdminOnly>
       ),
     },
   ];
@@ -475,10 +478,12 @@ export default function Fees() {
   return (
     <div>
       <PageHeader title="Commissioni">
-        <Button onClick={() => setEditing("new")}>
-          <Plus />
-          Nuova regola
-        </Button>
+        <AdminOnly>
+          <Button onClick={() => setEditing("new")}>
+            <Plus />
+            Nuova regola
+          </Button>
+        </AdminOnly>
       </PageHeader>
       {isError && <p className="mb-4 text-loss">Impossibile caricare le regole</p>}
       {deactivate.error && (
@@ -502,7 +507,9 @@ export default function Fees() {
           />
         </CardContent>
       </Card>
-      <Simulator />
+      <AdminOnly>
+        <Simulator />
+      </AdminOnly>
       {editing && <RuleDialog rule={editing === "new" ? null : editing} onClose={() => setEditing(null)} />}
     </div>
   );

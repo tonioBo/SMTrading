@@ -12,6 +12,22 @@ Redis e l'app web di amministrazione in italiano, tutto in `docker compose`.
 
 L'API (`127.0.0.1:8000`, anche per l'MCP) resta raggiungibile solo dal PC.
 
+## Utenti del portale
+
+In *Impostazioni → Utenti* un amministratore crea gli altri utenti: **Amministratore**
+(può fare tutto) o **Sola lettura** (vede tutto; può solo «Disattiva denaro reale» e
+attivare il kill switch). La password temporanea è mostrata una sola volta e va cambiata
+al primo accesso. Gli utenti non si cancellano: si disattivano. Recupero d'emergenza
+dalla riga di comando (stesse protezioni, almeno un amministratore attivo):
+
+```
+docker compose exec -T api python -m smtrading.cli users list
+docker compose exec -T api python -m smtrading.cli users create email@esempio.it --role admin
+docker compose exec -T api python -m smtrading.cli users set-role email@esempio.it viewer
+docker compose exec -T api python -m smtrading.cli users disable email@esempio.it
+docker compose exec -T api python -m smtrading.cli users reset-password email@esempio.it
+```
+
 ## Accesso dalla rete locale
 
 Dagli altri dispositivi della rete l'app è servita **solo in https**:

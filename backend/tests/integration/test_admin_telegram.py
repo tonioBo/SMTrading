@@ -119,7 +119,8 @@ async def _audits(admin, prefix="admin:"):
     async with admin.sm() as s:
         rows = (await s.scalars(select(McpAuditLog).where(McpAuditLog.method.like(f"{prefix}%"))
                                 .order_by(McpAuditLog.id))).all()
-    return [(r.method, r.params) for r in rows]
+    # the request_id (link to the activity log, see test_user_activity) is left out
+    return [(r.method, {k: v for k, v in r.params.items() if k != "request_id"}) for r in rows]
 
 
 def _no_token(text: str) -> None:

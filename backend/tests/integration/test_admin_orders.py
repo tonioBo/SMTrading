@@ -383,3 +383,77 @@ async def test_admin_cancel_audited(admin):
     assert audit.agent_id is None and audit.outcome == "ok"
     assert audit.params["order_id"] == oid and audit.params["portfolio_id"] == pid
     assert audit.params["by"] == admin.email and audit.params["status"] == "canceled"
+
+
+# -- portal roles, step-up lockout, activity log (merge of main's users/activity rules) ------
+
+async def _viewer(admin) -> httpx.AsyncClient:
+    """A logged-in viewer on the same app (the caller closes it)."""
+    from smtrading.admin.auth import hash_password
+    from smtrading.admin.models import AdminUser
+
+    email = f"viewer-{uuid.uuid4().hex[:8]}@example.com"
+    async with admin.sm() as s:
+        s.add(AdminUser(email=email, password_hash=await hash_password(PASSWORD),
+                        role="viewer"))
+        await s.commit()
+    c = httpx.AsyncClient(transport=httpx.ASGITransport(app=admin.app),
+                          base_url="http://test")
+    r = await c.post("/api/auth/login", json={"email": email, "password": PASSWORD})
+    assert r.status_code == 200, r.text
+    c.headers["X-CSRF-Token"] = c.cookies["smt_csrf"]
+    return c
+
+
+async def test_viewer_cannot_preview_or_place_manual_orders(admin):
+    pid = await _portfolio(admin.client)
+    before = await _order_count(admin.sm)
+    viewer = await _viewer(admin)
+    try:
+        assert (await viewer.get(f"/api/portfolios/{pid}/orders")).status_code == 200
+        for path in (f"/api/portfolios/{pid}/orders/preview", f"/api/portfolios/{pid}/orders"):
+            r = await viewer.post(path, json=_btc())
+            assert r.status_code == 403, r.text
+            assert r.json()["code"] == "FORBIDDEN"
+            assert r.json()["details"]["role_required"] == "admin"
+    finally:
+        await viewer.aclose()
+    assert await _order_count(admin.sm) == before
+    assert await _audits(admin.sm, "admin:order.place") == []
+
+
+async def test_real_order_totp_failures_lock_out(admin):
+    """The manual order's TOTP is a step-up (check_step_up_totp): 5 wrong codes, then even a
+    valid one is refused (RATE_LIMITED) and nothing is placed."""
+    pid = await _live(admin)
+    before = await _order_count(admin.sm)
+    for _ in range(5):
+        r = await admin.client.post(f"/api/portfolios/{pid}/orders", json=_aapl(totp="000000"))
+        assert r.status_code == 403 and r.json()["details"]["field"] == "totp", r.text
+    r = await admin.client.post(f"/api/portfolios/{pid}/orders",
+                                json=_aapl(totp=await admin.codes.fresh()))
+    assert r.status_code == 429, r.text
+    assert r.json()["code"] == "RATE_LIMITED" and r.json()["details"]["field"] == "totp"
+    assert await _order_count(admin.sm) == before
+
+
+async def test_manual_order_activity_rows_mask_the_totp(admin):
+    from smtrading.useractivity.models import UserActivity
+
+    pid = await _live(admin)
+    code = await admin.codes.fresh()
+    r = await admin.client.post(f"/api/portfolios/{pid}/orders/preview", json=_aapl())
+    assert r.status_code == 200, r.text
+    r = await admin.client.post(f"/api/portfolios/{pid}/orders", json=_aapl(totp=code))
+    assert r.status_code == 200, r.text
+    async with admin.sm() as s:
+        rows = list(await s.scalars(
+            select(UserActivity).where(UserActivity.provisional.is_(False))
+            .where(UserActivity.category == "portfolios").order_by(UserActivity.id)))
+    preview, place = [r for r in rows if r.action != "portfolios.create"]
+    assert preview.action == "portfolios.order_preview" and preview.outcome == "ok"
+    assert place.action == "portfolios.order_place" and place.outcome == "ok"
+    assert place.route == "/api/portfolios/{portfolio_id}/orders"
+    assert place.target == {"portfolio_id": pid}
+    assert place.summary["totp"] == "••••" and place.summary["symbol"] == "AAPL"
+    assert code not in str(place.summary)

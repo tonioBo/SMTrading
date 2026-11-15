@@ -30,6 +30,7 @@ class ErrorCode(StrEnum):
     LIVE_DRY_RUN = "LIVE_DRY_RUN"
     LIVE_CASH_LIMIT = "LIVE_CASH_LIMIT"
     VERSION_CONFLICT = "VERSION_CONFLICT"  # a stale base version (admin editors, HTTP 409)
+    PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED"  # temporary password (HTTP 403)
 
 
 class SMTError(Exception):

@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { toast } from "sonner";
+import { useIsAdmin } from "@/api/hooks/auth";
 import { useAppSettings } from "@/api/hooks/risk";
 import { useBackups, useDownloadBackup, useSaveMcpHideMode, useSaveTimezone, useVerifyIntegrity } from "@/api/hooks/system";
 import type { BackupFile } from "@/api/types";
 import { ChangePasswordSection } from "@/components/ChangePasswordSection";
 import { SessionsSection } from "@/components/SessionsSection";
 import { TotpSection } from "@/components/TotpSection";
+import { UsersSection } from "@/components/UsersSection";
 import { DataTable, type Column } from "@/components/DataTable";
 import { FormField, selectClass } from "@/components/FormField";
 import { PageHeader } from "@/components/PageHeader";
@@ -18,6 +20,8 @@ import { timezones } from "@/lib/timezones";
 function TimezoneEditor({ initial }: { initial: string }) {
   const [tz, setTz] = useState(initial);
   const save = useSaveTimezone();
+  const admin = useIsAdmin();
+  if (!admin) return <p className="text-sm">{initial}</p>;
   return (
     <div className="flex flex-wrap items-end gap-2">
       <div className="w-72">
@@ -45,6 +49,7 @@ function TimezoneEditor({ initial }: { initial: string }) {
 
 function McpHideModeSection({ initial }: { initial: boolean }) {
   const save = useSaveMcpHideMode();
+  const admin = useIsAdmin();
   return (
     <Card className="mt-6">
       <CardHeader>
@@ -55,7 +60,7 @@ function McpHideModeSection({ initial }: { initial: boolean }) {
           <input
             type="checkbox"
             checked={initial}
-            disabled={save.isPending}
+            disabled={save.isPending || !admin}
             onChange={(e) => save.mutate(e.target.checked, { onSuccess: () => toast.success("Impostazione salvata") })}
             className="h-4 w-4 accent-[rgb(var(--accent))]"
           />
@@ -111,6 +116,7 @@ function IntegritySection() {
 function BackupSection() {
   const { data, isLoading, isError } = useBackups();
   const download = useDownloadBackup();
+  const admin = useIsAdmin();
   const columns: Column<BackupFile>[] = [
     { key: "name", header: "Nome", sortValue: (b) => b.name, cell: (b) => b.name },
     { key: "size", header: "Dimensione", align: "right", sortValue: (b) => b.size_bytes, cell: (b) => <span className="num">{formatBytes(b.size_bytes)}</span> },
@@ -122,9 +128,11 @@ function BackupSection() {
         <CardTitle>Backup</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <Button type="button" onClick={() => download.mutate()} disabled={download.isPending}>
-          {download.isPending ? "Backup in corso…" : "Scarica backup ora"}
-        </Button>
+        {admin && (
+          <Button type="button" onClick={() => download.mutate()} disabled={download.isPending}>
+            {download.isPending ? "Backup in corso…" : "Scarica backup ora"}
+          </Button>
+        )}
         {download.error && (
           <p role="alert" className="text-sm text-loss">
             {errorMessage(download.error)}
@@ -140,9 +148,15 @@ function BackupSection() {
 
 export default function Settings() {
   const { data, isError } = useAppSettings();
+  const admin = useIsAdmin();
   return (
     <div>
       <PageHeader title="Impostazioni" />
+      {admin && (
+        <div className="mb-6">
+          <UsersSection />
+        </div>
+      )}
       <Card>
         <CardHeader>
           <CardTitle>Fuso orario</CardTitle>

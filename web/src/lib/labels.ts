@@ -1,4 +1,4 @@
-import type { AssetClass } from "@/api/types";
+import type { AssetClass, UserRole } from "@/api/types";
 
 /** Italian names of the asset classes (risk profiles, fees, connectors). */
 export const ASSET_CLASS_LABELS: Record<AssetClass, string> = {
@@ -23,3 +23,6 @@ export const ORDER_TYPE_LABELS: Record<string, string> = {
 
 /** Italian names of the order durations (engine TimeInForce). */
 export const TIF_LABELS: Record<string, string> = { gtc: "Fino a revoca (gtc)", day: "Giornaliero (day)" };
+
+/** Portal user roles («Impostazioni → Utenti»). */
+export const ROLE_LABELS: Record<UserRole, string> = { admin: "Amministratore", viewer: "Sola lettura" };

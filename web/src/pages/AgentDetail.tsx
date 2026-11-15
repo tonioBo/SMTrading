@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { errorMessage } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
+import { AdminFieldset } from "@/components/AdminOnly";
 
 /** The `notify` permission (PATCH can_notify): the agent may write to the Telegram group. */
 function NotifyPermission({ agent }: { agent: Agent }) {
@@ -124,8 +125,12 @@ export default function AgentDetail() {
           )}
         </CardContent>
       </Card>
-      <NotifyPermission agent={agent} />
-      <HaltPermission agent={agent} />
+      <AdminFieldset>
+        <div className="space-y-4">
+          <NotifyPermission agent={agent} />
+          <HaltPermission agent={agent} />
+        </div>
+      </AdminFieldset>
       <AgentWatchSection agentId={agent.id} />
     </div>
   );

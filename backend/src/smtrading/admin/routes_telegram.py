@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.activity.models import Decision, DecisionKind
 from smtrading.activity.service import list_decisions
-from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
+from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_access
 from smtrading.admin.common import _invalid, _transaction
 from smtrading.agents.models import Agent
 from smtrading.common.errors import SMTError
@@ -37,7 +37,7 @@ from smtrading.telegram.settings import (
     set_paused,
 )
 
-router = APIRouter(prefix="/api", tags=["telegram"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api", tags=["telegram"], dependencies=[Depends(require_access)])
 
 DEFAULT_LIMIT, MAX_LIMIT = 50, 200
 TEST_TEXT = "🟢 Messaggio di prova da SMTrading"

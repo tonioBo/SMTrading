@@ -1,13 +1,13 @@
 """Manual market closures («Chiusure straordinarie»): a whole closed day or an early
 close (local time of the exchange), one per market and day
 
-Revision ID: 0022
+Revision ID: 0024
 """
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0022"
-down_revision = "0021"
+revision = "0024"
+down_revision = "0023"
 branch_labels = None
 depends_on = None
 
