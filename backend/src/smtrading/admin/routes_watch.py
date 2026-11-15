@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
+from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_access
 from smtrading.admin.common import _transaction
 from smtrading.agents.models import Agent
 from smtrading.agents.service import write_audit
@@ -26,7 +26,7 @@ from smtrading.mcp.dto import alert_dto, to_jsonable
 from smtrading.watch import service as watch
 from smtrading.watch.models import Alert, Watchlist, WatchlistItem
 
-router = APIRouter(prefix="/api", tags=["watch"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api", tags=["watch"], dependencies=[Depends(require_access)])
 
 NOTIFICATION_KIND = "admin.watch_changed"
 

@@ -12,13 +12,13 @@ from fastapi import APIRouter, Depends, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.engine import make_url
 
-from smtrading.admin.auth import DbSession, require_admin
+from smtrading.admin.auth import DbSession, require_access
 from smtrading.common.config import get_settings
 from smtrading.ledger.service import verify_balances, verify_chain
 from smtrading.mcp.dto import to_jsonable
 
 log = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/system", tags=["system"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api/system", tags=["system"], dependencies=[Depends(require_access)])
 
 BACKUP_DIR = Path("/backups")  # the `backups` volume, mounted read-only on the api
 BACKUP_SUFFIXES = (".sql.gz", ".dump")

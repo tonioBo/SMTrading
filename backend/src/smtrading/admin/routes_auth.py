@@ -3,7 +3,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 
 from smtrading.admin import auth
-from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient
+from smtrading.admin.auth import CurrentAdmin, CurrentUser, DbSession, RedisClient, SessionUser
 from smtrading.admin.models import AdminUser
 from smtrading.admin.schemas import AdminOut, LoginIn, PasswordChangeIn, TotpCodeIn, TotpSetupOut
 
@@ -11,7 +11,8 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 def _out(user: AdminUser) -> AdminOut:
-    return AdminOut(email=user.email, totp_enabled=user.totp_enabled)
+    return AdminOut(email=user.email, totp_enabled=user.totp_enabled, role=user.role,
+                    must_change_password=user.must_change_password)
 
 
 def _cookie_opts(request: Request) -> dict:
@@ -74,7 +75,7 @@ async def logout(request: Request, redis: RedisClient) -> Response:
 
 
 @router.get("/me")
-async def me(user: CurrentAdmin) -> AdminOut:
+async def me(user: SessionUser) -> AdminOut:
     return _out(user)
 
 
@@ -82,14 +83,14 @@ async def me(user: CurrentAdmin) -> AdminOut:
 async def revoke_other_sessions(
     request: Request, user: CurrentAdmin, redis: RedisClient
 ) -> dict:
-    """Close every session of this admin except the caller's."""
+    """Close every session of this admin except the caller's (admins only)."""
     revoked = await auth.revoke_other_sessions(redis, user.id, request.state.admin_session_id)
     return {"revoked": revoked}
 
 
 @router.post("/totp/setup")
 async def totp_setup(
-    user: CurrentAdmin, session: DbSession
+    user: CurrentUser, session: DbSession
 ) -> TotpSetupOut:
     secret, uri = auth.totp_setup(user)
     await session.commit()
@@ -101,7 +102,7 @@ async def totp_enable(
     body: TotpCodeIn,
     request: Request,
     response: Response,
-    user: CurrentAdmin,
+    user: CurrentUser,
     session: DbSession,
     redis: RedisClient,
 ) -> AdminOut:
@@ -116,7 +117,7 @@ async def totp_disable(
     body: TotpCodeIn,
     request: Request,
     response: Response,
-    user: CurrentAdmin,
+    user: CurrentUser,
     session: DbSession,
     redis: RedisClient,
 ) -> AdminOut:
@@ -131,7 +132,7 @@ async def change_password(
     body: PasswordChangeIn,
     request: Request,
     response: Response,
-    user: CurrentAdmin,
+    user: SessionUser,
     session: DbSession,
     redis: RedisClient,
 ) -> dict:

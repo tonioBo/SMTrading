@@ -12,7 +12,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
+from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_access
 from smtrading.admin.common import _invalid, _transaction
 from smtrading.admin.schemas import (
     AgentCreateIn,
@@ -27,7 +27,7 @@ from smtrading.mcp.dto import parse_ts, to_jsonable
 from smtrading.portfolios.mode import mode_fields, portfolio_links
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 
-router = APIRouter(prefix="/api", tags=["agents"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api", tags=["agents"], dependencies=[Depends(require_access)])
 
 MAX_NAME_LEN = 128
 DEFAULT_AUDIT_LIMIT, MAX_AUDIT_LIMIT = 100, 500

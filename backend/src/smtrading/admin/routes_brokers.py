@@ -27,7 +27,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
+from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_access
 from smtrading.admin.common import (
     MASK,
     Quotes,
@@ -67,7 +67,7 @@ from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.mcp.dto import parse_int, to_jsonable
 from smtrading.portfolios.models import Portfolio
 
-router = APIRouter(prefix="/api", tags=["brokers"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api", tags=["brokers"], dependencies=[Depends(require_access)])
 
 BROKER_TIMEOUT_S = 30.0
 MAX_NAME_LEN = 128

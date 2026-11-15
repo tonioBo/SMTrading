@@ -1,6 +1,6 @@
 """Admin WebSocket `/ws`: relays Redis pub/sub to the web app.
 
-- Authentication: the `smt_session` cookie, validated like `require_admin` (session in
+- Authentication: the `smt_session` cookie, validated like `require_user` (session in
   Redis, TTL renewed, credentials fingerprint); no session → close 4401. A browser
   `Origin` must match the request `Host` (no CSRF token on WebSockets) → else close 4403;
   a client without `Origin` (not a browser) is allowed.
@@ -87,12 +87,13 @@ def _origin_ok(websocket: WebSocket) -> bool:
 
 
 async def _session_valid(websocket: WebSocket, redis: Redis, *, renew: bool) -> bool:
-    """The `require_admin` session checks (no CSRF) for the socket's session cookie."""
+    """The `require_user` session checks (no CSRF) for the socket's session cookie: any
+    role (the socket only reads), not a disabled user nor a temporary password."""
     async with websocket.app.state.sessionmaker() as db:
         loaded = await load_admin_session(
             redis, db, websocket.cookies.get(SESSION_COOKIE), renew=renew
         )
-    return loaded is not None
+    return loaded is not None and not loaded[0].must_change_password
 
 
 def _error(message: str) -> dict:

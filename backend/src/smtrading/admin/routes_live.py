@@ -37,7 +37,14 @@ from pydantic import BaseModel
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_admin
+from smtrading.admin.auth import (
+    CurrentAdmin,
+    CurrentUser,
+    DbSession,
+    RedisClient,
+    require_access,
+    require_user,
+)
 from smtrading.admin.common import MASK, Quotes, _invalid, _transaction, redact
 from smtrading.admin.routes_portfolios import _csv_text, portfolio_dto
 from smtrading.brokers.live import LIVE_KINDS
@@ -62,7 +69,9 @@ from smtrading.portfolios.models import Portfolio
 from smtrading.telegram.config import is_ready, load_config
 from smtrading.telegram.models import OutboxStatus, TelegramOutbox
 
-router = APIRouter(prefix="/api", tags=["live"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api", tags=["live"], dependencies=[Depends(require_access)])
+# protective actions every user may take, viewers included: «Disattiva denaro reale»
+emergency_router = APIRouter(prefix="/api", tags=["live"], dependencies=[Depends(require_user)])
 
 LIVE_TIMEOUT_S = 30.0
 DEFAULT_AUDIT_LIMIT, MAX_AUDIT_LIMIT = 50, 200
@@ -271,8 +280,8 @@ async def post_arm(link_id: UUID, body: ArmIn, request: Request, admin: CurrentA
     return await _fresh_dto(session, link_id)
 
 
-@router.post("/live-links/{link_id}/disarm")
-async def post_disarm(link_id: UUID, request: Request, admin: CurrentAdmin,
+@emergency_router.post("/live-links/{link_id}/disarm")
+async def post_disarm(link_id: UUID, request: Request, user: CurrentUser,
                       session: DbSession, redis: RedisClient) -> dict:
     """«Disattiva denaro reale»: one click, no TOTP, any body (an optional JSON
     `{"reason": "..."}`: a reason that is not a text is ignored). Two phases (R8.12): the
@@ -282,7 +291,7 @@ async def post_disarm(link_id: UUID, request: Request, admin: CurrentAdmin,
     await _live_link(session, link_id)  # 404 before anything changes
     await session.commit()
     orders = await disarm_live_link_now(request.app.state.sessionmaker, link_id,
-                                        actor=request_actor(request, admin), reason=reason,
+                                        actor=request_actor(request, user), reason=reason,
                                         redis=redis)
     return {**await _fresh_dto(session, link_id), "orders": orders,
             "settled": orders is not None}

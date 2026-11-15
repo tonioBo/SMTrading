@@ -20,7 +20,17 @@
     telegram set --chat-id ID [--token-stdin] [--no-verify] [--enable]
                  (the bot token is read only from stdin, never from argv; verified with
                  getMe/getChat like the admin API; the output never contains it)
+    users list               (portal users: role, TOTP, last login, state; no passwords)
+    users create EMAIL [--role admin|viewer]
+                             (prints the temporary password once; default role viewer;
+                             `--role admin` is the way back in when access is lost)
+    users set-role EMAIL admin|viewer
+    users disable EMAIL
+    users reset-password EMAIL   (prints the new temporary password once)
+                             (the same protections as /api/users, «at least one active
+                             admin» included; the user's sessions are closed)
 
+A temporary password is printed only by `users create` / `users reset-password`, once.
 A token is printed only by `agent create` / `agent rotate`, once: it is never stored in
 clear. Quotes come from the real MarketDataRouter. Each command runs in one transaction
 that is committed, then its Redis effects are dispatched (Ruling R10). On an SMTError the
@@ -43,6 +53,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import smtrading.models  # noqa: F401  (complete mapper registry, e.g. broker_links FK)
+from smtrading.admin import users
+from smtrading.admin.models import ROLE_VIEWER, ROLES
 from smtrading.agents import service as agents
 from smtrading.agents.models import Agent, AgentPortfolio
 from smtrading.common.config import get_settings
@@ -144,6 +156,20 @@ def build_parser() -> argparse.ArgumentParser:
     tg_set.add_argument("--no-verify", action="store_true",
                         help="skip the getMe/getChat check with Telegram")
     tg_set.add_argument("--enable", action="store_true", help="also enable the notifications")
+
+    users_p = sub.add_parser("users", help="portal users (emergency recovery)")
+    users_sub = users_p.add_subparsers(dest="users_command", required=True)
+    users_sub.add_parser("list", help="portal users (no passwords)")
+    u_create = users_sub.add_parser("create", help="create a user; prints its temporary password once")
+    u_create.add_argument("email")
+    u_create.add_argument("--role", choices=ROLES, default=ROLE_VIEWER)
+    u_role = users_sub.add_parser("set-role", help="change a user's role")
+    u_role.add_argument("email")
+    u_role.add_argument("role", choices=ROLES)
+    users_sub.add_parser("disable", help="disable a user (sessions closed)").add_argument("email")
+    users_sub.add_parser(
+        "reset-password", help="new temporary password, printed once (sessions closed)"
+    ).add_argument("email")
     return parser
 
 
@@ -280,6 +306,43 @@ async def execute_live(args: argparse.Namespace, session: AsyncSession, redis=No
     raise AssertionError(args.live_command)  # pragma: no cover
 
 
+def _user_row(user) -> dict:
+    dto = users.user_dto(user)
+    return {k: dto[k] for k in ("email", "role", "totp_enabled", "must_change_password",
+                                "active", "last_login_at", "created_at", "created_by")}
+
+
+async def execute_users(args: argparse.Namespace, session: AsyncSession, redis=None) -> object:
+    """The /api/users protections (users.py); the actor is `cli` (no TOTP step-up: shell
+    access to the server already is the strongest credential). Sessions are closed before
+    the commit: a disabled user's session would be refused anyway, a new password changes
+    the credentials fingerprint."""
+    actor = users.CLI_ACTOR
+    match args.users_command:
+        case "list":
+            return [_user_row(u) for u in await users.list_users(session)]
+        case "create":
+            user, temp = await users.create_user(session, email=args.email, role=args.role,
+                                                 actor=actor)
+            return {**_user_row(user), "temp_password": temp}
+    target = await users.find_by_email(session, args.email)
+    match args.users_command:
+        case "set-role":
+            user = await users.set_role(session, target.id, args.role, actor=actor)
+            result = _user_row(user)
+        case "disable":
+            user = await users.set_active(session, target.id, False, actor=actor)
+            result = _user_row(user)
+        case "reset-password":
+            user, temp = await users.reset_password(session, target.id, actor=actor)
+            result = {**_user_row(user), "temp_password": temp}
+        case _:  # pragma: no cover
+            raise AssertionError(args.users_command)
+    if redis is not None:
+        await users.revoke_sessions(redis, user.id)
+    return result
+
+
 def _read_token_stdin() -> str:
     return sys.stdin.read()
 
@@ -308,6 +371,8 @@ async def execute(
     args: argparse.Namespace, session: AsyncSession, qs: QuoteSource, redis=None
 ) -> object:
     match args.command:
+        case "users":
+            return await execute_users(args, session, redis)
         case "telegram":
             return await execute_telegram(args, session)
         case "live":

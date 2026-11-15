@@ -8,7 +8,7 @@ import httpx
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from smtrading.admin.auth import DbSession, RedisClient, require_admin
+from smtrading.admin.auth import DbSession, RedisClient, require_access
 from smtrading.admin.common import (
     _invalid,
     _transaction,
@@ -35,7 +35,7 @@ from smtrading.marketdata.registry import PROVIDERS
 from smtrading.marketdata.types import Capability
 from smtrading.mcp.dto import parse_enum, to_jsonable
 
-router = APIRouter(prefix="/api", tags=["connectors"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api", tags=["connectors"], dependencies=[Depends(require_access)])
 
 HEALTH_TIMEOUT_S = 10.0
 MAX_RATE_LIMIT = 1_000_000

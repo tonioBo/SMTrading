@@ -29,7 +29,7 @@ from redis.exceptions import RedisError
 from sqlalchemy import and_, func, select, text
 from sqlalchemy.dialects.postgresql import distinct_on
 
-from smtrading.admin.auth import DbSession, RedisClient, require_admin
+from smtrading.admin.auth import DbSession, RedisClient, require_access
 from smtrading.admin.common import Quotes
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.heartbeat import heartbeat_age_s
@@ -46,7 +46,7 @@ from smtrading.risk.settings import is_kill_switch_on
 from smtrading.valuation.service import value_portfolio
 
 log = logging.getLogger("smtrading.admin.dashboard")
-router = APIRouter(prefix="/api", tags=["dashboard"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api", tags=["dashboard"], dependencies=[Depends(require_access)])
 
 MARGIN_ALERT_KINDS = ("margin_warning", "liquidation")
 MAX_MARGIN_ALERTS = 10
