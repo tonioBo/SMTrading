@@ -1,9 +1,12 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { meKey } from "@/api/hooks/auth";
 import type { AdminUser, LiveLink, PortalUser } from "@/api/types";
+import { AdminOnly } from "@/components/AdminOnly";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
 
@@ -217,8 +220,29 @@ describe("Impostazioni → Utenti", () => {
     expect(await screen.findByText("Cambia password")).toBeInTheDocument();
     expect(screen.queryByRole("table", { name: "Utenti" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Scarica backup ora" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Chiudi tutte le altre sessioni" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Chiudi tutte le altre sessioni" })).toBeInTheDocument(); // own sessions
     expect(screen.getByText("Autenticazione a due fattori")).toBeInTheDocument(); // own TOTP stays
+  });
+});
+
+describe("step-up for admins", () => {
+  it("asks for the actor's TOTP to reactivate an admin and to reset an admin's TOTP", async () => {
+    const user = userEvent.setup();
+    me = { ...me, totp_enabled: true };
+    users = [portalUser({ id: "u5", email: "capo@example.com", role: "admin", active: false, totp_enabled: true })];
+    renderApp("/impostazioni");
+    const table = await screen.findByRole("table", { name: "Utenti" });
+    await user.click(await within(table).findByRole("button", { name: "Riattiva" }));
+    let dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Codice TOTP"), "123456");
+    await user.click(within(dialog).getByRole("button", { name: "Riattiva" }));
+    await waitFor(() => expect(posts).toContainEqual({ path: "enable/u5", body: { totp: "123456" } }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await user.click(within(table).getByRole("button", { name: "Azzera TOTP" }));
+    dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Codice TOTP"), "654321");
+    await user.click(within(dialog).getByRole("button", { name: "Azzera" }));
+    await waitFor(() => expect(posts).toContainEqual({ path: "reset-totp/u5", body: { totp: "654321" } }));
   });
 });
 
@@ -243,6 +267,23 @@ describe("forced password change", () => {
 });
 
 describe("read-only mode", () => {
+  it("stays read-only until /api/auth/me has answered", async () => {
+    const pending = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    pending.setQueryDefaults(meKey, { queryFn: () => new Promise<never>(() => undefined) });
+    render(
+      <QueryClientProvider client={pending}>
+        <AdminOnly>
+          <button type="button">Modifica</button>
+        </AdminOnly>
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByRole("button", { name: "Modifica" })).not.toBeInTheDocument();
+    act(() => {
+      pending.setQueryData(meKey, { email: "admin@example.com", totp_enabled: false, role: "admin" });
+    });
+    expect(await screen.findByRole("button", { name: "Modifica" })).toBeInTheDocument();
+  });
+
   it("marks the header and hides the create buttons", async () => {
     viewer();
     renderApp("/portafogli");

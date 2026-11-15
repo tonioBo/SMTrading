@@ -142,12 +142,13 @@ export function UsersSection() {
     setPending(null);
   };
 
-  /** Does the action need the actor's TOTP (create an admin, promote, reset an admin's password)? */
+  /** Does the action need the actor's TOTP (create an admin, promote, reactivate an admin,
+   * reset an admin's password or TOTP)? */
   function needsTotp(p: Pending): boolean {
     if (!actorTotp) return false;
-    if (p.kind === "create") return p.role === "admin";
-    if (p.kind === "role") return p.role === "admin";
-    if (p.kind === "reset-password") return p.user.role === "admin";
+    if (p.kind === "create" || p.kind === "role") return p.role === "admin";
+    if (p.kind === "reset-password" || p.kind === "reset-totp") return p.user.role === "admin";
+    if (p.kind === "active") return p.active && p.user.role === "admin";
     return false;
   }
 
@@ -180,10 +181,10 @@ export function UsersSection() {
         );
         return;
       case "reset-totp":
-        resetTotp.mutate(p.user.id, { onSuccess: () => done(`TOTP di ${p.user.email} azzerato`) });
+        resetTotp.mutate({ id: p.user.id, ...code }, { onSuccess: () => done(`TOTP di ${p.user.email} azzerato`) });
         return;
       case "active":
-        setActive.mutate({ id: p.user.id, active: p.active }, { onSuccess: () => done(`${p.user.email} ${p.active ? "riattivato" : "disattivato"}`) });
+        setActive.mutate({ id: p.user.id, active: p.active, ...code }, { onSuccess: () => done(`${p.user.email} ${p.active ? "riattivato" : "disattivato"}`) });
         return;
     }
   }

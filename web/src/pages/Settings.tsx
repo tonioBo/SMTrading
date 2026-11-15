@@ -169,7 +169,7 @@ export default function Settings() {
       {data && <McpHideModeSection initial={data.mcp_hide_mode} />}
       <ChangePasswordSection />
       <TotpSection />
-      {admin && <SessionsSection />}
+      <SessionsSection />
       <IntegritySection />
       <BackupSection />
     </div>

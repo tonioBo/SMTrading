@@ -1,8 +1,9 @@
 """Admin API: portal users (admins only). The temporary password is in the create and
 reset answers only (`Cache-Control: no-store`). Disable, role change, password reset and
 TOTP reset close the target's sessions right after the commit. Creating an admin,
-promoting to admin and resetting an admin's password need the actor's TOTP code when the
-actor has TOTP enabled (step-up, with the failure lockout)."""
+promoting to admin, reactivating an admin and resetting an admin's password or TOTP need
+the actor's TOTP code when the actor has TOTP enabled (step-up, with the failure
+lockout). The actor is checked again under the service's lock."""
 
 from uuid import UUID
 
@@ -55,7 +56,7 @@ async def create_user(body: UserCreateIn, response: Response, admin: CurrentAdmi
                       session: DbSession, redis: RedisClient) -> dict:
     async with _transaction(session, redis):
         user, temp = await users.create_user(
-            session, email=body.email, role=body.role, actor=admin.email,
+            session, email=body.email, role=body.role, actor=admin.email, actor_id=admin.id,
             step_up=_step_up(redis, admin, body.totp))
     _no_store(response)
     return {"user": users.user_dto(user), "temp_password": temp}
@@ -84,10 +85,11 @@ async def disable_user(user_id: UUID, admin: CurrentAdmin, session: DbSession,
 
 @router.post("/{user_id}/enable")
 async def enable_user(user_id: UUID, admin: CurrentAdmin, session: DbSession,
-                      redis: RedisClient) -> dict:
+                      redis: RedisClient, body: StepUpIn | None = None) -> dict:
     async with _transaction(session, redis):
         user = await users.set_active(session, user_id, True, actor=admin.email,
-                                      actor_id=admin.id)
+                                      actor_id=admin.id,
+                                      step_up=_step_up(redis, admin, body.totp if body else None))
     return {"user": users.user_dto(user)}
 
 
@@ -106,8 +108,9 @@ async def reset_password(user_id: UUID, response: Response, admin: CurrentAdmin,
 
 @router.post("/{user_id}/reset-totp")
 async def reset_totp(user_id: UUID, admin: CurrentAdmin, session: DbSession,
-                     redis: RedisClient) -> dict:
+                     redis: RedisClient, body: StepUpIn | None = None) -> dict:
     async with _transaction(session, redis):
-        user = await users.reset_totp(session, user_id, actor=admin.email, actor_id=admin.id)
+        user = await users.reset_totp(session, user_id, actor=admin.email, actor_id=admin.id,
+                                      step_up=_step_up(redis, admin, body.totp if body else None))
     await users.revoke_sessions(redis, user.id)
     return {"user": users.user_dto(user)}

@@ -7,9 +7,13 @@ admin and reactivating an admin queue a «system» Telegram security notice (no 
 The caller commits, then revokes the target's sessions (`revoke_sessions`) after a
 disable, a role change, a password reset or a TOTP reset.
 
+`actor_id` (the portal user acting; None from the CLI) is read again under the lock: an
+admin demoted or disabled meanwhile cannot finish the action.
+
 `step_up`: an optional coroutine the caller passes to confirm an admin-sensitive action
-(creating an admin, promoting to admin, resetting an admin's password) with the actor's
-TOTP; it runs under the lock, once the target is known, before anything changes."""
+(creating an admin, promoting to admin, reactivating an admin, resetting an admin's
+password or TOTP) with the actor's TOTP; it runs under the lock, once the target is
+known, before anything changes."""
 
 import re
 import uuid
@@ -70,6 +74,16 @@ async def _lock(session: AsyncSession) -> None:
     await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": _LOCK_KEY})
 
 
+async def _lock_and_check_actor(session: AsyncSession, actor_id: uuid.UUID | None) -> None:
+    """Take the lock, then require the acting portal user to still be an active admin."""
+    await _lock(session)
+    if actor_id is None:
+        return
+    actor = await session.get(AdminUser, actor_id, populate_existing=True)
+    if actor is None or not actor.is_admin or not actor.active:
+        raise _forbidden("non sei più un amministratore attivo")
+
+
 async def _target(session: AsyncSession, user_id: uuid.UUID) -> AdminUser:
     user = await session.get(AdminUser, user_id, with_for_update=True,
                              populate_existing=True)
@@ -126,6 +140,7 @@ async def list_users(session: AsyncSession) -> list[AdminUser]:
 
 
 async def create_user(session: AsyncSession, *, email: str, role: str, actor: str,
+                      actor_id: uuid.UUID | None = None,
                       step_up: StepUp = None) -> tuple[AdminUser, str]:
     """(user, temporary password): the password is returned here only, never stored in
     clear; the user must change it at the first login."""
@@ -133,7 +148,7 @@ async def create_user(session: AsyncSession, *, email: str, role: str, actor: st
     if len(clean) > MAX_EMAIL_LEN or not _EMAIL.match(clean):
         raise _invalid("email", "email non valida")
     _check_role(role)
-    await _lock(session)
+    await _lock_and_check_actor(session, actor_id)
     if await session.scalar(select(AdminUser.id).where(AdminUser.email == clean)) is not None:
         raise _invalid("email", "esiste già un utente con questa email")
     if role == ROLE_ADMIN and step_up is not None:
@@ -155,7 +170,7 @@ async def create_user(session: AsyncSession, *, email: str, role: str, actor: st
 async def set_role(session: AsyncSession, user_id: uuid.UUID, role: str, *, actor: str,
                    actor_id: uuid.UUID | None = None, step_up: StepUp = None) -> AdminUser:
     _check_role(role)
-    await _lock(session)
+    await _lock_and_check_actor(session, actor_id)
     user = await _target(session, user_id)
     _not_self(user, actor_id, "non puoi modificare il tuo ruolo")
     if user.role == role:
@@ -176,8 +191,8 @@ async def set_role(session: AsyncSession, user_id: uuid.UUID, role: str, *, acto
 
 
 async def set_active(session: AsyncSession, user_id: uuid.UUID, active: bool, *, actor: str,
-                     actor_id: uuid.UUID | None = None) -> AdminUser:
-    await _lock(session)
+                     actor_id: uuid.UUID | None = None, step_up: StepUp = None) -> AdminUser:
+    await _lock_and_check_actor(session, actor_id)
     user = await _target(session, user_id)
     if not active:
         _not_self(user, actor_id, "non puoi disattivare te stesso")
@@ -185,6 +200,8 @@ async def set_active(session: AsyncSession, user_id: uuid.UUID, active: bool, *,
         return user
     if not active:
         await _keep_an_admin(session, user)
+    elif user.is_admin and step_up is not None:
+        await step_up()
     user.disabled_at = None if active else datetime.now(UTC)
     await session.flush()
     await _audit(session, "enable" if active else "disable", actor, user)
@@ -199,7 +216,7 @@ async def reset_password(session: AsyncSession, user_id: uuid.UUID, *, actor: st
                          actor_id: uuid.UUID | None = None,
                          step_up: StepUp = None) -> tuple[AdminUser, str]:
     """(user, new temporary password), returned here only; to be changed at the login."""
-    await _lock(session)
+    await _lock_and_check_actor(session, actor_id)
     user = await _target(session, user_id)
     _not_self(user, actor_id, "per la tua password usa «Cambia password»")
     if user.is_admin and step_up is not None:
@@ -213,10 +230,12 @@ async def reset_password(session: AsyncSession, user_id: uuid.UUID, *, actor: st
 
 
 async def reset_totp(session: AsyncSession, user_id: uuid.UUID, *, actor: str,
-                     actor_id: uuid.UUID | None = None) -> AdminUser:
-    await _lock(session)
+                     actor_id: uuid.UUID | None = None, step_up: StepUp = None) -> AdminUser:
+    await _lock_and_check_actor(session, actor_id)
     user = await _target(session, user_id)
     _not_self(user, actor_id, "per il tuo TOTP usa la sezione Sicurezza")
+    if user.is_admin and step_up is not None:
+        await step_up()
     user.totp_enabled = False
     user.totp_secret_encrypted = None
     await session.flush()
@@ -227,3 +246,21 @@ async def reset_totp(session: AsyncSession, user_id: uuid.UUID, *, actor: str,
 async def revoke_sessions(redis: Redis, user_id: uuid.UUID) -> int:
     """Close every session of the user at once."""
     return await revoke_other_sessions(redis, user_id, keep_session_id="")
+
+
+_REVOKE_KEY = "smt_revoke_admin_sessions"
+
+
+def queue_revoke(session: AsyncSession, user_id: uuid.UUID) -> None:
+    """Close the user's sessions once this transaction commits (`revoke_queued`)."""
+    session.info.setdefault(_REVOKE_KEY, []).append(user_id)
+
+
+def discard_revokes(session: AsyncSession) -> None:
+    session.info.pop(_REVOKE_KEY, None)
+
+
+async def revoke_queued(session: AsyncSession, redis: Redis) -> None:
+    """After the commit: the sessions of every user queued with `queue_revoke`."""
+    for user_id in session.info.pop(_REVOKE_KEY, []):
+        await revoke_sessions(redis, user_id)

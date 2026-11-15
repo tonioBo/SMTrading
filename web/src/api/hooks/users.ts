@@ -30,9 +30,10 @@ export function useSetUserRole() {
   );
 }
 
+/** `totp`: the actor's code, needed to reactivate an admin when the actor has TOTP. */
 export function useSetUserActive() {
-  return useUsersMutation(({ id, active }: { id: string; active: boolean }) =>
-    apiFetch<{ user: PortalUser }>(`/api/users/${id}/${active ? "enable" : "disable"}`, { method: "POST" }),
+  return useUsersMutation(({ id, active, totp }: { id: string; active: boolean; totp?: string }) =>
+    apiFetch<{ user: PortalUser }>(`/api/users/${id}/${active ? "enable" : "disable"}`, { method: "POST", body: totp ? { totp } : undefined }),
   );
 }
 
@@ -42,6 +43,9 @@ export function useResetUserPassword() {
   );
 }
 
+/** `totp`: the actor's code, needed to reset an admin's TOTP when the actor has TOTP. */
 export function useResetUserTotp() {
-  return useUsersMutation((id: string) => apiFetch<{ user: PortalUser }>(`/api/users/${id}/reset-totp`, { method: "POST" }));
+  return useUsersMutation(({ id, totp }: { id: string; totp?: string }) =>
+    apiFetch<{ user: PortalUser }>(`/api/users/${id}/reset-totp`, { method: "POST", body: totp ? { totp } : undefined }),
+  );
 }

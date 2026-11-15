@@ -3,7 +3,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 
 from smtrading.admin import auth
-from smtrading.admin.auth import CurrentAdmin, CurrentUser, DbSession, RedisClient, SessionUser
+from smtrading.admin.auth import CurrentUser, DbSession, RedisClient, SessionUser
 from smtrading.admin.models import AdminUser
 from smtrading.admin.schemas import AdminOut, LoginIn, PasswordChangeIn, TotpCodeIn, TotpSetupOut
 
@@ -81,9 +81,10 @@ async def me(user: SessionUser) -> AdminOut:
 
 @router.post("/sessions/revoke-others")
 async def revoke_other_sessions(
-    request: Request, user: CurrentAdmin, redis: RedisClient
+    request: Request, user: CurrentUser, redis: RedisClient
 ) -> dict:
-    """Close every session of this admin except the caller's (admins only)."""
+    """Close every session of this user except the caller's (any role: it only protects
+    the caller's own account)."""
     revoked = await auth.revoke_other_sessions(redis, user.id, request.state.admin_session_id)
     return {"revoked": revoked}
 

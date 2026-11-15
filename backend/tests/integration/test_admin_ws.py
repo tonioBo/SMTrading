@@ -114,6 +114,19 @@ async def test_ws_with_bad_session_closes_4401(server):
         assert await _closed_code(ws) == 4401
 
 
+async def test_ws_with_a_temporary_password_closes_4401(server):
+    """A session that still has to change its temporary password gets no live feed."""
+    from sqlalchemy import update
+
+    from smtrading.admin.models import AdminUser
+
+    async with server.sm() as s:
+        await s.execute(update(AdminUser).values(must_change_password=True))
+        await s.commit()
+    async with connect(server.ws_url, additional_headers={"Cookie": server.cookie}) as ws:
+        assert await _closed_code(ws) == 4401
+
+
 async def test_ws_foreign_origin_closes_4403(server):
     async with connect(
         server.ws_url, origin="http://evil.example", additional_headers={"Cookie": server.cookie}

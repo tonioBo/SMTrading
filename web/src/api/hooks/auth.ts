@@ -8,11 +8,12 @@ export function useMe() {
   return useQuery({ queryKey: meKey, queryFn: () => apiFetch<AdminUser>("/api/auth/me") });
 }
 
-/** False only for a «Sola lettura» user: edit, create and delete controls are hidden
- * (the server refuses them anyway). The emergency actions stay available to everyone. */
+/** True for an admin: a «Sola lettura» user gets no edit, create and delete controls
+ * (the server refuses them anyway); the emergency actions stay available to everyone.
+ * Read-only until /me is loaded (a `role` missing from an older server means admin). */
 export function useIsAdmin(): boolean {
   const { data } = useMe();
-  return data?.role !== "viewer";
+  return data !== undefined && data.role !== "viewer";
 }
 
 export function useLogin() {

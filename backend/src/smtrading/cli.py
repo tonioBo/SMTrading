@@ -25,10 +25,12 @@
                              (prints the temporary password once; default role viewer;
                              `--role admin` is the way back in when access is lost)
     users set-role EMAIL admin|viewer
-    users disable EMAIL
+    users disable EMAIL | users enable EMAIL
     users reset-password EMAIL   (prints the new temporary password once)
+    users reset-totp EMAIL
                              (the same protections as /api/users, «at least one active
-                             admin» included; the user's sessions are closed)
+                             admin» included; the user's sessions are closed after the
+                             commit)
 
 A temporary password is printed only by `users create` / `users reset-password`, once.
 A token is printed only by `agent create` / `agent rotate`, once: it is never stored in
@@ -167,6 +169,10 @@ def build_parser() -> argparse.ArgumentParser:
     u_role.add_argument("email")
     u_role.add_argument("role", choices=ROLES)
     users_sub.add_parser("disable", help="disable a user (sessions closed)").add_argument("email")
+    users_sub.add_parser("enable", help="reactivate a disabled user").add_argument("email")
+    users_sub.add_parser(
+        "reset-totp", help="turn the user's TOTP off (sessions closed)"
+    ).add_argument("email")
     users_sub.add_parser(
         "reset-password", help="new temporary password, printed once (sessions closed)"
     ).add_argument("email")
@@ -312,11 +318,10 @@ def _user_row(user) -> dict:
                                 "active", "last_login_at", "created_at", "created_by")}
 
 
-async def execute_users(args: argparse.Namespace, session: AsyncSession, redis=None) -> object:
+async def execute_users(args: argparse.Namespace, session: AsyncSession) -> object:
     """The /api/users protections (users.py); the actor is `cli` (no TOTP step-up: shell
-    access to the server already is the strongest credential). Sessions are closed before
-    the commit: a disabled user's session would be refused anyway, a new password changes
-    the credentials fingerprint."""
+    access to the server already is the strongest credential). The user's sessions are
+    closed by `run_command` after the commit (users.queue_revoke)."""
     actor = users.CLI_ACTOR
     match args.users_command:
         case "list":
@@ -330,16 +335,20 @@ async def execute_users(args: argparse.Namespace, session: AsyncSession, redis=N
         case "set-role":
             user = await users.set_role(session, target.id, args.role, actor=actor)
             result = _user_row(user)
+        case "enable":  # reactivating closes nothing
+            return _user_row(await users.set_active(session, target.id, True, actor=actor))
         case "disable":
             user = await users.set_active(session, target.id, False, actor=actor)
             result = _user_row(user)
         case "reset-password":
             user, temp = await users.reset_password(session, target.id, actor=actor)
             result = {**_user_row(user), "temp_password": temp}
+        case "reset-totp":
+            user = await users.reset_totp(session, target.id, actor=actor)
+            result = _user_row(user)
         case _:  # pragma: no cover
             raise AssertionError(args.users_command)
-    if redis is not None:
-        await users.revoke_sessions(redis, user.id)
+    users.queue_revoke(session, user.id)
     return result
 
 
@@ -372,7 +381,7 @@ async def execute(
 ) -> object:
     match args.command:
         case "users":
-            return await execute_users(args, session, redis)
+            return await execute_users(args, session)
         case "telegram":
             return await execute_telegram(args, session)
         case "live":
@@ -439,9 +448,12 @@ async def run_command(
             if not e.persisted:
                 await session.rollback()
                 discard_post_commit(session)
+                users.discard_revokes(session)
                 return code, out
         await session.commit()
         await dispatch_post_commit(session, redis)
+        if redis is not None:
+            await users.revoke_queued(session, redis)
     return code, out
 
 

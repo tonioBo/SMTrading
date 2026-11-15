@@ -35,6 +35,7 @@ VIEWER_UNSAFE_EXCEPTIONS = {
     ("POST", "/api/auth/totp/setup"),
     ("POST", "/api/auth/totp/enable"),
     ("POST", "/api/auth/totp/disable"),
+    ("POST", "/api/auth/sessions/revoke-others"),  # own sessions only
     ("POST", "/api/live-links/{link_id}/disarm"),
     ("POST", "/api/kill-switch"),  # only towards "on" (tested below)
 }
@@ -262,8 +263,9 @@ async def test_viewer_emergency_actions(env):
     r = await c.post("/api/auth/password", json={"current": PASSWORD, "new": "another-password-1"})
     assert r.status_code == 200
     c.headers["X-CSRF-Token"] = c.cookies["smt_csrf"]
-    # but not the other sessions' revocation, nor the users
-    assert (await c.post("/api/auth/sessions/revoke-others")).status_code == 403
+    # closing the own other sessions too, never the users
+    assert (await c.post("/api/auth/sessions/revoke-others")).status_code == 200
+    assert (await c.get("/api/users")).status_code == 403
     assert (await c.post("/api/auth/logout")).status_code == 204
 
 
@@ -485,7 +487,8 @@ async def test_last_active_admin_is_kept_under_concurrency(env):
                 return e.message
 
     results = await asyncio.gather(demote(a_id, b_id), demote(b_id, a_id))
-    assert sorted(results) == ["deve restare almeno un amministratore attivo", "ok"]
+    # the loser is refused: it is no longer an admin (actor re-check under the lock)
+    assert sorted(results) == ["non sei più un amministratore attivo", "ok"]
     async with env.sm() as s:
         assert await s.scalar(select(func.count()).select_from(AdminUser).where(
             AdminUser.role == "admin", AdminUser.disabled_at.is_(None))) == 1
@@ -569,3 +572,131 @@ async def test_cli_users(env):
                        "admin:user.disable", "admin:user.reset_password"]
     assert all(x.params["by"] == "cli" for x in await _audit(env.sm))
 
+
+
+# -- review fixes ----------------------------------------------------------------------
+
+async def test_step_up_lockout_is_atomic_under_concurrency(env, monkeypatch):
+    """10 wrong codes at once: the count is taken before verifying, so at most 5 codes
+    are ever checked against the secret."""
+    from smtrading.admin import auth
+    from smtrading.common.errors import SMTError
+
+    secret = pyotp.random_base32()
+    _, user_id = await env.add_user("admin", totp_secret=secret)
+    user = await env.user(user_id)
+    verified = 0
+    real = auth._totp_ok
+
+    def counting(secret_, code):
+        nonlocal verified
+        verified += 1
+        return real(secret_, code)
+
+    monkeypatch.setattr(auth, "_totp_ok", counting)
+    wrong = "000000" if pyotp.TOTP(secret).now() != "000000" else "111111"
+    redis = Redis.from_url(env.redis_url)
+    try:
+        async def attempt():
+            try:
+                await auth.check_step_up_totp(redis, user, wrong)
+            except SMTError as e:
+                return e.code
+            return "ok"
+
+        codes = await asyncio.gather(*(attempt() for _ in range(10)))
+    finally:
+        await redis.aclose()
+    assert verified <= 5
+    assert codes.count("RATE_LIMITED") >= 5 and "ok" not in codes
+
+
+async def test_actor_is_rechecked_under_the_lock(env):
+    """An admin demoted or disabled meanwhile cannot finish an action."""
+    from smtrading.admin import users
+    from smtrading.admin.models import AdminUser
+    from smtrading.common.errors import SMTError
+
+    _, target_id = await env.add_user("viewer")
+    _, demoted_id = await env.add_user("viewer")  # was an admin when the request started
+    _, gone_id = await env.add_user("admin")
+    async with env.sm() as s:
+        (await s.get(AdminUser, gone_id)).disabled_at = datetime.now(UTC)
+        await s.commit()
+    for actor_id in (demoted_id, gone_id):
+        async with env.sm() as s:
+            with pytest.raises(SMTError) as exc:
+                await users.set_active(s, target_id, False, actor="x", actor_id=actor_id)
+            assert exc.value.code == "FORBIDDEN"
+            with pytest.raises(SMTError):
+                await users.create_user(s, email="z@example.com", role="viewer", actor="x",
+                                        actor_id=actor_id)
+    assert (await env.user(target_id)).active
+
+
+async def test_reactivating_an_admin_and_resetting_its_totp_need_the_actor_totp(env):
+    secret = pyotp.random_base32()
+    boss_email, _ = await env.add_user("admin", totp_secret=secret)
+    _, other_id = await env.add_user("admin", totp_secret=pyotp.random_base32())
+    _, viewer_id = await env.add_user("viewer", totp_secret=pyotp.random_base32())
+    a = await env.client(boss_email, totp=await env.code(secret))
+    assert (await a.post(f"/api/users/{other_id}/disable")).status_code == 200
+    for path in (f"/api/users/{other_id}/enable", f"/api/users/{other_id}/reset-totp"):
+        r = await a.post(path)
+        assert r.status_code == 403, (path, r.text)
+        assert r.json()["details"] == {"field": "totp", "totp_required": True}
+        r = await a.post(path, json={"totp": await env.code(secret)})
+        assert r.status_code == 200, (path, r.text)
+    # a viewer's TOTP reset needs no step-up
+    assert (await a.post(f"/api/users/{viewer_id}/reset-totp")).status_code == 200
+
+
+async def test_kill_switch_records_who_flipped_it(env):
+    viewer_email, _ = await env.add_user("viewer")
+    admin_email, _ = await env.add_user("admin")
+    v = await env.client(viewer_email)
+    a = await env.client(admin_email)
+    assert (await v.post("/api/kill-switch", json={"on": True})).status_code == 200
+    assert (await a.post("/api/kill-switch", json={"on": False})).status_code == 200
+    rows = await _audit(env.sm, "admin:kill_switch")
+    assert [(r.params["by"], r.params["role"], r.params["on"]) for r in rows] == [
+        (viewer_email, "viewer", True), (admin_email, "admin", False)]
+
+
+async def test_cli_enable_and_reset_totp(env):
+    await env.add_user("admin")
+    secret = pyotp.random_base32()
+    email, _user_id = await env.add_user("viewer", totp_secret=secret)
+    c = await env.client(email, totp=await env.code(secret))
+    code, out = await _cli(env, "users", "reset-totp", email)
+    assert code == 0 and json.loads(out)["totp_enabled"] is False
+    assert (await c.get("/api/auth/me")).status_code == 401
+    code, out = await _cli(env, "users", "disable", email)
+    assert code == 0 and json.loads(out)["active"] is False
+    code, out = await _cli(env, "users", "enable", email)
+    assert code == 0 and json.loads(out)["active"] is True
+    await env.client(email)
+    assert [x.method for x in await _audit(env.sm)][-3:] == [
+        "admin:user.reset_totp", "admin:user.disable", "admin:user.enable"]
+
+
+async def test_cli_revokes_sessions_after_the_commit(env, monkeypatch):
+    from smtrading.admin import users
+    from smtrading.admin.models import AdminUser
+
+    await env.add_user("admin")
+    email, _user_id = await env.add_user("viewer")
+    seen = []
+    real = users.revoke_sessions
+
+    async def spy(redis, uid):
+        async with env.sm() as s:  # another session: sees only committed rows
+            seen.append((await s.get(AdminUser, uid)).disabled_at is not None)
+        return await real(redis, uid)
+
+    monkeypatch.setattr(users, "revoke_sessions", spy)
+    code, _ = await _cli(env, "users", "disable", email)
+    assert code == 0 and seen == [True]
+    code, _ = await _cli(env, "users", "disable", "nobody@example.com")
+    assert code == 1
+    assert seen == [True]  # a refused command revokes nothing

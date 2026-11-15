@@ -14,8 +14,9 @@ every user on reads and only admins on unsafe methods. A disabled user's session
 refused (and destroyed); a user with `must_change_password` gets PASSWORD_CHANGE_REQUIRED
 everywhere except me, logout and the password change (`require_session_user`).
 
-Step-up TOTP (`check_step_up_totp`): 5 wrong codes in 15 minutes lock the user's
-step-up checks for 15 minutes (`adm:totp_fail:{id}`), a success clears the count.
+Step-up TOTP (`check_step_up_totp`): attempts are counted before the code is verified
+(`adm:totp_fail:{id}`); 5 wrong codes in 15 minutes lock the user's step-up checks for 15
+minutes, a success clears the count.
 """
 
 import asyncio
@@ -155,25 +156,28 @@ def _totp_fail_key(user: AdminUser) -> str:
 
 async def check_step_up_totp(redis: Redis, user: AdminUser, code: str | None) -> None:
     """`_check_totp` for a step-up (an action confirmed with a code, not the login, which
-    has its own limit): after TOTP_FAIL_LIMIT wrong codes within TOTP_FAIL_WINDOW_S every
-    check is refused (RATE_LIMITED) until the window ends, even with the right code.
-    A failure is logged (never the code); a success clears the count. Redis only."""
+    has its own limit). Every attempt is counted first, atomically (INCR, then the window
+    with EXPIRE NX), and only then verified: beyond TOTP_FAIL_LIMIT attempts within
+    TOTP_FAIL_WINDOW_S the code is not even checked (RATE_LIMITED), so parallel requests
+    cannot try more than TOTP_FAIL_LIMIT codes. The 5th failure restarts the window: a
+    15-minute lockout. A failure is logged (never the code); a success clears the count.
+    Redis only."""
     key = _totp_fail_key(user)
-    failures = int(await redis.get(key) or 0)
-    if failures >= TOTP_FAIL_LIMIT:
+    async with redis.pipeline(transaction=True) as pipe:
+        pipe.incr(key)
+        pipe.expire(key, TOTP_FAIL_WINDOW_S, nx=True)
+        count, _ = await pipe.execute()
+    count = int(count)
+    if count > TOTP_FAIL_LIMIT:
         raise SMTError(ErrorCode.RATE_LIMITED, TOTP_LOCKED_MESSAGE)
     if not _totp_ok(_totp_secret(user), code):
-        async with redis.pipeline(transaction=True) as pipe:
-            pipe.incr(key)
-            pipe.expire(key, TOTP_FAIL_WINDOW_S, nx=True)
-            count, _ = await pipe.execute()
-        if int(count) >= TOTP_FAIL_LIMIT:
+        if count == TOTP_FAIL_LIMIT:
             await redis.expire(key, TOTP_FAIL_WINDOW_S)  # a full lockout from this failure
-        log.warning("wrong step-up TOTP code for admin user %s (%d/%d)", user.id, int(count),
+        log.warning("wrong step-up TOTP code for admin user %s (%d/%d)", user.id, count,
                     TOTP_FAIL_LIMIT)
         raise _bad_totp()
-    await _check_totp(redis, user, code)  # the replay guard
     await redis.delete(key)
+    await _check_totp(redis, user, code)  # the replay guard
 
 
 async def _count_attempt(redis: Redis, email: str, entry: str) -> int:
