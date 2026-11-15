@@ -65,10 +65,13 @@ export async function totpAt(secret: string, counter: number): Promise<string> {
 let lastTotpCounter = -1;
 
 /** A TOTP code never used in this run: the server accepts each code once, so when the
- * current 30 s window was already spent this waits for the next one. */
+ * current 30 s window was already spent this waits for the next one. The window current
+ * at the first call counts as spent: the order battery (scripts/order_battery.py) may have
+ * just used it. */
 export async function freshTotp(): Promise<string> {
   const secret = process.env.SMT_E2E_TOTP_SECRET;
   if (!secret) throw new Error("SMT_E2E_TOTP_SECRET mancante: lancia i test con scripts/e2e.sh");
+  if (lastTotpCounter < 0) lastTotpCounter = Math.floor(Date.now() / 30_000);
   let counter = Math.floor(Date.now() / 30_000);
   while (counter <= lastTotpCounter) {
     await new Promise((r) => setTimeout(r, 30_000 - (Date.now() % 30_000) + 250));

@@ -10,7 +10,8 @@ Refused (exit code 2, nothing written) unless the `live_fake_broker` setting is 
   sends nothing: api.telegram.org resolves to nowhere there) and a `test` outbox row
   marked `sent` now, as arming requires;
 - creates an empty EUR portfolio (500 € of cash, leverage 1) with a compliant risk profile
-  (limit per order, daily loss limit, no short).
+  (limit per order, daily loss limit, no short), and two more (300 € each, same profile)
+  for the eToro procedure with several portfolios on one account.
 
 Idempotent. It never creates a live link, never stores live keys and never talks to a
 broker: the spec does all of that through the UI against the in-memory FakeLiveBroker.
@@ -44,6 +45,9 @@ TOTP_ENV = "SMT_E2E_TOTP_SECRET"
 E2E_PORTFOLIO_NAME = "Reale E2E"
 E2E_PROFILE_NAME = "Reale E2E · a norma"
 E2E_CASH = Decimal(500)  # below the fake broker's 1000 EUR
+# eToro: two portfolios on the fake's 1000 USD account (quotas 2 x 300 EUR, the rest unassigned)
+E2E_ETORO_PORTFOLIOS = ("Reale E2E eToro A", "Reale E2E eToro B")
+E2E_ETORO_CASH = Decimal(300)
 # not a real bot: the e2e stack cannot reach Telegram
 FAKE_BOT_TOKEN = "123456789:E2E-fake-bot-token-not-real"
 FAKE_CHAT_ID = "-1000000000001"
@@ -120,11 +124,19 @@ async def run_live_e2e_seed(session: AsyncSession, *, totp_secret: str,
     await _enable_totp(session, secret)
     await _telegram(session, now)
     profile = await _profile(session)
-    pf = await session.scalar(select(Portfolio).where(Portfolio.name == E2E_PORTFOLIO_NAME))
-    if pf is None:
-        pf = await create_portfolio(session, name=E2E_PORTFOLIO_NAME, initial_cash=E2E_CASH,
-                                    base_currency="EUR", risk_profile_id=profile.id)
+    pf = await _portfolio(session, E2E_PORTFOLIO_NAME, E2E_CASH, profile)
+    for name in E2E_ETORO_PORTFOLIOS:
+        await _portfolio(session, name, E2E_ETORO_CASH, profile)
     await session.flush()
+    return pf
+
+
+async def _portfolio(session: AsyncSession, name: str, cash: Decimal,
+                     profile: RiskProfile) -> Portfolio:
+    pf = await session.scalar(select(Portfolio).where(Portfolio.name == name))
+    if pf is None:
+        pf = await create_portfolio(session, name=name, initial_cash=cash,
+                                    base_currency="EUR", risk_profile_id=profile.id)
     return pf
 
 
