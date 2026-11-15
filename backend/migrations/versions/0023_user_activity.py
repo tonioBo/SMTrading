@@ -24,6 +24,7 @@ def upgrade() -> None:
         sa.Column("email", sa.String(254)),
         sa.Column("role", sa.String(16)),
         sa.Column("action", sa.String(64), nullable=False),
+        sa.Column("category", sa.String(32), nullable=False),
         sa.Column("method", sa.String(8), nullable=False),
         sa.Column("route", sa.String(200), nullable=False),
         sa.Column("target", postgresql.JSONB(), nullable=False,
@@ -36,11 +37,14 @@ def upgrade() -> None:
         sa.Column("user_agent", sa.String(300)),
         sa.Column("summary", postgresql.JSONB(), nullable=False,
                   server_default=sa.text("'{}'::jsonb")),
-        sa.CheckConstraint("outcome IN ('ok', 'denied', 'error')",
+        sa.Column("provisional", sa.Boolean(), nullable=False, server_default="false"),
+        sa.CheckConstraint("outcome IN ('ok', 'denied', 'error', 'pending')",
                            name="ck_user_activity_outcome"),
     )
     op.create_index("ix_user_activity_email", "user_activity", ["email", "id"])
     op.create_index("ix_user_activity_action", "user_activity", ["action", "id"])
+    op.create_index("ix_user_activity_category", "user_activity", ["category", "id"])
+    op.create_index("ix_user_activity_request_id", "user_activity", ["request_id"])
     op.create_index("ix_user_activity_ts", "user_activity", ["ts"])
     op.execute("""
         CREATE FUNCTION smt_user_activity_append_only() RETURNS trigger AS $$

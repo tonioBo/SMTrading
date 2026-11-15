@@ -10,9 +10,12 @@ from typing import Any
 
 BODY_MAX = 64 * 1024  # a longer body is summarized as "troppo grande"
 ERROR_BODY_MAX = 8 * 1024
+UA_MAX, ANON_UA_MAX = 300, 120
+INVALID_EMAIL = "(non valido)"
 
 
 def outcome_of(status: int) -> str:
+    """ok, denied or error (`pending` is only the provisional row's)."""
     if status < 400:
         return "ok"
     return "denied" if status in (401, 403) else "error"
@@ -83,34 +86,37 @@ class ActivityContext:
                 redact_log_text(str(message))[:300] if message else None)
 
     def build_row(self, *, provisional: bool = False, action: str | None = None):
-        """The UserActivity row of this request. `provisional`: written by the request's
-        own commit, before the answer exists (the route's success status)."""
+        """The UserActivity row of this request. `provisional`: the row the request's own
+        commit carries, before the answer exists (outcome `pending`, no status). An
+        anonymous row (no user) other than the login's keeps no summary and a shorter
+        user agent."""
         from smtrading.common.logsetup import redact_log_text
-        from smtrading.useractivity.catalog import action_for
+        from smtrading.useractivity.catalog import LOGIN, action_for, category
         from smtrading.useractivity.models import UserActivity
         from smtrading.useractivity.sanitize import target_of
 
         route = self.scope.get("route")
         template = getattr(route, "path", None)
         if provisional:
-            status, code, message = getattr(route, "status_code", None) or 200, None, None
+            status, code, message, outcome = None, None, None, "pending"
         else:
             status = self.status or 500
             code, message = self._error() if status >= 400 else (None, None)
-        outcome = outcome_of(status)
+            outcome = outcome_of(status)
+        act = action or action_for(self.method, template, outcome, code, self.override)
+        anonymous = self.user_id is None and (self.method, template) != LOGIN
         client = self.scope.get("client")
         user_agent = self._header(b"user-agent")
+        ua_max = ANON_UA_MAX if anonymous else UA_MAX
         return UserActivity(
             request_id=self.request_id, user_id=self.user_id, email=self.email,
-            role=self.role,
-            action=action or action_for(self.method, template, outcome, code, self.override),
-            method=self.method,
+            role=self.role, action=act, category=category(act), method=self.method,
             route=template or redact_log_text(self.scope.get("path", ""))[:200],
             target=target_of(self.scope.get("path_params")) if template else {},
             outcome=outcome, status=status, error_code=code, error_message=message,
             ip=client[0][:64] if client else None,
-            user_agent=redact_log_text(user_agent)[:300] if user_agent else None,
-            summary=self.summary(),
+            user_agent=redact_log_text(user_agent)[:ua_max] if user_agent else None,
+            summary={} if anonymous else self.summary(), provisional=provisional,
         )
 
 
@@ -134,10 +140,11 @@ def note_actor(user) -> None:
 
 
 def note_email(email: str) -> None:
-    """Who is trying to log in (the attempted email, the user being still unknown)."""
+    """Who is trying to log in (the attempted email, the user being still unknown); a
+    text that is not an email is recorded as «(non valido)»."""
     ctx = _current.get()
     if ctx is not None:
-        ctx.email = email[:254]
+        ctx.email = email[:254] if "@" in email else INVALID_EMAIL
 
 
 def set_action(action: str) -> None:

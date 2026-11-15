@@ -147,6 +147,13 @@ async def env(fresh_db, redis_url, monkeypatch):
 
     lifespan = asyncio.create_task(run_lifespan())
     await asyncio.wait_for(started.wait(), 15)
+    r = Redis.from_url(redis_url)  # the anonymous activity rate limit of earlier tests
+    try:
+        keys = [k async for k in r.scan_iter("ua:anon:*")]
+        if keys:
+            await r.delete(*keys)
+    finally:
+        await r.aclose()
     engine = make_engine(fresh_db)
     e = Env(async_sessionmaker(engine, expire_on_commit=False),
             httpx.ASGITransport(app=app), redis_url)

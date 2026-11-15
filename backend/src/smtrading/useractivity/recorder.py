@@ -5,15 +5,20 @@ POST/PUT/PATCH/DELETE under /api: it keeps the request body (up to 64 KB, for th
 summary), the answer's status and error body. The routing fills the route template and
 the path parameters; `require_session_user` and the login handler note who acts.
 
-Where the row is written:
-- in the request's own transaction: `bind_session` (called by `get_db`) hooks the
-  request session; its first commit adds the row inside a savepoint (`before_commit`). A
-  state change that commits therefore always has its row; a failing savepoint is logged
-  and never fails the commit.
-- after the answer, in a short transaction of its own, when no commit carried it (a
-  refused or failed request, a Redis-only action like the logout), plus a linked error row
-  (same request_id) when the request failed after its commit, plus the extra access
-  events (`note_event`).
+Two kinds of rows, sharing the request_id:
+- the provisional row (outcome `pending`), in the request's own transaction:
+  `bind_session` (called by `get_db`) hooks the request session, and its first outermost
+  commit adds the row inside a savepoint (`before_commit`, after the route's own flush,
+  whose errors reach the route unchanged). A state change that commits therefore always
+  leaves a row, even if the process dies before answering.
+- the final row, always, after the answer, in a short transaction of its own: the
+  outcome, the status, the error. It is the authoritative one (the API shows it and
+  hides the provisional row). Routes that commit early and then work on their own
+  sessions (live disarm, broker reconcile, the live flows) or touch no database (logout,
+  revoke-others) are covered by this row: their provisional row, if any, stays
+  «pending» until it.
+Extra access events (`note_event`) are final rows of their own. Anonymous failures are
+rate limited (useractivity.throttle).
 A failure of the log never changes the answer: it is logged, and a «system» Telegram
 alert goes out once, until a row is written again.
 """
@@ -23,6 +28,7 @@ import logging
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from smtrading.useractivity import throttle
 from smtrading.useractivity.context import ActivityContext, _current, current
 
 log = logging.getLogger(__name__)
@@ -77,21 +83,18 @@ def _sessionmaker(scope):
 
 
 async def _finish(scope, ctx: ActivityContext) -> None:
-    """After the answer: the rows no commit carried (see the module docstring)."""
+    """After the answer: the final row, the events, the anonymous rate limit."""
     try:
-        rows = []
-        failed = (ctx.status or 500) >= 400
-        if not ctx.committed or failed:
-            rows.append(ctx.build_row())
-        rows.extend(ctx.build_row(action=a) for a in ctx.events)
+        rows = [ctx.build_row(), *(ctx.build_row(action=a) for a in ctx.events)]
     except Exception:
         log.exception("activity log: row of %s %s not built", ctx.method, scope.get("path"))
         await _alert(_sessionmaker(scope))
         return
-    if not rows:
-        return
     sessionmaker = _sessionmaker(scope)
     if sessionmaker is None:  # no lifespan (some tests): nothing to write to
+        return
+    rows = await _rate_limited(scope, sessionmaker, rows)
+    if not rows:
         return
     try:
         await _insert_rows(sessionmaker, rows)
@@ -101,6 +104,22 @@ async def _finish(scope, ctx: ActivityContext) -> None:
         await _alert(sessionmaker)
         return
     _written()
+
+
+async def _rate_limited(scope, sessionmaker, rows: list) -> list:
+    """The rows to write: anonymous failures beyond the limit are only counted."""
+    if not any(throttle.is_limited(r) for r in rows):
+        return rows
+    redis = getattr(getattr(scope.get("app"), "state", None), "redis", None)
+    if redis is None:
+        return rows
+    try:
+        kept = [r for r in rows if not throttle.is_limited(r) or await throttle.admit(redis, r)]
+        await throttle.flush_suppressed(sessionmaker, redis)
+    except Exception:  # fail open: better a row too many than a lost one
+        log.warning("activity log: anonymous rate limit unavailable", exc_info=True)
+        return rows
+    return kept
 
 
 async def _insert_rows(sessionmaker, rows) -> None:
@@ -155,12 +174,13 @@ def _before_commit(sync_session) -> None:
     # a savepoint's commit fires the event too: only the outermost commit carries the row
     if ctx is None or ctx.committed or ctx.pending or sync_session.in_nested_transaction():
         return
+    sync_session.flush()  # the route's own changes: their errors are the route's
     try:
         row = ctx.build_row(provisional=True)
         with sync_session.begin_nested():
             sync_session.add(row)
         ctx.pending = True
-    except Exception:  # never fails the commit: the row is written after the answer
+    except Exception:  # never fails the commit: the final row comes after the answer
         log.exception("activity log: row not added to the request's commit")
 
 

@@ -1,12 +1,16 @@
 """Admin API of the «Registro attività» (admins only, a viewer gets 403):
 
-    GET /api/activity-log           newest first; filters email, category, action, outcome,
+    GET /api/activity-log           newest first; filters email (part of it, any case),
+                                    anonymous (no user), category, action, outcome,
                                     from/to (ISO 8601), before_id, limit
     GET /api/activity-log.csv       every matching row: `;`, UTF-8 with BOM, formula cells
                                     neutralized
     GET /api/activity-log/catalog   the categories and actions with their Italian labels
 
 The rows are written by useractivity.recorder; the log is append-only and kept forever.
+A request's provisional row (outcome `pending`, written by its own commit) is hidden once
+its final row (same request_id) exists: the list and the CSV show the final outcome,
+with `provisional_rows` (how many hidden rows) and the request_id.
 """
 
 import csv
@@ -17,7 +21,8 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import Select, select
+from sqlalchemy import Select, and_, exists, func, select
+from sqlalchemy.orm import aliased
 
 from smtrading.admin.auth import DbSession, require_admin
 from smtrading.admin.common import _invalid
@@ -32,24 +37,40 @@ DEFAULT_LIMIT, MAX_LIMIT = 50, 200
 CSV_BATCH = 500
 CSV_HEADER = ("id", "data", "utente", "ruolo", "azione", "categoria", "metodo", "route",
               "obiettivo", "esito", "stato", "codice errore", "messaggio", "ip", "user agent",
-              "riepilogo", "id richiesta")
-OUTCOME_LABELS = {"ok": "Riuscita", "denied": "Negata", "error": "Errore"}
+              "riepilogo", "id richiesta", "righe provvisorie")
+OUTCOME_LABELS = {"ok": "Riuscita", "denied": "Negata", "error": "Errore",
+                  "pending": "In attesa dell'esito"}
 
 
-def _query(email: str | None, category: str | None, action: str | None,
+_Final = aliased(UserActivity)
+_Prov = aliased(UserActivity)
+
+
+def _query(email: str | None, anonymous: bool, category: str | None, action: str | None,
            outcome: str | None, from_: str | None, to: str | None) -> Select:
-    q = select(UserActivity).order_by(UserActivity.id.desc())
+    """(row, hidden provisional rows) per request, newest first: a provisional row is
+    hidden once a final row of its request exists."""
+    hidden = (select(func.count()).where(_Prov.request_id == UserActivity.request_id,
+                                         _Prov.provisional.is_(True))
+              .correlate(UserActivity).scalar_subquery())
+    superseded = exists().where(and_(_Final.request_id == UserActivity.request_id,
+                                     _Final.provisional.is_(False)))
+    q = (select(UserActivity, hidden.label("hidden"))
+         .where(~(UserActivity.provisional.is_(True) & superseded))
+         .order_by(UserActivity.id.desc()))
     if email:
-        q = q.where(UserActivity.email == email.strip().lower())
+        q = q.where(UserActivity.email.icontains(email.strip(), autoescape=True))
+    if anonymous:
+        q = q.where(UserActivity.user_id.is_(None))
     if category:
         if category not in catalog.CATEGORIES:
             raise _invalid("category", "categoria non valida")
-        q = q.where(UserActivity.action.startswith(category + ".", autoescape=True))
+        q = q.where(UserActivity.category == category)
     if action:
         q = q.where(UserActivity.action == action)
     if outcome:
         if outcome not in OUTCOMES:
-            raise _invalid("outcome", "esito non valido: ok, denied o error")
+            raise _invalid("outcome", "esito non valido: ok, denied, error o pending")
         q = q.where(UserActivity.outcome == outcome)
     start, end = parse_ts(from_, "from"), parse_ts(to, "to")
     if start is not None:
@@ -59,8 +80,8 @@ def _query(email: str | None, category: str | None, action: str | None,
     return q
 
 
-def _dto(row: UserActivity) -> dict[str, Any]:
-    cat = catalog.category(row.action)
+def _dto(row: UserActivity, hidden: int) -> dict[str, Any]:
+    cat = row.category
     return {
         "id": row.id, "ts": to_jsonable(row.ts), "request_id": str(row.request_id),
         "user_id": to_jsonable(row.user_id), "email": row.email, "role": row.role,
@@ -69,18 +90,20 @@ def _dto(row: UserActivity) -> dict[str, Any]:
         "method": row.method, "route": row.route, "target": row.target,
         "outcome": row.outcome, "status": row.status, "error_code": row.error_code,
         "error_message": row.error_message, "ip": row.ip, "user_agent": row.user_agent,
-        "summary": row.summary,
+        "summary": row.summary, "provisional": row.provisional,
+        "provisional_rows": hidden if not row.provisional else 0,
     }
 
 
-Filters = dict[str, str | None]
+Filters = dict[str, Any]
 
 
-def _filters(email: str | None = None, category: str | None = None, action: str | None = None,
+def _filters(email: str | None = None, anonymous: bool = False, category: str | None = None,
+             action: str | None = None,
              outcome: str | None = None,
              from_: Annotated[str | None, Query(alias="from")] = None,
              to: str | None = None) -> Filters:
-    return {"email": email, "category": category, "action": action, "outcome": outcome,
+    return {"email": email, "anonymous": anonymous, "category": category, "action": action, "outcome": outcome,
             "from_": from_, "to": to}
 
 
@@ -95,22 +118,22 @@ async def get_activity_log(
     q = _query(**filters)
     if before is not None:
         q = q.where(UserActivity.id < before)
-    return [_dto(r) for r in await session.scalars(q.limit(n))]
+    return [_dto(r, hidden) for r, hidden in (await session.execute(q.limit(n))).all()]
 
 
 def _json_cell(value: Any) -> str:
     return "" if not value else _csv_text(json.dumps(value, ensure_ascii=False, sort_keys=True))
 
 
-def _csv_row(r: UserActivity) -> tuple:
+def _csv_row(r: UserActivity, hidden: int) -> tuple:
     return (
         r.id, to_jsonable(r.ts), _csv_text(r.email), r.role or "",
         _csv_text(catalog.label(r.action)),
-        _csv_text(catalog.CATEGORIES.get(catalog.category(r.action), "")),
+        _csv_text(catalog.CATEGORIES.get(r.category, "")),
         r.method, _csv_text(r.route), _json_cell(r.target),
         OUTCOME_LABELS.get(r.outcome, r.outcome), r.status or "", _csv_text(r.error_code),
         _csv_text(r.error_message), _csv_text(r.ip), _csv_text(r.user_agent),
-        _json_cell(r.summary), str(r.request_id),
+        _json_cell(r.summary), str(r.request_id), 0 if r.provisional else hidden,
     )
 
 
@@ -134,11 +157,11 @@ async def get_activity_log_csv(
         async with sessionmaker() as s:  # the request session may be closed by now
             while True:
                 q = query if before is None else query.where(UserActivity.id < before)
-                batch = list(await s.scalars(q.limit(CSV_BATCH)))
+                batch = (await s.execute(q.limit(CSV_BATCH))).all()
                 if not batch:
                     return
-                yield encode([_csv_row(r) for r in batch]).encode()
-                before = batch[-1].id
+                yield encode([_csv_row(r, hidden) for r, hidden in batch]).encode()
+                before = batch[-1][0].id
 
     return StreamingResponse(
         generate(), media_type="text/csv; charset=utf-8",

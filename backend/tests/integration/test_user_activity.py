@@ -31,9 +31,12 @@ from smtrading.useractivity.sanitize import SUMMARY_MAX_CHARS
 TG_TOKEN = "123456789:AAH" + "s" * 32
 
 
-async def _rows(sm, **where) -> list[UserActivity]:
+async def _rows(sm, provisional: bool | None = False, **where) -> list[UserActivity]:
+    """The final rows by default (`provisional=None`: every row)."""
     async with sm() as s:
         q = select(UserActivity).order_by(UserActivity.id)
+        if provisional is not None:
+            q = q.where(UserActivity.provisional.is_(provisional))
         for k, v in where.items():
             q = q.where(getattr(UserActivity, k) == v)
         return list(await s.scalars(q))
@@ -57,11 +60,13 @@ def test_every_unsafe_route_has_an_action():
 
 
 async def test_every_unsafe_route_records_one_activity_row(env):
-    """Enumerates ALL the app's unsafe routes: each request gives exactly one row with the
-    route template (never the raw path), the path ids and the outcome."""
+    """Enumerates ALL the app's unsafe routes: each request gives exactly one final row with
+    the route template (never the raw path), the path ids and the outcome (and, when it
+    committed, one provisional row of its own commit with the same request_id)."""
     email, user_id = await env.add_user("viewer")
     c = await env.client(email)
     before = len(await _rows(env.sm))
+    before_all = len(await _rows(env.sm, provisional=None))
     calls = [(m, p) for m, p in _app_routes()
              if m in UNSAFE and p != "/api/auth/logout"] + [("POST", "/api/auth/logout")]
     sent = {}
@@ -70,7 +75,10 @@ async def test_every_unsafe_route_records_one_activity_row(env):
         r = await c.request(method, url, json={})
         sent[(method, path)] = (url, r.status_code)
     rows = (await _rows(env.sm))[before:]
-    assert len(rows) == len(calls)  # one row per request, no duplicate
+    assert len(rows) == len(calls)  # one final row per request, no duplicate
+    pending = [r for r in (await _rows(env.sm, provisional=None))[before_all:] if r.provisional]
+    assert {r.request_id for r in pending} <= {r.request_id for r in rows}
+    assert all(r.outcome == "pending" and r.status is None for r in pending)
     by_route = {(r.method, r.route): r for r in rows}
     assert set(by_route) == set(calls)
     for (method, path), (url, status) in sent.items():
@@ -253,10 +261,11 @@ async def test_committed_change_is_recorded_in_the_same_transaction(env, monkeyp
     monkeypatch.setattr(recorder, "_insert_rows", broken)
     r = await a.post("/api/portfolios", json={"name": "Tx", "initial_cash": "100"})
     assert r.status_code == 200, r.text
-    assert len(await _rows(env.sm, action="portfolios.create")) == 1
+    (row,) = await _rows(env.sm, provisional=None, action="portfolios.create")
+    assert (row.provisional, row.outcome) == (True, "pending")
     r = await a.post("/api/portfolios", json={"name": "", "initial_cash": "x"})
     assert r.status_code == 400
-    assert len(await _rows(env.sm, action="portfolios.create")) == 1
+    assert len(await _rows(env.sm, provisional=None, action="portfolios.create")) == 1
 
 
 async def test_logging_failure_never_breaks_the_action(env, monkeypatch):
@@ -364,3 +373,144 @@ async def test_request_ids_are_unique_per_request(env):
                                               "initial_cash": "1"})
     rows = await _rows(env.sm, action="portfolios.create")
     assert len({r.request_id for r in rows}) == 3
+
+
+# -- review fixes: flush errors, provisional rows, anonymous rate limit --------------------
+
+async def test_route_flush_error_propagates_unchanged(env):
+    """The route's own flush error at commit is the error the route sees (the activity
+    hook never swallows it into a broken session)."""
+    from sqlalchemy.exc import IntegrityError
+
+    from smtrading.admin.auth import hash_password
+    from smtrading.admin.models import AdminUser
+    from smtrading.useractivity.context import ActivityContext, _current
+    from smtrading.useractivity.recorder import bind_session
+
+    email, _ = await env.add_user("admin")
+    ctx = ActivityContext({"type": "http", "method": "POST", "path": "/api/x", "headers": []})
+    token = _current.set(ctx)
+    try:
+        async with env.sm() as s:
+            bind_session(s)
+            s.add(AdminUser(email=email, password_hash=await hash_password(PASSWORD)))
+            with pytest.raises(IntegrityError):
+                await s.commit()
+    finally:
+        _current.reset(token)
+    assert ctx.pending is False and ctx.committed is False
+
+
+async def test_commit_early_route_that_fails_later(env, monkeypatch):
+    """Disarm commits before its slow work: if that work fails, the commit's row stays
+    «pending» and the final row (same request_id) says error; the API and the CSV show
+    the final outcome only."""
+    from smtrading.admin import routes_live
+    from smtrading.common.errors import ErrorCode, SMTError
+
+    async def found(session, link_id):
+        await session.execute(text("select 1"))  # the request transaction begins
+
+    async def fails(*args, **kwargs):
+        raise SMTError(ErrorCode.INVALID_ORDER, "disattivazione non riuscita")
+
+    monkeypatch.setattr(routes_live, "_live_link", found)
+    monkeypatch.setattr(routes_live, "disarm_live_link_now", fails)
+    email, _ = await env.add_user("admin")
+    a = await env.client(email)
+    r = await a.post(f"/api/live-links/{uuid.uuid4()}/disarm")
+    assert r.status_code == 400
+    rows = await _rows(env.sm, provisional=None, action="emergency.live_disarm")
+    assert [(x.provisional, x.outcome, x.status) for x in rows] == [
+        (True, "pending", None), (False, "error", 400)]
+    assert rows[0].request_id == rows[1].request_id
+    listed = (await a.get("/api/activity-log",
+                          params={"category": "emergency"})).json()
+    assert [(x["outcome"], x["request_id"]) for x in listed] == [
+        ("error", str(rows[1].request_id))]
+    assert listed[0]["provisional_rows"] == 1
+    csv_lines = (await a.get("/api/activity-log.csv", params={"category": "emergency"})
+                 ).content.decode("utf-8-sig").strip().split("\r\n")
+    assert len(csv_lines) == 2 and str(rows[1].request_id) in csv_lines[1]
+
+
+async def test_a_pending_row_without_its_final_row_is_shown_pending(env, monkeypatch):
+    from smtrading.useractivity import recorder
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    email, _ = await env.add_user("admin")
+    a = await env.client(email)
+    monkeypatch.setattr(recorder, "_insert_rows", broken)
+    assert (await a.post("/api/portfolios", json={"name": "P", "initial_cash": "1"})
+            ).status_code == 200
+    monkeypatch.undo()
+    listed = (await a.get("/api/activity-log", params={"category": "portfolios"})).json()
+    assert [x["outcome"] for x in listed] == ["pending"]
+
+
+async def test_anonymous_failures_are_rate_limited_and_coalesced(env):
+    import time
+
+    import httpx
+    from redis.asyncio import Redis
+
+    from smtrading.useractivity import throttle
+
+    anon = httpx.AsyncClient(transport=env.transport, base_url="http://test",
+                             headers={"User-Agent": "bot/" + "x" * 300})
+    env.clients.append(anon)
+    n = throttle.ANON_LIMIT + 5
+    for _ in range(n):
+        r = await anon.post("/api/portfolios", json={"name": "spam", "password": "x"})
+        assert r.status_code == 401
+    rows = await _rows(env.sm, action="portfolios.create")
+    assert len(rows) == throttle.ANON_LIMIT
+    assert all(x.user_id is None and x.summary == {} for x in rows)
+    assert all(len(x.user_agent) <= 120 for x in rows)
+    redis = Redis.from_url(env.redis_url)
+    try:
+        assert await throttle.flush_suppressed(env.sm, redis) == 0  # the window is open
+        assert await throttle.flush_suppressed(env.sm, redis, now=time.time() + 120) == 1
+        assert await throttle.flush_suppressed(env.sm, redis, now=time.time() + 120) == 0
+    finally:
+        await redis.aclose()
+    rows = await _rows(env.sm, action="portfolios.create")
+    assert len(rows) == throttle.ANON_LIMIT + 1
+    assert rows[-1].summary == {"_soppressi": 5} and rows[-1].ip == "127.0.0.1"
+    assert rows[-1].outcome == "denied" and rows[-1].route == "/api/portfolios"
+    # unknown routes too, only within the rate
+    for _ in range(n):
+        await anon.post("/api/nope", json={})
+    assert len(await _rows(env.sm, action="other.unknown")) == throttle.ANON_LIMIT
+
+
+async def test_authenticated_failures_are_never_rate_limited(env):
+    from smtrading.useractivity import throttle
+
+    email, _ = await env.add_user("viewer")
+    c = await env.client(email)
+    n = throttle.ANON_LIMIT + 5
+    for _ in range(n):
+        await c.post("/api/portfolios", json={"name": "x", "initial_cash": "1"})
+    assert len(await _rows(env.sm, action="portfolios.create")) == n
+
+
+async def test_attempted_login_email_must_look_like_an_email(env):
+    c = await env.client("not-an-email", "wrong-password-xx", expect=403)
+    assert c is not None
+    (row,) = await _rows(env.sm, action="auth.login_failed")
+    assert row.email == "(non valido)"
+
+
+async def test_email_free_text_and_anonymous_filters(env):
+    email, _ = await env.add_user("admin")
+    a = await env.client(email)
+    await env.client("ghost@example.com", "wrong-password-xx", expect=403)
+    part = email.split("@")[0].upper()
+    found = (await a.get("/api/activity-log", params={"email": part})).json()
+    assert found and {x["email"] for x in found} == {email}
+    anon = (await a.get("/api/activity-log", params={"anonymous": "true"})).json()
+    assert [x["email"] for x in anon] == ["ghost@example.com"]
+    assert all(x["user_id"] is None for x in anon)
