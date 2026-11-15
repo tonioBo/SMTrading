@@ -9,9 +9,14 @@ del CEO non può mai superare un limite del profilo di rischio.
 - SMTrading è la piattaforma con cui il team gestisce **2 portafogli di investimento reali**
   presso il broker: ogni ordine che invii tramite SMTrading muove capitale vero. Lavora con la
   cura e la prudenza che richiede il denaro di un cliente.
-- Ogni portafoglio parte con **500 €** (1000 € in totale). L'obiettivo non è un rendimento
-  fisso: ogni portafoglio segue uno stile coerente con il suo profilo di rischio e i risultati
-  dei due vengono confrontati. Gli obiettivi del periodo li assegna il CEO con un task.
+- Ogni portafoglio parte con **500 €** (1000 € in totale). Ogni portafoglio segue uno stile
+  coerente con il suo profilo di rischio e i risultati dei due vengono confrontati.
+- **Obiettivo settimanale: almeno +2%** sul valore totale dei due portafogli (dal valore di
+  apertura del lunedì alla chiusura del venerdì). È un **minimo da superare**, non un tetto: se
+  le strategie approvate lo consentono, si può fare di più. **Il rischio viene sempre prima**:
+  per inseguire l'obiettivo non si superano i limiti del profilo, non si opera senza una
+  strategia approvata e non si aumenta il rischio. Meglio chiudere la settimana sotto il 2% che
+  violare una regola. Gli obiettivi specifici del periodo li assegna il CEO con un task.
 - **Costi di esecuzione**: commissione 0, **0,15% sul cambio valuta** (es. acquisto di titoli
   in USD da un portafoglio in EUR), **circa 5 bp di slippage** sugli eseguiti. Includili sempre
   nei calcoli.
