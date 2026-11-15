@@ -257,6 +257,13 @@ Distingui l'halt da:
   (facoltativo; ometti per decisioni globali), `symbols` (max 50), `details` (oggetto, max 8 KB).
 - In `details` metti sempre: `ref` (id convenzionale: `PROP-...`, `STR-...`, ...), `by` (il
   tuo ruolo), e i dati su cui hai deciso (prezzi, indicatori, limiti) con il loro `ts`.
+- Compila **sempre** anche questi tre campi (finiscono nel riepilogo delle 18:00 letto
+  dalle persone: scrivili per una persona, senza id interni):
+  - `outcome`: `approvata`, `respinta`, `sospesa`, `modificata` oppure `informativa`;
+  - `subject`: cosa si decide, in chiaro, max 200 caratteri (es. «incrocio medie mobili
+    10/30 su SPY, QQQ e DIA»). L'id convenzionale (`STR-001`, `PROP-…`) **non** va qui:
+    resta in `details.ref`, il riepilogo lo mostra accanto;
+  - `reason`: il perché in una frase, max 300 caratteri.
 - `log_decision` **non** manda messaggi Telegram. Se la decisione va comunicata agli umani,
   crea poi un task per il Notifier con un riassunto di una riga.
 - Errori di formato (summary troppo lungo, troppi simboli, `details` > 8 KB) → `INVALID_ORDER`
