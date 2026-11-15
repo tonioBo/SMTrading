@@ -221,7 +221,10 @@ async def test_quote_skipped_without_date_or_non_usd_conversion(provider):
         {**base, "instrumentId": 7, "date": "2026-11-15T11:00:00"},  # other casing, no tz
     ]}))
     out = await provider.get_quotes([(s, s) for s in "ABCDEFG"])
-    assert set(out) == {"A", "G"}
+    # D/E: no last execution (normal outside trading hours, verified on the real API)
+    # → the bid/ask mid; no time or a non-USD conversion still skips the quote
+    assert set(out) == {"A", "D", "E", "G"}
+    assert out["D"].last == out["E"].last == Decimal("10.5")
     assert out["G"].ts == datetime(2026, 11, 15, 11, 0, tzinfo=UTC)
 
 
