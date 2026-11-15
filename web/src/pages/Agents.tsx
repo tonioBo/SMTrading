@@ -4,11 +4,12 @@ import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { useAgents, useCreateAgent, useRotateAgentToken, useSetAgentActive, useSetAgentPortfolios } from "@/api/hooks/agents";
 import { usePortfolios } from "@/api/hooks/portfolios";
-import type { Agent, AgentPermission } from "@/api/types";
+import type { Agent, AgentCreated, AgentPermission } from "@/api/types";
 import { AgentPortfoliosSummary } from "@/components/AgentPortfoliosSummary";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { FormField, selectClass } from "@/components/FormField";
+import { NameWarning } from "@/components/NameWarning";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,7 +20,16 @@ import { errorMessage } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
 
 /** Shows a token. It lives only in the props of this dialog: closing unmounts it. */
-function TokenDialog({ token, onClose }: { token: string; onClose: () => void }) {
+function TokenDialog({
+  token,
+  nameWarning,
+  onClose,
+}: {
+  token: string;
+  /** set after a creation whose name has a word the agents should not see */
+  nameWarning?: string | null;
+  onClose: () => void;
+}) {
   async function copy() {
     try {
       await navigator.clipboard.writeText(token);
@@ -35,6 +45,7 @@ function TokenDialog({ token, onClose }: { token: string; onClose: () => void })
           <DialogTitle>Token dell'agente</DialogTitle>
           <DialogDescription>Copialo ora e custodiscilo: serve all'agente per collegarsi.</DialogDescription>
         </DialogHeader>
+        <NameWarning warning={nameWarning} />
         <code className="block break-all rounded-md border border-border bg-card p-3 font-mono text-sm">{token}</code>
         <p role="alert" className="text-sm text-warn">
           Non sarà più visibile dopo la chiusura di questa finestra.
@@ -51,7 +62,7 @@ function TokenDialog({ token, onClose }: { token: string; onClose: () => void })
   );
 }
 
-function CreateAgentDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (token: string) => void }) {
+function CreateAgentDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (created: AgentCreated) => void }) {
   const [name, setName] = useState("");
   const create = useCreateAgent();
   function submit(e: FormEvent) {
@@ -59,7 +70,7 @@ function CreateAgentDialog({ onClose, onCreated }: { onClose: () => void; onCrea
     if (!name.trim()) return;
     create.mutate(name.trim(), {
       onSuccess: (res) => {
-        onCreated(res.token);
+        onCreated(res);
         create.reset();
       },
     });
@@ -165,11 +176,13 @@ export default function Agents() {
   const rotate = useRotateAgentToken();
   const [creating, setCreating] = useState(false);
   const [token, setToken] = useState<string | null>(null);
+  const [nameWarning, setNameWarning] = useState<string | null>(null);
   const [rotating, setRotating] = useState<Agent | null>(null);
   const [assigning, setAssigning] = useState<Agent | null>(null);
 
   function closeToken() {
     setToken(null);
+    setNameWarning(null);
     rotate.reset();
   }
 
@@ -252,9 +265,10 @@ export default function Agents() {
       {creating && (
         <CreateAgentDialog
           onClose={() => setCreating(false)}
-          onCreated={(t) => {
+          onCreated={(created) => {
             setCreating(false);
-            setToken(t);
+            setToken(created.token);
+            setNameWarning(created.name_warning ?? null);
           }}
         />
       )}
@@ -279,7 +293,7 @@ export default function Agents() {
         />
       )}
       {assigning && <AssignmentsDialog agent={assigning} onClose={() => setAssigning(null)} />}
-      {token && <TokenDialog token={token} onClose={closeToken} />}
+      {token && <TokenDialog token={token} nameWarning={nameWarning} onClose={closeToken} />}
     </div>
   );
 }

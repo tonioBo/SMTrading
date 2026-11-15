@@ -598,3 +598,20 @@ async def test_archive_refused_with_open_orders_via_api(admin):
     }
     missing = await c.post(f"/api/portfolios/{uuid.uuid4()}/archive")
     assert missing.status_code == 404
+
+
+async def test_portfolio_save_returns_name_warning(admin):
+    """A name with a simulation word is saved, with a warning (never blocked)."""
+    c = admin.client
+    warned = await _create(c, name="Demo 2")
+    assert warned["name"] == "Demo 2"
+    assert warned["name_warning"] == "gli agenti vedranno questo nome"
+    neutral = await _create(c, name="Alpha")
+    assert neutral["name_warning"] is None
+
+    r = await c.patch(f"/api/portfolios/{neutral['id']}", json={"name": "Prova 3"})
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "Prova 3"
+    assert r.json()["name_warning"] == "gli agenti vedranno questo nome"
+    r = await c.patch(f"/api/portfolios/{warned['id']}", json={"name": "Beta"})
+    assert r.json()["name_warning"] is None

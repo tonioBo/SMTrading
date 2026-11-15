@@ -7,6 +7,7 @@ import type { AppSettings, AssetClass, InterestKind, InterestRate, RiskProfile, 
 import { FormField, selectClass } from "@/components/FormField";
 import { HaltSection } from "@/components/HaltSection";
 import { KillSwitchButton } from "@/components/KillSwitchButton";
+import { NameWarning } from "@/components/NameWarning";
 import { RiskProfileCard } from "@/components/RiskProfileCard";
 import { PageHeader } from "@/components/PageHeader";
 import { TagInput } from "@/components/TagInput";
@@ -60,6 +61,8 @@ function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onCl
   const [description, setDescription] = useState(profile?.description ?? "");
   const [fuse, setFuse] = useState(String(profile?.max_live_orders_per_hour ?? FUSE_DEFAULT));
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // saved with a name warning: the dialog stays open on it until it is closed
+  const [nameWarning, setNameWarning] = useState<string | null>(null);
   const save = useSaveRiskProfile();
 
   const serverField = errorField(save.error);
@@ -91,7 +94,10 @@ function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onCl
       description: description.trim() || null,
       max_live_orders_per_hour: fuseValue,
     };
-    save.mutate({ id: profile?.id ?? null, profile: input }, { onSuccess: onClose });
+    save.mutate(
+      { id: profile?.id ?? null, profile: input },
+      { onSuccess: (saved) => (saved.name_warning ? setNameWarning(saved.name_warning) : onClose()) },
+    );
   }
 
   return (
@@ -102,10 +108,11 @@ function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onCl
           <DialogDescription>Un limite vuoto significa nessun limite; una whitelist vuota ammette tutto.</DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2" noValidate>
-          <div className="sm:col-span-2">
+          <div className="space-y-1.5 sm:col-span-2">
             <FormField label="Nome" error={fieldError("name")}>
-              <Input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+              <Input value={name} onChange={(e) => setName(e.target.value)} autoFocus disabled={nameWarning !== null} />
             </FormField>
+            <NameWarning warning={nameWarning} />
           </div>
           <div className="sm:col-span-2">
             <FormField label="Quando usarlo" error={fieldError("description")} hint={`Visibile agli agenti e nella scheda del portafoglio (${description.length}/${DESCRIPTION_MAX})`}>
@@ -155,12 +162,20 @@ function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onCl
             </p>
           )}
           <DialogFooter className="sm:col-span-2">
-            <Button type="button" variant="outline" onClick={onClose} disabled={save.isPending}>
-              Annulla
-            </Button>
-            <Button type="submit" disabled={save.isPending}>
-              Salva
-            </Button>
+            {nameWarning ? (
+              <Button type="button" onClick={onClose}>
+                Chiudi
+              </Button>
+            ) : (
+              <>
+                <Button type="button" variant="outline" onClick={onClose} disabled={save.isPending}>
+                  Annulla
+                </Button>
+                <Button type="submit" disabled={save.isPending}>
+                  Salva
+                </Button>
+              </>
+            )}
           </DialogFooter>
         </form>
       </DialogContent>

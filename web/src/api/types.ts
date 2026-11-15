@@ -141,6 +141,8 @@ export interface Portfolio {
   /** set while archived: hidden, read-only, skipped by every job */
   archived_at?: string | null;
   archived_by?: string | null;
+  /** only in a save response: set when the name has a word the agents should not see */
+  name_warning?: string | null;
 }
 
 export interface PortfolioCreate {
@@ -329,6 +331,8 @@ export interface RiskProfile {
   max_live_orders_per_hour?: number;
   /** live portfolios using it (list only; Default also counts those without a profile) */
   portfolios_count?: number;
+  /** only in a save response: set when the name has a word the agents should not see */
+  name_warning?: string | null;
 }
 
 export type AgentPermission = "read" | "trade";
@@ -379,6 +383,8 @@ export interface Agent {
 export interface AgentCreated {
   agent: Agent;
   token: string;
+  /** set when the name has a word the agents should not see (the agent is created) */
+  name_warning?: string | null;
 }
 
 export interface AgentRotated {

@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { usePatchPortfolio, useRiskProfiles } from "@/api/hooks/portfolios";
 import type { Portfolio } from "@/api/types";
 import { FormField, selectClass } from "@/components/FormField";
+import { NameWarning } from "@/components/NameWarning";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -10,7 +11,15 @@ import { errorField, errorMessage } from "@/lib/errors";
 import { buildPortfolioPatch, initialForm, PORTFOLIO_FIELDS as FIELDS, type PortfolioField as Field, type PortfolioForm as Form } from "@/lib/portfolioPatch";
 import { timezones } from "@/lib/timezones";
 
-function SettingsForm({ portfolio }: { portfolio: Portfolio }) {
+function SettingsForm({
+  portfolio,
+  nameWarning,
+  onSaved,
+}: {
+  portfolio: Portfolio;
+  nameWarning: string | null;
+  onSaved: (saved: Portfolio) => void;
+}) {
   const [form, setForm] = useState<Form>(() => initialForm(portfolio));
   const [errors, setErrors] = useState<Partial<Record<Field, string>>>({});
   const patch = usePatchPortfolio(portfolio.id);
@@ -28,14 +37,22 @@ function SettingsForm({ portfolio }: { portfolio: Portfolio }) {
     const built = buildPortfolioPatch(portfolio, form);
     setErrors(built.errors);
     if (Object.keys(built.errors).length > 0 || Object.keys(built.patch).length === 0) return;
-    patch.mutate(built.patch, { onSuccess: () => toast.success("Impostazioni salvate") });
+    patch.mutate(built.patch, {
+      onSuccess: (saved) => {
+        onSaved(saved);
+        toast.success("Impostazioni salvate");
+      },
+    });
   }
 
   return (
     <form onSubmit={onSubmit} className="grid gap-4 sm:grid-cols-2" noValidate aria-label="Impostazioni del portafoglio">
-      <FormField label="Nome" error={fieldError("name")}>
-        <Input value={form.name} onChange={set("name")} maxLength={128} />
-      </FormField>
+      <div className="space-y-1.5">
+        <FormField label="Nome" error={fieldError("name")}>
+          <Input value={form.name} onChange={set("name")} maxLength={128} />
+        </FormField>
+        <NameWarning warning={nameWarning} />
+      </div>
       <FormField label="Leva" error={fieldError("leverage")} hint="da 1 a 10">
         <Input value={form.leverage} onChange={set("leverage")} inputMode="decimal" />
       </FormField>
@@ -103,13 +120,20 @@ function SettingsForm({ portfolio }: { portfolio: Portfolio }) {
 export function PortfolioSettings({ portfolio }: { portfolio: Portfolio }) {
   // remount with the saved values once the portfolio is refetched after a save
   const key = FIELDS.map((f) => initialForm(portfolio)[f]).join("\u0000");
+  // kept across that remount: the warning of the last save
+  const [nameWarning, setNameWarning] = useState<string | null>(null);
   return (
     <Card>
       <CardHeader>
         <CardTitle>Impostazioni del portafoglio</CardTitle>
       </CardHeader>
       <CardContent>
-        <SettingsForm key={key} portfolio={portfolio} />
+        <SettingsForm
+          key={key}
+          portfolio={portfolio}
+          nameWarning={nameWarning}
+          onSaved={(saved) => setNameWarning(saved.name_warning ?? null)}
+        />
       </CardContent>
     </Card>
   );

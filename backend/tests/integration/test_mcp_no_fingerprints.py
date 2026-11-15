@@ -4,7 +4,8 @@ default): no agent-facing output or error may carry a simulation fingerprint.
 One sweep per portfolio flavor: orders, fills, a rejection, a cancel, a deposit, an
 alert, a watchlist and a decision on the portfolio, then every agent-facing read tool,
 the resources and a few errors are called and the JSON they return is scanned for the
-words that would give the simulation away (`FINGERPRINT`).
+words that would give the simulation away (`FINGERPRINT`, shared with the admin name
+warning in `smtrading.common.fingerprints`).
 
 Allowlist (documented, not scanned):
 - the backtest tools (run_backtest / get_backtest / list_backtests): a backtest is a
@@ -18,7 +19,6 @@ Allowlist (documented, not scanned):
 
 import dataclasses
 import json
-import re
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from smtrading.agents import service as agents
 from smtrading.agents.models import Agent
 from smtrading.common.db import make_engine
+from smtrading.common.fingerprints import FINGERPRINT
 from smtrading.marketdata.types import Bar, CalendarEvent, Fundamentals, NewsItem
 from smtrading.portfolios.models import Portfolio
 from smtrading.portfolios.service import create_portfolio, deposit
@@ -37,12 +38,6 @@ from smtrading.seed import run_seed
 D = Decimal
 SYM = "BTC-USD"
 NOW = datetime.now(UTC).replace(microsecond=0)
-
-FINGERPRINT = re.compile(
-    r"\bsim\b|simul|paper|demo|\bdry|\bprova\b|\btest|fake|mock|sandbox|virtual",
-    re.IGNORECASE,
-)
-
 
 class _Db:
     def __init__(self, url: str) -> None:

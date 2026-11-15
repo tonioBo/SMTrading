@@ -9,6 +9,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { FormField, selectClass } from "@/components/FormField";
 import { Money } from "@/components/Money";
+import { NameWarning } from "@/components/NameWarning";
 import { PageHeader } from "@/components/PageHeader";
 import { Pnl } from "@/components/Pnl";
 import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
@@ -99,6 +100,8 @@ function ArchiveDialog({ portfolio, onClose }: { portfolio: Portfolio; onClose: 
 function CreatePortfolioDialog({ onClose }: { onClose: () => void }) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [localErrors, setLocalErrors] = useState<Record<string, string>>({});
+  // saved with a name warning: the dialog stays open on it until the admin moves on
+  const [saved, setSaved] = useState<Portfolio | null>(null);
   const profiles = useRiskProfiles();
   const create = useCreatePortfolio();
   const navigate = useNavigate();
@@ -137,6 +140,10 @@ function CreatePortfolioDialog({ onClose }: { onClose: () => void }) {
       },
       {
         onSuccess: (p) => {
+          if (p.name_warning) {
+            setSaved(p);
+            return;
+          }
           onClose();
           navigate(`/portafogli/${p.id}`);
         },
@@ -152,10 +159,11 @@ function CreatePortfolioDialog({ onClose }: { onClose: () => void }) {
           <DialogDescription>Il saldo iniziale viene registrato come deposito.</DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2" noValidate>
-          <div className="sm:col-span-2">
+          <div className="space-y-1.5 sm:col-span-2">
             <FormField label="Nome" error={fieldError("name")}>
-              <Input value={form.name} onChange={set("name")} autoFocus />
+              <Input value={form.name} onChange={set("name")} autoFocus disabled={saved !== null} />
             </FormField>
+            <NameWarning warning={saved?.name_warning} />
           </div>
           <FormField
             label="Saldo iniziale"
@@ -192,12 +200,26 @@ function CreatePortfolioDialog({ onClose }: { onClose: () => void }) {
             </p>
           )}
           <DialogFooter className="sm:col-span-2">
-            <Button type="button" variant="outline" onClick={onClose} disabled={create.isPending}>
-              Annulla
-            </Button>
-            <Button type="submit" disabled={create.isPending}>
-              Crea
-            </Button>
+            {saved ? (
+              <Button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  navigate(`/portafogli/${saved.id}`);
+                }}
+              >
+                Apri portafoglio
+              </Button>
+            ) : (
+              <>
+                <Button type="button" variant="outline" onClick={onClose} disabled={create.isPending}>
+                  Annulla
+                </Button>
+                <Button type="submit" disabled={create.isPending}>
+                  Crea
+                </Button>
+              </>
+            )}
           </DialogFooter>
         </form>
       </DialogContent>

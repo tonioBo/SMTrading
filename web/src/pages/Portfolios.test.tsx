@@ -82,7 +82,11 @@ const server = setupServer(
         { status: 400 },
       );
     }
-    return HttpResponse.json(portfolio("p3", body.name));
+    const warned = /demo/i.test(body.name);
+    return HttpResponse.json({
+      ...portfolio("p3", body.name),
+      name_warning: warned ? "gli agenti vedranno questo nome" : null,
+    });
   }),
   http.get("*/api/portfolios/p3", () => HttpResponse.json(portfolio("p3", "Gamma"))),
   http.get("*/api/portfolios/p3/*", () => HttpResponse.json({}, { status: 404 })),
@@ -148,6 +152,23 @@ describe("Portfolios", () => {
       timezone: "Europe/Rome",
       risk_profile_id: "r1",
     });
+  });
+
+  it("shows name warning after save", async () => {
+    const user = userEvent.setup();
+    const { router } = renderApp("/portafogli");
+    await user.click(await screen.findByRole("button", { name: "Nuovo portafoglio" }));
+    const dialog = screen.getByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Nome"), "Demo 2");
+    await user.type(within(dialog).getByLabelText("Saldo iniziale"), "1000");
+    await user.click(within(dialog).getByRole("button", { name: "Crea" }));
+    // saved (never blocked), the warning stays under the name until the admin moves on
+    expect(await within(dialog).findByText("gli agenti vedranno questo nome")).toHaveClass("text-warn");
+    expect(created).toHaveLength(1);
+    expect(router.state.location.pathname).toBe("/portafogli");
+    expect(within(dialog).queryByRole("button", { name: "Crea" })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Apri portafoglio" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/portafogli/p3"));
   });
 
   it("validates the form locally before posting", async () => {

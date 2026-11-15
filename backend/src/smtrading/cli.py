@@ -17,6 +17,10 @@
     live disarm NAME [--reason TEXT]
                              («Disattiva denaro reale» from the shell: no TOTP; nothing
                              saves live keys or arms from the CLI)
+    names audit              (agent-visible names with simulation words, one line each:
+                             `tipo;id;nome attuale;nome proposto`; `—` = rename by hand)
+    names fix [--yes]        (without --yes the same list, nothing changes; with --yes
+                             the proposed names are applied, audited, `rinominati: K`)
     telegram set --chat-id ID [--token-stdin] [--no-verify] [--enable]
                  (the bot token is read only from stdin, never from argv; verified with
                  getMe/getChat like the admin API; the output never contains it)
@@ -24,9 +28,10 @@
 A token is printed only by `agent create` / `agent rotate`, once: it is never stored in
 clear. Quotes come from the real MarketDataRouter. Each command runs in one transaction
 that is committed, then its Redis effects are dispatched (Ruling R10). On an SMTError the
-error is printed as JSON with exit code 1; a rejected order (an error flagged `persisted`)
-is still committed so it stays stored, anything else is rolled back. Redis is also read
-for cached quotes when a provider quote is missing (Ruling R23).
+error is printed as JSON with exit code 1 (`names` prints plain lines); a rejected order
+(an error flagged `persisted`) is still committed so it stays stored, anything else is
+rolled back. Redis is also read for cached quotes when a provider quote is missing (Ruling
+R23).
 """
 
 import argparse
@@ -48,6 +53,7 @@ from smtrading.agents.models import Agent, AgentPortfolio
 from smtrading.common.config import get_settings
 from smtrading.common.db import get_sessionmaker
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.common.fingerprints import name_warning
 from smtrading.common.logsetup import configure_logging
 from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import OrderSide, OrderType
@@ -61,8 +67,9 @@ from smtrading.engine.service import (
 )
 from smtrading.events import discard_post_commit, dispatch_post_commit, json_safe
 from smtrading.marketdata.router import MarketDataRouter
-from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.positions.service import get_positions
+from smtrading.risk.models import RiskProfile
 from smtrading.telegram.settings import apply_config
 from smtrading.valuation.service import value_portfolio
 
@@ -71,6 +78,9 @@ SOURCE_CLI = "cli"
 _ORDER_TYPES = (OrderType.market.value, OrderType.limit.value)
 LIVE_DISARM_REASON = "disattivato da riga di comando"
 NO_LIVE_LINKS = "nessun collegamento live"
+NAME_BY_HAND = "—"
+ARCHIVED_PORTFOLIO_NAME = "Portafoglio archiviato {}"
+ARCHIVED_AGENT_NAME = "Agente archiviato {}"
 
 
 def _decimal(text: str) -> Decimal:
@@ -134,6 +144,12 @@ def build_parser() -> argparse.ArgumentParser:
     disarm = live_sub.add_parser("disarm", help="disarm a real-money link (no TOTP)")
     disarm.add_argument("name")
     disarm.add_argument("--reason", default=LIVE_DISARM_REASON)
+
+    names = sub.add_parser("names", help="agent-visible names with simulation words")
+    names_sub = names.add_subparsers(dest="names_command", required=True)
+    names_sub.add_parser("audit", help="list them with the proposed neutral names")
+    fix = names_sub.add_parser("fix", help="apply the proposed names (only with --yes)")
+    fix.add_argument("--yes", action="store_true", help="apply (default: only list)")
 
     telegram = sub.add_parser("telegram", help="Telegram notifications")
     telegram_sub = telegram.add_subparsers(dest="telegram_command", required=True)
@@ -280,6 +296,75 @@ async def execute_live(args: argparse.Namespace, session: AsyncSession, redis=No
     raise AssertionError(args.live_command)  # pragma: no cover
 
 
+@dataclasses.dataclass(frozen=True)
+class _NameRow:
+    type: str  # portafoglio | agente | profilo
+    obj: Portfolio | Agent | RiskProfile
+    proposed: str  # NAME_BY_HAND when there is no automatic proposal
+
+    def line(self) -> str:
+        return f"{self.type};{self.obj.id};{self.obj.name};{self.proposed}"
+
+
+def _numbered(template: str, taken: set[str]):
+    """`template` numbered from 1, skipping the names already taken."""
+    n = 0
+    while True:
+        n += 1
+        name = template.format(n)
+        if name not in taken:
+            taken.add(name)
+            yield name
+
+
+async def _name_rows(session: AsyncSession) -> list[_NameRow]:
+    """Portfolios (archived too), agents and risk profiles whose name gets the warning.
+    Proposed: archived portfolios and agents without a non-archived portfolio get a
+    neutral numbered name (by created_at); anything else is NAME_BY_HAND."""
+    portfolios = list(await session.scalars(
+        select(Portfolio).order_by(Portfolio.created_at, Portfolio.id)))
+    agents_ = list(await session.scalars(select(Agent).order_by(Agent.created_at, Agent.id)))
+    assigned = set(await session.scalars(
+        select(AgentPortfolio.agent_id).join(Portfolio, Portfolio.id == AgentPortfolio.portfolio_id)
+        .where(Portfolio.status != PortfolioStatus.archived)))
+    portfolio_names = _numbered(ARCHIVED_PORTFOLIO_NAME, {p.name for p in portfolios})
+    agent_names = _numbered(ARCHIVED_AGENT_NAME, {a.name for a in agents_})
+    rows = []
+    for p in portfolios:
+        if name_warning(p.name):
+            archived = p.status == PortfolioStatus.archived
+            rows.append(_NameRow("portafoglio", p,
+                                 next(portfolio_names) if archived else NAME_BY_HAND))
+    for a in agents_:
+        if name_warning(a.name):
+            rows.append(_NameRow("agente", a,
+                                 NAME_BY_HAND if a.id in assigned else next(agent_names)))
+    for r in await session.scalars(select(RiskProfile).order_by(RiskProfile.name)):
+        if name_warning(r.name):
+            rows.append(_NameRow("profilo", r, NAME_BY_HAND))
+    return rows
+
+
+async def execute_names(args: argparse.Namespace, session: AsyncSession) -> str:
+    """`names audit` / `names fix [--yes]`: plain lines, not JSON."""
+    rows = await _name_rows(session)
+    if args.names_command == "audit" or not args.yes:
+        return "\n".join(r.line() for r in rows)
+    renamed = []
+    for r in rows:
+        if r.proposed == NAME_BY_HAND:
+            continue
+        renamed.append({"type": r.type, "id": str(r.obj.id), "from": r.obj.name,
+                        "to": r.proposed})
+        r.obj.name = r.proposed
+    await session.flush()
+    await agents.write_audit(
+        session, agent_id=None, method="admin:names.fix",
+        params={"renamed": renamed, "by": SOURCE_CLI}, outcome="ok", latency_ms=0,
+    )
+    return f"rinominati: {len(renamed)}"
+
+
 def _read_token_stdin() -> str:
     return sys.stdin.read()
 
@@ -310,6 +395,8 @@ async def execute(
     match args.command:
         case "telegram":
             return await execute_telegram(args, session)
+        case "names":
+            return await execute_names(args, session)
         case "live":
             return await execute_live(args, session, redis)
         case "agent":
@@ -368,7 +455,7 @@ async def run_command(
     async with sessionmaker() as session:
         try:
             result = await execute(args, session, qs, redis)
-            code, out = 0, _dumps(result)
+            code, out = 0, result if isinstance(result, str) else _dumps(result)
         except SMTError as e:
             code, out = 1, _dumps({"error": e.to_dict()})
             if not e.persisted:

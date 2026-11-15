@@ -23,6 +23,7 @@ from smtrading.agents import service as agents
 from smtrading.agents.models import Agent, AgentPortfolio
 from smtrading.agents.service import write_audit
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.common.fingerprints import name_warning
 from smtrading.mcp.dto import parse_ts, to_jsonable
 from smtrading.portfolios.mode import mode_fields, portfolio_links
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
@@ -104,7 +105,8 @@ async def create_agent(body: AgentCreateIn, session: DbSession, redis: RedisClie
             agent, token = await agents.create_agent(session, name)
     except IntegrityError:  # a concurrent creation with the same name won the race
         raise _duplicate_name(name) from None
-    return {"agent": await _agent_dto(session, agent), "token": token}
+    return {"agent": await _agent_dto(session, agent), "token": token,
+            "name_warning": name_warning(agent.name)}
 
 
 @router.post("/agents/{agent_id}/rotate")
@@ -146,7 +148,7 @@ async def patch_agent(
                         "can_halt": body.can_halt, "by": admin.email},
                 outcome="ok", latency_ms=0,
             )
-    return await _agent_dto(session, agent)
+    return {**await _agent_dto(session, agent), "name_warning": name_warning(agent.name)}
 
 
 @router.put("/agents/{agent_id}/portfolios")

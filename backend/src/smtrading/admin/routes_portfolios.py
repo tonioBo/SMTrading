@@ -42,6 +42,7 @@ from smtrading.admin.schemas import (
 )
 from smtrading.brokers.models import BrokerLink
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.common.fingerprints import name_warning
 from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import OPEN_STATUSES, OrderStatus
 from smtrading.engine.quotesource import MemoQuoteSource
@@ -211,6 +212,12 @@ async def _summary(
     return out
 
 
+def _with_name_warning(out: dict[str, Any]) -> dict[str, Any]:
+    """A save response: `name_warning` set when agents will see a simulation word."""
+    out["name_warning"] = name_warning(out["name"])
+    return out
+
+
 @router.get("/portfolios")
 async def list_portfolios(
     session: DbSession, redis: RedisClient, qs: Quotes, include_archived: bool = False
@@ -244,7 +251,7 @@ async def create(
         if await _name_taken(session, name):
             raise _duplicate_name(name) from None
         raise
-    return await _summary(session, qs, redis, portfolio)
+    return _with_name_warning(await _summary(session, qs, redis, portfolio))
 
 
 @router.get("/portfolios/{portfolio_id}")
@@ -306,7 +313,7 @@ async def patch_portfolio(
         if "name" in fields and await _name_taken(session, _clean_name(body.name), portfolio_id):
             raise _duplicate_name(_clean_name(body.name)) from None
         raise
-    return await _summary(session, qs, redis, p)
+    return _with_name_warning(await _summary(session, qs, redis, p))
 
 
 @router.get("/portfolios/{portfolio_id}/valuation")

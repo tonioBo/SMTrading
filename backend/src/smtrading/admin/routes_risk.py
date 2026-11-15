@@ -22,6 +22,7 @@ from smtrading.admin.schemas import (
     RiskProfilePatchIn,
 )
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.common.fingerprints import name_warning
 from smtrading.common.money import decimal_to_str
 from smtrading.engine.service import set_kill_switch_and_cancel
 from smtrading.instruments.models import AssetClass
@@ -154,7 +155,7 @@ async def create_risk_profile(
             await session.flush()
     except IntegrityError:  # a concurrent creation with the same name won the race
         raise _duplicate_name(raw["name"].strip()) from None
-    return _profile_dto(profile)
+    return {**_profile_dto(profile), "name_warning": name_warning(profile.name)}
 
 
 @router.patch("/risk-profiles/{profile_id}")
@@ -182,7 +183,7 @@ async def patch_risk_profile(
             await session.flush()
     except IntegrityError:
         raise _duplicate_name(str(raw["name"]).strip()) from None
-    return _profile_dto(profile)
+    return {**_profile_dto(profile), "name_warning": name_warning(profile.name)}
 
 
 # --- interest rates ------------------------------------------------------------------
