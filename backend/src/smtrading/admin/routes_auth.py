@@ -30,8 +30,12 @@ def _set_session_cookies(
     request: Request, response: Response, session_id: str, csrf: str
 ) -> None:
     opts = _cookie_opts(request)
-    response.set_cookie(auth.SESSION_COOKIE, session_id, httponly=True, **opts)
-    response.set_cookie(auth.CSRF_COOKIE, csrf, httponly=False, **opts)
+    # persistent cookies (survive a browser restart); the server-side session still
+    # enforces the idle and absolute limits
+    response.set_cookie(auth.SESSION_COOKIE, session_id, httponly=True,
+                        max_age=auth.SESSION_MAX_AGE_S, **opts)
+    response.set_cookie(auth.CSRF_COOKIE, csrf, httponly=False,
+                        max_age=auth.SESSION_MAX_AGE_S, **opts)
 
 
 async def _reissue_session(

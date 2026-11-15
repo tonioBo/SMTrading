@@ -155,6 +155,15 @@ async def test_login_then_me(admin_app, admin_user):
         assert user.last_login_at is not None
 
 
+async def test_session_cookie_persists_for_the_absolute_lifetime(admin_app, admin_user):
+    """The session survives a browser restart: the cookie carries Max-Age = 31 days."""
+    client, _ = admin_app
+    r = await _login(client, admin_user.email)
+    cookies = [v for k, v in r.headers.multi_items() if k.lower() == "set-cookie"]
+    sess = next(c for c in cookies if c.startswith("smt_session="))
+    assert f"Max-Age={31 * 24 * 3600}" in sess
+
+
 async def test_session_ttl_is_sliding(admin_app, admin_user, redis_url):
     from redis.asyncio import Redis
 
@@ -163,10 +172,10 @@ async def test_session_ttl_is_sliding(admin_app, admin_user, redis_url):
     key = f"adm:sess:{client.cookies['smt_session']}"
     redis = Redis.from_url(redis_url)
     try:
-        assert 0 < await redis.ttl(key) <= 12 * 3600
+        assert 12 * 3600 < await redis.ttl(key) <= 24 * 3600  # idle: 24 h
         await redis.expire(key, 60)
         assert (await client.get("/api/auth/me")).status_code == 200
-        assert await redis.ttl(key) > 12 * 3600 - 60
+        assert await redis.ttl(key) > 24 * 3600 - 60
     finally:
         await redis.aclose()
 
@@ -490,13 +499,13 @@ async def test_session_absolute_lifetime(admin_app, admin_user, redis_url):
     key = f"adm:sess:{sid}"
     redis, data = await _session_data(redis_url, sid)
     try:
-        # 23h old: still valid, but the idle renewal never goes past the 24h cap
-        data["created_at"] = (datetime.now(UTC) - timedelta(hours=23)).isoformat()
+        # 31 days minus 1 h old: still valid, but the idle renewal never goes past the cap
+        data["created_at"] = (datetime.now(UTC) - timedelta(days=31, hours=-1)).isoformat()
         await redis.set(key, json.dumps(data), keepttl=True)
         assert (await client.get("/api/auth/me")).status_code == 200
         assert 0 < await redis.ttl(key) <= 3600
-        # past 24h: refused and destroyed, however recent the activity
-        data["created_at"] = (datetime.now(UTC) - timedelta(hours=24, seconds=1)).isoformat()
+        # past 31 days: refused and destroyed, however recent the activity
+        data["created_at"] = (datetime.now(UTC) - timedelta(days=31, seconds=1)).isoformat()
         await redis.set(key, json.dumps(data), ex=12 * 3600)
         assert (await client.get("/api/auth/me")).status_code == 401
         assert await redis.exists(key) == 0
