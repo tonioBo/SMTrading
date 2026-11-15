@@ -57,6 +57,7 @@ class Case:
 
 ALPACA_CFG = {"key_id": "CANARYKEYID0001", "secret_key": "CANARYSECRET-do-not-use"}
 T212_CFG = {"api_key": "CANARYKEYID0001", "api_secret": "CANARYSECRET-do-not-use"}
+ETORO_ASSET = {"instrumentId": 1001, "settlementType": "real", "leverage": 1, "side": "buy"}
 ETORO_CFG = {"api_key": "CANARYAPIKEY0001", "user_key": "CANARYUSERKEY-do-not-use"}
 # The live classes run on a LiveClient (make_live_client) on an armed link of the test db.
 CASES = [
@@ -229,7 +230,10 @@ async def test_place_payload_shape(case, http, mock):
 async def test_status_mapping(case, raw, expected, http, mock):
     if case.family == "etoro":
         mock.get(case.url(case.cls.INFO_V2 + "/orders:lookup"), params={"orderId": "11"}).mock(
-            return_value=httpx.Response(200, json={"orderId": 11, "status": {"id": raw}})
+            return_value=httpx.Response(200, json={
+                "orderId": 11, "status": {"id": raw}, "asset": ETORO_ASSET,
+                "positionExecutions": [{"positionId": 1, "openingData": {
+                    "units": 1, "avgPrice": 100, "fees": 0}}]})
         )
         bo = await case.adapter(http).get_order("11")
     elif case.family == "alpaca":
@@ -263,7 +267,8 @@ async def test_find_order_contract(case, http, mock):
         ref = str(uuid.uuid5(etoro_core.ETORO_NS, str(order.id)))
         mock.get(case.url(case.cls.INFO_V2 + "/orders:lookup"), params={"referenceId": ref}).mock(
             return_value=httpx.Response(
-                200, json={"orderId": 7, "referenceId": ref, "status": {"id": 2}})
+                200, json={"orderId": 7, "referenceId": ref, "status": {"id": 2},
+                           "asset": ETORO_ASSET})
         )
     else:
         _mock_t212_instruments(mock, case)

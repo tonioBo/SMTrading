@@ -85,6 +85,7 @@ def _reset_t212_caches():
         for etoro_cache in etoro_core._instrument_caches.values():
             etoro_cache.clear()
         etoro_core._rate_blocked_until.clear()
+        etoro_core._warned_no_asset.clear()
 
     reset()
     yield

@@ -3,7 +3,7 @@
 Docs: https://api-portal.etoro.com/llms.txt (consulted 2026-11-15). Demo and real share
 one host (ETORO_URL): the guard is the path. Each concrete class declares its path
 prefixes as ClassVars and `_guard_path` checks every request against them before it
-touches the network. The real prefixes are written only in brokers/live/etoro_live.py.
+touches the network. The real prefixes are written only in the real adapter (Task 16).
 
 Rules fixed by plan 9 (Task 13): market orders only; buys open unleveraged positions
 (`transaction: buy`, `leverage: 1`, `settlementType: real`), sells close conforming
@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import ClassVar, Literal
-from urllib.parse import unquote, urlencode
+from urllib.parse import urlencode
 
 import httpx
 
@@ -207,6 +207,11 @@ def _body_message(resp: httpx.Response) -> str | None:
     return None
 
 
+def _rejection(resp: httpx.Response) -> str:
+    """The message of a 400/422 rejection: the body's, else «etoro: HTTP <code>»."""
+    return _body_message(resp) or f"etoro: HTTP {resp.status_code}"
+
+
 def http_error(resp: httpx.Response) -> str:
     """«etoro: HTTP <code>» plus the redacted body message (never headers or keys)."""
     msg = _body_message(resp)
@@ -272,12 +277,11 @@ def _buy_unleveraged_real(entry: dict) -> bool:
 
 def _conforming(p: dict) -> bool:
     """An unleveraged owned long position, not copied (plan 9 Task 13)."""
-    mirror = _get(p, "mirrorID")
     return (
         p.get("isBuy") is True
         and _dec(p.get("leverage")) == 1
         and _int(_get(p, "settlementTypeID")) == _REAL_SETTLEMENT
-        and (mirror is None or _int(mirror) == 0)
+        and _int(_get(p, "mirrorID")) == 0  # missing: not conforming (fail-closed)
     )
 
 
@@ -306,6 +310,7 @@ def _fifo(positions: list[dict]) -> list[dict]:
 
 
 _rate_blocked_until: dict[tuple[str, str, str], float] = {}
+_warned_no_asset: set[str] = set()  # lookups without `asset` already logged
 
 
 def _bucket(method: str, path: str) -> str:
@@ -364,12 +369,12 @@ class _EtoroProtocol(BrokerAdapter):
         a demo class only reaches market data or `/demo/` paths, a real class never a
         `/demo/` path; market data is GET only. Anything odd in the path is refused."""
         bare = path.split("?", 1)[0]
-        decoded = unquote(bare)
         if (
             not bare.startswith("/")
-            or "//" in decoded
-            or "/." in decoded
-            or "\\" in decoded
+            or "%" in bare  # no eToro path needs an encoded character
+            or "//" in bare
+            or "/." in bare
+            or "\\" in bare
             or "#" in path
             or any(c.isspace() for c in path)
             or not bare.startswith(self.ALLOWED_PREFIXES)
@@ -565,7 +570,7 @@ class _EtoroProtocol(BrokerAdapter):
         resp = await self._request("POST", f"{self.EXEC_V2}/orders", body=fields,
                                    order=order, request_id=self.reference_id(order))
         if resp.status_code in _REJECT_HTTP:
-            return BrokerOrder("", "rejected", Decimal(0), None, _body_message(resp), {})
+            return BrokerOrder("", "rejected", Decimal(0), None, _rejection(resp), {})
         if resp.status_code >= 300:
             raise self._fail(resp)
         data = _parse(resp)
@@ -613,7 +618,7 @@ class _EtoroProtocol(BrokerAdapter):
                 )
                 if resp.status_code in _REJECT_HTTP and not accepted:
                     return BrokerOrder("", "rejected", Decimal(0), None,
-                                       _body_message(resp), {})
+                                       _rejection(resp), {})
                 if resp.status_code >= 300:
                     raise self._fail(resp)
                 data = _parse(resp)
@@ -671,11 +676,15 @@ class _EtoroProtocol(BrokerAdapter):
         status: BrokerStatus = _STATUS.get(sid, "accepted") if sid is not None else "accepted"
         message = None
         asset = data.get("asset")
-        if isinstance(asset, dict):
+        if not isinstance(asset, dict):
+            # leverage and settlement unknown: fail-closed (only openings are looked up)
+            if bid not in _warned_no_asset:
+                _warned_no_asset.add(bid)
+                log.warning("eToro order %s without asset: treated as rejected", bid)
+            status = "rejected"
+        else:
             lev, settle = asset.get("leverage"), asset.get("settlementType")
-            if (lev is not None and _dec(lev) != 1) or (
-                settle is not None and str(settle).lower() != "real"
-            ):
+            if _dec(lev) != 1 or str(settle).lower() != "real":
                 log.error("eToro order %s is not an unleveraged real buy (leverage %s, "
                           "settlement %s): treated as rejected", bid, lev, settle)
                 status = "rejected"
@@ -698,6 +707,8 @@ class _EtoroProtocol(BrokerAdapter):
                 cost += abs(units) * price
             if fee is not None:
                 fees = (fees or Decimal(0)) + abs(fee)
+        if status == "filled" and filled == 0:  # no executions yet: wait (as for closes)
+            status = "accepted"
         avg = cost / filled if filled > 0 and priced else None
         return BrokerOrder(bid, status, filled, avg, message, _jsonable(data), fees)
 
@@ -783,6 +794,7 @@ class _EtoroProtocol(BrokerAdapter):
             iid, units = _int(_get(p, "instrumentID")), _dec(p.get("units"))
             if iid is None or units is None:
                 continue
+            # an id not learned by `prepare` stays the raw instrument id (never a guess)
             symbol = self._instruments.reverse.get(iid, str(iid))
             out[symbol] = out.get(symbol, Decimal(0)) + units
         return out

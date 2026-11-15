@@ -15,6 +15,7 @@ import itertools
 import json
 import re
 import threading
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -94,7 +95,7 @@ class FakeLiveBroker:
         self.etoro = {"demo": _EtoroEnv(), "real": _EtoroEnv()}
         self.etoro_partial_close = True  # allowPartialClosePosition of every instrument
         self.etoro_fail_close_after: int | None = None  # closes accepted before a 500
-        self.calls: list[tuple[str, str]] = []
+        self.calls: deque[tuple[str, str]] = deque(maxlen=1000)  # the latest requests
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
 
