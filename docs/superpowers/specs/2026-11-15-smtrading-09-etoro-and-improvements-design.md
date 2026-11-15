@@ -29,6 +29,8 @@ Tutto in un unico piano, per decisione dell'utente.
 8. **Pulizia dei nomi.**
    - Rinominare i dati admin esistenti che contengono parole da simulazione e che gli agenti potrebbero vedere: i portafogli archiviati «Test 250 · …», «Paperclip», «Demo» e gli agenti «paperclip-demo», «smoke-agent».
    - Aggiungere un controllo permanente che avvisa l'admin quando salva un nome visibile agli agenti contenente queste parole.
+9. **Più portafogli reali su un conto** (aggiunta approvata dall'utente il 2026-11-15): un collegamento reale non è più legato a un solo portafoglio. Ogni portafoglio ha la sua quota del contante del conto (vedi §Più portafogli reali su un conto).
+10. **Modalità con il nome del broker nel portale** (aggiunta approvata dall'utente il 2026-11-15): al posto di «simulazione / paper / reale», per esempio «Alpaca · prova» o «🔴 Trading 212 · reale». Gli agenti non vedono nessun cambiamento (vedi §Etichette delle modalità).
 
 ## Non-obiettivi
 - Interactive Brokers (rimandato).
@@ -138,11 +140,42 @@ Tutto in un unico piano, per decisione dell'utente.
 - **Una tantum:** il piano include un comando CLI (`python -m smtrading.cli names audit|fix`) che elenca e, su conferma, rinomina portafogli e agenti con parole vietate. I nomi proposti sono neutri, per esempio «Portafoglio archiviato 1…4» e «Agente archiviato 1–2». Il controller lo esegue in produzione **solo dopo** l'approvazione dell'utente dei nomi proposti.
 - **Permanente:** al salvataggio di un portafoglio, di un agente o di una regola visibile agli agenti, se il nome contiene `test|demo|paper|sim|prova|fake|smoke` il portale mostra un avviso, non un blocco: «gli agenti vedranno questo nome». Lo stesso elenco di parole è usato da `test_mcp_no_fingerprints`, in un solo modulo.
 
+### Più portafogli reali su un conto
+Approvato dall'utente il 2026-11-15. Oggi il piano 8 ammette un solo portafoglio per collegamento reale (cancello, collegamento, controlli). Da questo piano un conto reale può avere più portafogli, ognuno con la sua **quota**.
+- **Quota:** il contante del portafoglio convertito nella valuta del conto, al cambio corrente con il margine di Task 7 (cambio peggiore più l'1%).
+- **Collegamento di un portafoglio:** sempre con TOTP. È ammesso solo se la somma delle quote, compresa quella nuova, non supera il contante disponibile al broker. Il contante in più resta fermo, non assegnato: l'uguaglianza esatta non è richiesta.
+  - Il primo portafoglio di un collegamento richiede il conto vuoto, come oggi.
+  - Per i successivi il conto non è più vuoto: servono un test in sola lettura recente e l'ultima riconciliazione in regola per ogni portafoglio già collegato (il conto contiene solo ciò che SMTrading conosce). Il portafoglio nuovo non ha posizioni, come oggi.
+- **Acquisti:** un ordine deve stare nel contante del suo portafoglio **e** nel contante del broker meno le quote riservate degli altri portafogli. La quota riservata di un altro portafoglio è il suo contante, che contiene ancora il costo dei suoi acquisti aperti finché non sono eseguiti: un portafoglio non può spendere la quota di un altro, e nulla si conta due volte.
+- **Vendite:** solo fino alle posizioni del proprio portafoglio, come oggi.
+- **Riconciliazione:**
+  - per simbolo, la somma delle posizioni dei portafogli collegati contro il broker;
+  - una differenza su un simbolo mette in sola chiusura **solo** i portafogli che hanno quel simbolo (posizione o ordine aperto al broker). Un simbolo che nessun portafoglio ha (posizione sconosciuta su un conto dedicato) li coinvolge tutti;
+  - contante del broker inferiore alla somma delle quote oltre la tolleranza: sola chiusura per **tutti** i portafogli collegati;
+  - scarto dovuto al solo cambio: solo avviso, come Task 7, al massimo uno al giorno per collegamento;
+  - debounce R8.7 e R8.8 invariati, valutati simbolo per simbolo.
+- **Ordine con esito sconosciuto (M8):** sola chiusura solo per il portafoglio dell'ordine. Per i controlli di contante dell'intero collegamento l'ordine resta impegnato finché non si chiarisce (decisione del controller).
+- **Valgono per tutto il collegamento**, quindi per tutti i suoi portafogli: disattivazione, prova a secco, kill switch, fusibile degli ordini all'ora (conta gli ordini inviati da tutti i portafogli del collegamento, con il limite più basso tra i loro profili), cambio di conto.
+- **Cancello:** un invio passa solo se il portafoglio dell'ordine è uno dei portafogli collegati, non bloccato e non archiviato. Tutte le altre condizioni del piano 8 restano.
+- **Guardia sui depositi** (Task 7): usa la somma di tutte le quote del collegamento più il deposito.
+- **Portale:** la scheda del collegamento reale elenca i portafogli collegati con la quota di ciascuno, il contante al broker e la parte non assegnata. Collegare e scollegare si fa per portafoglio; si scollega solo senza posizioni aperte, come oggi. La barra rossa conta i portafogli reali.
+- **Agenti:** nessun cambiamento. Vedono solo i portafogli su cui hanno permessi; `test_mcp_no_fingerprints` resta valido così com'è.
+- **eToro:** le posizioni al broker sono del conto, non del portafoglio. Una vendita può chiudere posizioni eToro aperte da un altro portafoglio: conta la quantità totale, e il registro di SMTrading resta la verità per ogni portafoglio.
+
+### Etichette delle modalità
+Approvato dall'utente il 2026-11-15. Riguarda **solo il portale**.
+- Le etichette generiche «simulazione / paper / reale» diventano:
+  - senza broker: «SMTrading (simulato)»;
+  - prova o demo: «Alpaca · prova», «Trading 212 · demo», «eToro · demo»;
+  - reale: «🔴 Alpaca · reale», «🔴 Trading 212 · reale», «🔴 eToro · reale», con «· prova a secco» o «· sospeso» secondo lo stato del collegamento, come oggi.
+- I conteggi della Dashboard sono per etichetta, per esempio «2 simulati · 1 Alpaca prova · 0 reali».
+- **Agenti:** gli output MCP non cambiano, e `mcp_hide_mode` resta com'è. Un test verifica che le risposte agli agenti siano identiche a prima.
+
 ## Vincoli
 - **Stesso stack e stesse regole del progetto:** TDD, revisione di ogni task, deploy solo da un worktree pulito di HEAD. Con migrazioni, `docker compose run --rm migrate` prima di `up --no-deps`.
 - Migrazioni lineari dopo la 0021.
 - **Nessuna attivazione del reale.** eToro reale resta spento: 0 collegamenti `etoro_live` in produzione.
-- `mcp_hide_mode` e tutte le regole del piano 8 (R8.4–R8.13) restano valide.
+- `mcp_hide_mode` e tutte le regole del piano 8 (R8.4–R8.13) restano valide, tranne il vincolo «un collegamento reale ↔ un portafoglio», sostituito da §Più portafogli reali su un conto.
 - **Per gli agenti:**
   - nuovi codici d'errore solo se indistinguibili da un broker reale;
   - le istruzioni non cambiano in questo piano senza ok dell'utente.

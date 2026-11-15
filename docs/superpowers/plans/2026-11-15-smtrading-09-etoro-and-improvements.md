@@ -5,11 +5,13 @@
 **Goal:** un terzo broker, eToro, in prova (`etoro_demo`) e reale (`etoro_live`, costruito e **spento**), più i miglioramenti della prima settimana: chiusure di borsa manuali e Londra, ordini manuali completi dal portale, più valute nel reale, «Decisioni di oggi» nel riepilogo con campi strutturati di `log_decision`, lettore Paperclip (costi e allarme isolamento) e pulizia dei nomi.
 
 **Architecture:**
-- **Miglioramenti prima, denaro reale eToro per ultimo.** I Task 1-9 non toccano eToro. I Task 10-12 aggiungono eToro in tre passi: protocollo e demo, poi l'integrazione della demo, poi il reale dietro il cancello del piano 8.
+- **Miglioramenti prima, denaro reale eToro per ultimo.** I Task 1-12 non toccano eToro. I Task 13-15 aggiungono eToro in tre passi: protocollo e demo, poi l'integrazione della demo, poi il reale dietro il cancello del piano 8.
 - **eToro, host condiviso:** demo e reale usano lo stesso host. La guardia non distingue per host ma **per percorso**:
   - il nucleo `_EtoroProtocol` controlla ogni richiesta contro i prefissi ammessi dalla classe concreta, prima di toccare la rete;
   - i prefissi reali sono scritti solo in `brokers/live/etoro_live.py`, e un test scandisce il repository alla ricerca di quei percorsi.
 - **Chiusure manuali:** `market_status` resta sincrono. Legge un registro in memoria del processo (`ClosureBook`), che un compito di API e worker ricarica dal database ogni 60 s; il salvataggio dall'admin lo ricarica subito nell'API.
+- **Più portafogli reali su un conto (Task 11-12):** il vincolo «un collegamento reale ↔ un portafoglio» del piano 8 cade. Ogni portafoglio ha una quota del contante del conto; contante e riconciliazione si controllano per collegamento, la sola chiusura colpisce solo i portafogli coinvolti. Nessuna migrazione: non esiste un vincolo UNIQUE su `portfolios.broker_link_id` (verificato), la regola 1:1 è solo nel codice.
+- **Etichette delle modalità (Task 10):** solo portale. Le DTO admin ricevono campi nuovi; `mode_fields`, che usano anche gli strumenti MCP, non cambia.
 - **Paperclip:** un job del worker ogni 5 minuti fa solo richieste `GET`, con un client che rifiuta ogni altro metodo. Gli avvisi vanno direttamente in `telegram_outbox` (categoria `system`), mai nel feed attività, che gli agenti leggono.
 - Il piano parte da `main` 045f598 più i commit dello spec, sul ramo `feat/plan-09-etoro-improvements`.
 
@@ -58,7 +60,7 @@
   - nel portale si vede solo `••••` più le ultime 4 cifre.
 - **Test senza rete:**
   - respx con `assert_all_mocked=True`;
-  - la fixture `_no_live_network` blocca anche l'host eToro (Task 10).
+  - la fixture `_no_live_network` blocca anche l'host eToro (Task 13).
 
 ## Review Focus
 
@@ -66,7 +68,7 @@
    - le posizioni intere si chiudono in ordine FIFO;
    - il resto è un'esecuzione parziale normale e l'ordine si chiude `canceled` con `filled_qty` uguale a quanto chiuso;
    - mai `sellShort`, mai un messaggio specifico di eToro verso gli agenti.
-   Test in Task 10.
+   Test in Task 13.
 2. **Chiusura manuale salvata mentre il worker gira.** Atteso:
    - l'API la applica subito, il worker entro 60 s;
    - un ordine a mercato su quel mercato resta `to_send` (mercato chiuso) e non parte.
@@ -81,6 +83,12 @@
    - con una fotografia esistente vale come «tutte rimosse»: un solo avviso critico, mai una nuova fotografia automatica.
    Test in Task 8.
 5. **Ordine manuale su un portafoglio reale** con un TOTP riusato, o da un admin senza TOTP attivo. Atteso: `FORBIDDEN`, nessun ordine salvato. L'anteprima funziona senza TOTP. Test in Task 5.
+6. **Due portafogli reali sullo stesso conto con lo stesso simbolo.** A ha 3 AAPL, B ne ha 2. Atteso:
+   - broker con 5 → in regola;
+   - broker con 4, confermato al secondo passaggio → sola chiusura per A e B, e per nessun altro portafoglio del collegamento;
+   - A non può spendere la quota di B; contante del broker sotto la somma delle quote → sola chiusura per tutti;
+   - «Disattiva denaro reale» ferma gli ordini di entrambi; un terzo portafoglio la cui quota supera il contante libero non si collega.
+   Test in Task 11.
 
 ---
 
@@ -97,6 +105,8 @@ backend/src/smtrading/
   risk/live_checks.py           (+ cambio peggiore, giorno di borsa)
   brokers/live/reconcile.py     (+ scarto di cambio)
   paperclip/{config,client,models,reader}.py   admin/routes_paperclip.py
+  portfolios/mode.py            (+ broker_kind, mode_label solo per il portale)
+  brokers/live/quotas.py        quote del contante per collegamento (Task 11)
   brokers/etoro_core.py         _EtoroProtocol, ETORO_URL, cache strumenti
   brokers/etoro_demo.py         EtoroDemoAdapter
   brokers/live/etoro_live.py    EtoroLiveAdapter (unico posto con i percorsi reali)
@@ -105,6 +115,7 @@ backend/src/smtrading/
 backend/migrations/versions/0022_…, 0023_…, 0024_…, 0025_…
 web/src/components/OrderForm.tsx, PaperclipBanner.tsx, PaperclipSection.tsx
 web/src/pages/AgentCosts.tsx    web/src/api/hooks/paperclip.ts
+web/src/components/LiveLinkPortfolios.tsx
 ```
 
 | Ondata | Task | Note |
@@ -113,8 +124,9 @@ web/src/pages/AgentCosts.tsx    web/src/api/hooks/paperclip.ts
 | B | 5 → 6 | 6 solo `web/` |
 | C | 7 | migrazione 0024 |
 | D | 8 → 9 | migrazione 0025; 9 solo `web/` |
-| E | 10 → 11 → 12 | eToro: demo prima, reale per ultimo |
-| F | 13 | e2e, documentazione, verifica |
+| E | 10 → 11 → 12 | etichette delle modalità; più portafogli reali per conto (backend, poi web); nessuna migrazione |
+| F | 13 → 14 → 15 | eToro: demo prima, reale per ultimo |
+| G | 16 | e2e, documentazione, verifica |
 
 ---
 
@@ -434,6 +446,7 @@ web/src/pages/AgentCosts.tsx    web/src/api/hooks/paperclip.ts
 - [ ] **Step D1: test** `tests/integration/test_live_deposit_guard.py::test_deposit_refused_when_broker_cash_short`. Il portafoglio è collegato a un link live (fake broker, conto con contante 600, portafoglio con 500). `POST /api/portfolios/{id}/deposit {amount: 200}` → 400 `INVALID_ORDER`, `details.field == "amount"`, messaggio «Il conto del broker non ha ancora questo contante: fai prima il bonifico al broker, poi registra il deposito». Saldo invariato. `{amount: 100}` → 200. Con portafoglio e conto in valute diverse il confronto avviene al cambio corrente con il margine di Task 7. Senza cambio il deposito viene rifiutato con lo stesso messaggio più «(cambio non disponibile)». `withdraw` è sempre ammesso. Portafogli non live: nessun cambiamento (test).
 - [ ] **Step D2:** in `portfolios/service.py` (o in un guard chiamato da `admin/routes_portfolios.py` `deposit_cash`): se il portafoglio ha `broker_link_id` con `live_state` non null, legge il contante disponibile dal broker (snapshot fresco via `brokers/live/account.py`, come `check_live_portfolio`) e rifiuta se `contante portafoglio + deposito > contante broker`. Il messaggio è in italiano e non contiene importi del conto oltre a quelli necessari.
 - [ ] **Step D3:** web: l'errore viene mostrato nel dialogo «Deposita» (test vitest). Commit insieme a Task 7.
+- Con più portafogli sullo stesso conto il confronto usa la somma delle quote di tutto il collegamento: lo estende il Task 11.
 
 ### Task 8: Lettore Paperclip (costi, isolamento, errori)
 
@@ -548,7 +561,175 @@ web/src/pages/AgentCosts.tsx    web/src/api/hooks/paperclip.ts
 - [ ] **Step 3:** implementazione → PASS; lint e build puliti.
 - [ ] **Step 4:** commit `feat(web): Paperclip settings, isolation banner, agent costs page`
 
-### Task 10: Protocollo eToro, adattatore demo, server finto
+### Task 10: Modalità con il nome del broker (solo portale)
+
+Aggiunta approvata dall'utente il 2026-11-15 (spec §Etichette delle modalità). Task piccolo e separato: tocca solo le DTO admin e il web, non gli strumenti MCP.
+
+**Files:**
+- Modify:
+  - backend: `portfolios/mode.py` (`mode_label`, `admin_mode_fields`), `admin/routes_portfolios.py` (`_portfolio_dto`), `admin/routes_dashboard.py` (righe e `mode_counts`), `admin/routes_agents.py` (portafogli degli agenti);
+  - web: `web/src/lib/portfolioMode.ts`, `web/src/components/PortfolioModeBadge.tsx`, `web/src/components/ModeBanner.tsx`, `web/src/pages/Dashboard.tsx` (`ModeCounts`), `web/src/api/types.ts`, i 5 punti che usano `PortfolioModeBadge` (`AgentPortfoliosSummary.tsx`, `AgentDetail.tsx`, `Dashboard.tsx`, `Portfolios.tsx`, `PortfolioDetail.tsx`)
+- Create (test): `tests/unit/test_portfolio_mode.py`
+- Test: `tests/integration/test_admin_portfolios.py`, `tests/integration/test_admin_brokers.py` (oggi verifica `mode` sulle DTO e la Dashboard), `tests/integration/test_mcp_portfolio.py`, `web/src/components/PortfolioModeBadge.test.tsx`, `web/src/pages/Dashboard.test.tsx`, `web/src/components/Layout.test.tsx` (banner)
+
+**Interfaces — Produces:**
+- **`portfolios/mode.py`** (le funzioni esistenti restano identiche):
+  - `BROKER_NAMES = {"alpaca": "Alpaca", "t212": "Trading 212", "etoro": "eToro"}`, chiave = prefisso del kind prima di `_`;
+  - `PRACTICE_WORD = {"alpaca_paper": "prova", "t212_demo": "demo", "etoro_demo": "demo"}`;
+  - `SIMULATED_LABEL = "SMTrading (simulato)"`;
+  - `def mode_label(portfolio: Portfolio, link: BrokerLink | None) -> str` (pura):
+    - nessun collegamento → `SIMULATED_LABEL`;
+    - kind in `PRACTICE_WORD` → `f"{nome} · {parola}"`, per esempio «Alpaca · prova», «Trading 212 · demo», «eToro · demo»;
+    - kind in `LIVE_KINDS` → `f"🔴 {nome} · reale"`, più « · prova a secco» con `dry_run` e « · sospeso» con `configured`;
+    - kind sconosciuto → il kind così com'è;
+  - `def admin_mode_fields(portfolio, link) -> dict`: `{**mode_fields(portfolio, link), "broker_kind": link.kind if link else None, "mode_label": mode_label(portfolio, link)}`.
+- **DTO admin:** `_portfolio_dto`, le righe della Dashboard e i portafogli degli agenti usano `admin_mode_fields` al posto di `mode_fields`. `mcp/tools_portfolio.py` continua a usare `mode_fields`: **nessun campo nuovo verso gli agenti**.
+- **`GET /api/dashboard`:** campo nuovo `mode_counts: [{label, count, live: bool}]`, raggruppato per `mode_label`, in quest'ordine: simulati, poi prova e demo in ordine alfabetico, poi reali. `GET /api/dashboard/modes` resta invariato (lo usa il banner).
+- **Web:**
+  - `api/types.ts`: `broker_kind: string | null` e `mode_label: string` nei tipi che oggi hanno `mode`; `PortfolioMode` resta;
+  - `PortfolioModeBadge` riceve `label` e mostra il testo esatto di `mode_label`, senza un'icona in più (il 🔴 è già nel testo dei reali); colore da `mode` e `liveState` come oggi (verde, giallo, rosso per ogni kind reale); `aria-label` `Modalità: <label>. <hint>`;
+  - `MODE_INFO` tiene colori e suggerimenti; le etichette di ripiego, per una risposta senza `mode_label`, diventano «SMTrading (simulato)», «Conto di prova del broker» e «🔴 Reale»;
+  - `ModeCounts` della Dashboard: `«{count} {testo}»` separati da « · », dove il testo è «simulati» («simulato» per 1) per la voce simulata e l'etichetta senza « · » per le altre, per esempio «2 simulati · 1 Alpaca prova · 0 reali». Senza voci reali si aggiunge «0 reali»;
+  - `ModeBanner`, testi nuovi: «SMTrading (simulato) e conti di prova dei broker – nessun denaro reale» e «SMTrading (simulato) – denaro virtuale, prezzi di mercato reali». Il testo rosso dei reali non cambia.
+
+- [ ] **Step 1: test falliti** (backend)
+  - `test_mode_label_table`: parametrizzato su nessun link, `alpaca_paper`, `t212_demo`, `etoro_demo`, `alpaca_live` nei 3 `live_state`, `t212_live` armato, `etoro_live` in `dry_run` → le etichette esatte sopra (per esempio «🔴 eToro · reale · prova a secco»);
+  - `test_admin_portfolio_dto_has_mode_label`: `GET /api/portfolios` → `mode_label` e `broker_kind`, con `mode` e `live_state` invariati;
+  - `test_dashboard_mode_counts`: 2 simulati e 1 `alpaca_paper` → `mode_counts == [{"label": "SMTrading (simulato)", "count": 2, "live": false}, {"label": "Alpaca · prova", "count": 1, "live": false}]`;
+  - `test_agent_payloads_unchanged_by_mode_labels`, in `test_mcp_portfolio.py`: un portafoglio simulato, uno `alpaca_paper` e uno su un link live in `dry_run`, con `mcp_hide_mode` acceso e spento. Le risposte di `list_portfolios` e `get_portfolio` non contengono le chiavi `mode_label` e `broker_kind` né i testi «SMTrading (simulato)», «Alpaca», «· prova», «· demo». Dove compare, `mode` è uguale a `mode_fields(...)["mode"]`.
+- [ ] **Step 2:** `uv run pytest tests/unit/test_portfolio_mode.py tests/integration/test_admin_portfolios.py tests/integration/test_admin_brokers.py tests/integration/test_mcp_portfolio.py -q` → FAIL.
+- [ ] **Step 3: test falliti** (web)
+  - `badge shows broker label`: «Trading 212 · demo» in giallo, «🔴 Alpaca · reale · sospeso» in rosso;
+  - `dashboard counts per broker label`: il testo «2 simulati · 1 Alpaca prova · 0 reali»;
+  - `banner simulated and practice text`.
+  `npm --prefix web test -- --run PortfolioModeBadge Dashboard Layout` → FAIL.
+- [ ] **Step 4:** implementazione → PASS; `uv run pytest tests/integration/test_mcp_no_fingerprints.py -q` verde, invariato; `npm --prefix web run lint` e `npm --prefix web run build` puliti.
+- [ ] **Step 5:** commit `feat(web): portfolio mode labels with the broker name (portal only)`
+
+### Task 11: Più portafogli reali su un conto, backend
+
+Aggiunta approvata dall'utente il 2026-11-15 (spec §Più portafogli reali su un conto). Toglie il vincolo «un collegamento reale ↔ un portafoglio» del piano 8. **Nessuna migrazione:** su `portfolios.broker_link_id` non c'è un vincolo UNIQUE (verificato su modelli e migrazioni 0009-0021); la regola 1:1 è solo in `gate.py` (`len(portfolios) != 1`) e in `check_live_portfolio` («il collegamento reale è già usato da un altro portafoglio»).
+
+**Files:**
+- Create: `brokers/live/quotas.py`, `tests/integration/test_live_multi_portfolio.py`
+- Modify:
+  - `brokers/live/gate.py` (portafoglio dell'ordine tra quelli collegati; docstring);
+  - `brokers/live/service.py` (`check_live_portfolio`, `link_live_portfolio`, `_require_fresh_empty_test`, dettagli dell'audit `armed`; docstring);
+  - `risk/live_checks.py` (`check_live_cash`, `check_live_fuse`, `live_orders_sent`, `max_live_orders_per_hour`; docstring);
+  - `brokers/sync.py` (`_live_memo`: cambi del contante degli altri portafogli del collegamento; `_live_refusal` passa il link al fusibile);
+  - `brokers/live/reconcile.py` (portafogli coinvolti per simbolo, debounce per simbolo, scarto di cambio per collegamento);
+  - la guardia sui depositi di Task 7 (Step D2);
+  - `admin/routes_live.py` (`_live_dto`: `portfolios`, quote, contante non assegnato)
+- Test: `tests/integration/test_live_gate.py`, `tests/integration/test_live_service.py`, `tests/unit/test_live_checks.py`, `tests/integration/test_live_monitor.py`, `tests/integration/test_live_sync.py`, `tests/integration/test_admin_live.py`, `tests/integration/test_live_deposit_guard.py`
+
+**Interfaces — Consumes:** Task 7 (`FX_SAFETY_PCT`, `fx_ref_rates`, `FX_DRIFT_KIND`, guardia sui depositi D1-D3).
+
+**Interfaces — Produces:**
+- **`brokers/live/quotas.py`:**
+  - `@dataclass(frozen=True) class Quota: portfolio_id: UUID; name: str; quota: Decimal` (valuta del conto);
+  - `async def portfolio_quota(session, qs, portfolio, link) -> Decimal`: il contante del portafoglio (`get_cash_balances`) nella valuta del conto. Per una valuta `c` diversa si usa il cambio peggiore per il conto, cioè il più alto tra corrente e `fx_ref_rates[c]` se c'è, moltiplicato per `1 + FX_SAFETY_PCT`. Senza cambio: `SMTError(PROVIDER_UNAVAILABLE)`;
+  - `async def link_quotas(session, qs, link, *, include: Portfolio | None = None, exclude: UUID | None = None) -> list[Quota]`: i portafogli collegati (`Portfolio.broker_link_id == link.id`), più `include` se non è ancora collegato, meno `exclude`; ordine per nome;
+  - `def unassigned(broker_cash: Decimal, quotas: list[Quota]) -> Decimal`: `broker_cash − Σ quota`, anche negativo.
+- **Collegamento** (`check_live_portfolio`, `link_live_portfolio`):
+  - si toglie il rifiuto «il collegamento reale è già usato da un altro portafoglio»;
+  - `_require_fresh_empty_test` diventa `_require_fresh_test(link, now, *, empty: bool)`. `link_live_portfolio` chiede `empty=True` solo se il collegamento non ha ancora portafogli; altrimenti valgono età del test, impronta e conto cash, ma non il conto vuoto. `arm_live_link` resta con `empty=True`, come oggi;
+  - con il conto non vuoto, `check_live_portfolio` chiede che l'ultima `Reconciliation` di ogni portafoglio già collegato sia `ok` e degli ultimi `LIVE_TEST_MAX_AGE_S`. Altrimenti `_invalid("riconciliazione non in regola: verifica il conto prima di collegare un altro portafoglio", "reconcile")`;
+  - il controllo `ours > broker_cash` diventa `Σ link_quotas(include=portfolio) > cash_available` dello snapshot → `_invalid("la somma delle quote dei portafogli supera la liquidità disponibile al broker", "cash", quotas_total=…, broker_cash=…, unassigned=…)`. Senza cambio: lo stesso campo, con «cambio non disponibile per confrontare la liquidità»;
+  - TOTP, ordine dei lock (link, poi portafoglio, R8.9), `check_relink` (il portafoglio nuovo senza posizioni) e audit `portfolio_linked` restano. Scollegare resta per portafoglio e rifiutato con posizioni reali aperte, come oggi;
+  - `arm_live_link`: `details.portfolios` elenca tutti gli id collegati; `portfolio_id` dell'audit resta il primo.
+- **Cancello (`LiveGateTransport._check`)**, al posto del blocco `limit(2)`, con lo stato letto di nuovo come oggi:
+  - nessun portafoglio collegato → `LIVE_NOT_ARMED`;
+  - con `smt_order_id`: ordine non trovato, o il suo `portfolio_id` non è tra i collegati → `LIVE_NOT_ARMED` con `OTHER_PORTFOLIO_MESSAGE`; il suo portafoglio `locked` o `archived` → `PORTFOLIO_LOCKED`; halt e kill switch si valutano sul portafoglio dell'ordine, come oggi;
+  - senza `smt_order_id`: passa solo se almeno un portafoglio collegato non è bloccato né archiviato e nessuno è sotto halt;
+  - tutte le altre condizioni del piano 8 restano: `armed`, prova a secco, kill switch con le sole chiusure `live_flatten`, halt, DELETE sempre ammessi.
+- **Acquisti (`check_live_cash`)**, importi nella valuta base del portafoglio:
+  - `others = Σ link_quotas(link, exclude=portfolio.id)`, in valuta del conto. È la quota riservata degli altri: il loro contante, che contiene ancora il costo dei loro acquisti aperti finché non sono eseguiti. Così nulla si conta due volte;
+  - `broker = to_base(cash_available − others)`, con il cambio peggiore e il margine di Task 7;
+  - `available = min(ours, broker) − committed`, come oggi; nei dettagli c'è anche `others_reserved`;
+  - snapshot vecchio → solo il contante del portafoglio, come oggi (BrokerSync ricontrolla con dati freschi);
+  - un cambio mancante per la quota di un altro portafoglio → `PROVIDER_UNAVAILABLE`, che in BrokerSync diventa `_WAIT`, come oggi;
+  - `_live_memo` precarica anche le coppie di cambio del contante degli altri portafogli collegati, verso la valuta del conto.
+- **Vendite:** `check_no_short` invariato, sulle sole posizioni del portafoglio.
+- **Ordine con esito sconosciuto (M8):** `_mark_unknown` mette in sola chiusura solo `order.portfolio_id` (già così). L'ordine resta aperto, quindi conta nei `committed_buys` del suo portafoglio e la quota riservata di quel portafoglio non scende finché non si chiarisce.
+- **Fusibile, per collegamento:**
+  - `live_orders_sent(session, link_id, now, *, exclude)` conta gli ordini con `Order.broker_link_id == link_id`;
+  - il limite è il più basso tra i `max_live_orders_per_hour` dei portafogli collegati (default 30);
+  - al superamento, `trip_reduce_only(cause="fuse")` per ogni portafoglio collegato;
+  - `check_live_fuse(session, *, portfolio, link, now, …)`: i due chiamanti hanno già il link.
+- **Disattivazione, prova a secco, kill switch, cambio di conto:** valgono già per collegamento (`_settle_disarm` e `account_changed` scorrono `_linked_portfolios`). I test lo confermano con due portafogli.
+- **Riconciliazione:**
+  - `_State.holders: dict[str, set[UUID]]`: per simbolo, i portafogli con una posizione diversa da zero o un ordine aperto al broker;
+  - `_compare` aggiunge a ogni voce di simbolo `"portfolios": [id, …]`, cioè i `holders` del simbolo, oppure tutti i collegati se nessuno lo ha;
+  - `_record(pid)` registra le voci di simbolo che includono `pid` più la voce del contante;
+  - **debounce per simbolo:** sono confermate le voci azionabili presenti anche nella riga precedente dello stesso portafoglio, stessa chiave e stesso segno (`_actionable` come insieme). Si va in `reconcile_diff` se c'è almeno un simbolo confermato, in `cash_shortfall` se il contante è confermato. Nei dettagli solo le voci confermate;
+  - contante: `ours` è già la somma di tutti i portafogli collegati, quindi una mancanza mette in sola chiusura tutti i portafogli;
+  - scarto di cambio (Task 7): un solo avviso per collegamento e giorno locale (la ricerca dell'`Activity` `live.fx_drift` filtra sul collegamento, non sul portafoglio);
+  - R8.10 (`margin_account`) e cambio di conto: tutti i portafogli, come oggi.
+- **Guardia sui depositi** (Task 7, D2): si rifiuta se `Σ link_quotas(link) + deposito`, convertito con `portfolio_quota`, supera `cash_available`. Il messaggio di D1 resta.
+- **`_live_dto`** (`GET /api/live-links` e le risposte delle azioni):
+  - `portfolio` è sostituito da `portfolios: [{id, name, status, base_currency, quota, positions_count}]`, ordinati per nome;
+  - campi nuovi: `currency`, `broker_cash`, `quotas_total`, `unassigned`;
+  - `quota`, `quotas_total` e `unassigned` sono `null` senza snapshot o senza cambio;
+  - la rotta riceve `qs: Quotes`; le letture dei cambi avvengono fuori da lock e transazioni (R9).
+- I docstring di `gate.py`, `brokers/live/service.py` e `risk/live_checks.py` che citano «1 live link <-> 1 portfolio» si aggiornano.
+
+- [ ] **Step 1: test falliti** (`test_live_multi_portfolio.py`, `FakeLiveBroker`, conto 1000.00 USD, portafogli USD salvo dove indicato)
+  - `test_link_second_portfolio_when_quotas_fit`: A (500) collegato, B (400) → collegato con TOTP, audit `portfolio_linked`, `unassigned == 100`;
+  - `test_link_third_portfolio_refused_when_quotas_exceed_cash`: poi C (200) → 422 `field=cash`, C non collegato, nessuna riga di audit (Review Focus 6);
+  - `test_link_second_portfolio_requires_reconciled_account`: A ha posizioni e l'ultima riconciliazione non è `ok` → 422 `field=reconcile`; dopo un passaggio `ok` → collegato;
+  - `test_second_portfolio_foreign_currency_quota_worst_rate`: B in EUR, la quota usa il cambio più alto tra corrente e riferimento, più l'1%;
+  - `test_buy_cannot_spend_other_portfolios_quota`: A 500 e B 400 collegati su 1000, poi il contante del broker scende a 800 → un acquisto di B che richiede 310 → `LIVE_CASH_LIMIT` (800 − 500 = 300), 290 → accettato; lo stesso esito in `BrokerSync.tick()` con uno snapshot fresco (Review Focus 6);
+  - `test_other_portfolios_open_buy_not_counted_twice`: A 500 con un acquisto aperto al broker da 400, B 400, broker 1000 → B può impegnare 400 (la quota di A vale 500, non 900);
+  - `test_unknown_order_trips_only_its_portfolio_and_stays_committed`: esito sconosciuto su un acquisto di A → A in sola chiusura, B `active`; la quota di A non scende finché l'ordine è aperto;
+  - `test_sell_limited_to_own_holdings`: A 3 AAPL, B 2 AAPL; B vende 3 → `SHORT_NOT_ALLOWED`;
+  - `test_reconcile_same_symbol_sum_ok`: 3 + 2 contro un broker con 5 → `ok` per A e B;
+  - `test_reconcile_symbol_diff_trips_only_holders`: A 3 AAPL, B 2 AAPL, C solo contante; broker con 4 per due passaggi → A e B `reduce_only` (`live_reconcile_diff`), C `active`; al primo passaggio nessuno (Review Focus 6);
+  - `test_reconcile_unknown_symbol_trips_all`: MSFT al broker e in nessun portafoglio → tutti in sola chiusura al secondo passaggio;
+  - `test_reconcile_debounce_per_symbol`: passaggio 1 diff AAPL, passaggio 2 diff AAPL e MSFT → solo i portafogli con AAPL; passaggio 3 → anche quelli con MSFT;
+  - `test_cash_shortfall_trips_all_linked`: contante del broker sotto la somma delle quote oltre la tolleranza per due passaggi → A, B e C in sola chiusura;
+  - `test_fx_drift_alert_once_per_link_per_day`: due portafogli, solo scarto di cambio → una sola `live.fx_drift`, nessuna sola chiusura;
+  - `test_disarm_stops_all_linked_portfolios`: ordini aperti di A e B → quelli mai inviati rifiutati, gli altri con richiesta d'annullamento; il cancello rifiuta poi un POST per entrambi (Review Focus 6);
+  - `test_dry_run_and_kill_switch_apply_to_all_linked`;
+  - `test_fuse_counts_link_orders_and_trips_all`: limiti 5 e 3, 2 ordini inviati da A e 1 da B → il quarto, di B, è rifiutato e A e B vanno in sola chiusura;
+  - `test_gate_accepts_any_linked_portfolio`: A bloccato, un ordine di B passa; un ordine di B bloccato → `PORTFOLIO_LOCKED`; un ordine di un portafoglio non collegato → `LIVE_NOT_ARMED` con `OTHER_PORTFOLIO_MESSAGE`; nessuna chiamata al trasporto interno;
+  - `test_deposit_guard_uses_sum_of_quotas`: A 400, B 300, broker 1000 → deposito su A di 300 ammesso, di 301 rifiutato con il messaggio di D1;
+  - `test_unlink_one_portfolio_keeps_the_others`: B senza posizioni si scollega, A resta collegato e armato; A con posizioni → «Chiudi prima le posizioni reali»;
+  - `test_live_dto_lists_portfolios_quotas_unassigned`, in `test_admin_live.py`;
+  - `test_live_status_counts_two_armed_portfolios`: `GET /api/live/status` elenca A e B con `live_state="armed"`.
+- [ ] **Step 2:** `uv run pytest tests/integration/test_live_multi_portfolio.py -q` → FAIL.
+- [ ] **Step 3:** implementazione. I test esistenti che fissano il vincolo 1:1 (per esempio il rifiuto «già usato da un altro portafoglio», o il cancello chiuso con due portafogli) si riscrivono sulle regole nuove; nel report si elencano uno per uno.
+- [ ] **Step 4:** PASS; `uv run pytest tests/integration/test_live_gate.py tests/integration/test_live_service.py tests/unit/test_live_checks.py tests/integration/test_live_monitor.py tests/integration/test_live_sync.py tests/integration/test_admin_live.py tests/integration/test_live_deposit_guard.py tests/integration/test_mcp_no_fingerprints.py -q` verdi, poi `uv run pytest -q` verde. `test_mcp_no_fingerprints` non cambia.
+- [ ] **Step 5:** commit `feat(live): several real portfolios per account with cash quotas, per-symbol reconciliation`
+
+### Task 12: Più portafogli reali su un conto, web
+
+**Files:**
+- Create: `web/src/components/LiveLinkPortfolios.tsx`, `LiveLinkPortfolios.test.tsx`
+- Modify: `web/src/pages/Brokers.tsx` (scheda del collegamento reale), `web/src/api/types.ts` (`LiveLink.portfolios`, `currency`, `broker_cash`, `quotas_total`, `unassigned`; via `portfolio`), `web/src/api/hooks/live.ts` (collega e scollega per portafoglio), ogni uso di `LiveLink.portfolio` nel web (`git grep -n "\.portfolio\b" web/src`)
+- Test: `web/src/pages/Brokers.test.tsx`, `web/src/components/Layout.test.tsx` (banner)
+
+**Interfaces — Consumes:** contratto HTTP del Task 11 (`_live_dto`, `PUT /api/portfolios/{id}/live-link`), etichette del Task 10.
+
+**Interfaces — Produces** (testi esatti):
+- **`LiveLinkPortfolios`**, nella scheda del collegamento reale:
+  - titolo «Portafogli collegati»; tabella con Portafoglio (badge del Task 10), Stato, «Quota» (importo e valuta del conto, «—» se `null`) e l'azione «Scollega»;
+  - «Scollega» è disabilitato con `positions_count > 0`, con il suggerimento «Chiudi prima le posizioni reali»; senza posizioni chiede conferma e chiama `PUT /api/portfolios/{id}/live-link` con `link_id: null`;
+  - sotto la tabella: «Contante al broker: X», «Assegnato ai portafogli: Y», «Non assegnato: Z». Un valore negativo di Z è in rosso, con «le quote superano il contante del conto»;
+  - pulsante «Collega un portafoglio», attivo solo in `dry_run` e `armed`: select dei portafogli non collegati e non archiviati, poi `LiveTotpDialog`. Un errore `field=cash` o `field=reconcile` mostra il messaggio nella finestra.
+- **Banner:** `liveBannerText` conta già i portafogli armati, quindi con due portafogli il testo è «Denaro reale attivo su 2 portafogli».
+
+- [ ] **Step 1: test falliti**
+  - `lists linked portfolios with quota and unassigned`;
+  - `link another portfolio asks totp`;
+  - `quota error shown in dialog`;
+  - `unlink disabled with open positions`;
+  - `banner counts two live portfolios`.
+- [ ] **Step 2:** `npm --prefix web test -- --run LiveLinkPortfolios Brokers Layout` → FAIL.
+- [ ] **Step 3:** implementazione con i componenti esistenti (`ConfirmDialog`, `LiveTotpDialog`, `PortfolioModeBadge`) → PASS.
+- [ ] **Step 4:** `npm --prefix web test -- --run`, `npm --prefix web run lint` e `npm --prefix web run build` puliti.
+- [ ] **Step 5:** commit `feat(web): live link card lists linked portfolios with quotas and unassigned cash`
+
+### Task 13: Protocollo eToro, adattatore demo, server finto
 
 **Riferimento protocollo eToro.** L'implementer usa solo questo; fonti consultate il 2026-11-15, indice su https://api-portal.etoro.com/llms.txt.
 
@@ -611,7 +792,7 @@ web/src/pages/AgentCosts.tsx    web/src/api/hooks/paperclip.ts
   - **Posizione conforme:** `isBuy`, `leverage == 1`, `settlementTypeID == 1`, `mirrorID == 0`. Nello snapshot `account_type = "cash"` se tutte le posizioni sono conformi, altrimenti `"leveraged"`. Un ordine consultato con `asset.leverage ≠ 1` o `settlementType ≠ real` → `rejected` con un log ERROR.
   - **Simboli:** prima `instrument.provider_symbols["etoro"]`; altrimenti cripto `BTC-USD` → `BTC`; altrimenti il simbolo così com'è. Uno strumento non idoneo (non compra a leva 1 `real`, `isBuyEnabled` falso o non trovato) non è instradabile: «strumento non negoziabile senza leva su questo broker».
 - **Da verificare all'esecuzione**, ciascuno con la sua regola di ripiego:
-  1. **Campi di `close-orders/{orderId}`** (unità eseguite, prezzo, stato). Se mancano unità o prezzo, l'eseguito aspetta (`FILL_PRICE_WAIT`, nessun prezzo inventato) e l'implementer si ferma e lo segnala al controller prima del Task 12.
+  1. **Campi di `close-orders/{orderId}`** (unità eseguite, prezzo, stato). Se mancano unità o prezzo, l'eseguito aspetta (`FILL_PRICE_WAIT`, nessun prezzo inventato) e l'implementer si ferma e lo segnala al controller prima del Task 15.
   2. **Ordine FIFO delle posizioni.** Si usa `openDateTime` se presente nelle posizioni, altrimenti `positionID` crescente.
   3. **Identità del conto per l'impronta.** Si usa l'id utente di `api-reference/identity/get-authenticated-user-profile`, se risponde con un id; altrimenti `sha256(user_key)[:16]` (una chiave vale per un solo conto e ambiente).
   4. **Valute del conto diverse da USD.** Solo `accountCurrencyId == 1` (USD). Un altro valore fa fallire il test del collegamento con «valuta del conto non supportata».
@@ -669,16 +850,16 @@ web/src/pages/AgentCosts.tsx    web/src/api/hooks/paperclip.ts
 - [ ] **Step 3:** implementazione → PASS; `uv run pytest tests/integration/test_brokers_t212.py tests/integration/test_brokers_alpaca.py -q` verdi.
 - [ ] **Step 4:** commit `feat(brokers): eToro protocol core with per-path guard, demo adapter, fake eToro server`
 
-### Task 11: eToro demo nel portale, in BrokerSync e per gli agenti
+### Task 14: eToro demo nel portale, in BrokerSync e per gli agenti
 
 **Files:**
 - Modify:
   - backend: `admin/routes_brokers.py` (`KINDS["etoro_demo"] = (ETORO_URL, ("api_key","user_key"))`, segreti, messaggio del kind, conto vuoto al collegamento), `mcp/dto.py` (`_broker_texts`);
   - test: `tests/integration/test_mcp_no_fingerprints.py` (variante `etoro_linked`);
-  - web: `web/src/lib/broker.ts` («eToro — prova», chiavi `api_key`, `user_key`), `web/src/pages/Brokers.tsx` (guida: chiave demo e azzeramento del conto virtuale dall'app eToro prima del collegamento)
+  - web: `web/src/lib/broker.ts` («eToro — prova», chiavi `api_key`, `user_key`; l'etichetta di modalità «eToro · demo» c'è già dal Task 10), `web/src/pages/Brokers.tsx` (guida: chiave demo e azzeramento del conto virtuale dall'app eToro prima del collegamento)
 - Test: `tests/integration/test_admin_brokers.py`, `tests/integration/test_brokers_sync.py`
 
-**Interfaces — Consumes:** Task 10.
+**Interfaces — Consumes:** Task 13.
 
 **Interfaces — Produces:**
 - **Collegamento di un portafoglio a `etoro_demo`** (`PUT /api/portfolios/{id}/broker-link`):
@@ -687,7 +868,7 @@ web/src/pages/AgentCosts.tsx    web/src/api/hooks/paperclip.ts
 - **`_broker_texts`:** coppie in più:
   - il kind `etoro_demo` → `etoro_live`;
   - i prefissi demo → i reali, presi dalle ClassVar `EXEC_V1/EXEC_V2/INFO_V1/INFO_V2` delle due classi;
-  - import pigro di `brokers.live.etoro_live`: finché il Task 12 non esiste, la coppia dei kind si salta (nessun errore).
+  - import pigro di `brokers.live.etoro_live`: finché il Task 15 non esiste, la coppia dei kind si salta (nessun errore).
 - **BrokerSync:** nessun percorso nuovo. Il test conferma che una vendita composta passa da `get_order` fino a `canceled` con il parziale e che le commissioni vengono da `BrokerOrder.fees`.
 
 - [ ] **Step 1: test falliti**
@@ -701,7 +882,7 @@ web/src/pages/AgentCosts.tsx    web/src/api/hooks/paperclip.ts
 - [ ] **Step 4:** PASS; `uv run pytest -q` e `npm --prefix web test -- --run` verdi.
 - [ ] **Step 5:** commit `feat(brokers): eToro demo links in the portal, dedicated account check, agent-safe texts`
 
-### Task 12: eToro reale dietro il cancello (costruito, spento)
+### Task 15: eToro reale dietro il cancello (costruito, spento)
 
 **Files:**
 - Create: `brokers/live/etoro_live.py`, `tests/integration/test_etoro_live.py`
@@ -716,7 +897,7 @@ web/src/pages/AgentCosts.tsx    web/src/api/hooks/paperclip.ts
   - test: `tests/unit/test_live_hosts_guard.py` (percorsi reali), `tests/integration/test_mcp_no_fingerprints.py` (variante `etoro_live_dry_run`);
   - web: `web/src/lib/live.ts`, `web/src/components/LiveLinkWizard.tsx` («eToro — denaro reale», guida chiavi)
 
-**Interfaces — Consumes:** Task 10 (`_EtoroProtocol`), piano 8 (`require_live_construction`, `make_live_client`, `LiveGateTransport`, `trip_reduce_only`).
+**Interfaces — Consumes:** Task 13 (`_EtoroProtocol`), piano 8 (`require_live_construction`, `make_live_client`, `LiveGateTransport`, `trip_reduce_only`).
 
 **Interfaces — Produces:**
 - `EtoroLiveAdapter(_EtoroProtocol)`:
@@ -735,7 +916,7 @@ web/src/pages/AgentCosts.tsx    web/src/api/hooks/paperclip.ts
 - **R8.10 generalizzato:**
   - `_cash_account(kind, snapshot)` vero se `kind not in CASH_ONLY_KINDS` oppure `snapshot.account_type == "cash"`;
   - in `reconcile` il controllo di oggi per Alpaca vale per `CASH_ONLY_KINDS`: una posizione non conforme → sola chiusura (`margin_account`) e avviso critico.
-- **Conto dedicato:** valgono test, prova a secco, attivazione e collegamento del piano 8 senza modifiche (NOT_DEDICATED, TOTP, Telegram, fusibile, riconciliazione, impronta con la regola 3 del Task 10, disattivazione in due fasi).
+- **Conto dedicato:** valgono test, prova a secco, attivazione e collegamento del piano 8 (NOT_DEDICATED, TOTP, Telegram, fusibile, riconciliazione, impronta con la regola 3 del Task 13, disattivazione in due fasi), con le regole di più portafogli per conto del Task 11.
 - **Guardia del repository:** `test_live_paths_only_in_brokers_live` scandisce i file tracciati, esclusi `docs/**` e `backend/src/smtrading/brokers/live/**`, con pattern costruiti da `LIVE_PATHS`. Il regex di ciascun prefisso non deve colpire la variante demo: per esempio `trading/execution/(?!demo/)`, costruito senza scrivere il percorso nel test.
 - **Wizard** (opzione «eToro — denaro reale»):
   - campi «Chiave API (x-api-key)» e «Chiave utente reale (x-user-key)»;
@@ -760,7 +941,7 @@ web/src/pages/AgentCosts.tsx    web/src/api/hooks/paperclip.ts
 - [ ] **Step 4:** PASS; `uv run pytest -q` e `npm --prefix web test -- --run` verdi; `git grep -n "etoro_live" -- backend/src | grep -v brokers/live` mostra solo i registri attesi (`__init__`, `account`, `registry`, `dto`, `routes_live`).
 - [ ] **Step 5:** commit `feat(live): eToro real-money adapter behind the live gate, per-path guards, wizard option`
 
-### Task 13: E2E, documentazione e verifica finale
+### Task 16: E2E, documentazione e verifica finale
 
 **Files:**
 - Create: `web/e2e/orders.spec.ts`
@@ -771,6 +952,7 @@ web/src/pages/AgentCosts.tsx    web/src/api/hooks/paperclip.ts
 **Interfaces — Produces:**
 - `orders.spec.ts`: «Nuovo ordine» su un portafoglio simulato → anteprima → invio → ordine in elenco → «Annulla» su un limite aperto.
 - `live.spec.ts`: la procedura eToro con le chiavi canarino → test → prova a secco → attiva (TOTP) → collega → un ordine manuale con `LiveOrderConfirm` e TOTP → «Disattiva denaro reale».
+- `live.spec.ts`, più portafogli: un secondo portafoglio collegato con TOTP → la scheda mostra due quote e il contante non assegnato → il badge mostra «🔴 eToro · reale» → il banner dice «Denaro reale attivo su 2 portafogli».
 - **`README.md`**, sezioni nuove:
   - «eToro»: demo e reale, conto dedicato, solo leva 1, solo ordini a mercato, guida delle chiavi, commissioni FX configurabili nelle regole di commissione;
   - «Chiusure di borsa»;
@@ -778,6 +960,8 @@ web/src/pages/AgentCosts.tsx    web/src/api/hooks/paperclip.ts
   - «Più valute nel reale» (scarto di cambio = solo avviso);
   - «Paperclip: costi e isolamento»;
   - «Pulizia dei nomi» (`names audit|fix`);
+  - «Più portafogli reali su un conto»: quote, contante non assegnato, sola chiusura per simbolo o per tutti, controlli validi per tutto il collegamento;
+  - «Etichette delle modalità» (solo portale, gli agenti non vedono nulla);
   - la checklist di attivazione del piano 8, con `etoro_live` tra i kind. Nessun percorso d'esecuzione reale scritto fuori da `docs/`.
 - **`docs/paperclip-mcp.md`:**
   - i campi `outcome`, `reason` e `subject` di `log_decision`;
