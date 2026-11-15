@@ -13,7 +13,11 @@ from smtrading.brokers.live.service import _telegram_ok, check_live_portfolio
 from smtrading.common.config import get_settings
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.devtools import live_e2e_seed
-from smtrading.devtools.live_e2e_seed import E2E_PORTFOLIO_NAME, run_live_e2e_seed
+from smtrading.devtools.live_e2e_seed import (
+    E2E_ETORO_PORTFOLIOS,
+    E2E_PORTFOLIO_NAME,
+    run_live_e2e_seed,
+)
 from smtrading.portfolios.models import Portfolio
 from smtrading.portfolios.service import get_cash_balances
 from smtrading.risk.models import RiskProfile
@@ -107,6 +111,22 @@ async def test_seed_prepares_the_wizard(env, db_session):
     profile = await db_session.get(RiskProfile, pf.risk_profile_id)
     assert profile.short_allowed is False and profile.max_order_notional_eur
     assert profile.max_daily_loss_pct or profile.max_daily_loss_eur
+
+
+async def test_seed_adds_the_etoro_portfolios(env, db_session):
+    """Two more empty EUR portfolios (300 each, same compliant profile), created once."""
+    env.setenv("SMT_LIVE_FAKE_BROKER", "1")
+    get_settings.cache_clear()
+    await _admin(db_session)
+    pf = await run_live_e2e_seed(db_session, totp_secret=SECRET)
+    await run_live_e2e_seed(db_session, totp_secret=SECRET)  # idempotent
+    rows = (await db_session.scalars(select(Portfolio).where(
+        Portfolio.name.in_(E2E_ETORO_PORTFOLIOS)))).all()
+    assert sorted(p.name for p in rows) == sorted(E2E_ETORO_PORTFOLIOS)
+    for p in rows:
+        assert p.base_currency == "EUR" and p.leverage == 1 and p.broker_link_id is None
+        assert p.risk_profile_id == pf.risk_profile_id
+        assert await get_cash_balances(db_session, p.id) == {"EUR": Decimal(300)}
 
 
 async def test_seeded_portfolio_passes_the_live_checks(env, db_session):

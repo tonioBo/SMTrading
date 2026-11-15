@@ -28,6 +28,10 @@ docker compose exec -T api python -m smtrading.cli users disable email@esempio.i
 docker compose exec -T api python -m smtrading.cli users reset-password email@esempio.it
 ```
 
+**Registro attività** (*Registro attività*, solo amministratori, esportabile in CSV): ogni
+azione fatta dal portale (accessi, ordini manuali, kill switch, blocchi, chiusure di borsa,
+collegamenti, impostazioni…) con utente, ruolo, esito, IP e un riassunto senza segreti.
+
 ## Accesso dalla rete locale
 
 Dagli altri dispositivi della rete l'app è servita **solo in https**:
@@ -107,7 +111,7 @@ ordini sono rifiutati con `STALE_QUOTE`.
 ### Broker paper/demo (pagina *Broker*)
 
 Un portafoglio può replicare gli ordini su un conto **paper/demo** (Alpaca Paper,
-Trading 212 Demo). Gli adattatori paper/demo accettano solo gli indirizzi paper/demo e
+Trading 212 Demo, eToro Demo: vedi *eToro* qui sotto). Gli adattatori paper/demo accettano solo gli indirizzi paper/demo e
 rifiutano quelli di produzione; i conti con denaro vero hanno una procedura separata
 (sezione *Denaro reale* qui sotto).
 
@@ -140,17 +144,114 @@ Funzionamento:
 - *Riconciliazione* (*Riconcilia ora*, e periodica): confronta le posizioni del broker con
   le nostre e registra le differenze; non corregge nulla.
 
+### eToro (demo e reale)
+
+eToro si collega in due modi: **eToro Demo** (`etoro_demo`, denaro virtuale, pagina
+*Broker → Nuovo collegamento*) ed **eToro reale** (`etoro_live`, nella sezione *Denaro
+reale*, con tutte le protezioni del denaro reale). Regole comuni:
+
+- **Conto dedicato:** il conto (virtuale o reale) deve essere vuoto, senza posizioni,
+  ordini o copy trading, quando si collega il primo portafoglio; con posizioni o ordini
+  aperti il collegamento è rifiutato. Per il demo: chiudi tutto o azzera il portafoglio
+  virtuale dall'app eToro.
+- **Solo leva 1 e solo acquisti:** un acquisto apre una posizione eToro senza leva
+  (`real`, lato buy); una vendita chiude le posizioni di quello strumento dalla più vecchia
+  (FIFO), anche in parte. Niente short e niente leva, né in demo né in reale.
+- **Solo ordini a mercato:** limit, stop e stop-limit sono rifiutati con «tipo d'ordine non
+  disponibile su questo broker: solo ordini a mercato». Il trailing stop è seguito da
+  SMTrading e al trigger diventa un ordine a mercato. Strumenti: azioni USA ed europee,
+  ETF e cripto in USD (`BTC-USD` → `BTC`); uno strumento che eToro non vende senza leva è
+  rifiutato; la mappatura del simbolo si cambia per strumento nella pagina *Mercati*.
+- **Chiavi:** sul portale API di eToro
+  (<https://api-portal.etoro.com/core/getting-started/authentication.md>) si crea una chiave
+  utente per **un solo ambiente**: *Demo* con permesso *Write* per il collegamento demo,
+  *Real* con permesso *Write* per quello reale. Nel collegamento si incollano la chiave API
+  (`x-api-key`) e la chiave utente (`x-user-key`); non riusare la stessa chiave in due
+  collegamenti né nel connettore dati (sotto).
+- **Commissioni:** su ogni esecuzione si registra la commissione comunicata da eToro. La
+  commissione di cambio (conversioni da e verso USD, secondo il listino eToro) si imposta
+  nelle regole di commissione (*Commissioni*, colonna «Cambio %»): entra nelle anteprime e
+  nel tetto di liquidità del denaro reale.
+
+**Da verificare con la chiave reale dell'utente prima di attivare il denaro reale:** tre
+risposte dell'API eToro sono state scritte dalla documentazione e provate solo contro il
+broker finto. Il codice le legge in modo prudente (una forma sconosciuta non inventa mai
+prezzi o quantità: l'ordine resta in attesa), ma vanno controllate con un test reale
+prima di «Attiva denaro reale»:
+
+1. la risposta di idoneità degli strumenti (leva 1, `real`, chiusura parziale ammessa);
+2. l'involucro della ricerca di un ordine per riferimento;
+3. i campi dell'esito di una chiusura: stato, unità chiuse, prezzo di chiusura.
+
+### eToro come fonte di dati (pagina *Connettori*)
+
+Il connettore `etoro` fornisce quotazioni e barre a **tutti** i portafogli (simulati, demo o
+reali, su qualsiasi broker), come Yahoo o Kraken, solo per **azioni USA e cripto in USD**.
+
+- **Chiave dedicata:** una chiave utente *Demo* con permesso *Read* (non tocca denaro). Se
+  «Verifica» risponde con un errore di autorizzazione anche con una chiave Demo valida, usa
+  una chiave *Real* con permesso *Read*: il connettore legge solo i dati di mercato e non
+  può né leggere il conto né negoziare. Non riusare le chiavi dei collegamenti eToro (i
+  limiti di frequenza valgono per chiave utente: dati e ordini si farebbero concorrenza).
+- **Nasce spento e in fondo alle priorità** di azioni USA e cripto: finché l'admin non lo
+  attiva, inserisce le chiavi, preme «Verifica» e, se vuole, lo sposta più in alto nelle
+  priorità, nulla cambia. A quota esaurita il router passa subito alla fonte successiva.
+
+### Chiusure di borsa (pagina *Mercati*)
+
+Oltre al calendario ufficiale di ogni borsa, l'admin può segnare a mano un **giorno chiuso**
+o una **chiusura anticipata** (con l'orario) di un mercato, con una nota: hanno la
+precedenza sul calendario, valgono subito per gli orari di `get_market_status`, la
+validità «giornata» degli ordini, la coda degli ordini a mercato e i controlli del denaro
+reale («un giorno di borsa» si conta dal calendario del mercato, festività comprese). Ogni
+aggiunta o rimozione va nell'audit. Londra (`LSE`) c'è solo per orari e festività: i titoli
+londinesi non sono negoziabili.
+
+### Ordini manuali (dettaglio portafoglio → *Ordini* → «Nuovo ordine»)
+
+L'admin può inserire un ordine a mano: simbolo (dal catalogo), lato, tipo (a mercato,
+limite, stop, stop limite, trailing stop), quantità o controvalore (solo a mercato), prezzi
+e durata (GTC o giornata). «Invia» si abilita solo dopo un'**Anteprima** riuscita degli
+stessi dati (gli stessi controlli di `preview_order`). L'ordine passa da tutti i controlli
+degli ordini degli agenti: limiti di rischio, kill switch e blocco aperture (passano solo
+le chiusure); ha origine `admin` ed è registrato nell'audit. Su un portafoglio reale (anche
+in prova a secco) «Invia» apre **«🔴 Ordine con denaro reale»** con riepilogo, importo
+stimato e **TOTP**. Un ordine aperto si annulla con «Annulla» nella riga, senza TOTP.
+
+### Etichette delle modalità (solo portale)
+
+Il portale nomina la modalità con il broker: «SMTrading (simulato)» senza broker,
+«Alpaca · prova», «Trading 212 · demo», «eToro · demo» per i conti di prova e
+«🔴 Alpaca · reale», «🔴 Trading 212 · reale», «🔴 eToro · reale» per il denaro reale, con
+«· prova a secco» o «· sospeso» secondo lo stato del collegamento. La Dashboard conta i
+portafogli per etichetta. **Gli agenti non vedono nulla di tutto questo**: le risposte MCP
+non cambiano e con `mcp_hide_mode` (attivo di default) non contengono parole da simulazione.
+
+### Pulizia dei nomi
+
+Gli agenti vedono i nomi di portafogli e agenti: un nome con parole come `test`, `demo`,
+`paper`, `sim`, `prova`, `fake`, `smoke` rivelerebbe la simulazione. Al salvataggio il
+portale avvisa («gli agenti vedranno questo nome»), senza bloccare. Per i nomi esistenti:
+
+```
+docker compose exec -T api python -m smtrading.cli names audit        # elenca, propone nomi neutri
+docker compose exec -T api python -m smtrading.cli names fix --yes    # applica le proposte
+```
+
+`fix` va eseguito solo dopo aver approvato i nomi proposti da `audit`.
+
 ### Denaro reale (pagina *Broker*, sezione «Denaro reale»)
 
 > **Stato: costruito, non attivato.** Il codice per operare con denaro vero su Alpaca
-> (live) e Trading 212 (Invest) è pronto e testato solo contro un broker finto; **non
-> esiste nessun collegamento live** e nessuna chiave reale è salvata. L'attivazione è
-> un'azione futura dell'utente, con la checklist qui sotto.
+> (live), Trading 212 (Invest) ed eToro (reale) è pronto e testato solo contro un broker
+> finto; **non esiste nessun collegamento live** e nessuna chiave reale è salvata.
+> L'attivazione è un'azione futura dell'utente, con la checklist qui sotto. Per eToro
+> vanno prima verificate le tre risposte elencate in *eToro*.
 
-Un portafoglio collegato a un conto reale mostra il badge rosso **🔴 REALE** (🔴 REALE ·
-PROVA durante la prova a secco, 🔴 REALE · SOSPESO quando il collegamento è disattivato) e,
-finché un collegamento è attivo, tutte le pagine hanno la barra rossa «Denaro reale attivo
-su N portafogli». Gli ordini reali sono **autonomi** (nessuna approvazione per ordine): le
+Un portafoglio collegato a un conto reale mostra il badge rosso con il broker (per esempio
+**🔴 Trading 212 · reale**, «· prova a secco» durante la prova, «· sospeso» quando il
+collegamento è disattivato) e, finché un collegamento è attivo, tutte le pagine hanno la
+barra rossa «Denaro reale attivo su N portafogli». Gli ordini reali sono **autonomi** (nessuna approvazione per ordine): le
 difese sono i limiti del profilo di rischio, il tetto di liquidità, il fusibile di
 frequenza (`max_live_orders_per_hour`, default 30 ordini/ora per portafoglio, poi
 reduce-only), il kill switch e una notifica Telegram per ogni ordine reale (sempre in coda,
@@ -164,24 +265,28 @@ sono vere) → `armed` (denaro reale). Chiavi sostituite o conto diverso al test
 #### Cosa deve fare l'utente al momento dell'attivazione
 
 1. **Aprire il conto.** Alpaca: domanda live da non residente (W-8BEN, KYC; verificare che
-   l'Italia sia accettata ed eventualmente la cripto). Trading 212: conto Invest. Serve un
-   conto **dedicato** a SMTrading, senza posizioni né ordini aperti (test, attivazione e
-   collegamento rifiutano un conto non vuoto); per Alpaca un conto *cash* (niente margine).
+   l'Italia sia accettata ed eventualmente la cripto). Trading 212: conto Invest. eToro: un
+   conto reale senza copy trading. Serve un conto **dedicato** a SMTrading, senza posizioni
+   né ordini aperti (test, attivazione e collegamento del primo portafoglio rifiutano un
+   conto non vuoto); per Alpaca un conto *cash* (niente margine), per eToro solo posizioni
+   senza leva.
 2. **Versare** l'importo desiderato dall'app del broker.
 3. **Creare le chiavi API live.** Trading 212: permessi minimi (dati del conto, metadati,
    portafoglio, ordini lettura ed esecuzione, storico; **niente «Pies - Write»**) e, se
    possibile, la restrizione all'IP pubblico del server. Alpaca: le chiavi live, distinte
-   da quelle paper.
+   da quelle paper. eToro: chiave utente dell'ambiente *Real* con permesso *Write*, distinta
+   da quella demo e da quella del connettore dati.
 4. In SMTrading: attivare il **TOTP** dell'admin (*Impostazioni*) e verificare che
    **Telegram** sia attivo, inviando un messaggio di prova (l'attivazione richiede una prova
    riuscita nelle ultime 24 ore).
-5. **Broker → Denaro reale → Nuovo collegamento reale**: incollare le chiavi e lanciare il
-   **test in sola lettura** (valido 15 minuti). Controllare conto (mascherato), valuta,
-   liquidità, zero posizioni e zero ordini aperti.
+5. **Broker → Denaro reale → Nuovo collegamento reale**: scegliere il tipo (`alpaca_live`,
+   `t212_live` o `etoro_live`), incollare le chiavi e lanciare il **test in sola lettura**
+   (valido 15 minuti). Controllare conto (mascherato), valuta, liquidità, zero posizioni e
+   zero ordini aperti.
 6. Creare o scegliere un **portafoglio vuoto** con: profilo di rischio con limite per
-   ordine e perdita giornaliera massima, short non consentito; leva 1; **valuta uguale a
-   quella del conto** (anche per Alpaca, in USD); deposito nel ledger pari al budget e non
-   superiore alla liquidità del broker.
+   ordine e perdita giornaliera massima, short non consentito; leva 1; deposito nel ledger
+   pari al budget e non superiore alla liquidità del broker. La valuta può essere diversa
+   da quella del conto (vedi *Più valute nel reale*).
 7. Facoltativo ma consigliato: la **prova a secco** per qualche giorno (collegando il
    portafoglio con il TOTP), per vedere su Telegram cosa avrebbero fatto gli agenti.
 8. **«Attiva denaro reale»**: leggere l'avviso, spuntare le tre conferme, scrivere il nome
@@ -233,27 +338,58 @@ migrazione), né da un ripristino di un backup più vecchio; non impedisce l'ins
 righe nuove da parte di chi ha accesso al database. È una protezione contro errori e
 codice applicativo, non contro chi controlla il server.
 
+#### Più portafogli reali su un conto
+
+Un collegamento reale può avere più portafogli, ognuno con la sua **quota**: il suo
+contante convertito nella valuta del conto (al cambio peggiore tra corrente e ultimo noto,
+più l'1%). La scheda del collegamento elenca i portafogli con la quota, il contante al
+broker, quanto è assegnato e quanto resta **non assegnato** (fermo, non usato da nessuno).
+
+- Collegare un portafoglio richiede sempre il TOTP ed è ammesso solo se la somma delle
+  quote, con quella nuova, sta nel contante disponibile al broker. Il primo portafoglio
+  richiede il conto vuoto; i successivi un test in sola lettura recente e l'ultima
+  riconciliazione in regola per quelli già collegati. Si scollega solo senza posizioni.
+- Un acquisto deve stare nel contante del suo portafoglio e in quello del broker meno le
+  quote degli altri; una vendita solo fino alle posizioni del proprio portafoglio.
+- Riconciliazione per simbolo: una differenza su un simbolo mette in **sola chiusura solo
+  i portafogli che hanno quel simbolo** (tutti, se nessuno lo ha); contante del broker sotto
+  la somma delle quote mette in sola chiusura **tutti**.
+- **Valgono per tutto il collegamento**, quindi per tutti i suoi portafogli: disattivazione,
+  prova a secco, kill switch, fusibile degli ordini all'ora (conta gli invii di tutti i
+  portafogli, con il limite più basso dei loro profili) e cambio di conto.
+- Con eToro le posizioni al broker sono del conto: una vendita può chiudere posizioni
+  aperte da un altro portafoglio; il registro di SMTrading resta la verità per ciascuno.
+
+#### Più valute nel reale
+
+La valuta del portafoglio può essere diversa da quella del conto (per esempio un
+portafoglio in EUR su un conto eToro in USD). Contante, limiti e quote si convertono al
+cambio corrente, con un margine dell'1%; la riconciliazione confronta nella valuta del
+broker. Una differenza di contante spiegata **solo dal movimento del cambio** (posizioni
+coincidenti) dà **solo un avviso** «scarto di cambio» su Telegram e nel portale, al massimo
+uno al giorno per collegamento, senza sola chiusura. Senza un cambio disponibile non
+partono nuovi acquisti in valuta diversa (l'ordine attende e scade dopo 30 minuti); le
+vendite restano ammesse. Le commissioni di cambio dei broker si impostano nelle regole di
+commissione («Cambio %»).
+
 #### Limiti noti
 
-- **Conferma degli ordini reali dall'interfaccia:** il componente `LiveOrderConfirm`
-  («Ordine con denaro reale», un clic) esiste ma non è collegato a nulla: il portale non ha
-  ancora un modulo per inserire ordini a mano; oggi gli ordini reali arrivano solo dagli
-  agenti (e da «Chiudi tutte le posizioni reali»).
 - **Prezzo di riserva del tetto di liquidità:** senza quotazione si usa l'ultimo eseguito
-  del portafoglio sullo stesso simbolo (×1,02) se non è più vecchio di «un giorno di
-  borsa»: 24 ore, 72 ore di sabato, domenica e lunedì (UTC). La regola **non conosce le
-  festività**: dopo un giorno festivo l'eseguito può risultare scaduto e l'ordine viene
-  rifiutato finché non c'è una quotazione.
+  del portafoglio sullo stesso simbolo (×1,02) se è successivo all'apertura della seduta
+  precedente del mercato dello strumento («un giorno di borsa», dal calendario: festività
+  e chiusure manuali saltate); altrimenti l'ordine è rifiutato finché non c'è una
+  quotazione.
 - **Broker finto solo per i test:** l'impostazione `SMT_LIVE_FAKE_BROKER` (spenta di
   default) sostituisce i broker reali con un broker in memoria; la usa solo lo stack e2e
   (`scripts/e2e.sh`). Quando è accesa, API e worker scrivono all'avvio un avviso nei log:
   non va mai attivata nello stack principale. Il seed e2e
   (`python -m smtrading.devtools.live_e2e_seed`) si rifiuta di partire se è spenta.
 - Trailing stop simulati (dipendono dal worker), dividendi e corporate action reali non
-  importati (differenze di liquidità → reduce-only), API Trading 212 in beta: vedi
+  importati (differenze di liquidità → reduce-only), API Trading 212 in beta, tre risposte
+  eToro da verificare (vedi *eToro*): vedi
   «Rischi aperti» nello spec `docs/superpowers/specs/2026-11-14-real-trading-design.md`.
 
-**Nota fiscale:** con Alpaca e Trading 212 si applica di norma il regime dichiarativo (quadri
+**Nota fiscale:** con Alpaca, Trading 212 ed eToro si applica di norma il regime dichiarativo (quadri
 RT, RM, RW): SMTrading conserva lo storico ma non calcola imposte. Vedi la «Nota fiscale»
 dello spec `docs/superpowers/specs/2026-11-14-real-trading-design.md` e verificare con un
 commercialista.
@@ -341,6 +477,21 @@ docker compose exec api python -m smtrading.cli agent notify NOME on   # oppure 
 Il resto (ordini accettati o annullati, alert di prezzo, decisioni) compare solo nel feed
 delle attività e nei riepiloghi.
 
+**Messaggi Telegram in più** (*Notifiche → Messaggi Telegram*):
+
+- **Controllo pre-apertura** (attivo di default alle 08:45, giorni feriali): un solo
+  messaggio con i mercati del giorno e lo stato del sistema. «✅ Pronti per l'apertura» se
+  va tutto bene, altrimenti l'elenco dei problemi (kill switch o blocchi attivi,
+  sincronizzazione broker o monitor del denaro reale fermi, collegamenti in errore o con
+  dati del conto vecchi, quotazioni mancanti o vecchie, portafogli in sola riduzione,
+  isolamento Paperclip non verificato, Redis o database non raggiungibili). Nei giorni con
+  le borse chiuse dice solo che sono chiuse.
+- **Obiettivo settimanale** (attivo di default, +2%): il riepilogo giornaliero e quello
+  settimanale mostrano a che punto è la settimana rispetto all'obiettivo.
+- **«🧭 Decisioni di oggi»** nel riepilogo delle 18:00 (e «della settimana» nel
+  settimanale): le decisioni registrate dagli agenti con `log_decision`, per tipo, una riga
+  ciascuna con esito, oggetto, portafoglio e motivo (campi `outcome`, `subject`, `reason`).
+
 **Ore silenziose e riepiloghi** (fuso orario del server):
 
 - dalle 23:00 alle 07:00 i messaggi critici arrivano comunque, senza suono; gli altri sono
@@ -387,6 +538,24 @@ aspettano e i riepiloghi non partono.
 Token e permessi si gestiscono in *Agenti* (il token è mostrato una sola volta; *Rigenera
 token* ne emette uno nuovo). Collegamento a Paperclip: `docs/paperclip-mcp.md`.
 
+#### Paperclip: costi e isolamento
+
+SMTrading **legge** Paperclip (solo richieste GET, ogni 5 minuti nel worker) per due cose.
+Si configura in *Impostazioni → Paperclip*: indirizzo, id azienda, chiave board (cifrata,
+mai mostrata né scritta nei log), interruttore «Lettura attiva»; «Verifica» fa una lettura
+di prova ed elenca gli agenti Paperclip con l'abbinamento agli agenti SMTrading (per nome,
+modificabile).
+
+- **Costi** (pagina *Costi agenti*): costo per agente e per giorno, settimana e mese, in
+  **dollari** come in Paperclip, distinguendo «a consumo API» da «incluso
+  nell'abbonamento», accanto a ordini e rendimento dei portafogli dell'agente.
+- **Isolamento:** le regole di isolamento degli strumenti di Paperclip sono confrontate con
+  quelle attese, fotografate al primo avvio e riconfermate dall'admin con un pulsante
+  (dopo aver controllato le modifiche in Paperclip). Regole rimosse, disattivate o
+  modificate danno un avviso critico su Telegram e un banner nel portale.
+- Paperclip spento o chiave errata: lo stato è nella sezione e c'è un solo avviso dopo 3
+  errori consecutivi, niente allarmi a raffica.
+
 ### Backup
 
 Il servizio `backup` salva ogni giorno un `pg_dump` compresso nel volume `backups`
@@ -412,5 +581,16 @@ l'immagine web usa l'ora della build).
   `smtrading-e2e`, con volumi, rete e credenziali proprie, web su `127.0.0.1:3190`), esegue
   Playwright e lo elimina alla fine; lo stack principale non viene toccato. Solo quello
   stack gira con `SMT_LIVE_FAKE_BROKER=1`: dopo le altre spec lo script esegue il seed e2e
-  del denaro reale e `web/e2e/live.spec.ts` (procedura completa contro il broker finto,
-  chiavi «canarino», TOTP di test generato a ogni esecuzione).
+  del denaro reale e `web/e2e/live.spec.ts` (procedure Trading 212 ed eToro contro il
+  broker finto, due portafogli su un conto eToro, chiavi «canarino», TOTP di test generato
+  a ogni esecuzione).
+- **Prova generale degli ordini:** `SMT_E2E_BATTERY=/percorso/batteria.jsonl bash
+  scripts/e2e.sh` esegue anche `scripts/order_battery.py` nello stesso stack isolato: un
+  agente di prova, via MCP con un token vero dello stack e2e, prova tutti i tipi d'ordine
+  e le opzioni (market per quantità e importo, limit, stop, stop-limit, trailing, GTC e
+  giornata, modifica, bracket, OCO, annullamenti), i rifiuti attesi, il conto reale eToro
+  finto in prova a secco e attivo, gli ordini manuali dell'admin con TOTP e le verifiche
+  trasversali (nessuna parola da simulazione per l'agente, outbox Telegram senza invii,
+  riepilogo con le decisioni, registro attività, pre-apertura). Ogni prova scrive una riga
+  JSON appena finisce. Non va mai lanciata contro lo stack principale (rifiuta di partire
+  senza `SMT_LIVE_FAKE_BROKER=1`).

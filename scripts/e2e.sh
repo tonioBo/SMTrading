@@ -8,7 +8,12 @@
 # «Denaro reale»: only this stack runs with SMT_LIVE_FAKE_BROKER=1 (live adapters talk to
 # the in-memory FakeLiveBroker, the live gate stays on). Playwright runs twice: first every
 # spec but `@live`, then `python -m smtrading.devtools.live_e2e_seed` (admin TOTP with a
-# throwaway secret, Telegram «ready», an empty EUR portfolio) and the `@live` spec.
+# throwaway secret, Telegram «ready», the empty EUR portfolios) and the `@live` spec.
+#
+# «Prova generale»: with SMT_E2E_BATTERY=<file.jsonl>, scripts/order_battery.py runs between
+# the seed and the `@live` spec (in a container of the e2e backend image, on the e2e network,
+# as an MCP agent); one JSON line per test is appended to <file.jsonl> as it completes. A
+# failed test fails the script at the end (the `@live` spec still runs).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -120,4 +125,14 @@ playwright "--grep-invert @live"
 echo "seed e2e del denaro reale (FakeLiveBroker)..."
 compose exec -T -e SMT_E2E_TOTP_SECRET api python -m smtrading.devtools.live_e2e_seed
 
+battery=0
+if [ -n "${SMT_E2E_BATTERY:-}" ]; then
+  echo "prova generale: batteria di ordini via MCP..."
+  out_dir="$(cd "$(dirname "$SMT_E2E_BATTERY")" && pwd)"
+  compose run --rm --no-deps -T --user "$(id -u):$(id -g)" --entrypoint python \
+    -e SMT_E2E_TOTP_SECRET -v "$PWD/scripts:/scripts:ro" -v "$out_dir:/out" \
+    api /scripts/order_battery.py --out "/out/$(basename "$SMT_E2E_BATTERY")" || battery=$?
+fi
+
 playwright "--grep @live" -e SMT_E2E_TOTP_SECRET
+[ "$battery" = 0 ] || { echo "prova generale: alcune prove non sono andate (codice $battery)" >&2; exit 1; }

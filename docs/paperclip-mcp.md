@@ -124,6 +124,10 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
 - `get_risk_limits`: stato di rischio: soglie di margine, profilo effettivo (con `description`, il «Quando usarlo» del profilo), perdita giornaliera, kill switch.
 - `preview_order`: esegue i controlli pre-trade senza inserire l'ordine (stima di prezzo, costi, potere d'acquisto).
 - `place_order`: inserisce un ordine (market, limit, stop, stop_limit, trailing_stop); `client_order_id` rende l'invio idempotente.
+  Su alcuni portafogli collegati a un broker sono ammessi solo gli ordini a mercato: gli
+  altri tipi sono rifiutati con `INVALID_ORDER` e il messaggio «tipo d'ordine non
+  disponibile su questo broker: solo ordini a mercato» (il trailing stop resta ammesso: e'
+  seguito da SMTrading e al trigger diventa un ordine a mercato).
 - `place_bracket_order`: ingresso piu' take profit e stop loss in un gruppo OCO.
 - `place_oco_order`: due ordini a riposo collegati: quando uno si esegue l'altro viene annullato.
 - `modify_order`: modifica quantita' o prezzi di un ordine aperto, con nuovi controlli di rischio.
@@ -137,7 +141,11 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
 - `get_instrument`: anagrafica di uno strumento e stato del suo mercato; un simbolo non in catalogo viene aggiunto automaticamente (vedi sotto).
 - `get_quote`: ultime quotazioni (bid, ask, last) fino a 50 simboli.
 - `get_bars`: barre OHLCV per timeframe e intervallo.
-- `get_market_status`: apertura/chiusura e prossimi orari di uno o tutti i mercati.
+- `get_market_status`: apertura/chiusura e prossimi orari di uno o tutti i mercati
+  (`NASDAQ`, `NYSE`, `MTA`, `XETRA`, `EURONEXT_PARIS`, `CRYPTO`, `FX` e `LSE`). Le chiusure
+  straordinarie decise dall'admin (pagina *Mercati*: giorno chiuso o chiusura anticipata)
+  hanno la precedenza sul calendario e sono gia' comprese negli orari. `LSE` (Londra) c'e'
+  **solo per gli orari**: i titoli londinesi non sono negoziabili (non entrano in catalogo).
 - `get_indicators`: indicatori tecnici (sma, ema, rsi, atr, bollinger, macd, vwap).
 - `get_fx_rate`: cambio tra due valute.
 - `get_news`: ultime notizie per simboli (default: quelli in portafoglio).
@@ -163,7 +171,7 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
 collegamento live**: tutto quanto segue e' pronto ma non attivato (vedi «Denaro reale» nel
 README).
 
-- Un portafoglio collegato a un conto reale (Alpaca live, Trading 212 Invest) con il denaro
+- Un portafoglio collegato a un conto reale (Alpaca live, Trading 212 Invest, eToro) con il denaro
   reale attivo invia gli ordini degli agenti al **conto vero**, senza alcuna conferma per
   ordine, entro i limiti del portafoglio. Ogni ordine reale produce una notifica Telegram.
   L'esecuzione e' asincrona come per i portafogli paper (`place_order` risponde con
@@ -202,6 +210,10 @@ README).
   tetto di liquidita' (`LIVE_CASH_LIMIT`, vedi sotto); fusibile di frequenza (al massimo
   `max_live_orders_per_hour` ordini inviati per portafoglio in un'ora, default 30): superato
   → `RISK_LIMIT_EXCEEDED` e il portafoglio passa in reduce-only.
+- Piu' portafogli possono condividere un conto reale, ognuno con la sua quota di contante:
+  per l'agente non cambia nulla (vede solo i suoi portafogli; un acquisto deve stare nel
+  contante del suo portafoglio, altrimenti `LIVE_CASH_LIMIT`). Disattivazione, prova a
+  secco, kill switch e fusibile valgono per tutto il collegamento.
 - Un'anomalia della sorveglianza (conto cambiato, differenze di riconciliazione, esito
   sconosciuto di un ordine, fusibile) mette il portafoglio in reduce-only: l'agente riceve
   `REDUCE_ONLY` sulle aperture finche' l'admin non riprende con il TOTP.
@@ -235,8 +247,8 @@ Mentre un blocco copre un portafoglio, ogni ordine che aumenterebbe l'esposizion
 
 ### Decisioni, feed delle attivita' e Telegram
 
-- `log_decision`: registra una decisione nello storico permanente (visibile nella web app): `kind` (`proposal`, `approval`, `veto`, `allocation`, `strategy`, `risk_rule`, `other`), `summary` (1-500 caratteri), `portfolio_id` facoltativo (serve `read`), `symbols` (al massimo 50, max 32 caratteri l'uno, portati in maiuscolo e senza duplicati), `details` (oggetto, al massimo 8 KB). Risponde `{decision_id, created_at}`; non invia messaggi Telegram.
-- `get_decisions`: le decisioni visibili all'agente, dalla piu' recente, filtrabili per `portfolio_id` (serve `read`, altrimenti `FORBIDDEN`), `agent` (nome o id; un agente sconosciuto da' `[]`), `kind`, `since`; `limit` 1-200 (default 50).
+- `log_decision`: registra una decisione nello storico permanente (visibile nella web app): `kind` (`proposal`, `approval`, `veto`, `allocation`, `strategy`, `risk_rule`, `other`), `summary` (1-500 caratteri), `portfolio_id` facoltativo (serve `read`), `symbols` (al massimo 50, max 32 caratteri l'uno, portati in maiuscolo e senza duplicati), `details` (oggetto, al massimo 8 KB). Tre campi facoltativi, da compilare sempre: `outcome` (`approvata`, `respinta`, `sospesa`, `modificata` o `informativa`), `subject` (cosa si decide, in chiaro, al massimo 200 caratteri, es. «incrocio medie mobili 10/30 su SPY, QQQ e DIA») e `reason` (perche', al massimo 300 caratteri). Risponde `{decision_id, created_at}`; non invia messaggi Telegram.
+- `get_decisions`: le decisioni visibili all'agente, dalla piu' recente, filtrabili per `portfolio_id` (serve `read`, altrimenti `FORBIDDEN`), `agent` (nome o id; un agente sconosciuto da' `[]`), `kind`, `since`; `limit` 1-200 (default 50). Ogni decisione ha anche `outcome`, `subject` e `reason` (`null` se non dati).
 - `get_activity_feed`: il feed delle attivita' (ordini, fill, eventi di rischio, alert, decisioni) dei portafogli dell'agente e globali: `{items, next_after_id}`; `limit` 1-200. Vedi sotto il contratto del cursore.
 - `send_telegram`: invia un messaggio al gruppo Telegram (serve il permesso `notify`, altrimenti `FORBIDDEN`): `text` inviato cosi' com'e', senza formattazione; `level` `info` (nessun prefisso), `warning` (🟠) o `critical` (🔴). Limiti e errori nella sezione «Notifiche Telegram».
 
@@ -245,7 +257,11 @@ Mentre un blocco copre un portafoglio, ogni ordine che aumenterebbe l'esposizion
 Ogni agente registra con `log_decision` ogni decisione presa in Paperclip (proposte,
 approvazioni, veti, allocazioni, strategie, regole di rischio, altro) e poi coinvolge il
 Notifier con un task o una menzione: il Notifier non fa polling. Le decisioni restano nello
-storico (web app, *Notifiche*) e compaiono nel feed e nei riepiloghi. `portfolio_id`
+storico (web app, *Notifiche*) e compaiono nel feed e nei riepiloghi: il riepilogo delle
+18:00 ha la sezione «🧭 Decisioni di oggi» (il settimanale «della settimana»), raggruppata
+per tipo, una riga per decisione «✅/❌/⏸ <subject> — <portafoglio> — <reason>» con
+l'agente; senza `subject`/`reason` (agente non aggiornato o decisione vecchia) si usa
+`summary` accorciato. Al massimo 15 righe, poi «… e altre N». `portfolio_id`
 facoltativo: senza, la decisione e' globale e visibile a tutti gli agenti; con, serve il
 permesso `read` su quel portafoglio. Violazioni dei limiti (tipo, lunghezza, simboli,
 dimensione di `details`) danno `INVALID_ORDER` con `details.field`.
@@ -358,7 +374,9 @@ Un errore e' restituito con `isError: true` e un testo JSON
 `{"code": "...", "message": "...", "details": {...}}`. Codici:
 
 - `INSUFFICIENT_BUYING_POWER`: potere d'acquisto insufficiente.
-- `MARKET_CLOSED_QUEUED`: mercato chiuso, ordine messo in coda.
+- `MARKET_CLOSED_QUEUED`: codice riservato, oggi non restituito. A mercato chiuso un ordine
+  a mercato **non** e' un errore: `place_order` risponde con l'ordine in stato `queued`, che
+  parte all'apertura (gli ordini limit/stop restano `pending`).
 - `SYMBOL_NOT_ALLOWED`: simbolo non consentito dal profilo di rischio.
 - `SYMBOL_NOT_FOUND`: simbolo sconosciuto.
 - `KILL_SWITCH_ACTIVE`: kill switch globale attivo.
