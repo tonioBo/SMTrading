@@ -16,7 +16,7 @@ import json
 import re
 import threading
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import httpx
@@ -32,6 +32,15 @@ _ETORO_INSTRUMENTS = {
     "BTC": 100000,
 }
 _ETORO_SEARCH = "/api/v1/market-data/search"
+_ETORO_RATES = "/api/v1/market-data/instruments/rates"
+_ETORO_CANDLES = re.compile(
+    r"^/api/v1/market-data/instruments/(\d+)/history/candles/(asc|desc)/(\w+)/(\d+)$")
+_ETORO_INTERVALS = {
+    "OneMinute": timedelta(minutes=1), "FiveMinutes": timedelta(minutes=5),
+    "TenMinutes": timedelta(minutes=10), "FifteenMinutes": timedelta(minutes=15),
+    "ThirtyMinutes": timedelta(minutes=30), "OneHour": timedelta(hours=1),
+    "FourHours": timedelta(hours=4), "OneDay": timedelta(days=1), "OneWeek": timedelta(weeks=1),
+}
 _ETORO_OPEN = re.compile(r"^/api/v2/trading/execution/(demo/)?orders$")
 _ETORO_CANCEL = re.compile(r"^/api/v2/trading/execution/(demo/)?orders/(\d+)$")
 _ETORO_LOOKUP = re.compile(r"^/api/v2/trading/info/(demo/)?orders:lookup$")
@@ -94,6 +103,8 @@ class FakeLiveBroker:
         self.etoro = {"demo": _EtoroEnv(), "real": _EtoroEnv()}
         self.etoro_partial_close = True  # allowPartialClosePosition of every instrument
         self.etoro_fail_close_after: int | None = None  # closes accepted before a 500
+        # RateLimit-Remaining of the market-data answers (None: no quota headers)
+        self.market_data_remaining: int | None = None
         self.calls: list[tuple[str, str]] = []
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
@@ -260,14 +271,13 @@ class FakeLiveBroker:
         if not request.headers.get("x-api-key") or not request.headers.get("x-user-key"):
             return httpx.Response(401, json={"errorMessage": "Unauthorized"})
         params = request.url.params
-        if path == _ETORO_SEARCH:
-            if method != "GET":
-                return httpx.Response(405, json={"errorMessage": "Method not allowed"})
-            query = str(params.get("internalSymbolFull") or "").upper()
-            items = [{"instrumentId": iid, "internalSymbolFull": sym,
-                      "isCurrentlyTradable": True, "isBuyEnabled": True, "isDelisted": False}
-                     for sym, iid in _ETORO_INSTRUMENTS.items() if query and query in sym]
-            return httpx.Response(200, json={"items": items})
+        if path.startswith("/api/v1/market-data/"):
+            resp = self._etoro_market_data(method, path, params)
+            if self.market_data_remaining is not None:
+                resp.headers.update({
+                    "RateLimit-Limit": "60", "RateLimit-Policy": "60;w=60", "RateLimit-Reset": "60",
+                    "RateLimit-Remaining": str(self.market_data_remaining)})
+            return resp
         env = self.etoro["demo" if "/demo/" in path else "real"]
         if method == "POST" and _ETORO_OPEN.match(path):
             return self._etoro_open(env, body, request.headers.get("x-request-id") or "")
@@ -304,6 +314,46 @@ class FakeLiveBroker:
                 "credit": env.credit, "accountCurrencyId": 1,
                 "positions": list(env.positions.values()), "orders": [],
                 "ordersForOpen": [], "ordersForClose": [], "mirrors": []}})
+        return httpx.Response(404, json={"errorMessage": "Not found"})
+
+    def _etoro_market_data(self, method: str, path: str, params) -> httpx.Response:
+        """search, rates and candles: the same answers on both environments (market
+        data has no environment in the path), prices in USD (`conversionRate*` 1)."""
+        if method != "GET":
+            return httpx.Response(405, json={"errorMessage": "Method not allowed"})
+        if path == _ETORO_SEARCH:
+            query = str(params.get("internalSymbolFull") or "").upper()
+            items = [{"instrumentId": iid, "internalSymbolFull": sym,
+                      "isCurrentlyTradable": True, "isBuyEnabled": True, "isDelisted": False}
+                     for sym, iid in _ETORO_INSTRUMENTS.items() if query and query in sym]
+            return httpx.Response(200, json={"items": items})
+        known = set(_ETORO_INSTRUMENTS.values())
+        if path == _ETORO_RATES:
+            ids = [int(x) for x in str(params.get("instrumentIds") or "").split(",")
+                   if x.strip().isdigit()]
+            spread = self.price / 1000
+            return _numbers(200, {"rates": [
+                {"instrumentID": iid, "bid": self.price - spread, "ask": self.price + spread,
+                 "lastExecution": self.price, "conversionRateBid": Decimal(1),
+                 "conversionRateAsk": Decimal(1), "date": _now(), "priceRateID": next(self._ids)}
+                for iid in ids if iid in known]})
+        m = _ETORO_CANDLES.match(path)
+        if m and int(m.group(1)) in known and m.group(3) in _ETORO_INTERVALS:
+            iid, step, count = int(m.group(1)), _ETORO_INTERVALS[m.group(3)], int(m.group(4))
+            if not 1 <= count <= 1000:
+                return httpx.Response(400, json={"errorMessage": "Invalid candlesCount"})
+            now = datetime.now(UTC)
+            last = now - (now - datetime(1970, 1, 1, tzinfo=UTC)) % step  # the forming one
+            candles = [
+                {"instrumentID": iid,
+                 "fromDate": (last - step * i).isoformat().replace("+00:00", "Z"),
+                 "open": self.price, "high": self.price, "low": self.price,
+                 "close": self.price, "volume": Decimal(10)}
+                for i in range(count)]
+            if m.group(2) == "asc":
+                candles.reverse()
+            return _numbers(200, {"interval": m.group(3), "candles": [
+                {"instrumentId": iid, "candles": candles}]})
         return httpx.Response(404, json={"errorMessage": "Not found"})
 
     def _etoro_open(self, env: _EtoroEnv, body: dict, ref: str) -> httpx.Response:

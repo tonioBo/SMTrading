@@ -1,0 +1,9 @@
+{
+  "page": 1,
+  "pageSize": 20,
+  "totalItems": 2,
+  "items": [
+    {"instrumentId": 9999, "internalSymbolFull": "AAPL.US", "isCurrentlyTradable": true, "isBuyEnabled": true, "isDelisted": false},
+    {"instrumentId": 1001, "internalSymbolFull": "AAPL", "isCurrentlyTradable": true, "isBuyEnabled": true, "isDelisted": false}
+  ]
+}

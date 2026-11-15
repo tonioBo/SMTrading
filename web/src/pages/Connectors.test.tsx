@@ -20,6 +20,7 @@ const connector = (over: Record<string, unknown>) => ({
   asset_classes: ["forex"],
   implemented: true,
   config_masked: { api_key: "••••abcd", ws_url: "wss://example.test" },
+  config_fields: [],
   secret_keys: ["api_key"],
   rate_limit_per_min: 60,
   health_status: "ok",
@@ -35,7 +36,19 @@ const server = setupServer(
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
   http.get("*/api/connectors", () =>
-    HttpResponse.json([connector({}), connector({ name: "revolutx", implemented: false, enabled: false, config_masked: {}, secret_keys: [] })]),
+    HttpResponse.json([
+      connector({}),
+      connector({ name: "revolutx", implemented: false, enabled: false, config_masked: {}, secret_keys: [] }),
+      connector({
+        name: "etoro",
+        enabled: false,
+        capabilities: ["bars", "quote"],
+        asset_classes: ["crypto", "us_equity"],
+        config_masked: { api_key: "••••0001" },
+        config_fields: ["api_key", "user_key"],
+        secret_keys: ["api_key", "user_key"],
+      }),
+    ]),
   ),
   http.patch("*/api/connectors/:name", async ({ request, params }) => {
     const body = (await request.json()) as Record<string, unknown>;
@@ -111,6 +124,32 @@ describe("Connectors", () => {
     await user.click(within(card).getByRole("button", { name: "Salva" }));
     await waitFor(() => expect(patches).toHaveLength(1));
     expect(patches[0].body).toEqual({ config: { api_key: null, ws_url: "wss://example.test" } });
+  });
+
+  it("etoro connector shows api and user key fields masked with guide", async () => {
+    const user = userEvent.setup();
+    renderApp("/connettori");
+    const card = await screen.findByLabelText("Connettore etoro");
+    const apiKey = within(card).getByLabelText("Chiave API (x-api-key)");
+    const userKey = within(card).getByLabelText("Chiave utente (x-user-key)");
+    expect(apiKey).toHaveAttribute("type", "password");
+    expect(apiKey).toHaveAttribute("placeholder", "••••0001");
+    expect(apiKey).toHaveValue("");
+    expect(userKey).toHaveAttribute("type", "password");
+    expect(userKey).toHaveValue("");
+    expect(within(card).getByText(/chiave dedicata, ambiente Demo, permesso Read/)).toBeInTheDocument();
+    expect(within(card).getByText(/non riusare le chiavi dei collegamenti/)).toBeInTheDocument();
+    expect(within(card).getByRole("link", { name: /autenticazione eToro/ })).toHaveAttribute(
+      "href",
+      "https://api-portal.etoro.com/core/getting-started/authentication.md",
+    );
+    expect(within(card).getByLabelText("Limite richieste al minuto")).toHaveValue("60");
+
+    // the missing user key is sent; the untouched masked api key is kept by the server
+    await user.type(userKey, "USERKEY123");
+    await user.click(within(card).getByRole("button", { name: "Salva" }));
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toEqual({ name: "etoro", body: { config: { user_key: "USERKEY123" } } });
   });
 
   it("marks unimplemented connectors and disables the switch", async () => {

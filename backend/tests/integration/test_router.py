@@ -685,7 +685,7 @@ def test_router_import_registers_providers():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                          check=True)
     expected = {"yahoo", "kraken", "binance", "coingecko", "frankfurter", "alpaca", "finnhub",
-                "twelvedata", "revolutx"}
+                "twelvedata", "revolutx", "etoro"}
     assert set(out.stdout.strip().split(",")) == expected
 
 
@@ -710,3 +710,40 @@ async def test_probe_quote_without_instrument(env):
     assert FakeA.calls == [("quote", ["DOGE-USD"])]
     with pytest.raises(SMTError):  # still unknown to the catalog
         await router.get_quotes(["DOGE-USD"])
+
+
+async def test_etoro_first_then_next_source_when_quota_exhausted(env):
+    """Plan 9 Task 14: with `etoro` on and first, a quote comes from eToro (the fake eToro
+    server, never the real host); once its quota is exhausted the router uses the next
+    source at once (the provider never waits)."""
+    from smtrading.brokers.live.fake import FakeLiveBroker
+    from smtrading.connectors.service import update_connector
+
+    _, sm = env
+    async with sm() as s:  # the row is born off (migration 0028)
+        assert (await s.get(Connector, "etoro")).enabled is False
+        await update_connector(s, "etoro", enabled=True, config={
+            "api_key": "CANARYAPIKEY0001", "user_key": "CANARYUSERKEY-do-not-use"})
+        row = await s.get(ProviderPriority, (AssetClass.crypto, Capability.quote))
+        row.providers = ["etoro", "fake_a"]
+        s.add(ProviderPriority(asset_class=AssetClass.us_equity, capability=Capability.quote,
+                               providers=["etoro"]))
+        await s.commit()
+
+    fake = FakeLiveBroker(price=Decimal("250.5"))
+    redis = env[0]._redis
+    async with httpx.AsyncClient(transport=fake.transport()) as http:
+        router = MarketDataRouter(sm, redis, http)
+        q = await router.get_quotes(["AAPL", "BTC-USD"])
+        assert q["AAPL"].provider == "etoro" and q["AAPL"].last == Decimal("250.5")
+        assert q["BTC-USD"].provider == "etoro"
+        assert FakeA.calls == []
+
+        fake.market_data_remaining = 0  # the next answer exhausts the quota
+        await redis.flushdb()
+        await router.get_quotes(["BTC-USD"])
+        calls = len(fake.calls)
+        await redis.flushdb()
+        q = await router.get_quotes(["BTC-USD"])
+        assert q["BTC-USD"].provider == "fake_a"
+        assert len(fake.calls) == calls  # eToro was skipped without a request

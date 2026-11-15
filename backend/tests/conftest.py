@@ -76,6 +76,7 @@ def _reset_t212_caches():
     place (modules alias the cache objects) around every test, so what one test loaded
     (e.g. the fake's US-only tickers) never decides another's routability."""
     from smtrading.brokers import etoro_core, t212_core
+    from smtrading.marketdata.providers import etoro as etoro_md
 
     def reset():
         for cache in t212_core._instrument_caches.values():
@@ -85,6 +86,8 @@ def _reset_t212_caches():
         for etoro_cache in etoro_core._instrument_caches.values():
             etoro_cache.clear()
         etoro_core._rate_blocked_until.clear()
+        etoro_md._blocked_until.clear()
+        etoro_md._missing.clear()
 
     reset()
     yield

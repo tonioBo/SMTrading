@@ -517,3 +517,67 @@ async def test_backup_one_dump_at_a_time(admin, monkeypatch, tmp_path):
     again = await admin.client.post("/api/system/backup")  # the guard is released
     assert again.status_code == 200
     assert (await admin.client.get("/api/system/backup")).status_code == 405
+
+
+ETORO_API_KEY = "CANARYAPIKEY0001"
+ETORO_USER_KEY = "CANARYUSERKEY-do-not-use"
+
+
+async def test_etoro_connector_keys_masked_verified_on_fake(admin, monkeypatch, caplog):
+    """Plan 9 Task 14: the eToro data connector shows both key fields even when empty,
+    treats both as secrets, never returns, records or logs them, and «Verifica» runs on
+    the fake eToro server (no real eToro call in tests)."""
+    import logging
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from smtrading.admin import routes_connectors
+    from smtrading.brokers.live.fake import FakeLiveBroker
+    from smtrading.useractivity.models import UserActivity
+
+    caplog.set_level(logging.DEBUG)
+    fake = FakeLiveBroker()
+    transport = {"t": fake.transport()}
+    monkeypatch.setattr(routes_connectors, "httpx", SimpleNamespace(
+        AsyncClient=lambda: httpx.AsyncClient(transport=transport["t"])))
+    c = admin.client
+
+    row = next(x for x in (await c.get("/api/connectors")).json() if x["name"] == "etoro")
+    assert row["enabled"] is False and row["implemented"] is True
+    assert row["config_fields"] == ["api_key", "user_key"]
+    assert row["secret_keys"] == ["api_key", "user_key"] and row["config_masked"] == {}
+    assert row["capabilities"] == ["bars", "quote"]
+    assert row["asset_classes"] == ["crypto", "us_equity"]
+    yahoo = next(x for x in (await c.get("/api/connectors")).json() if x["name"] == "yahoo")
+    assert yahoo["config_fields"] == []
+
+    r = await c.patch("/api/connectors/etoro", json={
+        "config": {"api_key": ETORO_API_KEY, "user_key": ETORO_USER_KEY}})
+    assert r.status_code == 200, r.text
+    assert r.json()["config_masked"] == {"api_key": "••••0001", "user_key": "••••-use"}
+    assert r.json()["enabled"] is False  # keys alone do not turn it on
+
+    r = await c.post("/api/connectors/etoro/test")
+    assert r.status_code == 200 and r.json()["ok"] is True, r.json()
+    assert fake.calls and all(p.startswith("/api/v1/market-data/") for _, p in fake.calls)
+
+    def leaky(request: httpx.Request) -> httpx.Response:  # an answer echoing the keys
+        return httpx.Response(500, json={"errorMessage": (
+            f"boom {request.headers['x-api-key']} {request.headers['x-user-key']}")})
+
+    transport["t"] = httpx.MockTransport(leaky)
+    r = await c.post("/api/connectors/etoro/test")
+    assert r.json()["ok"] is False and "HTTP 500" in r.json()["error"]
+    listed = (await c.get("/api/connectors")).json()
+    row = next(x for x in listed if x["name"] == "etoro")
+    assert row["health_status"] == "error" and "HTTP 500" in row["last_error"]
+
+    async with admin.sm() as s:
+        activity = list(await s.scalars(
+            select(UserActivity).where(UserActivity.category == "connectors")))
+    assert any(a.action == "connectors.update" and a.summary["config"] == {
+        "api_key": "••••", "user_key": "••••"} for a in activity)
+    for text in (r.text, json.dumps(listed), caplog.text,
+                 json.dumps([[a.summary, a.error_message] for a in activity])):
+        assert ETORO_API_KEY not in text and ETORO_USER_KEY not in text

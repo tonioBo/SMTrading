@@ -86,7 +86,7 @@ async def test_record_health(db_session):
 async def test_priorities_default_and_missing(db_session):
     await seed_connectors(db_session)
     assert await get_priorities(db_session, AssetClass.crypto, Capability.quote) == [
-        "kraken", "binance", "coingecko", "yahoo",
+        "kraken", "binance", "coingecko", "yahoo", "etoro",
     ]
     assert await get_priorities(db_session, AssetClass.forex, Capability.news) == []
     assert (AssetClass.forex, Capability.news) not in DEFAULT_PRIORITIES
@@ -107,3 +107,19 @@ async def test_set_priorities_unknown_provider(db_session):
     assert await get_priorities(db_session, AssetClass.crypto, Capability.quote) == [
         "yahoo", "kraken",
     ]
+
+
+async def test_etoro_seeded_off_and_last_in_its_priorities(db_session):
+    """Plan 9 Task 14: the eToro data source is born off and last; nothing changes until
+    the admin turns it on."""
+    await seed_connectors(db_session)
+    conns = {c.name: c for c in await list_connectors(db_session)}
+    assert "etoro" in conns and conns["etoro"].enabled is False
+    assert "etoro" not in DEFAULT_ENABLED
+    pairs = {(AssetClass.us_equity, Capability.quote), (AssetClass.us_equity, Capability.bars),
+             (AssetClass.crypto, Capability.quote), (AssetClass.crypto, Capability.bars)}
+    for (ac, cap), providers in DEFAULT_PRIORITIES.items():
+        assert ("etoro" in providers) == ((ac, cap) in pairs), (ac, cap)
+    for ac, cap in pairs:
+        providers = await get_priorities(db_session, ac, cap)
+        assert providers[-1] == "etoro" and providers.count("etoro") == 1

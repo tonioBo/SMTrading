@@ -1,4 +1,5 @@
 import importlib
+import json
 
 import pytest
 from sqlalchemy import text
@@ -237,3 +238,60 @@ async def test_decision_outcome_check(db_session):
             await db_session.execute(text(ins), {"a": agent.id, "o": "ok"})
     for o in ("approvata", "respinta", "sospesa", "modificata", "informativa", None):
         await db_session.execute(text(ins), {"a": agent.id, "o": o})
+
+
+async def test_0028_etoro_connector_keeps_admin_order(fresh_db):
+    """0028 (data only): the `etoro` connector row, off, and `etoro` appended to the four
+    existing quote/bars priority rows of US stocks and crypto, after the admin's order;
+    the downgrade removes both."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "-1")
+    engine = make_engine(fresh_db)
+    rows = {
+        ("us_equity", "quote"): ["yahoo", "alpaca"],  # reordered by the admin
+        ("us_equity", "bars"): ["yahoo"],
+        ("crypto", "quote"): ["etoro", "kraken"],  # already has it: unchanged
+        ("us_equity", "news"): ["yahoo"],  # not an eToro capability
+    }  # (crypto, bars) has no row: the seed writes it later, from DEFAULT_PRIORITIES
+    async with engine.begin() as conn:
+        assert await conn.scalar(text("select count(*) from connectors where name = 'etoro'")) == 0
+        for (ac, cap), providers in rows.items():
+            await conn.execute(text(
+                "insert into provider_priorities (asset_class, capability, providers)"
+                " values (:a, :c, cast(:p as jsonb))"), {"a": ac, "c": cap, "p": json.dumps(providers)})
+    await engine.dispose()
+
+    async def priorities() -> dict:
+        engine = make_engine(fresh_db)
+        async with engine.connect() as conn:
+            got = {(r[0], r[1]): r[2] for r in await conn.execute(
+                text("select asset_class, capability, providers from provider_priorities"))}
+            etoro = (await conn.execute(text(
+                "select enabled, health_status, config_encrypted from connectors"
+                " where name = 'etoro'"))).all()
+        await engine.dispose()
+        return got, etoro
+
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    got, etoro = await priorities()
+    assert got == {
+        ("us_equity", "quote"): ["yahoo", "alpaca", "etoro"],
+        ("us_equity", "bars"): ["yahoo", "etoro"],
+        ("crypto", "quote"): ["etoro", "kraken"],
+        ("us_equity", "news"): ["yahoo"],
+    }
+    assert etoro == [(False, "unknown", None)]
+
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "-1")
+    got, etoro = await priorities()
+    assert got == {
+        ("us_equity", "quote"): ["yahoo", "alpaca"],
+        ("us_equity", "bars"): ["yahoo"],
+        ("crypto", "quote"): ["kraken"],
+        ("us_equity", "news"): ["yahoo"],
+    }
+    assert etoro == []
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")

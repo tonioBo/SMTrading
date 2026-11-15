@@ -14,7 +14,8 @@ Allowlist (documented, not scanned):
   seeded "Demo" portfolio and "test-agent" agent to neutral names, since the words would
   be false positives of the data, not of the code.
 - market data provider names come from the real providers in production; the fixture's
-  fake source is given a real provider name ("yahoo").
+  fake source is given a real provider name ("yahoo", or "etoro" in the `etoro_source`
+  flavor: the eToro data source of plan 9 shows up by name like the others).
 """
 
 import dataclasses
@@ -52,10 +53,10 @@ class _Db:
         await self.engine.dispose()
 
 
-def _market(qs) -> None:
+def _market(qs, provider: str = "yahoo") -> None:
     qs.set_fx("EUR", "USD", D("1.25"))
     qs.set_quote(SYM, D(50000), D(50000), D(50000))
-    qs._quotes[SYM] = dataclasses.replace(qs._quotes[SYM], provider="yahoo")
+    qs._quotes[SYM] = dataclasses.replace(qs._quotes[SYM], provider=provider)
     step = timedelta(days=1)
     qs.set_bars(SYM, [
         Bar(NOW - step * (60 - i), D(100 + i), D(101 + i), D(99 + i), D(100 + i), D(10))
@@ -111,9 +112,9 @@ async def _read_resource(url: str, token: str, uri: str):
     return json.loads(result.contents[0].text)
 
 
-@pytest.mark.parametrize("flavor", ["simulated", "paper_linked"])
+@pytest.mark.parametrize("flavor", ["simulated", "paper_linked", "etoro_source"])
 async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, flavor):
-    _market(mcp_server.qs)
+    _market(mcp_server.qs, "etoro" if flavor == "etoro_source" else "yahoo")
     pid = await _setup(mcp_server, flavor)
     outputs: list[tuple[str, object]] = []
 
@@ -178,7 +179,10 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
     # the sweep saw the facts it is about
     feed = next(p for t, p in outputs if t == "get_activity_feed")
     assert {i["type"] for i in feed["items"]} >= {"portfolio.cash", "decision.strategy"}
-    if flavor == "simulated":
+    if flavor == "etoro_source":
+        quote = next(p for t, p in outputs if t == "get_quote")
+        assert "etoro" in json.dumps(quote), quote
+    if flavor in ("simulated", "etoro_source"):
         assert filled["status"] == "filled", filled
         assert "order.filled" in {i["type"] for i in feed["items"]}
         got = next(p for t, p in outputs if t == "get_order" and "fills" in p)
@@ -189,4 +193,6 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
         text = json.dumps(payload, ensure_ascii=False)
         for m in FINGERPRINT.finditer(text):
             leaks.append((tool, text[max(0, m.start() - 60): m.end() + 40]))
+        if "/demo/" in text:
+            leaks.append((tool, "/demo/"))
     assert not leaks, "\n".join(f"{t}: …{ctx}…" for t, ctx in leaks)
