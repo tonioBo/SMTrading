@@ -315,3 +315,20 @@ async def trip_reduce_only(session: AsyncSession, portfolio_id: uuid.UUID, *, ca
     log.warning("live portfolio %s: reduce-only (%s), changed=%s", portfolio_id, cause,
                 changed)
     return changed
+
+
+async def trip_link_portfolios(session: AsyncSession, link_id: uuid.UUID, *, exclude,
+                               cause: str, details: dict) -> list[uuid.UUID]:
+    """`trip_reduce_only` for every portfolio of the link but `exclude` (already tripped
+    by the caller), in the R8.9 lock order: the link row first, then the portfolios in id
+    order. Run in a transaction holding no portfolio lock (events.queue_live_trip)."""
+    from smtrading.brokers.live.quotas import linked_portfolios
+    from smtrading.portfolios.locks import lock_broker_link
+
+    await lock_broker_link(session, link_id)
+    tripped = []
+    for p in await linked_portfolios(session, link_id):
+        if p.id != exclude:
+            await trip_reduce_only(session, p.id, cause=cause, details=details)
+            tripped.append(p.id)
+    return tripped

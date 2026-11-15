@@ -782,7 +782,9 @@ class BrokerSync:
     async def _live_memo(self, order_id: UUID) -> QuoteSource:
         """For a real-money order, a frozen memo with every quote/FX rate its checks need
         (its portfolio, its symbol and those of the portfolio's other open buys, the fee
-        rule and broker snapshot currencies to EUR), fetched before any lock (I1, I2):
+        rule and broker snapshot currencies to EUR, and through prefetch_portfolio the cash
+        currencies of the link's other portfolios to the account currency for their
+        quotas), fetched before any lock (I1, I2):
         a miss under the lock makes the order wait. `self._qs` otherwise. A real sell needs
         no quote or FX rate (its checks are the position and the fuse): an empty frozen
         memo, so an FX outage never makes it wait (Review Focus 3, plan 9)."""
@@ -845,7 +847,7 @@ class BrokerSync:
                         log.warning("order %s waits: %s", order.id, e.message)
                         return _WAIT
                     raise
-            await check_live_fuse(session, portfolio=portfolio, now=now,
+            await check_live_fuse(session, portfolio=portfolio, link=link, now=now,
                                   reduce_only=order.reduce_only,
                                   live_flatten=order.live_flatten, exclude=order.id)
         except SMTError as e:

@@ -8,14 +8,17 @@ portfolio's status, the kill switch and the order being sent:
 - GET/HEAD: always passed on, like the POSTs that only read (LIVE_READ_POSTS: eToro
   eligibility, exact URL, never carrying an order);
 - DELETE (a cancel): passed on in every live_state of a live link;
-- POST/PUT/PATCH: only with the link `armed`, the linked portfolio not `locked` and the
-  kill switch off; with the kill switch on only an order created by «Chiudi tutte le
+- POST/PUT/PATCH: only with the link `armed`, the order's portfolio one of the
+  portfolios linked to the link (several since plan 9, Task 11), neither `locked` nor
+  `archived`, and the kill switch off; with the kill switch on only an order created by «Chiudi tutte le
   posizioni reali» passes (Ruling R8.2): `live_flatten`, reduce-only, market, still open
   and not acknowledged by the broker, and the request body is that order (same
   instrument and side, no more than its quantity); while a trading halt covers the
-  portfolio only a reduce-only, live-flatten or liquidation order, or one that strictly
+  order's portfolio only a reduce-only, live-flatten or liquidation order, or one that strictly
   reduces the position with a matching body, passes (TRADING_HALTED);
-- exactly one portfolio must be linked to the link (1 live link <-> 1 portfolio);
+- no portfolio linked: closed; an order of a portfolio not linked to the link (or not
+  found): closed (OTHER_PORTFOLIO_MESSAGE); a request that is not an order passes only
+  when one linked portfolio is neither locked nor archived and none is under a halt;
 - `dry_run`: an order POST raises `LiveDryRun` with the JSON payload (no headers), any
   other non-GET raises `LiveGateClosed`.
 
@@ -55,6 +58,7 @@ KILL_SWITCH_MESSAGE = "kill switch attivo: nessun invio verso il broker reale"
 LOCKED_MESSAGE = "portafoglio reale bloccato"
 DRY_RUN_MESSAGE = "prova a secco: solo gli ordini vengono intercettati"
 OTHER_PORTFOLIO_MESSAGE = "l'ordine non appartiene al portafoglio collegato"
+_CLOSED = (PortfolioStatus.locked, PortfolioStatus.archived)
 
 
 class LiveGateClosed(Exception):
@@ -244,15 +248,12 @@ class LiveGateTransport(httpx.AsyncBaseTransport):
                 raise LiveGateClosed(ErrorCode.LIVE_NOT_ARMED, DRY_RUN_MESSAGE)
             if state != LiveState.armed:
                 raise LiveGateClosed(ErrorCode.LIVE_NOT_ARMED, NOT_ARMED_MESSAGE)
-            portfolios = (await session.execute(
+            portfolios = {row.id: row.status for row in (await session.execute(
                 select(Portfolio.id, Portfolio.status)
-                .where(Portfolio.broker_link_id == self._link_id).limit(2)
-            )).all()
-            if len(portfolios) != 1:  # none, or not a dedicated link (1 link <-> 1 portfolio)
+                .where(Portfolio.broker_link_id == self._link_id)
+            )).all()}
+            if not portfolios:
                 raise LiveGateClosed(ErrorCode.LIVE_NOT_ARMED, NOT_ARMED_MESSAGE)
-            portfolio = portfolios[0]
-            if portfolio.status in (PortfolioStatus.locked, PortfolioStatus.archived):
-                raise LiveGateClosed(ErrorCode.PORTFOLIO_LOCKED, LOCKED_MESSAGE)
             order: Any = None
             if order_id is not None:
                 order = (await session.execute(
@@ -261,8 +262,13 @@ class LiveGateTransport(httpx.AsyncBaseTransport):
                            Order.broker_order_id, Order.role, Order.filled_qty)
                     .where(Order.id == order_id)
                 )).first()
-                if order is not None and order.portfolio_id != portfolio.id:
+                if order is None or order.portfolio_id not in portfolios:
                     raise LiveGateClosed(ErrorCode.LIVE_NOT_ARMED, OTHER_PORTFOLIO_MESSAGE)
+                if portfolios[order.portfolio_id] in _CLOSED:
+                    raise LiveGateClosed(ErrorCode.PORTFOLIO_LOCKED, LOCKED_MESSAGE)
+            else:  # not an order: one portfolio able to trade, none under a halt
+                if all(status in _CLOSED for status in portfolios.values()):
+                    raise LiveGateClosed(ErrorCode.PORTFOLIO_LOCKED, LOCKED_MESSAGE)
             if await is_kill_switch_on(session):
                 flatten = (order is not None and order.live_flatten and order.reduce_only
                            and order.type == OrderType.market
@@ -271,10 +277,12 @@ class LiveGateTransport(httpx.AsyncBaseTransport):
                            and self._matches(request, order))
                 if not flatten:
                     raise LiveGateClosed(ErrorCode.KILL_SWITCH_ACTIVE, KILL_SWITCH_MESSAGE)
-            halt = await covering_halt(session, portfolio.id)
-            if halt is not None and not await self._passes_halt(session, request, order):
-                # defense in depth: BrokerSync already refuses openings under a halt
-                raise LiveGateClosed(ErrorCode.TRADING_HALTED, halt_message(halt))
+            halted = [order.portfolio_id] if order is not None else sorted(portfolios, key=str)
+            for pid in halted:
+                halt = await covering_halt(session, pid)
+                if halt is not None and not await self._passes_halt(session, request, order):
+                    # defense in depth: BrokerSync already refuses openings under a halt
+                    raise LiveGateClosed(ErrorCode.TRADING_HALTED, halt_message(halt))
         self._reserve_close(request)  # passed: reserved before the inner transport
 
     def _matches(self, request: httpx.Request, order: Any) -> bool:

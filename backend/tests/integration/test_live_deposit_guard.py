@@ -159,7 +159,8 @@ async def test_withdraw_always_allowed(admin):
 
 
 async def test_deposit_other_currency_at_current_rate_with_margin(admin):
-    """A EUR portfolio on the USD account with 1000 USD: 1000 / 1.25 x 0.99 = 792 EUR."""
+    """A EUR portfolio on the USD account with 1000 USD: its quota counts each EUR at
+    1.25 / 0.99 (brokers.live.quotas), so at most 1000 x 0.99 / 1.25 = 792 EUR."""
     admin.fake.alpaca.cash = D("1000")
     pid = await _portfolio(admin, kind="alpaca_live")
     _refused(await _deposit(admin, pid, "292.01"))
@@ -273,3 +274,37 @@ async def test_reset_with_new_cash_needs_the_broker_cash(admin):
     r = await reset("600")  # the cash is replaced, not added to
     assert r.status_code == 200, r.text
     assert (await _cash(admin, pid))["EUR"] == D(600)
+
+
+async def _second_on_link(admin, first: uuid.UUID, *, cash: str, ccy: str) -> uuid.UUID:
+    """Another portfolio on `first`'s link (Task 11)."""
+    pid = await _portfolio(admin, cash=cash, ccy=ccy, kind=None)
+    async with admin.sm() as s:
+        (await s.get(Portfolio, pid)).broker_link_id = (
+            await s.get(Portfolio, first)).broker_link_id
+        await s.commit()
+    return pid
+
+
+async def test_deposit_counts_another_portfolios_foreign_quota(admin):
+    """A (USD, 400) and B (EUR, 200 = 252.53 USD at 1.25 / 0.99) share the 1000 USD
+    account: a deposit on A sees B's quota through the prefetched EUR/USD rate (no rate
+    is read under the locks)."""
+    admin.fake.alpaca.cash = D("1000")
+    a = await _portfolio(admin, cash="400", ccy="USD", kind="alpaca_live")
+    await _second_on_link(admin, a, cash="200", ccy="EUR")
+    _refused(await _deposit(admin, a, "348"))  # 400 + 252.53 + 348 > 1000
+    r = await _deposit(admin, a, "347")
+    assert r.status_code == 200, r.text
+
+
+async def test_concurrent_deposits_on_one_account_cannot_exceed_its_cash(admin):
+    """A (400) and B (300) on 1000 USD: two deposits of 250 at once; the link lock
+    serializes them, so only one passes."""
+    admin.fake.alpaca.cash = D("1000")
+    a = await _portfolio(admin, cash="400", ccy="USD", kind="alpaca_live")
+    b = await _second_on_link(admin, a, cash="300", ccy="USD")
+    results = await asyncio.gather(_deposit(admin, a, "250"), _deposit(admin, b, "250"))
+    assert sorted(r.status_code for r in results) == [200, 400], [r.text for r in results]
+    total = sum([sum((await _cash(admin, p)).values(), D(0)) for p in (a, b)], D(0))
+    assert total == D(950)

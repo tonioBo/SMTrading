@@ -63,7 +63,7 @@ from smtrading.mcp.dto import (
     valuation_dto,
 )
 from smtrading.performance.service import get_performance
-from smtrading.portfolios.locks import lock_live_portfolio
+from smtrading.portfolios.locks import lock_broker_link, lock_live_portfolio
 from smtrading.portfolios.mode import admin_mode_fields
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.queries import day_pnl, list_portfolio_journals
@@ -530,6 +530,8 @@ async def _cash_move(
                                           live_http_factory(request), live_guard[1],
                                           currency=body.currency)
         async with _transaction(session, redis):
+            if broker is not None:  # one deposit at a time per account (R8.9: link first)
+                await lock_broker_link(session, broker.link_id)
             portfolio = await lock_live_portfolio(session, portfolio_id)
             amount = parse_decimal(body.amount, "amount")
             currency = body.currency or portfolio.base_currency
@@ -637,6 +639,8 @@ async def reset(
                                           currency=body.currency)
         async with _transaction(session, redis):
             if new_cash > 0:
+                if broker is not None:  # serialized per account (R8.9: link first)
+                    await lock_broker_link(session, broker.link_id)
                 portfolio = await lock_live_portfolio(session, portfolio_id)
                 await check_live_deposit(session, portfolio, broker, new_cash,
                                          body.currency, replace=True, field="new_cash")

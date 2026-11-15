@@ -224,7 +224,8 @@ async def test_wizard_flow_api(admin):
     link = await _new_link(c)
     assert link["live_state"] == "configured" and link["kind"] == "t212_live"
     assert link["key_masked"] == "••••0001" and link["snapshot"] is None
-    assert link["portfolio"] is None and link["health_failures"] == 0
+    assert link["portfolios"] == [] and link["health_failures"] == 0
+    assert link["quotas_total"] is None and link["unassigned"] is None
 
     r = await c.post(f"/api/live-links/{link['id']}/test")
     assert r.status_code == 200, r.text
@@ -256,7 +257,7 @@ async def test_wizard_flow_api(admin):
     assert r.json()["mode"] == "reale" and r.json()["live_state"] == "armed"
 
     (listed,) = (await c.get("/api/live-links")).json()
-    assert listed["portfolio"] == {"id": pf["id"], "name": pf["name"]}
+    assert [(p["id"], p["name"]) for p in listed["portfolios"]] == [(pf["id"], pf["name"])]
     status = (await c.get("/api/live/status")).json()
     assert status["armed_count"] == 1 and status["dry_run_count"] == 0
     assert status["portfolios"] == [{"id": pf["id"], "name": pf["name"],
@@ -274,6 +275,30 @@ async def test_wizard_flow_api(admin):
         row = await s.scalar(select(LiveAudit).where(LiveAudit.action == "armed"))
     assert row.actor == admin.email and row.user_agent == "pytest-live" and row.ip
     assert admin.fake.writes == []  # never a write at the broker
+
+
+async def test_live_dto_lists_portfolios_quotas_unassigned(admin):
+    """Plan 9, Task 11: the link card lists every linked portfolio (by name) with its
+    quota in the account currency, the broker cash, the quotas' total and the rest."""
+    link, pf = await _wizard(admin)  # Trading 212 fake: 1000.00 EUR; pf 500 EUR
+    c = admin.client
+    assert (await c.post(f"/api/live-links/{link['id']}/test")).status_code == 200
+    second = await _portfolio(c, cash="300")
+    r = await c.put(f"/api/portfolios/{second['id']}/live-link",
+                    json={"link_id": link["id"], "totp": await admin.codes.code()})
+    assert r.status_code == 200, r.text
+    (listed,) = (await c.get("/api/live-links")).json()
+    assert listed["currency"] == "EUR" and Decimal(listed["broker_cash"]) == Decimal(1000)
+    expected = sorted([(pf["id"], pf["name"], Decimal(500)),
+                       (second["id"], second["name"], Decimal(300))], key=lambda t: t[1])
+    assert [(p["id"], p["name"], Decimal(p["quota"]))
+            for p in listed["portfolios"]] == expected
+    assert all(p["status"] == "active" and p["base_currency"] == "EUR"
+               and p["positions_count"] == 0 for p in listed["portfolios"])
+    assert Decimal(listed["quotas_total"]) == 800 and Decimal(listed["unassigned"]) == 200
+    status = (await c.get("/api/live/status")).json()  # the banner counts both
+    assert sorted((p["id"], p["live_state"]) for p in status["portfolios"]) == sorted(
+        [(pf["id"], "armed"), (second["id"], "armed")])
 
 
 async def test_replace_keys_back_to_configured(admin):

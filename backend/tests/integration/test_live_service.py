@@ -556,7 +556,7 @@ async def test_fingerprint_change_disarms_and_reduce_only(sm, redis, fake):
 
 # -- the real portfolio ----------------------------------------------------------------
 
-async def test_link_checks_profile_short_leverage_currency_cash_one_to_one(sm, redis, fake):
+async def test_link_checks_profile_short_leverage_currency_cash_quotas(sm, redis, fake):
     admin, totp = await _admin(sm)
     link_id = await _tested(sm, fake)  # Alpaca fake: 1000.00 USD
     async with sm() as s:
@@ -585,7 +585,8 @@ async def test_link_checks_profile_short_leverage_currency_cash_one_to_one(sm, r
         await link_live_portfolio(s, redis, ok, link_id, admin=await s.get(AdminUser, admin.id),
                                   totp=totp.code(), actor=WHO, qs=qs)
         await s.commit()
-    await check(await _portfolio(sm, ccy="USD"), "link_id")  # 1 live link <-> 1 portfolio
+    # several portfolios per link since plan 9 (Task 11): the quotas must fit the cash
+    await check(await _portfolio(sm, ccy="USD"), "cash")  # 1000 + 500 > 1000 USD
 
     t212 = await _tested(sm, fake, "t212_live", T212)  # Trading 212 fake: EUR
     async with sm() as s:  # another currency than the account's is allowed (plan 9)

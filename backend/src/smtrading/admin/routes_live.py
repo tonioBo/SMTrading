@@ -28,6 +28,7 @@ import io
 import json
 from collections.abc import AsyncIterator, Callable
 from datetime import timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -51,6 +52,13 @@ from smtrading.brokers.live import LIVE_KINDS
 from smtrading.brokers.live.account import decrypt_live_config, key_masked, live_secrets
 from smtrading.brokers.live.gate import LiveClient, make_live_client
 from smtrading.brokers.live.models import LIVE_AUDIT_ACTIONS, LiveAudit, LiveState
+from smtrading.brokers.live.quotas import (
+    Quota,
+    account_currency,
+    linked_portfolios,
+    quota_of_balances,
+    quotas_total,
+)
 from smtrading.brokers.live.service import (
     Actor,
     arm_live_link,
@@ -64,8 +72,12 @@ from smtrading.brokers.live.service import (
 )
 from smtrading.brokers.models import BrokerLink
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.common.money import decimal_to_str, quantize_money
+from smtrading.engine.quotesource import QuoteSource
 from smtrading.mcp.dto import parse_int, to_jsonable
 from smtrading.portfolios.models import Portfolio
+from smtrading.portfolios.service import get_cash_balances
+from smtrading.positions.models import Position
 from smtrading.telegram.config import is_ready, load_config
 from smtrading.telegram.models import OutboxStatus, TelegramOutbox
 
@@ -177,16 +189,18 @@ async def _live_link(session: AsyncSession, link_id: UUID) -> BrokerLink:
     return link
 
 
-async def _live_dto(session: AsyncSession, link: BrokerLink) -> dict[str, Any]:
+async def _live_dto(session: AsyncSession, link: BrokerLink,
+                    qs: QuoteSource | None = None) -> dict[str, Any]:
+    """The link card: its state, masked keys, the snapshot and the linked portfolios with
+    their cash quotas (brokers.live.quotas) in the account currency. `quota`,
+    `quotas_total` and `unassigned` are null without a snapshot or an FX rate. The session
+    is committed before the FX reads (no transaction across them, R9)."""
     try:
         masked = key_masked(link.kind, decrypt_live_config(link))
     except SMTError:  # keys that cannot be read (another master key): nothing shown
         masked = MASK
     snap = link.last_account_snapshot if isinstance(link.last_account_snapshot, dict) else None
-    pf = (await session.execute(
-        select(Portfolio.id, Portfolio.name).where(Portfolio.broker_link_id == link.id)
-        .order_by(Portfolio.name).limit(1))).first()
-    return {
+    out = {
         "id": str(link.id),
         "name": link.name,
         "kind": link.kind,
@@ -200,47 +214,90 @@ async def _live_dto(session: AsyncSession, link: BrokerLink) -> dict[str, Any]:
         "snapshot": {f: snap.get(f) for f in SNAPSHOT_FIELDS} if snap else None,
         "last_test_at": to_jsonable(link.last_test_at),
         "health_failures": link.health_failures or 0,
-        "portfolio": {"id": str(pf.id), "name": pf.name} if pf else None,
+    }
+    ccy = account_currency(link)
+    broker_cash = None
+    if snap is not None and snap.get("cash_available") is not None:
+        try:
+            broker_cash = Decimal(str(snap["cash_available"]))
+        except ArithmeticError:
+            broker_cash = None
+    counts = dict((await session.execute(
+        select(Position.portfolio_id, func.count())
+        .join(Portfolio, Portfolio.id == Position.portfolio_id)
+        .where(Portfolio.broker_link_id == link.id, Position.qty != 0)
+        .group_by(Position.portfolio_id))).all())
+    rows = [(p, await get_cash_balances(session, p.id))
+            for p in await linked_portfolios(session, link.id)]
+    await session.commit()  # the FX reads below run outside any transaction (R9)
+    portfolios, quotas = [], []
+    for p, balances in rows:
+        quota = None
+        if ccy and broker_cash is not None:
+            try:
+                quota = await quota_of_balances(qs, link, balances, ccy)
+            except SMTError:
+                quota = None
+        if quota is not None:
+            quotas.append(Quota(p.id, p.name, quota))
+        portfolios.append({"id": str(p.id), "name": p.name, "status": p.status,
+                           "base_currency": p.base_currency,
+                           "quota": None if quota is None else decimal_to_str(
+                               quantize_money(quota, ccy)),
+                           "positions_count": counts.get(p.id, 0)})
+    portfolios.sort(key=lambda d: (d["name"], d["id"]))
+    known = ccy and broker_cash is not None and len(quotas) == len(rows)
+    total = quotas_total(quotas) if known else None
+    return {
+        **out,
+        "portfolios": portfolios,
+        "currency": ccy,
+        "broker_cash": None if broker_cash is None else decimal_to_str(broker_cash),
+        "quotas_total": None if total is None else decimal_to_str(quantize_money(total, ccy)),
+        "unassigned": None if total is None or broker_cash is None
+        else decimal_to_str(quantize_money(broker_cash - total, ccy)),
     }
 
 
-async def _fresh_dto(session: AsyncSession, link_id: UUID) -> dict[str, Any]:
+async def _fresh_dto(session: AsyncSession, link_id: UUID,
+                     qs: QuoteSource | None = None) -> dict[str, Any]:
     session.expire_all()
-    return await _live_dto(session, await _live_link(session, link_id))
+    return await _live_dto(session, await _live_link(session, link_id), qs)
 
 
 # --- links ----------------------------------------------------------------------------
 
 
 @router.get("/live-links")
-async def get_live_links(session: DbSession) -> list[dict]:
-    links = await session.scalars(
-        select(BrokerLink).where(BrokerLink.kind.in_(LIVE_KINDS)).order_by(BrokerLink.name))
-    return [await _live_dto(session, link) for link in links]
+async def get_live_links(session: DbSession, qs: Quotes) -> list[dict]:
+    links = list(await session.scalars(
+        select(BrokerLink).where(BrokerLink.kind.in_(LIVE_KINDS)).order_by(BrokerLink.name)))
+    return [await _live_dto(session, link, qs) for link in links]
 
 
 @router.post("/live-links")
 async def post_live_link(body: LiveKeysIn, request: Request, admin: CurrentAdmin,
-                         session: DbSession, redis: RedisClient) -> dict:
+                         session: DbSession, redis: RedisClient, qs: Quotes) -> dict:
     if not body.kind or body.kind not in LIVE_KINDS:
         raise _invalid("kind", "tipo di collegamento reale: " + ", ".join(sorted(LIVE_KINDS)))
     async with _transaction(session, redis):
         link = await save_live_keys(session, name=body.name or "", kind=body.kind,
                                     config=body.config(), actor=request_actor(request, admin))
         link_id = link.id
-    return await _fresh_dto(session, link_id)
+    return await _fresh_dto(session, link_id, qs)
 
 
 @router.put("/live-links/{link_id}/keys")
 async def put_live_keys(link_id: UUID, body: LiveKeysIn, request: Request,
-                        admin: CurrentAdmin, session: DbSession, redis: RedisClient) -> dict:
+                        admin: CurrentAdmin, session: DbSession, redis: RedisClient,
+                        qs: Quotes) -> dict:
     """New keys: the link goes back to `configured` (disarmed first if it was armed)."""
     async with _transaction(session, redis):
         link = await _live_link(session, link_id)
         await save_live_keys(session, name=body.name or link.name, kind=link.kind,
                              config=body.config(), actor=request_actor(request, admin),
                              link_id=link_id)
-    return await _fresh_dto(session, link_id)
+    return await _fresh_dto(session, link_id, qs)
 
 
 @router.post("/live-links/{link_id}/test")
@@ -263,10 +320,10 @@ async def post_live_test(link_id: UUID, request: Request, admin: CurrentAdmin,
 
 @router.post("/live-links/{link_id}/dry-run")
 async def post_dry_run(link_id: UUID, body: DryRunIn, request: Request, admin: CurrentAdmin,
-                       session: DbSession, redis: RedisClient) -> dict:
+                       session: DbSession, redis: RedisClient, qs: Quotes) -> dict:
     async with _transaction(session, redis):
         await set_dry_run(session, link_id, body.on, actor=request_actor(request, admin))
-    return await _fresh_dto(session, link_id)
+    return await _fresh_dto(session, link_id, qs)
 
 
 @router.post("/live-links/{link_id}/arm")
@@ -279,12 +336,12 @@ async def post_arm(link_id: UUID, body: ArmIn, request: Request, admin: CurrentA
             confirm_name=body.confirm_name, accept_risks=body.accept_risks,
             dedicated_account=body.dedicated_account, limits_set=body.limits_set,
             actor=request_actor(request, admin), qs=qs)
-    return await _fresh_dto(session, link_id)
+    return await _fresh_dto(session, link_id, qs)
 
 
 @emergency_router.post("/live-links/{link_id}/disarm")
 async def post_disarm(link_id: UUID, request: Request, user: CurrentUser,
-                      session: DbSession, redis: RedisClient) -> dict:
+                      session: DbSession, redis: RedisClient, qs: Quotes) -> dict:
     """«Disattiva denaro reale»: one click, no TOTP, any body (an optional JSON
     `{"reason": "..."}`: a reason that is not a text is ignored). Two phases (R8.12): the
     link is `configured` once this answers, `settled` false if its orders could not be
@@ -295,7 +352,7 @@ async def post_disarm(link_id: UUID, request: Request, user: CurrentUser,
     orders = await disarm_live_link_now(request.app.state.sessionmaker, link_id,
                                         actor=request_actor(request, user), reason=reason,
                                         redis=redis)
-    return {**await _fresh_dto(session, link_id), "orders": orders,
+    return {**await _fresh_dto(session, link_id, qs), "orders": orders,
             "settled": orders is not None}
 
 

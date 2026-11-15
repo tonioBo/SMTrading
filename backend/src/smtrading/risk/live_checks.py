@@ -12,17 +12,21 @@ repeats the cash cap and the fuse right before sending (with a fresh broker snap
   the portfolio's other open sells on the symbol ahead of it (`open_sells_ahead`) must not
   exceed the position -> SHORT_NOT_ALLOWED (a reduce-only order is clamped);
 - a buy: `live_cash_needed(estimate, fees)` must not exceed min(the portfolio's cash, the
-  broker's cash in the portfolio currency), both less what the portfolio's other open
-  buys ahead of it may still cost (`committed_buys`: value + trade fee + FX fee, the same
-  `estimate_buy` for every order); the broker's cash only from a snapshot read in the
-  last SNAPSHOT_MAX_AGE_S and not marked stale by a send since (an older one: the
-  portfolio's cash only, BrokerSync checks again with fresh data) -> LIVE_CASH_LIMIT.
-  An account in another currency than the portfolio's (allowed since plan 9, replacing
-  R8.5) counts at the worse of the current rate and the link's reference rate
-  (`BrokerLink.fx_ref_rates`), less FX_SAFETY_PCT (`broker_cash_in_base`);
-- fuse (Ruling R8.1): `profile.max_live_orders_per_hour` (default 30) orders already sent
-  to the broker by the portfolio in the last 3600 s -> RISK_LIMIT_EXCEEDED and the
-  portfolio goes reduce-only (`trip_reduce_only(cause="fuse")`). A reduce-only order is
+  broker's cash less the quotas of the link's other portfolios, in the portfolio
+  currency), both less what the portfolio's other open buys ahead of it may still cost
+  (`committed_buys`: value + trade fee + FX fee, the same `estimate_buy` for every order);
+  the broker's cash only from a snapshot read in the last SNAPSHOT_MAX_AGE_S and not
+  marked stale by a send since (an older one: the portfolio's cash only, BrokerSync
+  checks again with fresh data) -> LIVE_CASH_LIMIT. Several portfolios may share one
+  real account (plan 9, Task 11): another portfolio's quota is its cash
+  (brokers.live.quotas), which still holds the cost of its open buys, so nothing is
+  counted twice. An account in another currency than the portfolio's (allowed since
+  plan 9, replacing R8.5) counts at the worse of the current rate and the link's
+  reference rate (`BrokerLink.fx_ref_rates`), less FX_SAFETY_PCT (`broker_cash_in_base`);
+- fuse (Ruling R8.1), per link: the lowest `profile.max_live_orders_per_hour` (default
+  30) of the link's portfolios, orders already sent to the broker by any portfolio of
+  the link in the last 3600 s -> RISK_LIMIT_EXCEEDED and every portfolio of the link
+  goes reduce-only (`trip_reduce_only(cause="fuse")`). A reduce-only order is
   not refused by the fuse (an exit must never be blocked; it still trips it); a
   live-flatten order neither (the admin's emergency close, counted only).
 
@@ -438,17 +442,27 @@ async def check_no_short(session: AsyncSession, *, portfolio: Portfolio, symbol:
             "open_sells": None if others is None else str(others)})
 
 
-async def max_live_orders_per_hour(session: AsyncSession, portfolio: Portfolio) -> int:
-    profile = await effective_risk_profile(session, portfolio)
-    value = profile.max_live_orders_per_hour if profile is not None else None
-    return int(value) if value else DEFAULT_MAX_LIVE_ORDERS_PER_HOUR
+async def max_live_orders_per_hour(session: AsyncSession, link_id: UUID) -> int:
+    """The fuse limit of a link: the lowest `max_live_orders_per_hour` of its portfolios'
+    profiles (a profile without one counts DEFAULT_MAX_LIVE_ORDERS_PER_HOUR)."""
+    limits = [DEFAULT_MAX_LIVE_ORDERS_PER_HOUR]
+    portfolios = list(await session.scalars(
+        select(Portfolio).where(Portfolio.broker_link_id == link_id)))
+    if portfolios:
+        limits = []
+        for p in portfolios:
+            profile = await effective_risk_profile(session, p)
+            value = profile.max_live_orders_per_hour if profile is not None else None
+            limits.append(int(value) if value else DEFAULT_MAX_LIVE_ORDERS_PER_HOUR)
+    return min(limits)
 
 
-async def live_orders_sent(session: AsyncSession, portfolio_id: UUID, now: datetime, *,
+async def live_orders_sent(session: AsyncSession, link_id: UUID, now: datetime, *,
                            exclude: UUID | None = None) -> int:
-    """Orders of the portfolio sent to the broker in the sliding hour before `now`."""
+    """Orders routed to the link (every portfolio) sent to the broker in the sliding hour
+    before `now`."""
     query = select(func.count(Order.id)).where(
-        Order.portfolio_id == portfolio_id, Order.broker_sent_at.is_not(None),
+        Order.broker_link_id == link_id, Order.broker_sent_at.is_not(None),
         Order.broker_sent_at >= now - FUSE_WINDOW,
     )
     if exclude is not None:
@@ -456,21 +470,28 @@ async def live_orders_sent(session: AsyncSession, portfolio_id: UUID, now: datet
     return int(await session.scalar(query) or 0)
 
 
-async def check_live_fuse(session: AsyncSession, *, portfolio: Portfolio, now: datetime,
-                          reduce_only: bool, live_flatten: bool, trip: bool = True,
-                          exclude: UUID | None = None) -> None:
-    """Ruling R8.1 (see the module docstring)."""
+async def check_live_fuse(session: AsyncSession, *, portfolio: Portfolio, link: BrokerLink,
+                          now: datetime, reduce_only: bool, live_flatten: bool,
+                          trip: bool = True, exclude: UUID | None = None) -> None:
+    """Ruling R8.1, per link (see the module docstring): a trip puts the portfolio in
+    reduce-only at once and the link's other portfolios right after the commit
+    (events.queue_live_trip: own transaction, link lock first, R8.9). Until then, any of
+    them sending an order meets the same link-wide count and is tripped itself."""
     if live_flatten:
         return
-    limit = await max_live_orders_per_hour(session, portfolio)
-    sent = await live_orders_sent(session, portfolio.id, now, exclude=exclude)
+    limit = await max_live_orders_per_hour(session, link.id)
+    sent = await live_orders_sent(session, link.id, now, exclude=exclude)
     if sent < limit:
         return
     if trip:
         from smtrading.brokers.live.protect import trip_reduce_only
+        from smtrading.events import queue_live_trip
 
-        await trip_reduce_only(session, portfolio.id, cause="fuse",
-                               details={"sent_last_hour": sent, "limit": limit})
+        details = {"sent_last_hour": sent, "limit": limit, "link_id": link.id}
+        # the caller holds this portfolio's lock: it is tripped in place; the link's other
+        # portfolios after the commit, link lock first (R8.9), never under this lock
+        await trip_reduce_only(session, portfolio.id, cause="fuse", details=details)
+        queue_live_trip(session, link.id, portfolio.id, "fuse", details)
     if not reduce_only:
         raise SMTError(ErrorCode.RISK_LIMIT_EXCEEDED, FUSE_MESSAGE,
                        {"sent_last_hour": sent, "limit": limit})
@@ -480,22 +501,29 @@ async def check_live_cash(session: AsyncSession, qs: QuoteSource, *, portfolio: 
                           link: BrokerLink, est_value: Decimal, est_fees: Decimal,
                           now: datetime, exclude: UUID | None = None,
                           order: Order | None = None) -> None:
-    """The cash cap of a real buy (amounts in the portfolio's base currency): the other
-    open buys ahead of it (`committed_buys`) are taken off both cash amounts."""
+    """The cash cap of a real buy (amounts in the portfolio's base currency): the broker's
+    cash less the quotas of the link's other portfolios (`others_reserved`, account
+    currency, brokers.live.quotas) counts; the other open buys ahead of it
+    (`committed_buys`) are taken off both cash amounts. A missing FX rate for another
+    portfolio's quota raises PROVIDER_UNAVAILABLE (BrokerSync: the order waits)."""
     needed = live_cash_needed(est_value, est_fees)
     committed = await committed_buys(session, qs, portfolio=portfolio, exclude=exclude,
                                      order=order, now=now)
     ours = await portfolio_cash(session, qs, portfolio)
-    broker = None
+    broker = others = None
     snap = snapshot_cash(link, now)
     if snap is not None:
-        broker = await broker_cash_in_base(qs, link, snap[0], snap[1],
+        from smtrading.brokers.live.quotas import link_quotas, quotas_total
+
+        others = quotas_total(await link_quotas(session, qs, link, exclude=portfolio.id,
+                                                currency=snap[1]))
+        broker = await broker_cash_in_base(qs, link, snap[0] - others, snap[1],
                                            portfolio.base_currency)
     available = (ours if broker is None else min(ours, broker)) - committed
     if needed > available:
         ccy = portfolio.base_currency
         details = {"needed": needed, "portfolio_cash": ours, "broker_cash": broker,
-                   "committed": committed}
+                   "committed": committed, "others_reserved": others}
         raise SMTError(
             ErrorCode.LIVE_CASH_LIMIT,
             f"liquidità insufficiente per l'ordine reale: servono "
@@ -532,5 +560,6 @@ async def live_pre_trade(
         await check_live_cash(session, qs, portfolio=portfolio, link=link,
                               est_value=est_value, est_fees=est_fees, now=now,
                               exclude=exclude_order)
-    await check_live_fuse(session, portfolio=portfolio, now=now, reduce_only=reduce_only,
+    await check_live_fuse(session, portfolio=portfolio, link=link, now=now,
+                          reduce_only=reduce_only,
                           live_flatten=live_flatten, trip=trip, exclude=exclude_order)
