@@ -10,7 +10,8 @@ const TIME_ZONE = "Europe/Rome";
 /** The filters as query parameters; the period's days are whole days in Europe/Rome. */
 export function activityQuery(filters: ActivityFilters): URLSearchParams {
   const params = new URLSearchParams();
-  if (filters.email) params.set("email", filters.email);
+  if (filters.email.trim()) params.set("email", filters.email.trim());
+  if (filters.anonymous) params.set("anonymous", "true");
   if (filters.category) params.set("category", filters.category);
   if (filters.outcome) params.set("outcome", filters.outcome);
   if (filters.from) params.set("from", zonedDayStart(filters.from, TIME_ZONE));

@@ -938,7 +938,8 @@ export interface LiveAuditFilters {
 }
 
 /** «Registro attività»: one state-changing request of a person, or an access event. */
-export type ActivityOutcome = "ok" | "denied" | "error";
+/** `pending`: only the provisional row of a request whose final row is missing. */
+export type ActivityOutcome = "ok" | "denied" | "error" | "pending";
 
 export interface ActivityRow {
   id: number;
@@ -961,10 +962,16 @@ export interface ActivityRow {
   ip: string | null;
   user_agent: string | null;
   summary: Record<string, unknown>;
+  provisional: boolean;
+  /** provisional rows of the same request hidden behind this final row */
+  provisional_rows: number;
 }
 
 export interface ActivityFilters {
+  /** part of an email, any case */
   email: string;
+  /** only rows without a user (failed logins, requests without a session) */
+  anonymous: boolean;
   category: string;
   outcome: string;
   /** yyyy-mm-dd, inclusive (Europe/Rome days) */
