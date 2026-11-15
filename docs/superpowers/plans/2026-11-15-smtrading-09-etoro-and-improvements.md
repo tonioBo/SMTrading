@@ -429,6 +429,12 @@ web/src/pages/AgentCosts.tsx    web/src/api/hooks/paperclip.ts
 - [ ] **Step 4:** PASS; `uv run pytest -q` verde.
 - [ ] **Step 5:** commit `feat(live): multi-currency real portfolios, worst-rate cash cap, FX-only drift alert`
 
+
+**Aggiunta (decisione dell'utente 2026-11-15): deposito su portafoglio reale solo se il broker ha già il contante.**
+- [ ] **Step D1: test** `tests/integration/test_live_deposit_guard.py::test_deposit_refused_when_broker_cash_short`. Il portafoglio è collegato a un link live (fake broker, conto con contante 600, portafoglio con 500). `POST /api/portfolios/{id}/deposit {amount: 200}` → 400 `INVALID_ORDER`, `details.field == "amount"`, messaggio «Il conto del broker non ha ancora questo contante: fai prima il bonifico al broker, poi registra il deposito». Saldo invariato. `{amount: 100}` → 200. Con portafoglio e conto in valute diverse il confronto avviene al cambio corrente con il margine di Task 7. Senza cambio il deposito viene rifiutato con lo stesso messaggio più «(cambio non disponibile)». `withdraw` è sempre ammesso. Portafogli non live: nessun cambiamento (test).
+- [ ] **Step D2:** in `portfolios/service.py` (o in un guard chiamato da `admin/routes_portfolios.py` `deposit_cash`): se il portafoglio ha `broker_link_id` con `live_state` non null, legge il contante disponibile dal broker (snapshot fresco via `brokers/live/account.py`, come `check_live_portfolio`) e rifiuta se `contante portafoglio + deposito > contante broker`. Il messaggio è in italiano e non contiene importi del conto oltre a quelli necessari.
+- [ ] **Step D3:** web: l'errore viene mostrato nel dialogo «Deposita» (test vitest). Commit insieme a Task 7.
+
 ### Task 8: Lettore Paperclip (costi, isolamento, errori)
 
 **Riferimento protocollo Paperclip**, verificato il 2026-11-15:
