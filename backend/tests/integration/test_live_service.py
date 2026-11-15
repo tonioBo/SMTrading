@@ -577,7 +577,6 @@ async def test_link_checks_profile_short_leverage_currency_cash_one_to_one(sm, r
     await check(await _portfolio(sm, profile=await _profile(sm, short_allowed=True)),
                 "short_allowed")
     await check(await _portfolio(sm, leverage=2), "leverage")
-    await check(await _portfolio(sm, ccy="EUR"), "base_currency")  # R8.5: Alpaca too
     await check(await _portfolio(sm, cash=1001, ccy="USD"), "cash")
     ok = await _portfolio(sm, cash=1000, ccy="USD")  # 1000.00 USD: allowed
     async with sm() as s:
@@ -589,10 +588,31 @@ async def test_link_checks_profile_short_leverage_currency_cash_one_to_one(sm, r
     await check(await _portfolio(sm, ccy="USD"), "link_id")  # 1 live link <-> 1 portfolio
 
     t212 = await _tested(sm, fake, "t212_live", T212)  # Trading 212 fake: EUR
-    async with sm() as s:
+    async with sm() as s:  # another currency than the account's is allowed (plan 9)
+        await check_live_portfolio(s, await s.get(Portfolio, await _portfolio(
+            sm, ccy="USD")), await s.get(BrokerLink, t212), qs=qs)
         await _expect(check_live_portfolio(s, await s.get(Portfolio, await _portfolio(
-            sm, ccy="USD")), await s.get(BrokerLink, t212), qs=qs),
-            ErrorCode.INVALID_ORDER, "base_currency")
+            sm, cash=1251, ccy="USD")), await s.get(BrokerLink, t212), qs=qs),
+            ErrorCode.INVALID_ORDER, "cash")  # 1251 USD = 1000.80 EUR > 1000.00 EUR
+
+
+async def test_link_allows_other_currency(sm, redis, fake):
+    """A EUR portfolio on the Alpaca (USD) account links; the reference FX rates are the
+    current ones of the portfolio's cash currencies (USD per EUR)."""
+    admin, totp = await _admin(sm)
+    link_id = await _tested(sm, fake)  # 1000.00 USD
+    async with sm() as s:
+        await set_dry_run(s, link_id, True, actor=WHO)
+        await s.commit()
+    pid = await _portfolio(sm, cash=500, ccy="EUR")  # 625 USD
+    async with sm() as s:
+        pf = await link_live_portfolio(s, redis, pid, link_id,
+                                       admin=await s.get(AdminUser, admin.id),
+                                       totp=totp.code(), actor=WHO, qs=_qs())
+        await s.commit()
+    assert pf.broker_link_id == link_id
+    assert {c: D(r) for c, r in (await _link(sm, link_id)).fx_ref_rates.items()} == {
+        "EUR": D("1.25")}
 
 
 async def test_link_allowed_in_dry_run(sm, redis, fake):

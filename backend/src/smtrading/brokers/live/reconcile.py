@@ -11,11 +11,20 @@ FOR NO KEY UPDATE, then the portfolio through `trip_reduce_only`):
   QTY_EPSILON; a difference inside the band is `explained` (a fill not yet synced), one
   outside is a position diff. A symbol with an open notional order (no quantity) cannot
   be bounded: `skipped`;
-- cash: broker cash below ours by more than the tolerance is a shortfall; the tolerance is
-  `cash_tolerance` + 1 % of the cash held in other currencies than the account's
-  (converted, R8.5) + what the open buys at the broker may still cost (a buy filled there
-  and not yet synced). Open sells never skip it (a surplus is fine: the account is
-  dedicated). A missing FX rate or price: `skipped`;
+- cash, compared in the account currency: broker cash below ours by more than the
+  tolerance is a shortfall; the tolerance is `cash_tolerance` + 1 % of the cash held in
+  other currencies than the account's (converted at the current rates) + what the open
+  buys at the broker may still cost (a buy filled there and not yet synced). Open sells
+  never skip it (a surplus is fine: the account is dedicated). A missing FX rate or
+  price: `skipped` (no shortfall, no FX drift alert);
+- FX drift (plan 9, replacing the same-currency rule R8.5): the drift is
+  Σ |cash_c| × |current rate of c − the link's reference rate of c| over the currencies
+  c other than the account's (`BrokerLink.fx_ref_rates`, missing: no drift). A
+  shortfall within the tolerance plus the drift, with no position diff, is an `fx_drift`
+  entry: not a diff (the row is ok, never reduce-only), one critical `live.fx_drift`
+  per portfolio and local day. Beyond it, or with a position diff, it is a shortfall as
+  above. The reference rates are set to the current ones on every pass whose cash is
+  compared and not short (under the link lock);
 - debounce (R8.7): a diff is recorded at once (`Reconciliation(ok=False)`), the portfolio
   goes reduce-only (`reconcile_diff` / `cash_shortfall`) only when the same diff (by
   symbol and sign of the difference; cash short) is found again on the next pass;
@@ -40,9 +49,10 @@ at the broker shows here as a position diff, for the admin to resolve.
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from decimal import Decimal, localcontext
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -79,6 +89,7 @@ INFLIGHT = "ordine in corso"
 NO_FX = "cambio non disponibile"
 NO_PRICE = "prezzo non disponibile"
 UNEXPLAINED_KIND = "reconcile_unexplained"
+FX_DRIFT_KIND = "fx_drift"
 _AUTH = re.compile(r"HTTP (401|403)\b|credenziali non valide")  # Alpaca, Trading 212
 _RATE = re.compile(r"HTTP 429\b")  # Alpaca (Trading 212 raises RateLimited)
 _PREC = 60
@@ -189,6 +200,7 @@ async def _rates(qs: QuoteSource | None, ccys: set[str], ccy: str) -> dict[str, 
 class _Money:
     ours: Decimal  # our cash, in the account currency
     eur: Decimal  # 1 EUR in the account currency
+    rates: dict[str, Decimal]  # units of the account currency per unit of our cash's
     foreign: Decimal  # our cash held in other currencies, converted
     buys: Decimal | None  # what the open buys may still cost (None: a price is missing)
 
@@ -224,7 +236,8 @@ async def _money(qs: QuoteSource | None, cash: dict[str, Decimal], buys: list[_B
         with localcontext() as ctx:
             ctx.prec = _PREC
             cost += value * margin * rates[b.currency]
-    return _Money(ours, rates["EUR"], foreign, cost)
+    return _Money(ours, rates["EUR"], {c: rates[c] for c in cash if c != ccy}, foreign,
+                  cost)
 
 
 async def reconcile_live(
@@ -283,11 +296,16 @@ async def reconcile_live(
         link.last_account_snapshot = new
         link.last_snapshot_at = await session.scalar(select(func.now()))
         now = link.last_snapshot_at
-        diffs, position_diff, cash_short = _compare(before, after, broker, snap, money)
+        diffs, position_diff, cash = _compare(before, after, broker, snap, money,
+                                              link.fx_ref_rates)
+        if cash == _CASH_OK:  # matching: these rates are the new reference
+            link.fx_ref_rates = {c: str(r) for c, r in money.rates.items()}
         rows = []
         for pid in pids:
             rows.append(await _record(session, link, pid, diffs, now,
-                                      position_diff=position_diff, cash_short=cash_short))
+                                      position_diff=position_diff,
+                                      cash_short=cash == _CASH_SHORT,
+                                      fx_drift=cash == _CASH_FX_DRIFT))
         if kind == "alpaca_live" and snap.account_type != "cash":  # R8.10 (no multiplier too)
             for pid in pids:
                 await trip_reduce_only(session, pid, cause="margin_account",
@@ -307,8 +325,29 @@ def _stale_since(snapshot: dict, read_at: datetime) -> bool:
         return True
 
 
+_CASH_OK, _CASH_SHORT, _CASH_FX_DRIFT, _CASH_SKIPPED = "ok", "short", "fx_drift", "skipped"
+
+
+def _drift(money: _Money, cash: dict[str, Decimal], refs: dict | None) -> Decimal:
+    """Σ |cash_c| × |current rate − reference rate| over the other currencies (module
+    docstring), in the account currency."""
+    refs = refs if isinstance(refs, dict) else {}
+    total = Decimal(0)
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        for c, now in money.rates.items():
+            try:
+                ref = Decimal(str(refs[c])) if c in refs else now
+            except ArithmeticError:
+                ref = now
+            total += abs(cash.get(c, Decimal(0))) * abs(now - ref)
+    return total
+
+
 def _compare(before: _State, after: _State, broker: dict[str, Decimal],
-             snap: AccountSnapshot, money: _Money | None) -> tuple[list[dict], bool, bool]:
+             snap: AccountSnapshot, money: _Money | None, refs: dict | None = None,
+             ) -> tuple[list[dict], bool, str]:
+    """(entries, a position differs, the cash outcome: _CASH_*)."""
     diffs: list[dict] = []
     position_diff = False
     unbounded = before.unbounded | after.unbounded
@@ -328,21 +367,29 @@ def _compare(before: _State, after: _State, broker: dict[str, Decimal],
             continue
         diffs.append({"symbol": symbol, "ours": _num(ours), "broker": _num(theirs)})
         position_diff = True
-    cash_short = False
     if money is None:
         diffs.append({"cash": {"skipped": NO_FX}})
-    elif money.buys is None:
+        return diffs, position_diff, _CASH_SKIPPED
+    if money.buys is None:
         diffs.append({"cash": {"skipped": NO_PRICE}})
-    else:
-        with localcontext() as ctx:
-            ctx.prec = _PREC
-            tolerance = (cash_tolerance(money.ours, money.eur) + money.foreign * FX_BAND_PCT
-                         + money.buys)
-        if snap.cash_available < money.ours - tolerance:
-            cash_short = True
-            diffs.append({"cash": {"ours": _num(money.ours), "broker": _num(snap.cash_available),
-                                   "currency": snap.currency, "tolerance": _num(tolerance)}})
-    return diffs, position_diff, cash_short
+        return diffs, position_diff, _CASH_SKIPPED
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        tolerance = (cash_tolerance(money.ours, money.eur) + money.foreign * FX_BAND_PCT
+                     + money.buys)
+        drift = _drift(money, after.cash, refs)
+        short = snap.cash_available < money.ours - tolerance
+        true_short = snap.cash_available < money.ours - tolerance - drift
+    if not short:
+        return diffs, position_diff, _CASH_OK
+    if not true_short and not position_diff:  # the FX moved, nothing else: an alert only
+        diffs.append({"cash": {"fx_drift": _num(drift), "ours": _num(money.ours),
+                               "broker": _num(snap.cash_available),
+                               "currency": snap.currency}})
+        return diffs, position_diff, _CASH_FX_DRIFT
+    diffs.append({"cash": {"ours": _num(money.ours), "broker": _num(snap.cash_available),
+                           "currency": snap.currency, "tolerance": _num(tolerance)}})
+    return diffs, position_diff, _CASH_SHORT
 
 
 # -- recording: debounce, changes only, unexplained for too long ---------------------------
@@ -355,6 +402,11 @@ def _is_account(entry: dict) -> bool:
 
 def _key(entry: dict) -> str:
     return f"symbol:{entry['symbol']}" if "symbol" in entry else "cash"
+
+
+def _is_fx_drift(entry: dict) -> bool:
+    """A cash shortfall explained by the FX alone: never a diff."""
+    return "cash" in entry and "fx_drift" in entry["cash"]
 
 
 def _pending(entry: dict) -> str | None:
@@ -372,7 +424,7 @@ def _actionable(diffs: list[dict]) -> list:
     cash is short."""
     out: list = []
     for d in diffs:
-        if _is_account(d) or _pending(d) is not None:
+        if _is_account(d) or _is_fx_drift(d) or _pending(d) is not None:
             continue
         if "cash" in d:
             out.append(["cash"])
@@ -388,6 +440,8 @@ def _signature(diffs: list[dict]) -> list:
     for d in diffs:
         if _is_account(d):
             out.append(["account"])
+        elif _is_fx_drift(d):
+            out.append(["cash", "fx_drift"])
         elif "cash" in d:
             out.append(["cash", d["cash"].get("skipped", "short"), d.get("since")])
         else:
@@ -403,7 +457,8 @@ async def _previous(session: AsyncSession, link_id: UUID, pid: UUID) -> Reconcil
 
 
 async def _record(session: AsyncSession, link: BrokerLink, pid: UUID, diffs: list[dict],
-                  now: datetime, *, position_diff: bool, cash_short: bool) -> Reconciliation:
+                  now: datetime, *, position_diff: bool, cash_short: bool,
+                  fx_drift: bool = False) -> Reconciliation:
     previous = await _previous(session, link.id, pid)
     prev_diffs = previous.diffs if previous is not None and isinstance(previous.diffs, list) \
         else []
@@ -442,7 +497,30 @@ async def _record(session: AsyncSession, link: BrokerLink, pid: UUID, diffs: lis
                     "confirmed" if confirmed else "first pass", entries)
     for d in entries:
         await _unexplained_alert(session, link, pid, d, now)
+        if fx_drift and _is_fx_drift(d):
+            await _fx_drift_alert(session, link, pid, d, now)
     return row
+
+
+async def _fx_drift_alert(session: AsyncSession, link: BrokerLink, pid: UUID, entry: dict,
+                          now: datetime) -> None:
+    """One critical `live.fx_drift` per portfolio and local day (its timezone)."""
+    portfolio = await session.get(Portfolio, pid)
+    tz = ZoneInfo(portfolio.timezone if portfolio is not None else "Europe/Rome")
+    midnight = datetime.combine(now.astimezone(tz).date(), time(0), tzinfo=tz)
+    sent = await session.scalar(select(Activity.id).where(
+        Activity.type == f"live.{FX_DRIFT_KIND}", Activity.portfolio_id == pid,
+        Activity.ts >= midnight).limit(1))
+    if sent is not None:
+        return
+    cash = entry["cash"]
+    ours, theirs = (Decimal(cash[k]).quantize(Decimal("0.01")) for k in ("ours", "broker"))
+    await live_alert(
+        session, kind=FX_DRIFT_KIND,
+        summary=f"Scarto di cambio sul portafoglio reale: {ours} contro {theirs} "
+                f"{cash['currency']}",
+        portfolio_id=pid, link_id=link.id, data={"entry": entry},
+    )
 
 
 async def _unexplained_alert(session: AsyncSession, link: BrokerLink, pid: UUID, entry: dict,

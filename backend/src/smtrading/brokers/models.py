@@ -50,6 +50,9 @@ class BrokerLink(Base):
     last_snapshot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_test_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     health_failures: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    # real-money links: {currency: units of the account currency per unit}, the last FX
+    # rates at which the linked cash matched the broker's (risk.live_checks, reconcile)
+    fx_ref_rates: Mapped[dict | None] = mapped_column(JSONB)
 
 
 class Reconciliation(Base):

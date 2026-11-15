@@ -808,3 +808,45 @@ async def test_an_order_failing_every_pass_from_the_start_still_expires(
     assert o.status == OrderStatus.rejected and o.reject_code == ErrorCode.PROVIDER_UNAVAILABLE
     assert "30 minuti" in o.reject_message
     assert oid not in sync._waiting
+
+
+async def test_no_fx_buy_waits_then_expires_sell_sent(maker, redis, qs):
+    """Review Focus 3: a EUR portfolio on a USD account and no FX rate at send time: the
+    buy waits and is rejected after LIVE_WAIT_MAX, the sell is sent."""
+    async with maker() as s:
+        p = await create_portfolio(s, name=f"P-{uuid.uuid4().hex[:8]}", initial_cash=D(10000))
+        await s.commit()
+    await _place(maker, redis, qs, p.id, qty=D(5))  # on the simulator: 5 AAPL held
+    async with maker() as s:
+        link = BrokerLink(name=f"L-{uuid.uuid4().hex[:8]}", kind="alpaca_live",
+                          live_state="armed",
+                          last_account_snapshot={"currency": "USD", "cash_available": "100000"},
+                          last_snapshot_at=OPEN)
+        s.add(link)
+        await s.flush()
+        (await s.get(Portfolio, p.id)).broker_link_id = link.id
+        await s.commit()
+    buy = await _place(maker, redis, qs, p.id, qty=D(1))
+    sell = await _place(maker, redis, qs, p.id, side=OrderSide.sell, qty=D(2))
+    no_fx = FakeQuoteSource()  # quotes, no FX rate
+    no_fx.set_quote("AAPL", D("99.90"), D("100.00"), D("99.95"))
+    clock = Clock(OPEN)
+    sync = _sync(maker, redis, no_fx, clock)
+    with _mock(called=False) as mock:
+        post = mock.post(f"{ALPACA}/v2/orders").mock(return_value=httpx.Response(
+            200, json={**_alpaca_order(), "side": "sell", "qty": "2"}))
+        mock.get(url__regex=rf"{ALPACA}/v2/orders/.*").mock(return_value=httpx.Response(
+            200, json={**_alpaca_order(), "side": "sell", "qty": "2"}))
+        mock.get(f"{ALPACA}/v2/account").mock(return_value=httpx.Response(500))
+        await sync.tick()
+        assert post.call_count == 1
+        assert post.calls.last.request.extensions["smt_order_id"] == str(sell)
+        assert (await _order(maker, sell)).broker_order_id == "bo-1"
+        o = await _order(maker, buy)
+        assert o.status == OrderStatus.pending and o.broker_status == BrokerState.TO_SEND
+        clock.now = OPEN + timedelta(minutes=31)
+        await sync.tick()
+    o = await _order(maker, buy)
+    assert o.status == OrderStatus.rejected and o.reject_code == ErrorCode.PROVIDER_UNAVAILABLE
+    assert "30 minuti" in o.reject_message
+    assert post.call_count == 1

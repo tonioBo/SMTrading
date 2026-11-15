@@ -16,7 +16,10 @@ repeats the cash cap and the fuse right before sending (with a fresh broker snap
   buys ahead of it may still cost (`committed_buys`: value + trade fee + FX fee, the same
   `estimate_buy` for every order); the broker's cash only from a snapshot read in the
   last SNAPSHOT_MAX_AGE_S and not marked stale by a send since (an older one: the
-  portfolio's cash only, BrokerSync checks again with fresh data) -> LIVE_CASH_LIMIT;
+  portfolio's cash only, BrokerSync checks again with fresh data) -> LIVE_CASH_LIMIT.
+  An account in another currency than the portfolio's (allowed since plan 9, replacing
+  R8.5) counts at the worse of the current rate and the link's reference rate
+  (`BrokerLink.fx_ref_rates`), less FX_SAFETY_PCT (`broker_cash_in_base`);
 - fuse (Ruling R8.1): `profile.max_live_orders_per_hour` (default 30) orders already sent
   to the broker by the portfolio in the last 3600 s -> RISK_LIMIT_EXCEEDED and the
   portfolio goes reduce-only (`trip_reduce_only(cause="fuse")`). A reduce-only order is
@@ -68,6 +71,7 @@ from smtrading.risk.settings import is_kill_switch_on
 log = logging.getLogger(__name__)
 
 LIVE_CASH_MARGIN_PCT = Decimal(2)
+FX_SAFETY_PCT = Decimal("0.01")  # off the broker's cash held in another currency
 SNAPSHOT_MAX_AGE_S = 60
 FUSE_WINDOW = timedelta(seconds=3600)
 DEFAULT_MAX_LIVE_ORDERS_PER_HOUR = 30
@@ -161,6 +165,31 @@ def mark_snapshot_stale(link: BrokerLink, at: datetime) -> None:
     the next buy reads the account again (BrokerSync, at most every 5 s)."""
     if isinstance(link.last_account_snapshot, dict):
         link.last_account_snapshot = {**link.last_account_snapshot, STALE_KEY: at.isoformat()}
+
+
+def fx_ref_rate(link: BrokerLink, ccy: str) -> Decimal | None:
+    """The link's reference rate of `ccy` (units of the account currency per unit), the
+    last one at which the linked cash matched the broker's; None when unknown."""
+    refs = link.fx_ref_rates if isinstance(link.fx_ref_rates, dict) else {}
+    rate = _dec(refs.get(ccy.upper()))
+    return rate if rate is not None and rate > 0 else None
+
+
+async def broker_cash_in_base(qs: QuoteSource, link: BrokerLink, cash: Decimal, ccy: str,
+                              base: str) -> Decimal:
+    """`cash` of the broker account (in `ccy`) as the portfolio may count it in `base`:
+    unchanged in the same currency; otherwise at the worse (lower) of the current rate
+    and 1 / the reference rate of `base`, less FX_SAFETY_PCT. PROVIDER_UNAVAILABLE
+    without a current rate."""
+    if ccy.upper() == base.upper():
+        return cash
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        rate = await to_currency(qs, Decimal(1), ccy, base)
+        ref = fx_ref_rate(link, base)
+        if ref is not None:
+            rate = min(rate, 1 / ref)
+        return cash * rate * (1 - FX_SAFETY_PCT)
 
 
 def snapshot_cash(link: BrokerLink, now: datetime) -> tuple[Decimal, str] | None:
@@ -460,7 +489,8 @@ async def check_live_cash(session: AsyncSession, qs: QuoteSource, *, portfolio: 
     broker = None
     snap = snapshot_cash(link, now)
     if snap is not None:
-        broker = await to_currency(qs, snap[0], snap[1], portfolio.base_currency)
+        broker = await broker_cash_in_base(qs, link, snap[0], snap[1],
+                                           portfolio.base_currency)
     available = (ours if broker is None else min(ours, broker)) - committed
     if needed > available:
         ccy = portfolio.base_currency

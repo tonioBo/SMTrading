@@ -41,6 +41,7 @@ from smtrading.admin.schemas import (
     ReverseIn,
 )
 from smtrading.agents.service import write_audit
+from smtrading.brokers.live.deposit import check_live_deposit, read_live_cash
 from smtrading.brokers.models import BrokerLink
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.fingerprints import name_warning
@@ -514,14 +515,28 @@ async def transactions_csv(
 
 async def _cash_move(
     mover: Callable[..., Awaitable[Journal]], portfolio_id: UUID, body: CashMoveIn,
-    admin, session: AsyncSession, redis, idem: Idempotency,
+    admin, session: AsyncSession, redis, idem: Idempotency, *,
+    live_guard: tuple[Request, MemoQuoteSource] | None = None,
 ):
+    """A deposit or withdrawal; with `live_guard` (deposits) a portfolio linked to a
+    real-money link needs the cash at the broker first (brokers.live.deposit)."""
     async def run() -> dict:
+        broker = None
+        if live_guard is not None:  # read before any lock, no transaction open (R9)
+            from smtrading.admin.routes_live import live_http_factory  # (circular import)
+
+            request = live_guard[0]
+            broker = await read_live_cash(request.app.state.sessionmaker, portfolio_id,
+                                          live_http_factory(request))
         async with _transaction(session, redis):
             portfolio = await lock_live_portfolio(session, portfolio_id)
             amount = parse_decimal(body.amount, "amount")
+            currency = body.currency or portfolio.base_currency
+            if live_guard is not None and amount > 0:
+                await check_live_deposit(session, live_guard[1], portfolio, broker, amount,
+                                         currency)
             journal = await mover(
-                session, portfolio_id, amount, body.currency or portfolio.base_currency,
+                session, portfolio_id, amount, currency,
                 author_id=admin.email, reason=(body.reason or "").strip() or None,
             )
             out = {
@@ -535,10 +550,12 @@ async def _cash_move(
 
 @router.post("/portfolios/{portfolio_id}/deposit")
 async def deposit_cash(
-    portfolio_id: UUID, body: CashMoveIn, admin: CurrentAdmin, session: DbSession,
-    redis: RedisClient, idem: Annotated[Idempotency, Depends(idempotent("deposit"))],
+    portfolio_id: UUID, body: CashMoveIn, request: Request, admin: CurrentAdmin,
+    session: DbSession, redis: RedisClient, qs: Quotes,
+    idem: Annotated[Idempotency, Depends(idempotent("deposit"))],
 ):
-    return await _cash_move(deposit, portfolio_id, body, admin, session, redis, idem)
+    return await _cash_move(deposit, portfolio_id, body, admin, session, redis, idem,
+                            live_guard=(request, qs))
 
 
 @router.post("/portfolios/{portfolio_id}/withdraw")

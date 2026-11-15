@@ -16,7 +16,8 @@ reale» (`armed`, TOTP) -> one-click disarm (back to `configured`, no TOTP).
 - Arming needs the admin TOTP, the three confirmations and the link name, a successful
   read-only test of an empty account from the last 15 minutes, a working Telegram (a
   test message sent in the last 24 hours) and a linked portfolio that passes
-  `check_live_portfolio` (base currency = account currency, for both brokers). It never
+  `check_live_portfolio` (its base currency may differ from the account's since plan 9:
+  the cash is compared at the current rate). It never
   bypasses the kill switch or a trading halt: the live gate and the pre-trade checks
   still apply.
 - Disarming rejects the never-sent orders through engine.service.reject_broker_order
@@ -724,6 +725,24 @@ async def _portfolio_cash_in(session: AsyncSession, portfolio: Portfolio, ccy: s
     return total
 
 
+async def _current_fx_rates(session: AsyncSession, portfolio: Portfolio, link: BrokerLink,
+                            qs: QuoteSource) -> dict[str, str]:
+    """{currency: units of the account currency per unit} of the portfolio's cash
+    currencies other than the account's, at the current rates (a missing rate is left
+    out: the current rate then counts alone)."""
+    ccy = str((link.last_account_snapshot or {}).get("currency") or "").upper()
+    rates: dict[str, str] = {}
+    for asset in sorted(await get_cash_balances(session, portfolio.id)):
+        if asset.upper() == ccy:
+            continue
+        try:
+            rates[asset.upper()] = str(await qs.get_fx_rate(asset, ccy))
+        except SMTError as e:
+            log.warning("live link %s: no %s/%s reference rate: %s", link.id, asset, ccy,
+                        e.message)
+    return rates
+
+
 async def check_live_portfolio(session: AsyncSession, portfolio: Portfolio, link: BrokerLink,
                                *, qs: QuoteSource | None = None) -> None:
     """The conditions a portfolio needs to trade real money on `link` (INVALID_ORDER with
@@ -742,8 +761,6 @@ async def check_live_portfolio(session: AsyncSession, portfolio: Portfolio, link
     if not snapshot:
         raise _invalid("esegui prima il test in sola lettura", "test")
     broker_ccy = str(snapshot.get("currency") or "")
-    if portfolio.base_currency != broker_ccy:  # R8.5: both brokers
-        raise _invalid(f"la valuta del portafoglio deve essere {broker_ccy}", "base_currency")
     other = await session.scalar(
         select(Portfolio.id).where(Portfolio.broker_link_id == link.id,
                                    Portfolio.id != portfolio.id).limit(1))
@@ -776,6 +793,8 @@ async def link_live_portfolio(
     await check_relink(session, pf, link.id)
     await _verify_totp(redis, admin, totp)
     pf = await link_portfolio(session, pf.id, link.id, actor=actor, _allow_live=True)
+    if qs is not None:
+        link.fx_ref_rates = await _current_fx_rates(session, pf, link, qs)
     await record_live_audit(session, action="portfolio_linked", link_id=link.id,
                             portfolio_id=pf.id, **_who(actor),
                             details={"portfolio_name": pf.name, "live_state": link.live_state})

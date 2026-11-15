@@ -432,6 +432,24 @@ describe("PortfolioDetail", () => {
     expect(user).toBeDefined();
   });
 
+  it("shows the live deposit guard refusal next to the amount", async () => {
+    const message =
+      "Il conto del broker non ha ancora questo contante: fai prima il bonifico al broker, poi registra il deposito";
+    server.use(
+      http.post("*/api/portfolios/p1/deposit", () =>
+        HttpResponse.json({ code: "INVALID_ORDER", message, details: { field: "amount" } }, { status: 400 }),
+      ),
+    );
+    const user = await openTab("Operazioni");
+    await user.click(screen.getByRole("button", { name: "Nuovo deposito" }));
+    const dialog = screen.getByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Importo"), "200");
+    await user.click(within(dialog).getByRole("button", { name: "Deposita" }));
+    expect(await within(dialog).findByText(message)).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Importo")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
   it("refuses an ambiguous amount in the deposit dialog", async () => {
     const user = await openTab("Operazioni");
     await user.click(screen.getByRole("button", { name: "Nuovo deposito" }));

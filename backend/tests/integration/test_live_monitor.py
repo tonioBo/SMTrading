@@ -873,3 +873,108 @@ async def test_monitor_forgets_the_link_state_when_no_portfolio_is_linked(maker,
     assert link_id not in monitor._internal
     assert link_id not in monitor._auth_alerted
     assert link_id not in monitor._rate_limited
+
+
+# -- several currencies (plan 9, Task 7): FX-only drift is an alert, never reduce-only ----
+
+def _eur_usd(rate: str) -> FakeQuoteSource:
+    q = FakeQuoteSource()
+    q.set_fx("EUR", "USD", D(rate))
+    q.set_quote("AAPL", D("99.90"), D("100.00"), D("99.95"))
+    return q
+
+
+async def _ref(maker, link_id) -> dict[str, Decimal] | None:
+    refs = (await _get(maker, BrokerLink, link_id)).fx_ref_rates
+    return None if refs is None else {c: D(r) for c, r in refs.items()}
+
+
+async def _drifted(maker, fake) -> tuple[uuid.UUID, uuid.UUID]:
+    """1000 EUR on a USD account holding 1250 USD, matched at 1.25 (the reference)."""
+    pid, link_id = await _live(maker, cash="1000", ccy="EUR")
+    fake.alpaca.cash = D("1250")
+    assert (await reconcile_live(maker, link_id, _factory(maker, fake),
+                                 qs=_eur_usd("1.25"))).ok
+    return pid, link_id
+
+
+async def test_fx_only_drift_alerts_once_per_day_no_reduce_only(maker, fake):
+    """At 1.30 our 1000 EUR are 1300 USD: 1250 USD is short by more than the tolerance
+    (14.30) but within it plus the drift (1000 x 0.05 = 50 USD): one alert per day, the
+    portfolio stays active, the row is ok."""
+    pid, link_id = await _drifted(maker, fake)
+    for _ in range(2):
+        row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=_eur_usd("1.30"))
+        assert row.ok
+        assert row.diffs == [{"cash": {"fx_drift": "50", "ours": "1300", "broker": "1250",
+                                       "currency": "USD"}}]
+    (alert,) = await _activities(maker, "live.fx_drift")
+    assert alert.portfolio_id == pid and alert.level == "critical"
+    assert alert.summary == ("Scarto di cambio sul portafoglio reale: 1300.00 contro"
+                             " 1250.00 USD")
+    p = await _get(maker, Portfolio, pid)
+    assert p.status == PortfolioStatus.active and p.reduce_only_reason is None
+    assert await _ref(maker, link_id) == {"EUR": D("1.25")}  # not a matching pass
+
+    async with maker() as s:  # the next local day: one more
+        a = await s.get(Activity, alert.id)
+        a.ts = a.ts - timedelta(days=1)
+        await s.commit()
+    await reconcile_live(maker, link_id, _factory(maker, fake), qs=_eur_usd("1.30"))
+    assert len(await _activities(maker, "live.fx_drift")) == 2
+
+
+async def test_drift_plus_real_shortfall_trips_after_debounce(maker, fake):
+    """1200 USD at 1.30: short beyond the tolerance plus the FX drift (1235.70)."""
+    pid, link_id = await _drifted(maker, fake)
+    fake.alpaca.cash = D("1200")
+    row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=_eur_usd("1.30"))
+    assert not row.ok and "fx_drift" not in row.diffs[0]["cash"]
+    assert (await _get(maker, Portfolio, pid)).status == PortfolioStatus.active
+    await reconcile_live(maker, link_id, _factory(maker, fake), qs=_eur_usd("1.30"))
+    p = await _get(maker, Portfolio, pid)
+    assert (p.status, p.reduce_only_reason) == (PortfolioStatus.reduce_only,
+                                                "live_cash_shortfall")
+    assert await _activities(maker, "live.fx_drift") == []
+
+
+async def test_drift_with_a_position_diff_is_a_cash_shortfall(maker, fake):
+    """The drift excuses the cash only when the positions match."""
+    _, link_id = await _drifted(maker, fake)
+    fake.alpaca.positions["AAPL"] = D(3)
+    row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=_eur_usd("1.30"))
+    assert not row.ok
+    assert next(d for d in row.diffs if "cash" in d)["cash"]["tolerance"] == "14.3"
+    assert await _activities(maker, "live.fx_drift") == []
+
+
+async def test_fx_ref_updated_only_on_ok_pass(maker, fake):
+    _, link_id = await _live(maker, cash="1000", ccy="EUR")
+    assert await _ref(maker, link_id) is None
+    fake.alpaca.cash = D("1250")
+    await reconcile_live(maker, link_id, _factory(maker, fake), qs=_eur_usd("1.25"))
+    assert await _ref(maker, link_id) == {"EUR": D("1.25")}
+    await reconcile_live(maker, link_id, _factory(maker, fake), qs=_eur_usd("1.30"))  # drift
+    assert await _ref(maker, link_id) == {"EUR": D("1.25")}
+    fake.alpaca.cash = D("1100")  # a real shortfall
+    await reconcile_live(maker, link_id, _factory(maker, fake), qs=_eur_usd("1.30"))
+    assert await _ref(maker, link_id) == {"EUR": D("1.25")}
+    fake.alpaca.cash = D("1300")  # matching again at 1.30
+    assert (await reconcile_live(maker, link_id, _factory(maker, fake),
+                                 qs=_eur_usd("1.30"))).ok
+    assert await _ref(maker, link_id) == {"EUR": D("1.30")}
+    await reconcile_live(maker, link_id, _factory(maker, fake), qs=FakeQuoteSource())  # no FX
+    assert await _ref(maker, link_id) == {"EUR": D("1.30")}
+
+
+async def test_reconcile_no_fx_skipped_no_alert(maker, fake):
+    """Review Focus 3: no FX rate on a EUR portfolio on a USD account: the cash is
+    skipped, no reduce-only, no FX drift alert, the reference left alone."""
+    pid, link_id = await _drifted(maker, fake)
+    fake.alpaca.cash = D("900")
+    for _ in range(2):
+        row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=FakeQuoteSource())
+        assert row.ok and row.diffs[0]["cash"]["skipped"] == "cambio non disponibile"
+    assert (await _get(maker, Portfolio, pid)).status == PortfolioStatus.active
+    assert await _activities(maker, "live.fx_drift") == []
+    assert await _ref(maker, link_id) == {"EUR": D("1.25")}

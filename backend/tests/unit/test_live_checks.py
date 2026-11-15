@@ -143,7 +143,38 @@ async def test_buy_over_min_cash_refused(maker, qs):
     assert e.value.code == ErrorCode.LIVE_CASH_LIMIT
     assert D(e.value.details["needed"]) == D("500.8")
     assert D(e.value.details["portfolio_cash"]) == D(1000)
-    assert D(e.value.details["broker_cash"]) == D(500)
+    assert D(e.value.details["broker_cash"]) == D(495)  # 500 EUR less FX_SAFETY_PCT
+
+
+async def _set_fx_ref(maker, link_id, rates: dict[str, str]) -> None:
+    async with maker() as s:
+        (await s.get(BrokerLink, link_id)).fx_ref_rates = rates
+        await s.commit()
+
+
+async def test_cash_cap_uses_worst_rate_and_margin(maker):
+    """A EUR portfolio on a USD account with 1000 USD: now 1.10 USD per EUR (0.9091 EUR
+    per USD), reference 1.05 (0.9524): the worse one counts, less 1 %: 900.00 EUR."""
+    qs = FakeQuoteSource()
+    qs.set_fx("EUR", "USD", D("1.10"))  # and its inverse
+    pid, link_id = await _portfolio(maker, qs, cash=5000,
+                                    snapshot={"currency": "USD", "cash_available": "1000"})
+    await _set_fx_ref(maker, link_id, {"EUR": "1.05"})
+    await _check(maker, qs, pid, est_value=D(800), est_fees=D("83.99"))  # 899.99
+    with pytest.raises(SMTError) as e:
+        await _check(maker, qs, pid, est_value=D(800), est_fees=D("84.01"))  # 900.01
+    assert e.value.code == ErrorCode.LIVE_CASH_LIMIT
+    assert D(e.value.details["broker_cash"]).quantize(D("0.01")) == D("900.00")
+    # a reference worse than the current rate counts instead: 1.20 USD per EUR
+    await _set_fx_ref(maker, link_id, {"EUR": "1.20"})  # 1000 / 1.20 * 0.99 = 825
+    with pytest.raises(SMTError) as e:
+        await _check(maker, qs, pid, est_value=D(800), est_fees=D("10"))  # 826
+    assert D(e.value.details["broker_cash"]).quantize(D("0.01")) == D("825.00")
+
+
+async def test_cash_cap_same_currency_has_no_fx_margin(maker, qs):
+    pid, _ = await _portfolio(maker, qs, snapshot={"currency": "EUR", "cash_available": "500"})
+    await _check(maker, qs, pid, est_value=D(0), est_fees=D(500))  # exactly 500: ok
 
 
 async def test_stale_snapshot_uses_portfolio_cash_only(maker, qs):

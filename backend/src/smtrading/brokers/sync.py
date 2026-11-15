@@ -758,15 +758,22 @@ class BrokerSync:
         """For a real-money order, a frozen memo with every quote/FX rate its checks need
         (its portfolio, its symbol and those of the portfolio's other open buys, the fee
         rule and broker snapshot currencies to EUR), fetched before any lock (I1, I2):
-        a miss under the lock makes the order wait. `self._qs` otherwise."""
+        a miss under the lock makes the order wait. `self._qs` otherwise. A real sell needs
+        no quote or FX rate (its checks are the position and the fuse): an empty frozen
+        memo, so an FX outage never makes it wait (Review Focus 3, plan 9)."""
         async with self._sm() as session:
             row = (await session.execute(
-                select(Order.portfolio_id, Order.symbol, Order.broker_link_id)
+                select(Order.portfolio_id, Order.symbol, Order.broker_link_id, Order.side)
                 .where(Order.id == order_id)
             )).first()
             if row is None or not await self._is_live(session, row.broker_link_id):
                 await session.commit()
                 return self._qs
+            if row.side == OrderSide.sell:
+                await session.commit()
+                memo = MemoQuoteSource(self._qs)
+                memo.freeze()
+                return memo
             buys = set(await session.scalars(
                 select(Order.symbol).where(
                     Order.portfolio_id == row.portfolio_id, Order.side == OrderSide.buy,
