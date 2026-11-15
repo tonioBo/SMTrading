@@ -757,8 +757,9 @@ class BrokerSync:
     async def _live_memo(self, order_id: UUID) -> QuoteSource:
         """For a real-money order, a frozen memo with every quote/FX rate its checks need
         (its portfolio, its symbol and those of the portfolio's other open buys, the fee
-        rule and broker snapshot currencies to EUR, the cash currencies of the link's other
-        portfolios to the account currency for their quotas), fetched before any lock (I1, I2):
+        rule and broker snapshot currencies to EUR, and through prefetch_portfolio the cash
+        currencies of the link's other portfolios to the account currency for their
+        quotas), fetched before any lock (I1, I2):
         a miss under the lock makes the order wait. `self._qs` otherwise. A real sell needs
         no quote or FX rate (its checks are the position and the fuse): an empty frozen
         memo, so an FX outage never makes it wait (Review Focus 3, plan 9)."""
@@ -785,24 +786,10 @@ class BrokerSync:
             ccys = {r.currency for r in await load_rules(session)}
             if isinstance(snap, dict) and snap.get("currency"):
                 ccys.add(str(snap["currency"]).upper())
-            # the other portfolios' quotas (brokers.live.quotas): their cash currencies to
-            # the account currency
-            account = (str(snap["currency"]).upper()
-                       if isinstance(snap, dict) and snap.get("currency") else None)
-            quota_ccys: set[str] = set()
-            if account is not None:
-                quota_ccys = {c.upper() for c in await session.scalars(
-                    select(Account.asset).distinct()
-                    .join(AccountBalance, AccountBalance.account_id == Account.id)
-                    .join(Portfolio, Portfolio.id == Account.portfolio_id)
-                    .where(Portfolio.broker_link_id == row.broker_link_id,
-                           Portfolio.id != row.portfolio_id,
-                           Account.kind == AccountKind.cash, AccountBalance.balance != 0))}
             memo = MemoQuoteSource.wrap(self._qs)
             await prefetch_portfolio(session, memo, row.portfolio_id,
                                      symbols=sorted({row.symbol, *buys}))
-            await memo.prefetch([], {(c, EUR) for c in ccys if c != EUR}
-                                | {(c, account) for c in quota_ccys if c != account})
+            await memo.prefetch([], {(c, EUR) for c in ccys if c != EUR})
             await session.commit()
         memo.freeze()
         return memo

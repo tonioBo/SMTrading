@@ -473,8 +473,10 @@ async def live_orders_sent(session: AsyncSession, link_id: UUID, now: datetime, 
 async def check_live_fuse(session: AsyncSession, *, portfolio: Portfolio, link: BrokerLink,
                           now: datetime, reduce_only: bool, live_flatten: bool,
                           trip: bool = True, exclude: UUID | None = None) -> None:
-    """Ruling R8.1, per link (see the module docstring): a trip puts every portfolio of
-    the link in reduce-only."""
+    """Ruling R8.1, per link (see the module docstring): a trip puts the portfolio in
+    reduce-only at once and the link's other portfolios right after the commit
+    (events.queue_live_trip: own transaction, link lock first, R8.9). Until then, any of
+    them sending an order meets the same link-wide count and is tripped itself."""
     if live_flatten:
         return
     limit = await max_live_orders_per_hour(session, link.id)
@@ -483,13 +485,13 @@ async def check_live_fuse(session: AsyncSession, *, portfolio: Portfolio, link: 
         return
     if trip:
         from smtrading.brokers.live.protect import trip_reduce_only
+        from smtrading.events import queue_live_trip
 
-        pids = set(await session.scalars(
-            select(Portfolio.id).where(Portfolio.broker_link_id == link.id)))
-        for pid in sorted(pids | {portfolio.id}, key=str):
-            await trip_reduce_only(session, pid, cause="fuse",
-                                   details={"sent_last_hour": sent, "limit": limit,
-                                            "link_id": link.id})
+        details = {"sent_last_hour": sent, "limit": limit, "link_id": link.id}
+        # the caller holds this portfolio's lock: it is tripped in place; the link's other
+        # portfolios after the commit, link lock first (R8.9), never under this lock
+        await trip_reduce_only(session, portfolio.id, cause="fuse", details=details)
+        queue_live_trip(session, link.id, portfolio.id, "fuse", details)
     if not reduce_only:
         raise SMTError(ErrorCode.RISK_LIMIT_EXCEEDED, FUSE_MESSAGE,
                        {"sent_last_hour": sent, "limit": limit})

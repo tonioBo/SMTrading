@@ -71,7 +71,13 @@ from smtrading.brokers.live.protect import (
     record_live_order_activity,
     trip_reduce_only,
 )
-from smtrading.brokers.live.quotas import link_quotas, quotas_total, unassigned
+from smtrading.brokers.live.quotas import (
+    link_quotas,
+    linked_portfolios,
+    quota_pairs,
+    quotas_total,
+    unassigned,
+)
 from smtrading.brokers.models import BrokerLink, Reconciliation
 from smtrading.brokers.registry import adapter_class
 from smtrading.common.errors import ErrorCode, SMTError
@@ -85,7 +91,7 @@ from smtrading.engine.models import (
     OrderType,
     TimeInForce,
 )
-from smtrading.engine.quotesource import QuoteSource
+from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.engine.service import reject_broker_order
 from smtrading.events import POST_COMMIT_KEY, dispatch_post_commit, queue_event
 from smtrading.instruments.models import AssetClass, Instrument
@@ -117,6 +123,7 @@ KEYS_CHANGED_MESSAGE = "chiavi sostituite durante il test: ripeti il test"
 FLATTEN_NOT_ARMED_MESSAGE = ("denaro reale non attivo sul collegamento: chiudi le posizioni"
                              " dall'app del broker")
 CLOSE_REAL_POSITIONS_MESSAGE = "Chiudi prima le posizioni reali"
+RECONCILED_AT_KEY = "reconciled_at"  # in last_account_snapshot: the last live reconciliation
 
 
 
@@ -205,9 +212,7 @@ async def _live_link(session: AsyncSession, link_id: uuid.UUID, *, lock: bool = 
     return link
 
 
-async def _linked_portfolios(session: AsyncSession, link_id: uuid.UUID) -> list[Portfolio]:
-    return list(await session.scalars(
-        select(Portfolio).where(Portfolio.broker_link_id == link_id).order_by(Portfolio.id)))
+_linked_portfolios = linked_portfolios  # in id order (R8.9)
 
 
 def _require_totp_enabled(admin: AdminUser) -> None:
@@ -333,7 +338,11 @@ async def test_live_link(
             raise _invalid(KEYS_CHANGED_MESSAGE, "test")
         changed = link.account_fingerprint is not None and link.account_fingerprint != fp
         link.account_fingerprint = fp
-        link.last_account_snapshot = snapshot
+        old = link.last_account_snapshot if isinstance(link.last_account_snapshot, dict) else {}
+        # the last reconciliation pass stays known (linking another portfolio needs it)
+        keep = {RECONCILED_AT_KEY: old[RECONCILED_AT_KEY]} \
+            if not changed and old.get(RECONCILED_AT_KEY) else {}
+        link.last_account_snapshot = {**snapshot, **keep}
         link.last_snapshot_at = now
         # after a change, or on a margin account: test again
         link.last_test_at = None if changed or margin else now
@@ -449,6 +458,8 @@ async def arm_live_link(
     """«Attiva denaro reale»: every check in order (each error names its `field`), the
     TOTP last; then `armed` with a critical alert."""
     _require_totp_enabled(admin)
+    if qs is not None:  # no network under the locks: every linked portfolio's quota rates
+        qs = await _prefetched_fx(session, None, link_id, qs)
     if not (accept_risks and dedicated_account and limits_set):
         raise _invalid("conferma i rischi, il conto dedicato e i limiti", "confirm")
     link = await _live_link(session, link_id)
@@ -720,6 +731,19 @@ async def _dispatch(session: AsyncSession, redis) -> None:
 
 # -- the real portfolio ----------------------------------------------------------------
 
+async def _prefetched_fx(session: AsyncSession, portfolio_id: uuid.UUID | None,
+                         link_id: uuid.UUID, qs: QuoteSource) -> QuoteSource:
+    """A frozen memo with the rates linking (or arming) needs: the cash currencies of the
+    portfolio and of every portfolio already on the link to the account currency (their
+    quotas, `quota_pairs`), read before any row lock; a rate missing then is missing
+    later too (PROVIDER_UNAVAILABLE, or left out of the reference rates)."""
+    own = set(await get_cash_balances(session, portfolio_id)) if portfolio_id else set()
+    memo = MemoQuoteSource(qs)
+    await memo.prefetch([], await quota_pairs(session, link_id, extra=own))
+    memo.freeze()
+    return memo
+
+
 async def _current_fx_rates(session: AsyncSession, portfolio: Portfolio, link: BrokerLink,
                             qs: QuoteSource) -> dict[str, str]:
     """{currency: units of the account currency per unit} of the portfolio's cash
@@ -779,9 +803,6 @@ async def check_live_portfolio(session: AsyncSession, portfolio: Portfolio, link
                        unassigned=unassigned(broker_cash, quotas))
 
 
-RECONCILED_AT_KEY = "reconciled_at"  # in last_account_snapshot: the last live reconciliation
-
-
 async def _reconciled(session: AsyncSession, link: BrokerLink, portfolio_id: uuid.UUID,
                       now: datetime) -> bool:
     """The portfolio's last reconciliation on the link is `ok` and recent: written in the
@@ -814,6 +835,8 @@ async def link_live_portfolio(
     from smtrading.brokers.service import check_relink, link_portfolio
 
     _require_totp_enabled(admin)
+    if qs is not None:  # no network under the locks: the rates first, then a frozen memo
+        qs = await _prefetched_fx(session, portfolio_id, link_id, qs)
     link = await _live_link(session, link_id)  # lock order: link, then portfolio (R8.9)
     pf = await lock_live_portfolio(session, portfolio_id)
     if link.live_state not in (LiveState.dry_run, LiveState.armed):

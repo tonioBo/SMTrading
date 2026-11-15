@@ -52,7 +52,13 @@ from smtrading.brokers.live import LIVE_KINDS
 from smtrading.brokers.live.account import decrypt_live_config, key_masked, live_secrets
 from smtrading.brokers.live.gate import LiveClient, make_live_client
 from smtrading.brokers.live.models import LIVE_AUDIT_ACTIONS, LiveAudit, LiveState
-from smtrading.brokers.live.quotas import account_currency, linked_portfolios, quota_of_balances
+from smtrading.brokers.live.quotas import (
+    Quota,
+    account_currency,
+    linked_portfolios,
+    quota_of_balances,
+    quotas_total,
+)
 from smtrading.brokers.live.service import (
     Actor,
     arm_live_link,
@@ -222,7 +228,7 @@ async def _live_dto(session: AsyncSession, link: BrokerLink,
     rows = [(p, await get_cash_balances(session, p.id))
             for p in await linked_portfolios(session, link.id)]
     await session.commit()  # the FX reads below run outside any transaction (R9)
-    portfolios, total = [], Decimal(0) if ccy and broker_cash is not None else None
+    portfolios, quotas = [], []
     for p, balances in rows:
         quota = None
         if ccy and broker_cash is not None:
@@ -230,12 +236,16 @@ async def _live_dto(session: AsyncSession, link: BrokerLink,
                 quota = await quota_of_balances(qs, link, balances, ccy)
             except SMTError:
                 quota = None
-        total = None if total is None or quota is None else total + quota
+        if quota is not None:
+            quotas.append(Quota(p.id, p.name, quota))
         portfolios.append({"id": str(p.id), "name": p.name, "status": p.status,
                            "base_currency": p.base_currency,
                            "quota": None if quota is None else decimal_to_str(
                                quantize_money(quota, ccy)),
                            "positions_count": counts.get(p.id, 0)})
+    portfolios.sort(key=lambda d: (d["name"], d["id"]))
+    known = ccy and broker_cash is not None and len(quotas) == len(rows)
+    total = quotas_total(quotas) if known else None
     return {
         **out,
         "portfolios": portfolios,

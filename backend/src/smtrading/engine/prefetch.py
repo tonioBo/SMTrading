@@ -4,7 +4,9 @@ The chain lock (taken by post_journal) is held until commit, so every quote and 
 used after the first journal of a transaction must already be in the memo: the
 valuation of the portfolio (held symbols, every account currency -> EUR), and the
 pre-trade check / execute_fill of further orders on `symbols` (instrument currency
-<-> fee rule currencies, base and cash currencies -> instrument currency).
+<-> fee rule currencies, base and cash currencies -> instrument currency), and for a
+portfolio sharing a real-money account the cash currencies of the other portfolios of
+the link -> the account currency (their quotas, brokers.live.quotas).
 """
 
 from collections.abc import Iterable
@@ -47,7 +49,9 @@ async def prefetch_portfolio(
         select(Instrument.symbol, Instrument.currency)
         .where(Instrument.symbol.in_(sorted(all_symbols)))
     )).all()) if all_symbols else {}
-    base = await session.scalar(select(Portfolio.base_currency).where(Portfolio.id == portfolio_id))
+    base, link_id = (await session.execute(
+        select(Portfolio.base_currency, Portfolio.broker_link_id)
+        .where(Portfolio.id == portfolio_id))).first() or (None, None)
     rule_ccys = {r.currency for r in await load_rules(session)}
     order_ccys = {inst_ccy[s] for s in traded if s in inst_ccy}
     sources = money | ({base} if base else set())
@@ -58,4 +62,12 @@ async def prefetch_portfolio(
     for i in order_ccys:
         pairs |= {(i, r) for r in rule_ccys} | {(r, i) for r in rule_ccys}
         pairs |= {(c, i) for c in sources}
+    if link_id is not None:  # real money: the other portfolios' quotas on the account
+        from smtrading.brokers.live import LIVE_KINDS
+        from smtrading.brokers.live.quotas import quota_pairs
+        from smtrading.brokers.models import BrokerLink
+
+        kind = await session.scalar(select(BrokerLink.kind).where(BrokerLink.id == link_id))
+        if kind in LIVE_KINDS:
+            pairs |= await quota_pairs(session, link_id, exclude_pid=portfolio_id)
     await memo.prefetch(sorted(all_symbols), {(a, b) for a, b in pairs if a != b})

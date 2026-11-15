@@ -17,12 +17,15 @@ FOR NO KEY UPDATE, then the portfolio through `trip_reduce_only`):
   buys at the broker may still cost (a buy filled there and not yet synced). Open sells
   never skip it (a surplus is fine: the account is dedicated). A missing FX rate or
   price: `skipped` (no shortfall, no FX drift alert);
-- FX drift (plan 9, replacing the same-currency rule R8.5): the drift is
-  Σ |cash_c| × |current rate of c − the link's reference rate of c| over the currencies
-  c other than the account's (`BrokerLink.fx_ref_rates`, missing: no drift). A
+- FX drift (plan 9, replacing the same-currency rule R8.5; signed, Ruling R9.2): the
+  drift is max(0, Σ cash_c × (current rate of c − the link's reference rate of c)) over
+  the currencies c other than the account's (`BrokerLink.fx_ref_rates`, missing: no
+  drift): only an FX move that raised our cash in account terms explains a shortfall,
+  and moves in opposite directions cancel out. A
   shortfall within the tolerance plus the drift, with no position diff, is an `fx_drift`
   entry: not a diff (the row is ok, never reduce-only), one critical `live.fx_drift`
-  per link and local day. Beyond it, or with a position diff, it is a shortfall as
+  per link and local day (the first linked portfolio's timezone). Beyond it, or with a
+  position diff, it is a shortfall as
   above. The reference rates are set to the current ones on every pass whose cash is
   compared and not short (under the link lock);
 - several portfolios per link (plan 9, Task 11): the positions compared are the sum of
@@ -340,8 +343,8 @@ _CASH_OK, _CASH_SHORT, _CASH_FX_DRIFT, _CASH_SKIPPED = "ok", "short", "fx_drift"
 
 
 def _drift(money: _Money, cash: dict[str, Decimal], refs: dict | None) -> Decimal:
-    """Σ |cash_c| × |current rate − reference rate| over the other currencies (module
-    docstring), in the account currency."""
+    """max(0, Σ cash_c × (current rate − reference rate)) over the other currencies
+    (module docstring, R9.2), in the account currency."""
     refs = refs if isinstance(refs, dict) else {}
     total = Decimal(0)
     with localcontext() as ctx:
@@ -351,8 +354,8 @@ def _drift(money: _Money, cash: dict[str, Decimal], refs: dict | None) -> Decima
                 ref = Decimal(str(refs[c])) if c in refs else now
             except ArithmeticError:
                 ref = now
-            total += abs(cash.get(c, Decimal(0))) * abs(now - ref)
-    return total
+            total += cash.get(c, Decimal(0)) * (now - ref)
+    return max(total, Decimal(0))
 
 
 def _compare(before: _State, after: _State, broker: dict[str, Decimal],
@@ -538,10 +541,13 @@ async def _record(session: AsyncSession, link: BrokerLink, pid: UUID, diffs: lis
 
 async def _fx_drift_alert(session: AsyncSession, link: BrokerLink, pid: UUID, entry: dict,
                           now: datetime) -> None:
-    """One critical `live.fx_drift` per link and local day (the timezone of the portfolio
-    recording it), whatever the number of portfolios on the link."""
-    portfolio = await session.get(Portfolio, pid)
-    tz = ZoneInfo(portfolio.timezone if portfolio is not None else "Europe/Rome")
+    """One critical `live.fx_drift` per link and local day, whatever the number of
+    portfolios on the link; the day is the one of the link's first portfolio (id order,
+    the same for every pass), Europe/Rome without one."""
+    tzname = await session.scalar(
+        select(Portfolio.timezone).where(Portfolio.broker_link_id == link.id)
+        .order_by(Portfolio.id).limit(1))
+    tz = ZoneInfo(tzname or "Europe/Rome")
     midnight = datetime.combine(now.astimezone(tz).date(), time(0), tzinfo=tz)
     sent = await session.scalar(select(Activity.id).where(
         Activity.type == f"live.{FX_DRIFT_KIND}",

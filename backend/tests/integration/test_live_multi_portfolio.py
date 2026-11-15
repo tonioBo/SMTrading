@@ -8,6 +8,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import httpx
 import pytest
 import respx
 from sqlalchemy import select, update
@@ -36,6 +37,7 @@ from test_live_service import (  # noqa: F401  (fixtures: sm, redis, fake, autou
 from smtrading.activity.models import Activity
 from smtrading.admin.models import AdminUser
 from smtrading.brokers.live.account import LIVE_AAD, account_fingerprint
+from smtrading.brokers.live.alpaca_live import AlpacaLiveAdapter
 from smtrading.brokers.live.deposit import DEPOSIT_SHORT_MESSAGE, BrokerCash, check_live_deposit
 from smtrading.brokers.live.gate import (
     OTHER_PORTFOLIO_MESSAGE,
@@ -55,6 +57,7 @@ from smtrading.common.crypto import encrypt_json
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.models import BrokerState, Order, OrderSide, OrderStatus, OrderType
 from smtrading.engine.quotesource import FakeQuoteSource
+from smtrading.events import dispatch_post_commit
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio, get_cash_balances
 from smtrading.risk.live_checks import check_live_cash, check_live_fuse, check_no_short
@@ -231,7 +234,7 @@ async def test_link_second_portfolio_requires_reconciled_account(committed, redi
 
 async def test_second_portfolio_foreign_currency_quota_worst_rate(sm):
     """B in EUR on the USD account: the higher of the current rate (1.25) and the
-    reference (1.30), plus 1 %."""
+    reference (1.30), divided by 0.99 (the inverse of the cash cap's x 0.99)."""
     link_id, (_a, b) = await _multi(sm, ("500", "200"), ccys={1: "EUR"})
     async with sm() as s:
         link = await s.get(BrokerLink, link_id)
@@ -240,10 +243,10 @@ async def test_second_portfolio_foreign_currency_quota_worst_rate(sm):
     async with sm() as s:
         link = await s.get(BrokerLink, link_id)
         assert await portfolio_quota(s, _qs(), await s.get(Portfolio, b), link) == \
-            D(200) * D("1.30") * D("1.01")
+            D(200) * D("1.30") / D("0.99")
         link.fx_ref_rates = {"EUR": "1.20"}
         assert await portfolio_quota(s, _qs(), await s.get(Portfolio, b), link) == \
-            D(200) * D("1.25") * D("1.01")
+            D(200) * D("1.25") / D("0.99")
         with pytest.raises(SMTError) as e:  # no current rate
             await portfolio_quota(s, FakeQuoteSource(), await s.get(Portfolio, b), link)
         assert e.value.code == ErrorCode.PROVIDER_UNAVAILABLE
@@ -265,8 +268,11 @@ async def test_buy_cannot_spend_other_portfolios_quota(sm):
     await _cash_check(sm, b, link_id, "294")
 
 
-async def test_buy_recheck_before_send_uses_other_quotas(fresh_db, redis_url, monkeypatch):
-    """The same cap in BrokerSync.tick() with a fresh snapshot (Review Focus 6)."""
+@pytest.mark.parametrize("qty,sent", [("2", True), ("3", False)])
+async def test_buy_recheck_before_send_uses_other_quotas(fresh_db, redis_url, monkeypatch,
+                                                         qty, sent):
+    """The same cap in BrokerSync.tick() with a fresh snapshot (Review Focus 6): 300 left
+    for B; 2 x 100 (+ fees, + 2 %) is sent, 3 x 100 is refused."""
     from redis.asyncio import Redis
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -290,7 +296,7 @@ async def test_buy_recheck_before_send_uses_other_quotas(fresh_db, redis_url, mo
         async with maker() as s:  # 3 x 100 (+2 %) = 306: fits B's 400 and 1000 - 500
             o = await place_order(s, qs, PlaceOrderRequest(
                 portfolio_id=b, symbol="AAPL", side=OrderSide.buy,
-                type=OrderType.market, qty=D(3)), now=OPEN)
+                type=OrderType.market, qty=D(qty)), now=OPEN)
             await s.commit()
         async with maker() as s:
             link = await s.get(BrokerLink, link_id)
@@ -298,11 +304,19 @@ async def test_buy_recheck_before_send_uses_other_quotas(fresh_db, redis_url, mo
             link.last_snapshot_at = OPEN
             await s.commit()
         with respx.mock(assert_all_mocked=True, assert_all_called=False) as mock:
+            post = mock.post(f"{AlpacaLiveAdapter.BASE_URL}/v2/orders").mock(
+                return_value=httpx.Response(200, json={
+                    "id": "bo-1", "client_order_id": "x", "symbol": "AAPL", "side": "buy",
+                    "qty": qty, "status": "new", "filled_qty": "0"}))
             await BrokerSync(maker, redis, qs, None, clock=lambda: OPEN).tick()
-        assert mock.calls.call_count == 0
         async with maker() as s:
             o = await s.get(Order, o.id)
-        assert o.status == OrderStatus.rejected and o.reject_code == ErrorCode.LIVE_CASH_LIMIT
+        if sent:
+            assert post.call_count == 1 and o.broker_order_id == "bo-1", o.reject_message
+        else:
+            assert post.call_count == 0
+            assert (o.status, o.reject_code) == (OrderStatus.rejected,
+                                                 ErrorCode.LIVE_CASH_LIMIT)
     finally:
         await redis.aclose()
         await engine.dispose()
@@ -373,8 +387,11 @@ async def test_fuse_counts_link_orders_and_trips_all(sm):
         assert e.value.code == ErrorCode.RISK_LIMIT_EXCEEDED
         assert e.value.details == {"sent_last_hour": 3, "limit": 3}
         await s.commit()
+        # B (holding its lock) is tripped in place; A after the commit, link lock first
+        assert await _status(sm, b) == PortfolioStatus.reduce_only
+        assert await _status(sm, a) == PortfolioStatus.active
+        await dispatch_post_commit(s, None)
     assert await _status(sm, a) == PortfolioStatus.reduce_only
-    assert await _status(sm, b) == PortfolioStatus.reduce_only
 
 
 async def _profile_id(s, limit: int) -> uuid.UUID:
@@ -497,12 +514,12 @@ async def test_unlink_one_portfolio_keeps_the_others(sm):
 
 async def test_deposit_guard_uses_sum_of_quotas(sm):
     link_id, (a, _b) = await _multi(sm, ("400", "300"))
-    broker = BrokerCash(link_id, D("1000"), "USD")
+    broker = BrokerCash(link_id, D("1000"), "USD", _qs())
     async with sm() as s:
         pf = await s.get(Portfolio, a)
-        await check_live_deposit(s, _qs(), pf, broker, D("300"), "USD")
+        await check_live_deposit(s, pf, broker, D("300"), "USD")
         with pytest.raises(SMTError) as e:
-            await check_live_deposit(s, _qs(), pf, broker, D("301"), "USD")
+            await check_live_deposit(s, pf, broker, D("301"), "USD")
     assert e.value.message == DEPOSIT_SHORT_MESSAGE and e.value.details["field"] == "amount"
 
 
@@ -647,3 +664,127 @@ async def test_arm_records_every_linked_portfolio(sm, redis, fake):
     assert row.portfolio_id in (a, b)
     assert (await _link(sm, link_id)).live_state == "armed"
 
+
+
+# -- review fixes: FX prefetch, lock order, gate cases ------------------------------------
+
+async def test_concurrent_fuse_trips_do_not_deadlock(committed):
+    """A and B both meet the link-wide fuse at once, each holding its own portfolio lock:
+    each trips itself in place and the other after its commit (link lock first), so
+    neither waits on the other's portfolio lock."""
+    import asyncio
+
+    from smtrading.portfolios.locks import lock_portfolio
+
+    sm = committed
+    link_id, (a, b) = await _multi(sm, ("500", "400"))
+    now = datetime.now(UTC)
+    async with sm() as s:
+        for pid in (a, b):
+            (await s.get(Portfolio, pid)).risk_profile_id = await _profile_id(s, 2)
+        for pid in (a, b):
+            await _order(s, pid, link_id, broker_status="new", broker_order_id=uuid.uuid4().hex,
+                         broker_sent_at=now - timedelta(minutes=5))
+        await s.commit()
+
+    async def fuse(pid):
+        async with sm() as s:
+            portfolio = await lock_portfolio(s, pid)
+            await asyncio.sleep(0.2)  # both hold their portfolio lock now
+            with pytest.raises(SMTError):
+                await check_live_fuse(s, portfolio=portfolio,
+                                      link=await s.get(BrokerLink, link_id), now=now,
+                                      reduce_only=False, live_flatten=False)
+            await s.commit()
+            await dispatch_post_commit(s, None)
+
+    await asyncio.wait_for(asyncio.gather(fuse(a), fuse(b)), 20)
+    assert {await _status(sm, p) for p in (a, b)} == {PortfolioStatus.reduce_only}
+
+
+async def _eur_on_usd(sm) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """A (USD 500) and B (EUR 200 = 252.53 USD) on the 1000 USD account."""
+    link_id, (a, b) = await _multi(sm, ("500", "200"), ccys={1: "EUR"})
+    return link_id, a, b
+
+
+async def test_placement_memo_holds_the_other_quotas_rates(sm):
+    """The placement memo (engine.prefetch) prefetches B's EUR -> USD: A's cash cap on a
+    frozen memo needs no rate it does not have (no network under the locks)."""
+    from smtrading.engine.prefetch import prefetch_portfolio
+    from smtrading.engine.quotesource import MemoQuoteSource
+
+    link_id, a, _b = await _eur_on_usd(sm)
+    memo = MemoQuoteSource.wrap(_qs())
+    async with sm() as s:
+        await prefetch_portfolio(s, memo, a, symbols=["AAPL"])
+    memo.freeze()
+    async with sm() as s:  # 1000 - 252.53 = 747.47; A has 500
+        await check_live_cash(s, memo, portfolio=await s.get(Portfolio, a),
+                              link=await s.get(BrokerLink, link_id), est_value=D(490),
+                              est_fees=D(0), now=datetime.now(UTC))
+
+
+async def test_link_third_portfolio_with_a_foreign_quota_on_the_link(sm, redis, fake):
+    """Linking reads the rates of every quota before the locks (a frozen memo): B's EUR
+    quota is counted, no PROVIDER_UNAVAILABLE."""
+    admin, totp = await _admin(sm)
+    link_id = await _tested_dry_run(sm, fake)
+    await _link_via_service(sm, redis, await _new_portfolio(sm, "500"), link_id, admin, totp)
+    await _link_via_service(sm, redis, await _new_portfolio(sm, "200", "EUR"), link_id,
+                            admin, totp)
+    admin, totp = await _admin(sm)  # fresh TOTP codes (three per window)
+    c = await _new_portfolio(sm, "248")  # 500 + 252.53 + 248 = 1000.53 > 1000
+    async with sm() as s:
+        await _expect(link_live_portfolio(s, redis, c, link_id,
+                                          admin=await s.get(AdminUser, admin.id),
+                                          totp=totp.code(), actor=WHO, qs=_qs()),
+                      ErrorCode.INVALID_ORDER, "cash")
+    pf = await _link_via_service(sm, redis, await _new_portfolio(sm, "247"), link_id, admin,
+                                 totp)
+    assert pf.broker_link_id == link_id
+
+
+async def _post_plain(sm, link_id, fake):
+    async with _client(sm, link_id, fake) as http:  # not an order (no smt_order_id)
+        return await http.post("https://paper-api.invalid/v2/watchlists", json={})
+
+
+async def test_gate_non_order_request_all_locked_and_halt_on_one(sm):
+    from smtrading.risk.models import TradingHalt
+
+    link_id, (a, b) = await _multi(sm, ("500", "400"))
+    async with sm() as s:
+        ob = await _order(s, b, link_id)
+        s.add(TradingHalt(scope="portfolio", portfolio_id=a, reason="Stop",
+                          set_by="admin:admin@example.com"))
+        await s.commit()
+    fake = Fake()
+    await _post(sm, link_id, ob, fake)  # A's halt does not cover B's order
+    assert len(fake.writes) == 1
+    with pytest.raises(LiveGateClosed) as e:  # a non-order request: no linked one halted
+        await _post_plain(sm, link_id, fake)
+    assert e.value.code == ErrorCode.TRADING_HALTED
+    async with sm() as s:
+        for pid in (a, b):
+            (await s.get(Portfolio, pid)).status = PortfolioStatus.locked
+        await s.commit()
+    with pytest.raises(LiveGateClosed) as e:
+        await _post_plain(sm, link_id, fake)
+    assert e.value.code == ErrorCode.PORTFOLIO_LOCKED
+    assert len(fake.writes) == 1
+
+
+async def test_read_only_test_keeps_the_reconciliation_stamp(committed, fake):
+    """A fresh read-only test does not drop `reconciled_at`: linking another portfolio
+    right after it does not wait for the next monitor pass."""
+    from smtrading.brokers.live.service import RECONCILED_AT_KEY, test_live_link
+
+    sm = committed
+    link_id, _ = await _multi(sm, ("500",))
+    fake.alpaca.cash = D(500)
+    assert (await _pass(sm, link_id, fake)).ok
+    stamp = (await _link(sm, link_id)).last_account_snapshot[RECONCILED_AT_KEY]
+    async with _client(sm, link_id, fake) as http:
+        await test_live_link(sm, link_id, actor=WHO, http=http)
+    assert (await _link(sm, link_id)).last_account_snapshot[RECONCILED_AT_KEY] == stamp

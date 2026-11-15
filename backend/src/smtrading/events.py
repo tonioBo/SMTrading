@@ -97,6 +97,14 @@ def queue_untrack(session: AsyncSession, symbol: str, source: str) -> None:
     _queue(session).append(("untrack", symbol, source))
 
 
+def queue_live_trip(session: AsyncSession, link_id, exclude, cause: str,
+                    details: dict) -> None:
+    """After commit, put the other portfolios of a real-money link in reduce-only (a fuse
+    trip, risk.live_checks) in a transaction of their own that locks the link first
+    (R8.9): the caller holds a portfolio lock and must not lock another portfolio."""
+    _queue(session).append(("live_trip", link_id, exclude, cause, details))
+
+
 def discard_post_commit(session: AsyncSession) -> None:
     session.info.pop(POST_COMMIT_KEY, None)
     clear_activity_keys(session)
@@ -105,10 +113,20 @@ def discard_post_commit(session: AsyncSession) -> None:
 async def dispatch_post_commit(session: AsyncSession, redis) -> int:
     """Run (and clear) the queued effects after commit; returns how many succeeded.
 
-    Errors are logged and skipped. With redis None the queue is dropped.
+    Errors are logged and skipped. With redis None the queue is dropped, except the
+    `live_trip` effects (database work, run first in their own transaction on `session`).
     """
     effects = session.info.pop(POST_COMMIT_KEY, [])
     clear_activity_keys(session)
+    trips = [e for e in effects if e[0] == "live_trip"]
+    effects = [e for e in effects if e[0] != "live_trip"]
+    if trips:
+        if session.in_transaction():  # not after a commit: left for the next dispatch
+            _queue(session).extend(trips)
+        else:
+            await _run_live_trips(session, trips)
+            effects += session.info.pop(POST_COMMIT_KEY, [])
+            clear_activity_keys(session)
     if redis is None:
         return 0
     done = 0
@@ -127,3 +145,16 @@ async def dispatch_post_commit(session: AsyncSession, redis) -> int:
         except Exception:
             log.exception("post-commit effect failed: %r", effect)
     return done
+
+
+async def _run_live_trips(session: AsyncSession, trips: list[tuple]) -> None:
+    from smtrading.brokers.live.protect import trip_link_portfolios
+
+    for _, link_id, exclude, cause, details in trips:
+        try:
+            await trip_link_portfolios(session, link_id, exclude=exclude, cause=cause,
+                                       details=details)
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            log.exception("live trip of link %s failed", link_id)

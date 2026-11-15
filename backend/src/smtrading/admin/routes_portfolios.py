@@ -63,7 +63,7 @@ from smtrading.mcp.dto import (
     valuation_dto,
 )
 from smtrading.performance.service import get_performance
-from smtrading.portfolios.locks import lock_live_portfolio
+from smtrading.portfolios.locks import lock_broker_link, lock_live_portfolio
 from smtrading.portfolios.mode import admin_mode_fields
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.queries import day_pnl, list_portfolio_journals
@@ -527,14 +527,16 @@ async def _cash_move(
 
             request = live_guard[0]
             broker = await read_live_cash(request.app.state.sessionmaker, portfolio_id,
-                                          live_http_factory(request))
+                                          live_http_factory(request), live_guard[1],
+                                          currency=body.currency)
         async with _transaction(session, redis):
+            if broker is not None:  # one deposit at a time per account (R8.9: link first)
+                await lock_broker_link(session, broker.link_id)
             portfolio = await lock_live_portfolio(session, portfolio_id)
             amount = parse_decimal(body.amount, "amount")
             currency = body.currency or portfolio.base_currency
             if live_guard is not None and amount > 0:
-                await check_live_deposit(session, live_guard[1], portfolio, broker, amount,
-                                         currency)
+                await check_live_deposit(session, portfolio, broker, amount, currency)
             journal = await mover(
                 session, portfolio_id, amount, currency,
                 author_id=admin.email, reason=(body.reason or "").strip() or None,
@@ -618,15 +620,30 @@ async def reverse(
 
 @router.post("/portfolios/{portfolio_id}/reset")
 async def reset(
-    portfolio_id: UUID, body: ResetIn, admin: CurrentAdmin, session: DbSession,
-    redis: RedisClient, qs: Quotes,
+    portfolio_id: UUID, body: ResetIn, request: Request, admin: CurrentAdmin,
+    session: DbSession, redis: RedisClient, qs: Quotes,
     idem: Annotated[
         Idempotency, Depends(idempotent("reset", in_flight_ttl_s=RESET_IN_FLIGHT_TTL_S))
     ],
 ):
+    """With new cash, a portfolio linked to a real-money link needs that cash at the
+    broker first (brokers.live.deposit, the deposit guard)."""
     async def run() -> dict:
         new_cash = parse_decimal(body.new_cash, "new_cash")
+        broker = None
+        if new_cash > 0:  # read before any lock, no transaction open (R9)
+            from smtrading.admin.routes_live import live_http_factory  # (circular import)
+
+            broker = await read_live_cash(request.app.state.sessionmaker, portfolio_id,
+                                          live_http_factory(request), qs,
+                                          currency=body.currency)
         async with _transaction(session, redis):
+            if new_cash > 0:
+                if broker is not None:  # serialized per account (R8.9: link first)
+                    await lock_broker_link(session, broker.link_id)
+                portfolio = await lock_live_portfolio(session, portfolio_id)
+                await check_live_deposit(session, portfolio, broker, new_cash,
+                                         body.currency, replace=True, field="new_cash")
             result = await reset_portfolio(
                 session, qs, portfolio_id, new_cash, body.currency,  # type: ignore[arg-type]
                 reason=body.reason, author_id=admin.email, redis=redis,

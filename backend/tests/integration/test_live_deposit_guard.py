@@ -12,13 +12,20 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from smtrading.brokers.live.account import LIVE_AAD, account_fingerprint
-from smtrading.brokers.live.deposit import DEPOSIT_SHORT_MESSAGE
+from smtrading.brokers.live.deposit import (
+    DEPOSIT_SHORT_MESSAGE,
+    UNREADABLE_MESSAGE,
+    BrokerCash,
+    check_live_deposit,
+)
 from smtrading.brokers.live.fake import FakeLiveBroker
 from smtrading.brokers.live.gate import make_live_client
 from smtrading.brokers.models import BrokerLink
 from smtrading.common.config import get_settings
 from smtrading.common.crypto import encrypt_json
 from smtrading.common.db import make_engine
+from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.engine.quotesource import FakeQuoteSource
 from smtrading.portfolios.models import Portfolio
 from smtrading.portfolios.service import get_cash_balances
 
@@ -81,7 +88,7 @@ async def admin(fresh_db, redis_url, monkeypatch):
                 pass
 
             ns = NS()
-            ns.client, ns.sm, ns.fake = client, sm, fake
+            ns.client, ns.sm, ns.fake, ns.app = client, sm, fake, app
             yield ns
     finally:
         stop.set()
@@ -153,13 +160,13 @@ async def test_withdraw_always_allowed(admin):
 
 async def test_deposit_other_currency_at_current_rate_with_margin(admin):
     """A EUR portfolio on the USD account with 1000 USD: its quota counts each EUR at
-    1.25 x 1.01 (Task 11, brokers.live.quotas), so at most 1000 / 1.2625 = 792.07 EUR."""
+    1.25 / 0.99 (brokers.live.quotas), so at most 1000 x 0.99 / 1.25 = 792 EUR."""
     admin.fake.alpaca.cash = D("1000")
     pid = await _portfolio(admin, kind="alpaca_live")
-    _refused(await _deposit(admin, pid, "292.08"))
-    r = await _deposit(admin, pid, "292.07")
+    _refused(await _deposit(admin, pid, "292.01"))
+    r = await _deposit(admin, pid, "292")
     assert r.status_code == 200, r.text
-    assert await _cash(admin, pid) == {"EUR": D("792.07")}
+    assert await _cash(admin, pid) == {"EUR": D(792)}
 
 
 async def test_deposit_without_fx_rate_refused(admin):
@@ -176,3 +183,128 @@ async def test_deposit_on_paper_portfolio_unchanged(admin):
     r = await _deposit(admin, pid, "100000")
     assert r.status_code == 200, r.text
     assert await _cash(admin, pid) == {"EUR": D(100500)}
+
+
+def _unreadable(r: httpx.Response) -> None:
+    assert r.status_code == 400, r.text
+    assert (r.json()["code"], r.json()["message"]) == ("PROVIDER_UNAVAILABLE",
+                                                       UNREADABLE_MESSAGE)
+
+
+async def test_deposit_refused_when_account_unreadable(admin):
+    pid = await _portfolio(admin)
+
+    def failing(request):
+        return httpx.Response(500, json={"message": "down"})
+
+    admin.app.state.live_http_factory = lambda link_id: make_live_client(
+        admin.sm, link_id, inner=httpx.MockTransport(failing))
+    _unreadable(await _deposit(admin, pid, "1"))
+    assert await _cash(admin, pid) == {"EUR": D(500)}
+
+
+async def test_deposit_refused_on_another_account(admin):
+    admin.fake.t212.cash = D("100000")
+    pid = await _portfolio(admin)
+    async with admin.sm() as s:
+        link = await s.get(BrokerLink, (await s.get(Portfolio, pid)).broker_link_id)
+        link.account_fingerprint = account_fingerprint("t212_live", "another-account")
+        await s.commit()
+    _unreadable(await _deposit(admin, pid, "1"))
+
+
+async def test_deposit_refused_when_keys_cannot_be_decrypted(admin):
+    admin.fake.t212.cash = D("100000")
+    pid = await _portfolio(admin)
+    async with admin.sm() as s:
+        link = await s.get(BrokerLink, (await s.get(Portfolio, pid)).broker_link_id)
+        link.config_encrypted = b"not a ciphertext"
+        await s.commit()
+    r = await _deposit(admin, pid, "1")
+    _unreadable(r)
+    assert "CANARY" not in r.text
+
+
+async def test_link_changed_between_read_and_lock_refused(admin):
+    pid = await _portfolio(admin)
+    async with admin.sm() as s:
+        portfolio = await s.get(Portfolio, pid)
+        other = BrokerCash(uuid.uuid4(), D(100000), "EUR", FakeQuoteSource())
+        with pytest.raises(SMTError) as e:
+            await check_live_deposit(s, portfolio, other, D(1), "EUR")
+        assert (e.value.code, e.value.message) == (ErrorCode.PROVIDER_UNAVAILABLE,
+                                                   UNREADABLE_MESSAGE)
+        with pytest.raises(SMTError) as e:
+            await check_live_deposit(s, portfolio, None, D(1), "EUR")
+        assert e.value.code == ErrorCode.PROVIDER_UNAVAILABLE
+
+
+async def test_deposit_in_another_currency_with_margin(admin):
+    """600 EUR at the broker, 500 in the portfolio: 125 USD = 100 EUR + 1 % = 101 is too
+    much, 120 USD = 96 EUR + 1 % = 96.96 fits."""
+    admin.fake.t212.cash = D("600")
+    pid = await _portfolio(admin)
+
+    async def usd(amount):
+        return await admin.client.post(f"/api/portfolios/{pid}/deposit",
+                                       json={"amount": amount, "currency": "USD"},
+                                       headers={"Idempotency-Key": uuid.uuid4().hex})
+
+    _refused(await usd("125"))
+    r = await usd("120")
+    assert r.status_code == 200, r.text
+    assert await _cash(admin, pid) == {"EUR": D(500), "USD": D(120)}
+
+
+async def test_reset_with_new_cash_needs_the_broker_cash(admin):
+    admin.fake.t212.cash = D("600")
+    pid = await _portfolio(admin)
+
+    async def reset(new_cash):
+        return await admin.client.post(
+            f"/api/portfolios/{pid}/reset",
+            json={"new_cash": new_cash, "currency": "EUR", "reason": "prova"},
+            headers={"Idempotency-Key": uuid.uuid4().hex})
+
+    r = await reset("700")
+    assert r.status_code == 400, r.text
+    assert (r.json()["code"], r.json()["details"]["field"], r.json()["message"]) == (
+        "INVALID_ORDER", "new_cash", DEPOSIT_SHORT_MESSAGE)
+    assert await _cash(admin, pid) == {"EUR": D(500)}
+    r = await reset("600")  # the cash is replaced, not added to
+    assert r.status_code == 200, r.text
+    assert (await _cash(admin, pid))["EUR"] == D(600)
+
+
+async def _second_on_link(admin, first: uuid.UUID, *, cash: str, ccy: str) -> uuid.UUID:
+    """Another portfolio on `first`'s link (Task 11)."""
+    pid = await _portfolio(admin, cash=cash, ccy=ccy, kind=None)
+    async with admin.sm() as s:
+        (await s.get(Portfolio, pid)).broker_link_id = (
+            await s.get(Portfolio, first)).broker_link_id
+        await s.commit()
+    return pid
+
+
+async def test_deposit_counts_another_portfolios_foreign_quota(admin):
+    """A (USD, 400) and B (EUR, 200 = 252.53 USD at 1.25 / 0.99) share the 1000 USD
+    account: a deposit on A sees B's quota through the prefetched EUR/USD rate (no rate
+    is read under the locks)."""
+    admin.fake.alpaca.cash = D("1000")
+    a = await _portfolio(admin, cash="400", ccy="USD", kind="alpaca_live")
+    await _second_on_link(admin, a, cash="200", ccy="EUR")
+    _refused(await _deposit(admin, a, "348"))  # 400 + 252.53 + 348 > 1000
+    r = await _deposit(admin, a, "347")
+    assert r.status_code == 200, r.text
+
+
+async def test_concurrent_deposits_on_one_account_cannot_exceed_its_cash(admin):
+    """A (400) and B (300) on 1000 USD: two deposits of 250 at once; the link lock
+    serializes them, so only one passes."""
+    admin.fake.alpaca.cash = D("1000")
+    a = await _portfolio(admin, cash="400", ccy="USD", kind="alpaca_live")
+    b = await _second_on_link(admin, a, cash="300", ccy="USD")
+    results = await asyncio.gather(_deposit(admin, a, "250"), _deposit(admin, b, "250"))
+    assert sorted(r.status_code for r in results) == [200, 400], [r.text for r in results]
+    total = sum([sum((await _cash(admin, p)).values(), D(0)) for p in (a, b)], D(0))
+    assert total == D(950)
