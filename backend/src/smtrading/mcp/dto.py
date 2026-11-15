@@ -18,6 +18,7 @@ from typing import Any
 from smtrading.brokers.base import BROKER_REJECTED_MESSAGE
 from smtrading.brokers.live.protect import order_summary
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.common.fingerprints import FINGERPRINT
 from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import Fill, Order
 from smtrading.instruments.models import Instrument
@@ -250,9 +251,15 @@ def agent_safe(value: Any) -> Any:
 # "broker" for a broker fill) is dropped wherever it appears (fills of get_order /
 # list_orders, order.filled / order.partially_filled activity data), so simulated and
 # real fills look the same; paper/demo broker hosts and kinds in any text (e.g. a
-# transport error kept as the reason of an unknown outcome) read as the live ones; the
-# dry-run masking of `agent_safe` follows. Humans (portal, Telegram) keep everything.
+# transport error kept as the reason of an unknown outcome) read as the live ones; a
+# broker text still giving the simulation away reads as a plain refusal; the dry-run
+# masking of `agent_safe` follows. Humans (portal, Telegram) keep everything.
 _FILL_SOURCES = frozenset({"sim", "broker"})
+# the fields holding a broker's refusal or error text (an order's reject_message, the
+# `message` of an order.rejected notification): one that still matches FINGERPRINT once
+# the broker names are replaced (e.g. eToro's «Demo account ...») reads as a plain
+# broker refusal (AGENT_REJECT_MESSAGE)
+_BROKER_TEXT_KEYS = frozenset({"reject_message", "message"})
 
 
 @functools.cache
@@ -274,6 +281,9 @@ def _broker_texts() -> tuple[tuple[str, str], ...]:
                  if a and b and a != b)
 
 
+_ETORO_LIVE_MODULE = "smtrading.brokers.live.etoro_live"
+
+
 def _etoro_texts(demo) -> tuple[tuple[str, str], ...]:
     """The eToro demo kind and path prefixes -> the real adapter's (its ClassVars). Until
     the real adapter exists (plan 9 Task 16) neutral stand-ins derived from the demo ones
@@ -283,7 +293,9 @@ def _etoro_texts(demo) -> tuple[tuple[str, str], ...]:
     demo_prefixes = tuple(getattr(demo, a) for a in attrs)
     try:
         from smtrading.brokers.live.etoro_live import EtoroLiveAdapter as real
-    except ImportError:
+    except ModuleNotFoundError as e:
+        if e.name != _ETORO_LIVE_MODULE:
+            raise  # a broken import inside the real adapter: never hidden
         real_kind = demo.kind.removesuffix("_demo") + "_live"
         real_prefixes = tuple(p.replace("/demo", "") for p in demo_prefixes)
     else:
@@ -300,8 +312,15 @@ def _scrub(value: Any) -> Any:
     if isinstance(value, list):
         return [_scrub(v) for v in value]
     if isinstance(value, dict):
-        return {k: _scrub(v) for k, v in value.items()
-                if not (k == "source" and v in _FILL_SOURCES)}
+        out = {}
+        for k, v in value.items():
+            if k == "source" and v in _FILL_SOURCES:
+                continue
+            v = _scrub(v)
+            if k in _BROKER_TEXT_KEYS and isinstance(v, str) and FINGERPRINT.search(v):
+                v = AGENT_REJECT_MESSAGE  # a broker's own words gave the demo away
+            out[k] = v
+        return out
     return value
 
 

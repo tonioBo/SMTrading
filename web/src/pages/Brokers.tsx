@@ -47,6 +47,10 @@ function EtoroDemoGuide() {
         azzera il portafoglio virtuale dall'app eToro. Con posizioni o ordini aperti il collegamento viene rifiutato.
       </p>
       <p>
+        Commissioni: su ogni esecuzione si registra la commissione comunicata da eToro; le regole di commissione del
+        portale non si applicano a questo collegamento.
+      </p>
+      <p>
         Guida alle chiavi:{" "}
         <a
           className="underline"

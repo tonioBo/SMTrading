@@ -118,6 +118,7 @@ from smtrading.brokers.live.gate import (
 )
 from smtrading.brokers.live.protect import record_live_order_activity, trip_reduce_only
 from smtrading.brokers.models import BrokerLink, Reconciliation
+from smtrading.brokers.registry import adapter_class
 from smtrading.brokers.service import get_adapter, open_adapter
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.execution import (
@@ -486,10 +487,9 @@ class BrokerSync:
         memo = MemoQuoteSource.wrap(self._qs)
         await prefetch_portfolio(session, memo, row.portfolio_id, symbols=[row.symbol])
         if bo.fees is not None and await self._broker_fees(session, row.broker_link_id):
-            link = await session.get(BrokerLink, row.broker_link_id)  # the fee's currency
-            snap = link.last_account_snapshot if link is not None else None
-            if isinstance(snap, dict) and snap.get("currency"):
-                await memo.prefetch([], {(str(snap["currency"]).upper(), EUR)} - {(EUR, EUR)})
+            ccy = await self._account_currency(session, row.broker_link_id)  # the fee's
+            if ccy:
+                await memo.prefetch([], {(ccy, EUR)} - {(EUR, EUR)})
         await session.commit()
         return memo
 
@@ -900,6 +900,21 @@ class BrokerSync:
         order.broker_status = "rejected"  # reached BrokerSync: told by its live.order.* row
         await self._reject(session, order, code, message, phase=phase, payload=payload)
 
+    async def _account_currency(self, session: AsyncSession, link_id: UUID | None
+                                ) -> str | None:
+        """The currency of the link's broker account (that of its fees): the live
+        snapshot's, else the adapter's ACCOUNT_CURRENCY (eToro: USD), else None."""
+        link = await session.get(BrokerLink, link_id) if link_id is not None else None
+        if link is None:
+            return None
+        snap = link.last_account_snapshot
+        if isinstance(snap, dict) and snap.get("currency"):
+            return str(snap["currency"]).upper()
+        try:
+            return adapter_class(link.kind).ACCOUNT_CURRENCY
+        except SMTError:  # a kind with no adapter: no declared currency
+            return None
+
     async def _fee_override(self, session: AsyncSession, order: Order,
                             bo: BrokerOrder) -> tuple[Decimal | None, str | None]:
         """The broker's fee for this fill (`_broker_fees` links): its cumulative fee for the
@@ -908,9 +923,7 @@ class BrokerSync:
         None)."""
         if bo.fees is None or not await self._broker_fees(session, order.broker_link_id):
             return None, None
-        link = await session.get(BrokerLink, order.broker_link_id)
-        snap = link.last_account_snapshot if link is not None else None
-        ccy = (snap or {}).get("currency") if isinstance(snap, dict) else None
+        ccy = await self._account_currency(session, order.broker_link_id)
         if not ccy:
             ccy = await session.scalar(
                 select(Instrument.currency).where(Instrument.symbol == order.symbol))

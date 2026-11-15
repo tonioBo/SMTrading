@@ -342,6 +342,7 @@ class _EtoroProtocol(BrokerAdapter):
     ALLOWED_PREFIXES: ClassVar[tuple[str, ...]]
 
     idempotent_place: ClassVar[bool] = False
+    ACCOUNT_CURRENCY: ClassVar[str | None] = "USD"  # USD accounts only (get_account)
     supported_types: ClassVar[frozenset[OrderType]] = frozenset({OrderType.market})
     supported_asset_classes: ClassVar[frozenset[AssetClass]] = frozenset(
         {AssetClass.us_equity, AssetClass.eu_equity, AssetClass.crypto}
@@ -832,7 +833,7 @@ class _EtoroProtocol(BrokerAdapter):
         return AccountSnapshot(
             account_id=self._account,
             account_type="cash" if conforming else "leveraged",
-            currency="USD",
+            currency=self.ACCOUNT_CURRENCY,
             cash_available=max(cash, Decimal(0)),
             positions_count=len(positions) + len(mirrors),
             open_orders_count=sum(len(cp.get(k, [])) for k in

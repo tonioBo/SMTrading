@@ -149,6 +149,7 @@ describe("Brokers", () => {
     const guide = within(form).getByRole("note", { name: "Guida eToro" });
     expect(guide).toHaveTextContent("Demo");
     expect(guide).toHaveTextContent("azzera il portafoglio virtuale dall'app eToro");
+    expect(guide).toHaveTextContent("le regole di commissione del portale non si applicano");
     expect(within(form).queryByLabelText("API secret")).not.toBeInTheDocument();
     await user.type(within(form).getByLabelText("API key"), "ETKEY");
     await user.type(within(form).getByLabelText("User key"), "ETUSER");

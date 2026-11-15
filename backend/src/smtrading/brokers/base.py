@@ -63,6 +63,9 @@ class BrokerAdapter:
     idempotent_place: ClassVar[bool] = True
     supported_types: ClassVar[frozenset[OrderType]]
     supported_asset_classes: ClassVar[frozenset[AssetClass]]
+    # the account's currency when the broker has only one (eToro: USD), else None (read
+    # from the account snapshot); the currency of the broker's fees
+    ACCOUNT_CURRENCY: ClassVar[str | None] = None
 
     def __init__(self, config: dict, http) -> None:
         self.config = config
