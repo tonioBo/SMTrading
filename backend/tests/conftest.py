@@ -18,15 +18,19 @@ LIVE_HOST_MESSAGE = "tentata connessione a un host live nei test"
 
 @pytest.fixture(scope="session", autouse=True)
 def _no_live_network():
-    """No test ever resolves or connects to a real-money host (LIVE_HOSTS)."""
+    """No test ever resolves or connects to a real-money host (LIVE_HOSTS), nor to the
+    eToro host (shared by its demo and real APIs: tests use the fake or respx only)."""
     import socket
 
-    from smtrading.brokers.live import LIVE_HOSTS
+    from smtrading.brokers.etoro_core import ETORO_URL
+    from smtrading.brokers.live import LIVE_HOSTS, hostname
+
+    blocked = LIVE_HOSTS | {hostname(ETORO_URL)}
 
     def is_live(host) -> bool:
         if isinstance(host, bytes):
             host = host.decode("ascii", "replace")
-        return isinstance(host, str) and host.lower().rstrip(".") in LIVE_HOSTS
+        return isinstance(host, str) and host.lower().rstrip(".") in blocked
 
     real_getaddrinfo, real_create_connection = socket.getaddrinfo, socket.create_connection
 
@@ -68,16 +72,19 @@ def _reset_activity_alert():
 
 @pytest.fixture(autouse=True)
 def _reset_t212_caches():
-    """The Trading 212 instrument caches and rate-limit blocks are process-wide: reset in
+    """The Trading 212 (and eToro) instrument caches and rate-limit blocks are process-wide: reset in
     place (modules alias the cache objects) around every test, so what one test loaded
     (e.g. the fake's US-only tickers) never decides another's routability."""
-    from smtrading.brokers import t212_core
+    from smtrading.brokers import etoro_core, t212_core
 
     def reset():
         for cache in t212_core._instrument_caches.values():
             cache.data.update(at=0.0, items=None, failed_at=None)
             cache.reverse.clear()
         t212_core._rate_blocked_until.clear()
+        for etoro_cache in etoro_core._instrument_caches.values():
+            etoro_cache.clear()
+        etoro_core._rate_blocked_until.clear()
 
     reset()
     yield

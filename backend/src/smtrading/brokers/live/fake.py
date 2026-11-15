@@ -26,6 +26,19 @@ _T212_INSTRUMENTS = [
     {"ticker": "AAPL_US_EQ", "shortName": "AAPL", "type": "STOCK", "currencyCode": "USD"},
     {"ticker": "MSFT_US_EQ", "shortName": "MSFT", "type": "STOCK", "currencyCode": "USD"},
 ]
+_ETORO_INSTRUMENTS = {
+    "AAPL": 1001,
+    "MSFT": 1002,
+    "BTC": 100000,
+}
+_ETORO_SEARCH = "/api/v1/market-data/search"
+_ETORO_OPEN = re.compile(r"^/api/v2/trading/execution/(demo/)?orders$")
+_ETORO_CANCEL = re.compile(r"^/api/v2/trading/execution/(demo/)?orders/(\d+)$")
+_ETORO_LOOKUP = re.compile(r"^/api/v2/trading/info/(demo/)?orders:lookup$")
+_ETORO_CLOSE = re.compile(r"^/api/v1/trading/execution/(demo/)?market-close-orders/positions/(\d+)$")
+_ETORO_CLOSE_STATUS = re.compile(r"^/api/v1/trading/info/(demo|real)/close-orders/(\d+)$")
+_ETORO_PNL = re.compile(r"^/api/v1/trading/info/(demo|real)/pnl$")
+_ETORO_ELIGIBILITY = re.compile(r"^/api/v2/trading/info/(demo/)?eligibility$")
 _ALPACA_ORDER = re.compile(r"^/v2/orders/([^/]+)$")
 _T212_ORDER = re.compile(rf"^{_T212}/orders/(\d+)$")
 _T212_PLACE = re.compile(rf"^{_T212}/orders/(market|limit|stop|stop_limit)$")
@@ -64,11 +77,24 @@ class _Account:
     orders: dict[str, dict] = field(default_factory=dict)
 
 
+@dataclass
+class _EtoroEnv:
+    credit: Decimal = Decimal("1000.00")
+    positions: dict[int, dict] = field(default_factory=dict)  # positionID -> position
+    orders: dict[int, dict] = field(default_factory=dict)  # orderId -> lookup record
+    refs: dict[str, int] = field(default_factory=dict)  # referenceId -> orderId
+    closes: dict[int, dict] = field(default_factory=dict)  # close orderID -> status
+
+
 class FakeLiveBroker:
     def __init__(self, price: Decimal = Decimal(100)) -> None:
         self.price = price
         self.alpaca = _Account("USD")
         self.t212 = _Account("EUR")
+        self.etoro = {"demo": _EtoroEnv(), "real": _EtoroEnv()}
+        self.etoro_partial_close = True  # allowPartialClosePosition of every instrument
+        self.etoro_fail_close_after: int | None = None  # closes accepted before a 500
+        self.calls: list[tuple[str, str]] = []
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
 
@@ -86,6 +112,9 @@ class FakeLiveBroker:
             except ValueError:
                 return httpx.Response(400, json={"message": "invalid JSON"})
         with self._lock:
+            self.calls.append((method, path))
+            if path.startswith(("/api/v1/", "/api/v2/")):
+                return self._etoro(request, method, path, body)
             if path.startswith(_T212 + "/"):
                 return self._t212(method, path, body)
             if path.startswith("/v2/"):
@@ -223,6 +252,120 @@ class FakeLiveBroker:
             order.update(status="FILLED", filledQuantity=qty)
         acct.orders[oid] = order
         return _numbers(200, order)
+
+    # --- eToro ---------------------------------------------------------------------
+
+    def _etoro(self, request: httpx.Request, method: str, path: str,
+               body: dict) -> httpx.Response:
+        if not request.headers.get("x-api-key") or not request.headers.get("x-user-key"):
+            return httpx.Response(401, json={"errorMessage": "Unauthorized"})
+        params = request.url.params
+        if path == _ETORO_SEARCH:
+            if method != "GET":
+                return httpx.Response(405, json={"errorMessage": "Method not allowed"})
+            query = str(params.get("internalSymbolFull") or "").upper()
+            items = [{"instrumentId": iid, "internalSymbolFull": sym,
+                      "isCurrentlyTradable": True, "isBuyEnabled": True, "isDelisted": False}
+                     for sym, iid in _ETORO_INSTRUMENTS.items() if query and query in sym]
+            return httpx.Response(200, json={"items": items})
+        env = self.etoro["demo" if "/demo/" in path else "real"]
+        if method == "POST" and _ETORO_OPEN.match(path):
+            return self._etoro_open(env, body, request.headers.get("x-request-id") or "")
+        if method == "POST" and _ETORO_ELIGIBILITY.match(path):
+            ids = body.get("instrumentIds") or []
+            return httpx.Response(200, json={"instruments": [
+                {"instrumentId": iid, "allowOpenPosition": True,
+                 "allowPartialClosePosition": self.etoro_partial_close,
+                 "leverageConfigs": [{"settlementType": "real", "direction": "buy",
+                                      "leverageValues": [1]}]}
+                for iid in ids if iid in _ETORO_INSTRUMENTS.values()]})
+        if method == "GET" and _ETORO_LOOKUP.match(path):
+            oid = params.get("orderId")
+            if oid is None and params.get("referenceId") in env.refs:
+                oid = env.refs[params["referenceId"]]
+            order = env.orders.get(int(oid)) if str(oid or "").isdigit() else None
+            return _numbers(200, order) if order else httpx.Response(
+                404, json={"errorMessage": "Order not found"})
+        m = _ETORO_CANCEL.match(path)
+        if method == "DELETE" and m:
+            if int(m.group(2)) not in env.orders:
+                return httpx.Response(404, json={"errorMessage": "Order not found"})
+            return httpx.Response(400, json={"errorMessage": "Order cannot be cancelled"})
+        m = _ETORO_CLOSE.match(path)
+        if method == "POST" and m:
+            return self._etoro_close(env, int(m.group(2)), body)
+        m = _ETORO_CLOSE_STATUS.match(path)
+        if method == "GET" and m:
+            close = env.closes.get(int(m.group(2)))
+            return _numbers(200, close) if close else httpx.Response(
+                404, json={"errorMessage": "Order not found"})
+        if method == "GET" and _ETORO_PNL.match(path):
+            return _numbers(200, {"clientPortfolio": {
+                "credit": env.credit, "accountCurrencyId": 1,
+                "positions": list(env.positions.values()), "orders": [],
+                "ordersForOpen": [], "ordersForClose": [], "mirrors": []}})
+        return httpx.Response(404, json={"errorMessage": "Not found"})
+
+    def _etoro_open(self, env: _EtoroEnv, body: dict, ref: str) -> httpx.Response:
+        if ref in env.refs:  # x-request-id is the idempotency key
+            oid = env.refs[ref]
+            return httpx.Response(200, json={"token": "t", "orderId": oid, "referenceId": ref})
+        iid = body.get("instrumentId")
+        if (body.get("action") != "open" or body.get("transaction") != "buy"
+                or body.get("orderType") != "mkt" or body.get("leverage") != 1
+                or body.get("settlementType") != "real" or "sellShort" in body
+                or iid not in _ETORO_INSTRUMENTS.values()):
+            return httpx.Response(400, json={"errorMessage": "Invalid order"})
+        try:
+            if body.get("units") is not None:
+                units = Decimal(str(body["units"]))
+            else:
+                units = Decimal(str(body.get("amount"))) / self.price
+        except ArithmeticError:
+            return httpx.Response(400, json={"errorMessage": "Invalid units"})
+        cost = units * self.price
+        if units <= 0 or cost > env.credit:
+            return httpx.Response(400, json={"errorMessage": "Insufficient funds"})
+        env.credit -= cost
+        oid, pid = next(self._ids), next(self._ids)
+        env.positions[pid] = {
+            "positionID": pid, "instrumentID": iid, "isBuy": True, "units": units,
+            "openRate": self.price, "amount": cost, "leverage": 1, "mirrorID": 0,
+            "settlementTypeID": 1, "totalFees": Decimal(0), "openDateTime": _now()}
+        env.orders[oid] = {
+            "orderId": oid, "referenceId": ref,
+            "status": {"id": 3, "name": "Filled", "errorCode": None, "errorMessage": None},
+            "asset": {"instrumentId": iid, "settlementType": "real", "leverage": 1,
+                      "side": "buy"},
+            "positionExecutions": [{"positionId": pid, "openingData": {
+                "units": units, "avgPrice": self.price, "fees": Decimal(0)}}],
+            "totalCosts": Decimal(0)}
+        env.refs[ref] = oid
+        return httpx.Response(200, json={"token": "t", "orderId": oid, "referenceId": ref})
+
+    def _etoro_close(self, env: _EtoroEnv, pid: int, body: dict) -> httpx.Response:
+        if self.etoro_fail_close_after is not None:
+            if self.etoro_fail_close_after <= 0:
+                return httpx.Response(500, json={"errorMessage": "Internal error"})
+            self.etoro_fail_close_after -= 1
+        pos = env.positions.get(pid)
+        if pos is None or body.get("InstrumentID") != pos["instrumentID"]:
+            return httpx.Response(404, json={"errorMessage": "Position not found"})
+        raw = body.get("UnitsToDeduct")
+        units = pos["units"] if raw is None else Decimal(str(raw))
+        if raw is not None and not self.etoro_partial_close:
+            return httpx.Response(400, json={"errorMessage": "Partial close not allowed"})
+        if units <= 0 or units > pos["units"]:
+            return httpx.Response(400, json={"errorMessage": "Invalid units"})
+        pos["units"] -= units
+        if pos["units"] == 0:
+            del env.positions[pid]
+        env.credit += units * self.price
+        cid = next(self._ids)
+        env.closes[cid] = {"statusID": 3, "unitsDeducted": units, "closeRate": self.price}
+        return _numbers(200, {"orderForClose": {
+            "positionID": pid, "instrumentID": pos["instrumentID"], "unitsToDeduct": raw,
+            "orderID": cid, "statusID": 1}, "token": "t"})
 
 
 _shared: FakeLiveBroker | None = None

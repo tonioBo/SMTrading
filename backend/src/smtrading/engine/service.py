@@ -442,10 +442,11 @@ async def _route(session: AsyncSession, order: Order, adm: _Admission) -> bool:
         return True
     async with open_adapter(session, link_id, None) as adapter:  # no network: config only
         routable = adapter.routable(order, adm.instrument)
+        reason = None if routable else adapter.unsupported_reason(order, adm.instrument)
     if not routable:
         if order.type == OrderType.trailing_stop:
             return False  # simulated trigger, see hand_to_broker
-        _reject(order, ErrorCode.INVALID_ORDER, UNSUPPORTED_BY_BROKER)
+        _reject(order, ErrorCode.INVALID_ORDER, reason or UNSUPPORTED_BY_BROKER)
         return True
     order.broker_link_id = link_id
     order.broker_status = BrokerState.TO_SEND

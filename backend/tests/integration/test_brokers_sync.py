@@ -743,6 +743,18 @@ async def test_unsupported_order_is_refused_at_placement(maker, redis, qs):
     assert BROKER.placed == []
 
 
+async def test_unsupported_order_refused_with_the_adapter_reason(maker, redis, qs,
+                                                                 monkeypatch):
+    reason = "tipo d'ordine non disponibile su questo broker: solo quantità"
+    monkeypatch.setattr(FakeBrokerAdapter, "unsupported_reason",
+                        lambda self, order, instrument: reason)
+    pid, _ = await _linked_portfolio(maker)
+    with pytest.raises(SMTError) as e:
+        await _place(maker, redis, qs, pid, qty=None, notional=D(500))
+    assert (e.value.code, e.value.message) == (ErrorCode.INVALID_ORDER, reason)
+    assert BROKER.placed == []
+
+
 async def test_unsupported_after_prepare_is_rejected(maker, redis, qs):
     pid, _ = await _linked_portfolio(maker)
     oid = await _place(maker, redis, qs, pid)
