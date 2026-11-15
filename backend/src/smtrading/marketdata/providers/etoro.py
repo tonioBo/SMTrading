@@ -27,15 +27,16 @@ import httpx
 from smtrading.brokers.etoro_core import (
     ETORO_URL,
     MARKET_DATA_PREFIX,
-    _search_path,
     account_digest,
+    as_int,
     etoro_headers,
-    http_error,
+    field,
     instrument_cache,
     match_instrument,
+    path_is_safe,
     rate_headers,
+    search_path,
 )
-from smtrading.brokers.etoro_core import _get as _field
 from smtrading.brokers.t212_core import _dec
 from smtrading.common.logsetup import register_secret
 from smtrading.instruments.models import AssetClass
@@ -123,8 +124,7 @@ class EtoroProvider(DataProvider):
     # --- the only network access ---------------------------------------------------
 
     async def _get(self, path: str, params: dict | None = None) -> object:
-        bare = path.split("?", 1)[0]
-        if not bare.startswith(MARKET_DATA_PREFIX) or ".." in bare or "//" in bare:
+        if not path_is_safe(path, (MARKET_DATA_PREFIX,)):
             raise RuntimeError("etoro: percorso non ammesso")
         if not self._api_key or not self._user_key:
             raise self._unsupported("request without API key")
@@ -151,8 +151,8 @@ class EtoroProvider(DataProvider):
             raise RuntimeError(INVALID_KEY)
         if 300 <= resp.status_code < 400:  # never follow to another host
             raise RuntimeError(f"etoro: unexpected redirect HTTP {resp.status_code}")
-        if resp.status_code >= 400:
-            raise RuntimeError(http_error(resp))
+        if resp.status_code >= 400:  # never eToro's text: it may name its environment
+            raise RuntimeError(f"etoro: HTTP {resp.status_code}")
         try:
             return json.loads(resp.content, parse_float=Decimal)
         except ValueError:
@@ -161,7 +161,7 @@ class EtoroProvider(DataProvider):
     # --- instruments ---------------------------------------------------------------
 
     async def _search(self, symbol: str) -> dict | None:
-        return match_instrument(await self._get(_search_path(symbol)), symbol)
+        return match_instrument(await self._get(search_path(symbol)), symbol)
 
     async def _instrument_ids(self, symbols: list[str]) -> dict[str, int]:
         """eToro symbol -> instrument id. At most MAX_LOOKUPS_PER_CALL new searches: the
@@ -181,12 +181,12 @@ class EtoroProvider(DataProvider):
                 continue
             lookups += 1
             item = await self._search(symbol)
-            d = _dec(_field(item, "instrumentId")) if item is not None else None
-            if d is None or item.get("isDelisted") is True:
+            iid = as_int(field(item, "instrumentId")) if item is not None else None
+            if iid is None or item.get("isDelisted") is True:
                 _missing[symbol] = _clock()
                 continue
             _missing.pop(symbol, None)
-            out[symbol] = cache.put(symbol, int(d))["instrument_id"]
+            out[symbol] = cache.put(symbol, iid)["instrument_id"]
         return out
 
     # --- capabilities --------------------------------------------------------------
@@ -207,8 +207,8 @@ class EtoroProvider(DataProvider):
             for rate in rates if isinstance(rates, list) else []:
                 if not isinstance(rate, dict):
                     continue
-                d = _dec(_field(rate, "instrumentID"))
-                canonicals = wanted.get(int(d)) if d is not None else None
+                iid = as_int(field(rate, "instrumentID"))
+                canonicals = wanted.get(iid) if iid is not None else None
                 last, ts = _positive(rate.get("lastExecution")), _ts(rate.get("date"))
                 if not canonicals or last is None or ts is None or not _in_usd(rate):
                     continue
@@ -236,7 +236,7 @@ class EtoroProvider(DataProvider):
         groups = data.get("candles") if isinstance(data, dict) else None
         bars: list[Bar] = []
         for group in groups if isinstance(groups, list) else []:
-            if not isinstance(group, dict) or _dec(_field(group, "instrumentId")) != iid:
+            if not isinstance(group, dict) or as_int(field(group, "instrumentId")) != iid:
                 continue
             for c in group.get("candles") or []:
                 if not isinstance(c, dict):

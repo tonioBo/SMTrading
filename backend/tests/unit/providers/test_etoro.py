@@ -115,7 +115,11 @@ async def test_headers_and_market_data_path_only(provider):
 @respx.mock  # assert_all_mocked (default): any unmocked request fails
 async def test_non_market_data_path_refused_before_network(provider):
     for path in ("/api/v1/trading/info/real/pnl", "/api/v2/trading/execution/orders",
-                 "/api/v1/market-data/../trading/info/pnl"):
+                 "/api/v1/market-data/../trading/info/pnl",
+                 "/api/v1/market-data/%2e%2e/trading/info/pnl",
+                 "/api/v1/market-data/./search", "/api/v1/market-data\\..\\trading",
+                 "/api/v1/market-data/search#x", "/api/v1/market-data/sea rch",
+                 "api/v1/market-data/search", "/api/v1/market-data//search"):
         with pytest.raises(RuntimeError, match="percorso non ammesso"):
             await provider._get(path)
     assert not respx.calls
@@ -312,7 +316,7 @@ async def test_errors_redacted_no_keys(provider):
         assert e.value.__cause__ is None  # nothing chained (the request, its headers)
         assert e.value.__context__ is None or e.value.__suppress_context__
     assert messages[0] == messages[1] == "etoro: chiave non valida"
-    assert messages[2].startswith("etoro: HTTP 500")
+    assert messages[2] == "etoro: HTTP 500"  # never the broker's text
     assert messages[3] == "etoro: request failed: ConnectError"
     for m in messages:
         for word in (API_KEY, USER_KEY, "x-api-key", "x-user-key", "demo", "/api/"):
@@ -328,3 +332,18 @@ async def test_health_check(provider):
     route.return_value = httpx.Response(200, json={"items": [_search_item("AAPL.US", 9)]})
     with pytest.raises(RuntimeError, match="strumento di prova non trovato"):
         await provider.health_check()
+
+
+@respx.mock
+async def test_broker_text_never_forwarded(provider, caplog):
+    """I1: eToro's body text (which may name its environment) never reaches the error."""
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+    instrument_cache("data").put("AAPL", 1001)
+    respx.get(f"{MD}/instruments/rates").mock(return_value=httpx.Response(
+        400, json={"errorMessage": f"not available in Demo environment {USER_KEY}"}))
+    with pytest.raises(RuntimeError) as e:
+        await provider.get_quotes([("AAPL", "AAPL")])
+    assert str(e.value) == "etoro: HTTP 400"
+    assert USER_KEY not in caplog.text

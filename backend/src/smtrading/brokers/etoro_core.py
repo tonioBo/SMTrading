@@ -142,6 +142,23 @@ def instrument_cache(scope: str) -> InstrumentCache:
     return cache
 
 
+def path_is_safe(path: str, prefixes: tuple[str, ...]) -> bool:
+    """The shared strict path check (adapters and the market-data provider), before any
+    network I/O: an absolute path under one of `prefixes`, with no encoded character,
+    no `//`, `/.`, backslash, fragment or whitespace."""
+    bare = path.split("?", 1)[0]
+    return not (
+        not bare.startswith("/")
+        or "%" in bare  # no eToro path needs an encoded character
+        or "//" in bare
+        or "/." in bare
+        or "\\" in bare
+        or "#" in path
+        or any(c.isspace() for c in path)
+        or not bare.startswith(prefixes)
+    )
+
+
 def _search_path(symbol: str) -> str:
     query = urlencode({"internalSymbolFull": symbol, "fields": _SEARCH_FIELDS})
     return f"{MARKET_DATA_PREFIX}search?{query}"
@@ -244,6 +261,12 @@ async def search_instrument(http, headers: dict, symbol: str) -> dict | None:
         raise RuntimeError(f"etoro: {type(e).__name__}") from None
     _check(resp)
     return match_instrument(_parse(resp), symbol)
+
+
+# public names of the helpers the market-data provider reuses
+search_path = _search_path
+field = _get
+as_int = _int
 
 
 # --- eligibility and portfolio parsing --------------------------------------------
@@ -369,16 +392,7 @@ class _EtoroProtocol(BrokerAdapter):
         a demo class only reaches market data or `/demo/` paths, a real class never a
         `/demo/` path; market data is GET only. Anything odd in the path is refused."""
         bare = path.split("?", 1)[0]
-        if (
-            not bare.startswith("/")
-            or "%" in bare  # no eToro path needs an encoded character
-            or "//" in bare
-            or "/." in bare
-            or "\\" in bare
-            or "#" in path
-            or any(c.isspace() for c in path)
-            or not bare.startswith(self.ALLOWED_PREFIXES)
-        ):
+        if not path_is_safe(path, self.ALLOWED_PREFIXES):
             raise SMTError(ErrorCode.FORBIDDEN, FORBIDDEN_PATH_MESSAGE)
         market_data = bare.startswith(MARKET_DATA_PREFIX)
         if (
