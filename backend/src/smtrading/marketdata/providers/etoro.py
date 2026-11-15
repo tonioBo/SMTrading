@@ -210,9 +210,12 @@ class EtoroProvider(DataProvider):
                 iid = as_int(field(rate, "instrumentID"))
                 canonicals = wanted.get(iid) if iid is not None else None
                 last, ts = _positive(rate.get("lastExecution")), _ts(rate.get("date"))
+                bid, ask = _positive(rate.get("bid")), _positive(rate.get("ask"))
+                if last is None and bid is not None and ask is not None:
+                    # eToro sends lastExecution 0.0 outside trading hours: use the mid
+                    last = (bid + ask) / 2
                 if not canonicals or last is None or ts is None or not _in_usd(rate):
                     continue
-                bid, ask = _positive(rate.get("bid")), _positive(rate.get("ask"))
                 for canonical in canonicals:
                     out[canonical] = Quote(symbol=canonical, bid=bid, ask=ask, last=last,
                                            ts=ts, provider=self.name)

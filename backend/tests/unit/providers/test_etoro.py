@@ -350,3 +350,17 @@ async def test_broker_text_never_forwarded(provider, caplog):
         await provider.get_quotes([("AAPL", "AAPL")])
     assert str(e.value) == "etoro: HTTP 400"
     assert USER_KEY not in caplog.text
+
+
+@respx.mock  # assert_all_mocked (default): any unmocked request fails
+async def test_quote_without_last_execution_uses_mid(provider):
+    """Real eToro answers (verified 2026-11-15 with a real key): outside trading hours
+    `lastExecution` is 0.0 while bid/ask are valid → the quote uses the bid/ask mid."""
+    instrument_cache("data").put("AAPL", 1001)
+    respx.get(f"{MD}/instruments/rates").mock(return_value=httpx.Response(200, json={"rates": [
+        {"instrumentID": 1001, "bid": "356.26", "ask": "356.28", "lastExecution": "0.0",
+         "conversionRateBid": "1.0", "conversionRateAsk": "1.0",
+         "date": "2026-11-13T20:59:55.937Z"}]}))
+    out = await provider.get_quotes([("AAPL", "AAPL")])
+    assert out["AAPL"].last == Decimal("356.27")
+    assert (out["AAPL"].bid, out["AAPL"].ask) == (Decimal("356.26"), Decimal("356.28"))
