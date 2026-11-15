@@ -4,7 +4,7 @@ import { usePaperclipStatus, useReconfirmPaperclip } from "@/api/hooks/paperclip
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { errorMessage } from "@/lib/errors";
-import { PAPERCLIP_ERRORS_THRESHOLD, expiryText, isolationText } from "@/lib/paperclip";
+import { PAPERCLIP_ERRORS_THRESHOLD, expiryText, isolationInactive, isolationText } from "@/lib/paperclip";
 
 /** «Riconferma» with a confirmation: the current isolation rules become the expected ones (admin). */
 function ReconfirmButton() {
@@ -47,6 +47,11 @@ export function PaperclipBanner() {
         >
           <span>{isolationText(data.changes)}</span>
           {admin && <ReconfirmButton />}
+        </div>
+      )}
+      {isolationInactive(data) && (
+        <div role="alert" aria-label="Isolamento Paperclip non attivo" className="border-b border-warn/40 bg-warn/15 px-6 py-1.5 text-center text-xs font-semibold text-warn">
+          Paperclip: nessuna regola di isolamento trovata — l&apos;allarme non è attivo
         </div>
       )}
       {data.consecutive_errors >= PAPERCLIP_ERRORS_THRESHOLD && (

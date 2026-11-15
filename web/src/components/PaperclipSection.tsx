@@ -12,22 +12,32 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
-import { expiryText } from "@/lib/paperclip";
+import { expiryText, isolationInactive } from "@/lib/paperclip";
 
-/** «Ultima lettura: …» or the last read error (the reader resets the counter on success). */
-function StatusLine({ status }: { status: PaperclipStatus | undefined }) {
-  if (!status) return null;
+/**
+ * «Ultima lettura: …», the last reader error (also a successful read without isolation rules),
+ * and whether the isolation alarm is active.
+ */
+function StatusLine({ status, isError }: { status: PaperclipStatus | undefined; isError: boolean }) {
+  if (!status) {
+    return isError ? (
+      <p role="status" className="text-sm text-loss">
+        Impossibile leggere lo stato
+      </p>
+    ) : null;
+  }
   return (
     <div className="space-y-1 text-sm">
-      {status.last_error && status.consecutive_errors > 0 ? (
-        <p role="status" className="text-loss">
-          Errore di lettura: {status.last_error}
-        </p>
-      ) : (
-        <p role="status" className="text-muted">
-          Ultima lettura: {status.last_ok_at ? formatDateTime(status.last_ok_at) : "mai"}
+      <p role="status" className="text-muted">
+        Ultima lettura: {status.last_ok_at ? formatDateTime(status.last_ok_at) : "mai"}
+      </p>
+      {status.last_error && <p className="text-loss">Errore di lettura: {status.last_error}</p>}
+      {status.isolation === "ok" && (
+        <p className="text-muted">
+          Regole di isolamento: {status.baseline_count} attese{status.baseline_at ? ` (dal ${formatDateTime(status.baseline_at)})` : ""}
         </p>
       )}
+      {isolationInactive(status) && <p className="text-warn">Regole di isolamento non verificate: l&apos;allarme non è attivo</p>}
       {status.rebaseline_reason === "config" && (
         <p className="text-muted">Configurazione cambiata: nuova fotografia delle regole al prossimo controllo</p>
       )}
@@ -87,7 +97,7 @@ function VerifyResult({
                       value={mapping[a.id] ?? a.smt_agent?.id ?? ""}
                       onChange={(e) => onMap(a.id, e.target.value)}
                     >
-                      <option value="">— non abbinato —</option>
+                      <option value="">— automatico (per nome) —</option>
                       {agents.map((s) => (
                         <option key={s.id} value={s.id}>
                           {s.name}
@@ -106,7 +116,7 @@ function VerifyResult({
   );
 }
 
-function EditForm({ config, status }: { config: PaperclipConfig; status: PaperclipStatus | undefined }) {
+function EditForm({ config, status, statusError }: { config: PaperclipConfig; status: PaperclipStatus | undefined; statusError: boolean }) {
   const save = useSavePaperclipConfig();
   const verify = useVerifyPaperclip();
   const [baseUrl, setBaseUrl] = useState(config.base_url ?? "");
@@ -152,6 +162,7 @@ function EditForm({ config, status }: { config: PaperclipConfig; status: Papercl
         setKey("");
         setMapDraft({});
         resetSave();
+        verify.reset(); // its matches were computed with the previous configuration
         toast.success("Impostazioni Paperclip salvate");
       },
       onError: (err) => {
@@ -215,12 +226,12 @@ function EditForm({ config, status }: { config: PaperclipConfig; status: Papercl
           onMap={(pid, sid) => setMapDraft((d) => ({ ...d, [pid]: sid }))}
         />
       )}
-      <StatusLine status={status} />
+      <StatusLine status={status} isError={statusError} />
     </div>
   );
 }
 
-function ReadOnlyView({ config, status }: { config: PaperclipConfig; status: PaperclipStatus | undefined }) {
+function ReadOnlyView({ config, status, statusError }: { config: PaperclipConfig; status: PaperclipStatus | undefined; statusError: boolean }) {
   return (
     <div className="space-y-3">
       <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
@@ -233,7 +244,7 @@ function ReadOnlyView({ config, status }: { config: PaperclipConfig; status: Pap
         <dt className="text-muted">Lettura attiva</dt>
         <dd>{config.enabled ? "Sì" : "No"}</dd>
       </dl>
-      <StatusLine status={status} />
+      <StatusLine status={status} isError={statusError} />
     </div>
   );
 }
@@ -256,7 +267,7 @@ export function PaperclipSection() {
             {config.data.error}
           </p>
         )}
-        {config.data && (admin ? <EditForm config={config.data} status={status.data} /> : <ReadOnlyView config={config.data} status={status.data} />)}
+        {config.data && (admin ? <EditForm config={config.data} status={status.data} statusError={status.isError} /> : <ReadOnlyView config={config.data} status={status.data} statusError={status.isError} />)}
       </CardContent>
     </Card>
   );

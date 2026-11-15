@@ -27,8 +27,8 @@ function costs(period: string): AgentCosts {
         name: "Analista",
         paperclip_name: "analista",
         api_usd: big ? "1234.5" : "1.5",
-        subscription_usd: "0.25",
-        other_usd: "0",
+        subscription_usd: "0.004",
+        other_usd: "0.1234",
         runs: 7,
         orders: 2,
         portfolios: [{ id: "p1", name: "Crescita", permission: "trade", return_pct: "1.25" }],
@@ -72,7 +72,9 @@ describe("AgentCosts", () => {
     ]);
     const row = await within(table).findByRole("row", { name: /Analista/ });
     expect(row).toHaveTextContent("1,50 $");
-    expect(row).toHaveTextContent("0,25 $");
+    // sub-cent and below-1-dollar amounts stay readable; the raw value is in the title
+    expect(within(row).getByText("< 0,01 $")).toHaveAttribute("title", "0.004 $");
+    expect(within(row).getByText("0,123 $")).toHaveAttribute("title", "0.1234 $");
     expect(row).toHaveTextContent("Crescita");
     expect(row).toHaveTextContent("+1,25%");
     expect(periods).toEqual(["day"]);

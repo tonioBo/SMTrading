@@ -6,7 +6,8 @@ import { DataTable, type Column } from "@/components/DataTable";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatDateTime, formatMoney, formatPct } from "@/lib/format";
+import { formatDateTime, formatPct } from "@/lib/format";
+import { formatUsd } from "@/lib/paperclip";
 
 const PERIODS: { value: AgentCostPeriod; label: string }[] = [
   { value: "day", label: "Oggi" },
@@ -14,9 +15,13 @@ const PERIODS: { value: AgentCostPeriod; label: string }[] = [
   { value: "month", label: "Mese" },
 ];
 
-/** USD as Paperclip reports it, it-IT format ("1.234,50 $"). */
+/** USD as Paperclip reports it; the raw value is in the title. */
 function Usd({ value }: { value: string }) {
-  return <span className="num">{formatMoney(value, "USD")}</span>;
+  return (
+    <span className="num" title={`${value} $`}>
+      {formatUsd(value)}
+    </span>
+  );
 }
 
 const num = (v: string) => Number(v) || 0;

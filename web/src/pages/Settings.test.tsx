@@ -125,9 +125,9 @@ describe("Settings", () => {
   it("saves the timezone", async () => {
     const user = userEvent.setup();
     renderApp("/impostazioni");
-    const select = await screen.findByLabelText("Fuso orario");
-    await user.selectOptions(select, "Asia/Tokyo");
-    await user.click(within(select.closest(".flex-wrap") as HTMLElement).getByRole("button", { name: "Salva" }));
+    const card = await screen.findByRole("region", { name: "Fuso orario" });
+    await user.selectOptions(await within(card).findByRole("combobox"), "Asia/Tokyo");
+    await user.click(within(card).getByRole("button", { name: "Salva" }));
     await waitFor(() => expect(tzPuts).toEqual([{ timezone: "Asia/Tokyo" }]));
   });
 

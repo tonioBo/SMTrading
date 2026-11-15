@@ -158,7 +158,7 @@ export default function Settings() {
           <UsersSection />
         </div>
       )}
-      <Card>
+      <Card role="region" aria-label="Fuso orario">
         <CardHeader>
           <CardTitle>Fuso orario</CardTitle>
         </CardHeader>

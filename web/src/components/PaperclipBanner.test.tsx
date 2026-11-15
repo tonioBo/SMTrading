@@ -94,6 +94,22 @@ describe("PaperclipBanner", () => {
     expect(screen.queryByRole("alert", { name: /Paperclip/ })).toBeNull();
   });
 
+  it("yellow banner when no isolation rule is found (viewer too)", async () => {
+    role = "viewer";
+    status = { ...baseStatus(), isolation: "unknown", baseline_at: null, baseline_count: 0, last_error: "nessuna regola di isolamento trovata" };
+    renderApp("/portafogli");
+    const bar = await screen.findByRole("alert", { name: "Isolamento Paperclip non attivo" });
+    expect(bar).toHaveTextContent("Paperclip: nessuna regola di isolamento trovata — l'allarme non è attivo");
+    expect(bar.className).toContain("bg-warn");
+  });
+
+  it("no isolation-inactive banner while re-reading after a configuration change", async () => {
+    status = { ...baseStatus(), isolation: "unknown", baseline_at: null, baseline_count: 0, rebaseline_reason: "config" };
+    const { queryClient } = renderApp("/portafogli");
+    await waitFor(() => expect(queryClient.getQueryState(["paperclip", "status"])?.status).toBe("success"));
+    expect(screen.queryByRole("alert", { name: /Paperclip/ })).toBeNull();
+  });
+
   it("shows the key expiry warning", async () => {
     status = { ...baseStatus(), key_expiring: true, key_expires_at: "2026-11-20T09:00:00Z" };
     renderApp("/portafogli");

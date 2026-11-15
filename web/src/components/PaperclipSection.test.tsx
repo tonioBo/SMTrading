@@ -165,10 +165,13 @@ describe("PaperclipSection", () => {
     expect(first).toHaveValue(AGENT_A);
     const second = within(rows[1]).getByRole("combobox", { name: "Agente SMTrading per Trader notturno" });
     expect(second).toHaveValue("");
+    expect(within(second).getByRole("option", { name: "— automatico (per nome) —" })).toBeInTheDocument();
     await user.selectOptions(second, AGENT_B);
     await user.click(within(region).getByRole("button", { name: "Salva" }));
     await waitFor(() => expect(puts).toHaveLength(1));
     expect(puts[0]).toEqual({ agent_map: { "pc-2": AGENT_B } });
+    // the old verify result (computed with the previous matches) is cleared after the save
+    await waitFor(() => expect(within(region).queryByRole("table", { name: "Agenti Paperclip" })).toBeNull());
   });
 
   it("shows the read error and the expiry warning", async () => {
@@ -186,6 +189,80 @@ describe("PaperclipSection", () => {
     renderApp("/impostazioni");
     const region = await section();
     expect(await within(region).findByText("Configurazione cambiata: nuova fotografia delle regole al prossimo controllo")).toBeInTheDocument();
+  });
+
+  it("shows the expected isolation rules when ok", async () => {
+    config = baseConfig();
+    status = baseStatus();
+    renderApp("/impostazioni");
+    const region = await section();
+    expect(await within(region).findByText(/Regole di isolamento: 4 attese \(dal /)).toBeInTheDocument();
+  });
+
+  it("isolation unknown: shows the reader error and that the alarm is not active", async () => {
+    config = baseConfig();
+    status = {
+      ...baseStatus(),
+      isolation: "unknown",
+      baseline_at: null,
+      baseline_count: 0,
+      consecutive_errors: 0,
+      last_error: "nessuna regola di isolamento trovata: controlla l'id azienda e i permessi della chiave",
+    };
+    renderApp("/impostazioni");
+    const region = await section();
+    expect(await within(region).findByText(/Errore di lettura: nessuna regola di isolamento trovata/)).toBeInTheDocument();
+    expect(within(region).getByText(/Regole di isolamento non verificate: l'allarme non è attivo/)).toBeInTheDocument();
+    expect(within(region).getByText(/Ultima lettura:/)).toBeInTheDocument();
+  });
+
+  it("no isolation warning while the rules are re-read after a configuration change", async () => {
+    config = baseConfig();
+    status = { ...baseStatus(), isolation: "unknown", baseline_at: null, baseline_count: 0, rebaseline_reason: "config" };
+    renderApp("/impostazioni");
+    const region = await section();
+    await within(region).findByText(/Configurazione cambiata/);
+    expect(within(region).queryByText(/l'allarme non è attivo/)).toBeNull();
+  });
+
+  it("shows when the status cannot be read", async () => {
+    config = baseConfig();
+    server.use(http.get("*/api/paperclip/status", () => HttpResponse.json({ code: "INTERNAL", message: "x", details: null }, { status: 500 })));
+    renderApp("/impostazioni");
+    const region = await section();
+    expect(await within(region).findByText("Impossibile leggere lo stato", {}, { timeout: 4000 })).toBeInTheDocument();
+  });
+
+  it("shows the unreadable configuration alert", async () => {
+    config = { ...baseConfig(), board_key_masked: null, error: "configurazione illeggibile: reinserisci la chiave board" };
+    status = baseStatus();
+    renderApp("/impostazioni");
+    const region = await section();
+    expect(await within(region).findByRole("alert")).toHaveTextContent("configurazione illeggibile: reinserisci la chiave board");
+  });
+
+  it("verify failure shows the error", async () => {
+    config = baseConfig();
+    status = baseStatus();
+    server.use(http.post("*/api/paperclip/verify", () => HttpResponse.json({ ok: false, agents: [], policies_count: 0, error: "HTTP 401" })));
+    const user = userEvent.setup();
+    renderApp("/impostazioni");
+    const region = await section();
+    await user.click(await within(region).findByRole("button", { name: "Verifica" }));
+    expect(await within(region).findByRole("alert")).toHaveTextContent("Verifica non riuscita: HTTP 401");
+    expect(within(region).queryByRole("table")).toBeNull();
+  });
+
+  it("verify with no Paperclip agents shows the empty row", async () => {
+    config = baseConfig();
+    status = baseStatus();
+    server.use(http.post("*/api/paperclip/verify", () => HttpResponse.json({ ok: true, agents: [], policies_count: 2, error: null })));
+    const user = userEvent.setup();
+    renderApp("/impostazioni");
+    const region = await section();
+    await user.click(await within(region).findByRole("button", { name: "Verifica" }));
+    const table = await within(region).findByRole("table", { name: "Agenti Paperclip" });
+    expect(table).toHaveTextContent("Nessun agente in Paperclip");
   });
 
   it("viewer sees the configuration without edit controls", async () => {
