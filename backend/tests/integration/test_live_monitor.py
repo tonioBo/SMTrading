@@ -978,3 +978,47 @@ async def test_reconcile_no_fx_skipped_no_alert(maker, fake):
     assert (await _get(maker, Portfolio, pid)).status == PortfolioStatus.active
     assert await _activities(maker, "live.fx_drift") == []
     assert await _ref(maker, link_id) == {"EUR": D("1.25")}
+
+
+def _rates(eur: str, gbp: str) -> FakeQuoteSource:
+    q = _eur_usd(eur)
+    q.set_fx("GBP", "USD", D(gbp))
+    return q
+
+
+async def test_opposite_fx_moves_cancel_and_a_real_loss_trips(maker, fake):
+    """R9.2: 1000 EUR + 1000 GBP matched at 1.25 / 1.50 (2750 USD); EUR to 1.30 and GBP
+    to 1.45 cancel out (signed drift 0), so 80 USD missing is a real shortfall."""
+    from smtrading.portfolios.service import deposit
+
+    pid, link_id = await _live(maker, cash="1000", ccy="EUR")
+    async with maker() as s:
+        await deposit(s, pid, D(1000), "GBP", author_id=None)
+        discard_post_commit(s)
+        await s.commit()
+    fake.alpaca.cash = D("2750")
+    assert (await reconcile_live(maker, link_id, _factory(maker, fake),
+                                 qs=_rates("1.25", "1.50"))).ok
+    fake.alpaca.cash = D("2670")
+    for _ in range(2):
+        row = await reconcile_live(maker, link_id, _factory(maker, fake),
+                                   qs=_rates("1.30", "1.45"))
+        assert not row.ok and "fx_drift" not in row.diffs[0]["cash"]
+    p = await _get(maker, Portfolio, pid)
+    assert (p.status, p.reduce_only_reason) == (PortfolioStatus.reduce_only,
+                                                "live_cash_shortfall")
+    assert await _activities(maker, "live.fx_drift") == []
+
+
+async def test_adverse_fx_move_never_explains_a_loss(maker, fake):
+    """R9.2: EUR falls 1.25 -> 1.20 (our 1000 EUR lose D = 50 USD) and the broker lost
+    L = 80 USD, with D + tolerance (63.20) < L <= 2D + tolerance (113.20): a shortfall."""
+    pid, link_id = await _drifted(maker, fake)
+    fake.alpaca.cash = D("1170")
+    for _ in range(2):
+        row = await reconcile_live(maker, link_id, _factory(maker, fake), qs=_eur_usd("1.20"))
+        assert not row.ok and row.diffs[0]["cash"]["tolerance"] == "13.2"
+    p = await _get(maker, Portfolio, pid)
+    assert (p.status, p.reduce_only_reason) == (PortfolioStatus.reduce_only,
+                                                "live_cash_shortfall")
+    assert await _activities(maker, "live.fx_drift") == []

@@ -78,7 +78,7 @@ from smtrading.engine.models import (
     OrderType,
     TimeInForce,
 )
-from smtrading.engine.quotesource import QuoteSource
+from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.engine.service import reject_broker_order
 from smtrading.events import POST_COMMIT_KEY, dispatch_post_commit, queue_event
 from smtrading.instruments.models import AssetClass, Instrument
@@ -725,6 +725,24 @@ async def _portfolio_cash_in(session: AsyncSession, portfolio: Portfolio, ccy: s
     return total
 
 
+async def _prefetched_fx(session: AsyncSession, portfolio_id: uuid.UUID,
+                         link_id: uuid.UUID, qs: QuoteSource) -> QuoteSource:
+    """A frozen memo with the rates linking needs (the portfolio's cash currencies to the
+    account currency), read before any row lock; a rate missing then is missing later
+    too (PROVIDER_UNAVAILABLE, or left out of the reference rates)."""
+    snapshot = await session.scalar(
+        select(BrokerLink.last_account_snapshot).where(BrokerLink.id == link_id))
+    ccy = str((snapshot or {}).get("currency") or "").upper() if isinstance(
+        snapshot, dict) else ""
+    memo = MemoQuoteSource(qs)
+    if ccy:
+        await memo.prefetch([], {(c.upper(), ccy) for c in
+                                 await get_cash_balances(session, portfolio_id)
+                                 if c.upper() != ccy})
+    memo.freeze()
+    return memo
+
+
 async def _current_fx_rates(session: AsyncSession, portfolio: Portfolio, link: BrokerLink,
                             qs: QuoteSource) -> dict[str, str]:
     """{currency: units of the account currency per unit} of the portfolio's cash
@@ -783,6 +801,8 @@ async def link_live_portfolio(
     from smtrading.brokers.service import check_relink, link_portfolio
 
     _require_totp_enabled(admin)
+    if qs is not None:  # no network under the locks: the rates first, then a frozen memo
+        qs = await _prefetched_fx(session, portfolio_id, link_id, qs)
     link = await _live_link(session, link_id)  # lock order: link, then portfolio (R8.9)
     pf = await lock_live_portfolio(session, portfolio_id)
     if link.live_state not in (LiveState.dry_run, LiveState.armed):

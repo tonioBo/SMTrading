@@ -79,7 +79,8 @@ def qs():
 
 
 async def _portfolio(maker, qs, *, state="armed", cash=1000, held=0, snapshot=None,
-                     snapshot_age_s=0, profile_limit=None) -> tuple[uuid.UUID, uuid.UUID]:
+                     snapshot_age_s=0, profile_limit=None, base="EUR"
+                     ) -> tuple[uuid.UUID, uuid.UUID]:
     """A EUR portfolio linked to an alpaca_live link in `state`; `held` AAPL bought on
     the simulator first (then the link is set directly)."""
     async with maker() as s:
@@ -91,7 +92,8 @@ async def _portfolio(maker, qs, *, state="armed", cash=1000, held=0, snapshot=No
             await s.flush()
             risk_id = profile.id
         p = await create_portfolio(s, name=f"P-{uuid.uuid4().hex[:8]}",
-                                   initial_cash=D(cash), risk_profile_id=risk_id)
+                                   initial_cash=D(cash), risk_profile_id=risk_id,
+                                   base_currency=base)
         await s.commit()
     if held:
         async with maker() as s:
@@ -170,6 +172,21 @@ async def test_cash_cap_uses_worst_rate_and_margin(maker):
     with pytest.raises(SMTError) as e:
         await _check(maker, qs, pid, est_value=D(800), est_fees=D("10"))  # 826
     assert D(e.value.details["broker_cash"]).quantize(D("0.01")) == D("825.00")
+
+
+async def test_cash_cap_usd_portfolio_on_eur_account_worst_of(maker, qs):
+    """A USD portfolio on a EUR account with 1000 EUR: now 1.25 USD per EUR, reference
+    fx_ref_rates["USD"] = 0.85 EUR per USD (1.1765 USD per EUR, worse): 1164.71 USD."""
+    pid, link_id = await _portfolio(maker, qs, cash=5000, base="USD",
+                                    snapshot={"currency": "EUR", "cash_available": "1000"})
+    await _set_fx_ref(maker, link_id, {"USD": "0.85"})
+    await _check(maker, qs, pid, est_value=D(0), est_fees=D(1164))
+    with pytest.raises(SMTError) as e:
+        await _check(maker, qs, pid, est_value=D(0), est_fees=D(1165))
+    assert e.value.code == ErrorCode.LIVE_CASH_LIMIT
+    assert D(e.value.details["broker_cash"]).quantize(D("0.01")) == D("1164.71")
+    await _set_fx_ref(maker, link_id, {"USD": "0.70"})  # a better reference: current counts
+    await _check(maker, qs, pid, est_value=D(0), est_fees=D(1237))  # 1000 x 1.25 x 0.99
 
 
 async def test_cash_cap_same_currency_has_no_fx_margin(maker, qs):
