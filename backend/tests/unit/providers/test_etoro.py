@@ -26,6 +26,7 @@ import respx
 
 import smtrading.marketdata.providers  # noqa: F401
 from smtrading.brokers.etoro_core import instrument_cache
+from smtrading.brokers.live import LIVE_PATHS
 from smtrading.instruments.models import AssetClass
 from smtrading.marketdata.provider import ProviderUnsupported
 from smtrading.marketdata.providers import etoro
@@ -114,7 +115,9 @@ async def test_headers_and_market_data_path_only(provider):
 
 @respx.mock  # assert_all_mocked (default): any unmocked request fails
 async def test_non_market_data_path_refused_before_network(provider):
-    for path in ("/api/v1/trading/info/real/pnl", "/api/v2/trading/execution/orders",
+    # the real execution/info prefixes come from LIVE_PATHS (never spelled outside
+    # brokers/live: test_live_hosts_guard)
+    for path in (*(f"{p}/pnl" for p in sorted(LIVE_PATHS)),
                  "/api/v1/market-data/../trading/info/pnl",
                  "/api/v1/market-data/%2e%2e/trading/info/pnl",
                  "/api/v1/market-data/./search", "/api/v1/market-data\\..\\trading",

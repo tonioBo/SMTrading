@@ -20,7 +20,7 @@ from smtrading.brokers.alpaca_paper import AlpacaPaperAdapter
 from smtrading.brokers.base import AccountSnapshot, BrokerAdapter, RateLimited
 from smtrading.brokers.etoro_demo import EtoroDemoAdapter
 from smtrading.brokers.live.alpaca_live import AlpacaLiveAdapter
-from smtrading.brokers.live.gate import make_live_client
+from smtrading.brokers.live.gate import ORDER_EXTENSION, make_live_client
 from smtrading.brokers.live.t212_live import T212LiveAdapter
 from smtrading.brokers.models import BrokerLink
 from smtrading.brokers.t212_demo import T212DemoAdapter
@@ -113,11 +113,31 @@ async def http(request):
                               live_state="armed")
             s.add(link)
             await s.flush()
-            s.add(Portfolio(name=f"P-{uuid.uuid4().hex[:8]}", broker_link_id=link.id))
+            portfolio = Portfolio(name=f"P-{uuid.uuid4().hex[:8]}", broker_link_id=link.id)
+            s.add(portfolio)
+            if await s.get(Instrument, "AAPL") is None:  # the stored orders' symbol
+                s.add(_inst())
             await s.commit()
+
+        async def own_order(req: httpx.Request) -> None:
+            """The gate refuses an order it cannot find among the linked portfolios'
+            (plan 9 Task 11): the test's order is stored as the linked portfolio's."""
+            order_id = req.extensions.get(ORDER_EXTENSION)
+            if order_id is None:
+                return
+            async with sm() as s:
+                if await s.get(Order, uuid.UUID(str(order_id))) is None:
+                    s.add(Order(id=uuid.UUID(str(order_id)), portfolio_id=portfolio.id,
+                                symbol="AAPL", side=OrderSide.buy, type=OrderType.market,
+                                tif=TimeInForce.day, qty=Decimal(10),
+                                broker_link_id=link.id))
+                    await s.commit()
+
         try:
             async with make_live_client(sm, link.id,
                                         inner=httpx.AsyncHTTPTransport()) as c:
+                c.event_hooks = {**c.event_hooks,
+                                 "request": [*c.event_hooks["request"], own_order]}
                 yield c
         finally:
             await trans.rollback()
