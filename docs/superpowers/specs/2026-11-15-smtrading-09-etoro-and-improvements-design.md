@@ -1,6 +1,6 @@
 # SMTrading — Piano 9: eToro e miglioramenti (design)
 
-Data: 2026-11-15 · Stato: bozza da approvare (risposte dell'utente alla revisione incluse) · Ramo previsto: `feat/plan-09-etoro-improvements` (da `main` 045f598+)
+Data: 2026-11-15 · Stato: APPROVATO dall'utente il 2026-11-15 · Ramo previsto: `feat/plan-09-etoro-improvements` (da `main` 045f598+)
 
 ## Perché
 Dopo il piano 8 (denaro reale costruito, spento) l'utente vuole:
