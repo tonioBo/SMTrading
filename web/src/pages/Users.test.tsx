@@ -45,7 +45,11 @@ const liveLink: LiveLink = {
   snapshot: null,
   last_test_at: null,
   health_failures: 0,
-  portfolio: null,
+  portfolios: [],
+  currency: null,
+  broker_cash: null,
+  quotas_total: null,
+  unassigned: null,
 };
 
 let me: AdminUser = { email: "admin@example.com", totp_enabled: false, role: "admin", must_change_password: false };

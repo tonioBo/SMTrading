@@ -52,6 +52,8 @@ interface Props {
   confirmLabel: string;
   destructive?: boolean;
   pending: boolean;
+  /** Keeps the confirm disabled even with a valid code (e.g. nothing chosen yet). */
+  confirmDisabled?: boolean;
   error: unknown;
   onClose: () => void;
   onConfirm: (totp: string) => void;
@@ -59,7 +61,18 @@ interface Props {
 }
 
 /** A real-money action that needs the TOTP (link, resume, flatten): mount one per opening. */
-export function LiveTotpDialog({ title, description, confirmLabel, destructive, pending, error, onClose, onConfirm, children }: Props) {
+export function LiveTotpDialog({
+  title,
+  description,
+  confirmLabel,
+  destructive,
+  pending,
+  confirmDisabled = false,
+  error,
+  onClose,
+  onConfirm,
+  children,
+}: Props) {
   const [totp, setTotp] = useState("");
   return (
     <ConfirmDialog
@@ -70,7 +83,7 @@ export function LiveTotpDialog({ title, description, confirmLabel, destructive, 
       confirmLabel={confirmLabel}
       destructive={destructive}
       pending={pending}
-      confirmDisabled={!TOTP_RE.test(totp)}
+      confirmDisabled={confirmDisabled || !TOTP_RE.test(totp)}
       onConfirm={() => onConfirm(totp)}
     >
       {children}

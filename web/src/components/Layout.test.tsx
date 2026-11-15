@@ -208,6 +208,26 @@ describe("Layout", () => {
     expect(screen.queryByText(/Telegram non funziona/)).not.toBeInTheDocument();
   });
 
+  it("banner counts two live portfolios", async () => {
+    // one armed link, two portfolios on its account
+    server.use(
+      http.get("*/api/live/status", () =>
+        HttpResponse.json({
+          armed_count: 1,
+          dry_run_count: 0,
+          portfolios: [
+            { id: "p1", name: "A", live_state: "armed" },
+            { id: "p2", name: "B", live_state: "armed" },
+          ],
+          telegram_ok: true,
+        }),
+      ),
+    );
+    renderApp("/");
+    const banner = await screen.findByRole("status", { name: "Modalità di trading" });
+    await waitFor(() => expect(banner).toHaveTextContent("Denaro reale attivo su 2 portafogli"));
+  });
+
   it("shows no Telegram warning without an armed link", async () => {
     server.use(
       http.get("*/api/live/status", () => HttpResponse.json({ armed_count: 0, dry_run_count: 1, portfolios: [], telegram_ok: false })),

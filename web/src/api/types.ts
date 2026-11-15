@@ -964,7 +964,25 @@ export interface LiveLink {
   snapshot: LiveSnapshot | null;
   last_test_at: string | null;
   health_failures: number;
-  portfolio: { id: string; name: string } | null;
+  /** the linked portfolios, sorted by name; `quota` in the account currency (null without a snapshot or FX rate) */
+  portfolios: LiveLinkPortfolio[];
+  /** the account currency (null before the first test) */
+  currency: string | null;
+  /** the broker's available cash, in `currency` */
+  broker_cash: string | null;
+  /** Σ quotas of the linked portfolios */
+  quotas_total: string | null;
+  /** broker_cash − quotas_total: negative when the quotas exceed the account's cash */
+  unassigned: string | null;
+}
+
+export interface LiveLinkPortfolio {
+  id: string;
+  name: string;
+  status: PortfolioStatus;
+  base_currency: string;
+  quota: string | null;
+  positions_count: number;
 }
 
 /** POST /api/live-links (name + kind) and PUT /api/live-links/{id}/keys. */

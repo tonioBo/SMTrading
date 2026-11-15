@@ -6,14 +6,13 @@ import {
   useDisarmLiveLink,
   useReplaceLiveKeys,
   useSetLiveDryRun,
-  useSetLivePortfolio,
   useTestLiveLink,
 } from "@/api/hooks/live";
 import { usePortfolios, useRiskProfiles, useValuation } from "@/api/hooks/portfolios";
-import type { LiveKeysInput, LiveKind, LiveLink, LiveSnapshot, LiveState, LiveTestResult } from "@/api/types";
-import { FormField, selectClass } from "@/components/FormField";
+import type { LiveKeysInput, LiveKind, LiveLink, LiveSnapshot, LiveState, LiveTestResult, RiskProfile } from "@/api/types";
+import { FormField } from "@/components/FormField";
 import { LiveArmDialog } from "@/components/LiveArmDialog";
-import { LiveTotpDialog } from "@/components/LiveTotpDialog";
+import { LiveLinkPortfolios } from "@/components/LiveLinkPortfolios";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,7 +30,7 @@ import {
   liveKindInfo,
 } from "@/lib/live";
 import { cn } from "@/lib/utils";
-import { AdminFieldset, AdminOnly } from "@/components/AdminOnly";
+import { AdminOnly } from "@/components/AdminOnly";
 import { useIsAdmin } from "@/api/hooks/auth";
 
 function Alert({ children }: { children: ReactNode }) {
@@ -328,97 +327,6 @@ function TestStep({ link }: { link: LiveLink }) {
   );
 }
 
-function PortfolioStep({ link }: { link: LiveLink }) {
-  const portfolios = usePortfolios();
-  const setPf = useSetLivePortfolio();
-  const [selected, setSelected] = useState("");
-  const [linking, setLinking] = useState(false);
-  const available = (portfolios.data ?? []).filter((p) => !p.broker_link_id);
-  const canLink = link.live_state === "dry_run" || link.live_state === "armed";
-  const chosen = available.find((p) => p.id === selected);
-
-  if (link.portfolio) {
-    const pf = link.portfolio;
-    return (
-      <div className="space-y-1">
-        <div className="flex items-center justify-between gap-2 text-sm">
-          <span>
-            Portafoglio collegato: <strong>{pf.name}</strong>
-          </span>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            aria-label={`Scollega ${pf.name}`}
-            disabled={setPf.isPending}
-            onClick={() =>
-              setPf.mutate({ portfolioId: pf.id, linkId: null }, { onSuccess: () => toast.success(`${pf.name} scollegato`) })
-            }
-          >
-            Scollega
-          </Button>
-        </div>
-        {setPf.error && <Alert>{errorMessage(setPf.error)}</Alert>}
-      </div>
-    );
-  }
-  return (
-    <div className="space-y-2">
-      <div className="flex items-end gap-2">
-        <div className="flex-1">
-          <FormField label="Portafoglio da collegare" hint={canLink ? "Un solo portafoglio per collegamento reale" : "Avvia la prova a secco o attiva il denaro reale per collegare"}>
-            <select className={selectClass} value={selected} disabled={!canLink} onChange={(e) => setSelected(e.target.value)}>
-              <option value="">Seleziona…</option>
-              {available.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </FormField>
-        </div>
-        <Button
-          type="button"
-          size="sm"
-          disabled={!canLink || !selected}
-          onClick={() => {
-            setPf.reset();
-            setLinking(true);
-          }}
-        >
-          Collega portafoglio
-        </Button>
-      </div>
-      <p className="text-xs text-muted">
-        Il portafoglio deve avere leva 1, short non consentito, limiti per ordine e di perdita giornaliera, la valuta del conto e una
-        liquidità non superiore a quella del broker.
-      </p>
-      {linking && chosen && (
-        <LiveTotpDialog
-          title={`Collegare ${chosen.name} a ${link.name}?`}
-          description="Il portafoglio userà il conto reale del collegamento."
-          confirmLabel="Collega"
-          pending={setPf.isPending}
-          error={setPf.error}
-          onClose={() => setLinking(false)}
-          onConfirm={(totp) =>
-            setPf.mutate(
-              { portfolioId: chosen.id, linkId: link.id, totp },
-              {
-                onSuccess: () => {
-                  toast.success(`${chosen.name} collegato a ${link.name}`);
-                  setSelected("");
-                  setLinking(false);
-                },
-              },
-            )
-          }
-        />
-      )}
-    </div>
-  );
-}
-
 function DryRunStep({ link }: { link: LiveLink }) {
   const dry = useSetLiveDryRun(link.id);
   const admin = useIsAdmin();
@@ -439,9 +347,7 @@ function DryRunStep({ link }: { link: LiveLink }) {
         </Button>
       )}
       {dry.error && <Alert>{errorMessage(dry.error)}</Alert>}
-      <AdminFieldset>
-        <PortfolioStep link={link} />
-      </AdminFieldset>
+      <LiveLinkPortfolios link={link} />
     </div>
   );
 }
@@ -455,10 +361,24 @@ function ArmWithPortfolio({ link, portfolioId, onClose }: { link: LiveLink; port
   const ccy = pf?.base_currency ?? link.snapshot?.currency ?? "EUR";
   const amount = valuation.data?.cash?.[ccy];
   const cash = amount != null ? formatMoney(amount, ccy) : valuation.isError ? "non disponibile" : "…";
-  const profile = pf?.risk_profile_id
-    ? (profiles.data?.find((p) => p.id === pf.risk_profile_id)?.name ?? "…")
-    : (profiles.data?.find((p) => p.name === "Default")?.name ?? "Default");
-  return <LiveArmDialog link={link} cash={cash} profile={profile} onClose={onClose} />;
+  return <LiveArmDialog link={link} cash={cash} profile={profileName(pf?.risk_profile_id, profiles.data)} onClose={onClose} />;
+}
+
+function profileName(id: string | null | undefined, profiles: RiskProfile[] | undefined): string {
+  if (!profiles) return "…";
+  return id ? (profiles.find((p) => p.id === id)?.name ?? "…") : (profiles.find((p) => p.name === "Default")?.name ?? "Default");
+}
+
+/** Several portfolios on the account: {liquidità} is the sum of their quotas, {profilo} each one's profile. */
+function ArmWithPortfolios({ link, onClose }: { link: LiveLink; onClose: () => void }) {
+  const portfolios = usePortfolios();
+  const profiles = useRiskProfiles();
+  const n = link.portfolios.length;
+  const total = link.quotas_total != null && link.currency ? formatMoney(link.quotas_total, link.currency) : "non disponibile";
+  const profile = link.portfolios
+    .map((lp) => `${lp.name}: ${profileName(portfolios.data?.find((p) => p.id === lp.id)?.risk_profile_id, profiles.data)}`)
+    .join(" · ");
+  return <LiveArmDialog link={link} cash={`${total} (quote di ${n} portafogli)`} profile={profile} onClose={onClose} />;
 }
 
 function ArmStep({ link }: { link: LiveLink }) {
@@ -481,8 +401,10 @@ function ArmStep({ link }: { link: LiveLink }) {
         </Button>
       </AdminOnly>
       {open &&
-        (link.portfolio ? (
-          <ArmWithPortfolio link={link} portfolioId={link.portfolio.id} onClose={() => setOpen(false)} />
+        (link.portfolios.length === 1 ? (
+          <ArmWithPortfolio link={link} portfolioId={link.portfolios[0].id} onClose={() => setOpen(false)} />
+        ) : link.portfolios.length > 1 ? (
+          <ArmWithPortfolios link={link} onClose={() => setOpen(false)} />
         ) : (
           <LiveArmDialog link={link} cash="— (nessun portafoglio collegato)" profile="—" onClose={() => setOpen(false)} />
         ))}
