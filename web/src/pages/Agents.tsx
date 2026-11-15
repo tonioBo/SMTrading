@@ -17,6 +17,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { errorMessage } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
+import { AdminOnly } from "@/components/AdminOnly";
 
 /** Shows a token. It lives only in the props of this dialog: closing unmounts it. */
 function TokenDialog({ token, onClose }: { token: string; onClose: () => void }) {
@@ -206,31 +207,33 @@ export default function Agents() {
       header: "Azioni",
       align: "right",
       cell: (a) => (
-        <div className="flex flex-wrap justify-end gap-1">
-          <Button size="sm" variant="outline" aria-label={`Portafogli ${a.name}`} onClick={() => setAssigning(a)}>
-            <Users />
-            Portafogli
-          </Button>
-          <Button size="sm" variant="outline" aria-label={`Rigenera token ${a.name}`} onClick={() => setRotating(a)}>
-            <KeyRound />
-            Rigenera token
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            aria-label={`${a.active ? "Disattiva" : "Attiva"} ${a.name}`}
-            disabled={setActive.isPending}
-            onClick={() =>
-              setActive.mutate(
-                { id: a.id, active: !a.active },
-                { onError: (err) => toast.error(errorMessage(err)) },
-              )
-            }
-          >
-            {a.active ? <PowerOff /> : <Power />}
-            {a.active ? "Disattiva" : "Attiva"}
-          </Button>
-        </div>
+        <AdminOnly>
+          <div className="flex flex-wrap justify-end gap-1">
+            <Button size="sm" variant="outline" aria-label={`Portafogli ${a.name}`} onClick={() => setAssigning(a)}>
+              <Users />
+              Portafogli
+            </Button>
+            <Button size="sm" variant="outline" aria-label={`Rigenera token ${a.name}`} onClick={() => setRotating(a)}>
+              <KeyRound />
+              Rigenera token
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              aria-label={`${a.active ? "Disattiva" : "Attiva"} ${a.name}`}
+              disabled={setActive.isPending}
+              onClick={() =>
+                setActive.mutate(
+                  { id: a.id, active: !a.active },
+                  { onError: (err) => toast.error(errorMessage(err)) },
+                )
+              }
+            >
+              {a.active ? <PowerOff /> : <Power />}
+              {a.active ? "Disattiva" : "Attiva"}
+            </Button>
+          </div>
+        </AdminOnly>
       ),
     },
   ];
@@ -238,10 +241,12 @@ export default function Agents() {
   return (
     <div>
       <PageHeader title="Agenti">
-        <Button onClick={() => setCreating(true)}>
-          <Plus />
-          Nuovo agente
-        </Button>
+        <AdminOnly>
+          <Button onClick={() => setCreating(true)}>
+            <Plus />
+            Nuovo agente
+          </Button>
+        </AdminOnly>
       </PageHeader>
       {isError && <p className="mb-4 text-loss">Impossibile caricare gli agenti</p>}
       <Card>

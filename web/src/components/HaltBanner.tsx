@@ -6,6 +6,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { errorMessage } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
+import { useIsAdmin } from "@/api/hooks/auth";
 
 /** "Aperture sospese dal CEO — <motivo> — dal <data>" (portfolio scope: its name first). */
 function haltText(h: TradingHalt): string {
@@ -17,6 +18,8 @@ function haltText(h: TradingHalt): string {
 export function RevokeHaltButton({ halt }: { halt: TradingHalt }) {
   const [open, setOpen] = useState(false);
   const clear = useClearHalt();
+  const admin = useIsAdmin();
+  if (!admin) return null;
   return (
     <>
       <Button size="sm" variant="outline" onClick={() => setOpen(true)}>

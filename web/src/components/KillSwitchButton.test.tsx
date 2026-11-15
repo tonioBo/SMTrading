@@ -19,6 +19,7 @@ const server = setupServer(
     return HttpResponse.json({ on: body.on, canceled: 0 });
   }),
   http.get("*/api/dashboard", () => HttpResponse.json({})),
+  http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false, role: "admin" })),
 );
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {

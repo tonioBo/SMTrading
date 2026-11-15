@@ -16,6 +16,8 @@ import { normalizeAmount } from "@/lib/decimal";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatDateTime, formatQty } from "@/lib/format";
 import { useLiveMessage, useLiveSocket } from "@/lib/ws";
+import { AdminFieldset, AdminOnly } from "@/components/AdminOnly";
+import { useIsAdmin } from "@/api/hooks/auth";
 
 const ASSET_CLASSES: AssetClass[] = ["us_equity", "eu_equity", "crypto", "forex"];
 const SYMBOL_RE = /^[A-Z0-9][A-Z0-9.\-_/=^]{0,63}$/;
@@ -186,6 +188,7 @@ function InstrumentsSection({ sources, markets }: { sources: Record<string, Trac
   const [query, setQuery] = useState("");
   const [market, setMarket] = useState("");
   const [offset, setOffset] = useState(0);
+  const admin = useIsAdmin();
   const [adding, setAdding] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const { data, isLoading, isError } = useInstruments({ query: useDebounced(query.trim(), 250), market, offset });
@@ -223,6 +226,7 @@ function InstrumentsSection({ sources, markets }: { sources: Record<string, Trac
       align: "right",
       cell: (i) => {
         const byAdmin = sources[i.symbol]?.includes("admin") ?? false;
+        if (!admin) return null;
         return (
           <Button
             type="button"
@@ -242,13 +246,17 @@ function InstrumentsSection({ sources, markets }: { sources: Record<string, Trac
     <Card className="mt-6">
       <CardHeader className="flex-row items-center justify-between space-y-0">
         <CardTitle>Strumenti</CardTitle>
-        <Button type="button" size="sm" onClick={() => setAdding(true)} disabled={markets.length === 0}>
-          <Plus className="mr-1 h-4 w-4" />
-          Aggiungi strumento
-        </Button>
+        <AdminOnly>
+          <Button type="button" size="sm" onClick={() => setAdding(true)} disabled={markets.length === 0}>
+            <Plus className="mr-1 h-4 w-4" />
+            Aggiungi strumento
+          </Button>
+        </AdminOnly>
       </CardHeader>
       <CardContent className="space-y-3">
-        <AutoAddToggle />
+        <AdminFieldset>
+          <AutoAddToggle />
+        </AdminFieldset>
         <div className="flex flex-col gap-2 sm:flex-row">
           <Input
             aria-label="Cerca strumento"

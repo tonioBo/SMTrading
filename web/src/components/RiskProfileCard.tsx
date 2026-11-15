@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { formatQty } from "@/lib/format";
 import { assetClassLabel } from "@/lib/labels";
 import { cn } from "@/lib/utils";
+import { AdminOnly } from "@/components/AdminOnly";
 
 function Chip({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "neutral" | "accent" | "gain" | "loss" }) {
   const tones = {
@@ -37,10 +38,12 @@ export function RiskProfileCard({ profile: p, onEdit }: { profile: RiskProfile; 
             {usedBy === 0 ? "Nessun portafoglio attivo" : usedBy === 1 ? "1 portafoglio attivo" : `${usedBy} portafogli attivi`}
           </p>
         </div>
-        <Button size="sm" variant="outline" aria-label={`Modifica ${p.name}`} onClick={onEdit}>
-          <Pencil />
-          Modifica
-        </Button>
+        <AdminOnly>
+          <Button size="sm" variant="outline" aria-label={`Modifica ${p.name}`} onClick={onEdit}>
+            <Pencil />
+            Modifica
+          </Button>
+        </AdminOnly>
       </div>
 
       <div className="mt-2 flex flex-wrap gap-1.5">

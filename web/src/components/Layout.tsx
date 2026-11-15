@@ -2,12 +2,14 @@ import { LogOut, Menu, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useLogout, useMe } from "@/api/hooks/auth";
+import { ChangePasswordSection } from "@/components/ChangePasswordSection";
 import { KillSwitchIndicator } from "@/components/KillSwitchIndicator";
 import { ModeBanner } from "@/components/ModeBanner";
 import { NewVersionBanner } from "@/components/NewVersionBanner";
 import { Logo } from "@/components/Logo";
 import { Sidebar } from "@/components/Sidebar";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useSidebarCollapsed } from "@/lib/sidebarState";
 import { useLiveSocket } from "@/lib/ws";
@@ -115,6 +117,27 @@ export function Layout() {
 
   const onLogout = () => logout.mutate(undefined, { onSettled: () => navigate("/login", { replace: true }) });
 
+  if (me.data.must_change_password) {
+    // a temporary password: the server refuses everything else until it is changed
+    return (
+      <div className="flex min-h-screen flex-col">
+        <header className="flex h-14 items-center justify-between border-b border-border px-4 md:px-6">
+          <Brand />
+          <div className="flex items-center gap-3">
+            <span className="hidden text-sm text-muted sm:inline">{me.data.email}</span>
+            <Button variant="ghost" size="sm" onClick={onLogout} disabled={logout.isPending}>
+              <LogOut />
+              Esci
+            </Button>
+          </div>
+        </header>
+        <main className="mx-auto w-full max-w-md flex-1 p-4 md:p-6">
+          <ChangePasswordSection forced />
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen">
       <aside
@@ -155,6 +178,11 @@ export function Layout() {
           <LiveDot />
           <KillSwitchIndicator />
           <ThemeToggle />
+          {me.data.role === "viewer" && (
+            <Badge variant="outline" title="Puoi vedere tutto; puoi solo disattivare il denaro reale e attivare il kill-switch">
+              Sola lettura
+            </Badge>
+          )}
           <span className="hidden text-sm text-muted sm:inline">{me.data.email}</span>
           <Button variant="ghost" size="sm" onClick={onLogout} disabled={logout.isPending}>
             <LogOut />

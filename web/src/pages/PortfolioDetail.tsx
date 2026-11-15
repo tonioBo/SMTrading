@@ -41,6 +41,8 @@ import { LIVE_BADGE, LIVE_STATE_LABELS, TRAILING_NOTE, isLiveReason, reduceOnlyR
 import { Movements } from "@/pages/PortfolioDetailMovements";
 import { Operations } from "@/pages/PortfolioDetailOperations";
 import { PortfolioSettings } from "@/pages/PortfolioDetailSettings";
+import { AdminFieldset, AdminOnly } from "@/components/AdminOnly";
+import { useIsAdmin } from "@/api/hooks/auth";
 
 function Kpi({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -387,6 +389,7 @@ function Risk({ portfolio }: { portfolio: Portfolio }) {
   const valuation = useValuation(portfolio.id);
   const profiles = useRiskProfiles();
   const patch = usePatchPortfolio(portfolio.id);
+  const admin = useIsAdmin();
   const [unlocking, setUnlocking] = useState(false);
   const profile = profiles.data?.find((p) => p.id === portfolio.risk_profile_id);
   const v: Valuation | undefined = valuation.data;
@@ -399,7 +402,7 @@ function Risk({ portfolio }: { portfolio: Portfolio }) {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle>Stato</CardTitle>
-          {blocked && (
+          {blocked && admin && (
             <Button
               size="sm"
               onClick={() => {
@@ -514,6 +517,7 @@ function LivePanel({ portfolio }: { portfolio: Portfolio }) {
   const resume = useLiveResume(portfolio.id);
   const flatten = useLiveFlatten(portfolio.id);
   const [dialog, setDialog] = useState<"resume" | "flatten" | null>(null);
+  const admin = useIsAdmin();
   const state = portfolio.live_state!;
   const suspended = (portfolio.status === "reduce_only" || portfolio.status === "locked") && isLiveReason(portfolio.reduce_only_reason);
   const links = useLiveLinks();
@@ -543,7 +547,7 @@ function LivePanel({ portfolio }: { portfolio: Portfolio }) {
             everArmed={Boolean(link?.armed_at || link?.disarmed_at)}
           />
         )}
-        {suspended && (
+        {suspended && admin && (
           <Button
             size="sm"
             onClick={() => {
@@ -554,7 +558,7 @@ function LivePanel({ portfolio }: { portfolio: Portfolio }) {
             Ho verificato, riprendi
           </Button>
         )}
-        {state === "armed" && (
+        {state === "armed" && admin && (
           <Button
             size="sm"
             variant="destructive"
@@ -624,17 +628,19 @@ function ArchivedBanner({ portfolio }: { portfolio: Portfolio }) {
         {portfolio.archived_at && <> il {formatDateTime(portfolio.archived_at)}</>}
         {portfolio.archived_by && <> da {portfolio.archived_by}</>}: sola lettura, escluso da dashboard, agenti e job.
       </p>
-      <Button
-        size="sm"
-        variant="outline"
-        onClick={() => {
-          restore.reset();
-          setConfirming(true);
-        }}
-      >
-        <ArchiveRestore />
-        Ripristina
-      </Button>
+      <AdminOnly>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            restore.reset();
+            setConfirming(true);
+          }}
+        >
+          <ArchiveRestore />
+          Ripristina
+        </Button>
+      </AdminOnly>
       {confirming && (
         <ConfirmDialog
           open
@@ -667,6 +673,8 @@ export default function PortfolioDetail() {
   const { id = "" } = useParams();
   const { data: portfolio, isError, error } = usePortfolio(id);
   const archived = portfolio?.status === "archived";
+  const admin = useIsAdmin();
+  const readOnly = archived || !admin;
 
   return (
     <div>
@@ -694,7 +702,7 @@ export default function PortfolioDetail() {
             <TabsTrigger value="positions">Posizioni</TabsTrigger>
             <TabsTrigger value="orders">Ordini</TabsTrigger>
             <TabsTrigger value="movements">Movimenti</TabsTrigger>
-            {!archived && <TabsTrigger value="operations">Operazioni</TabsTrigger>}
+            {!readOnly && <TabsTrigger value="operations">Operazioni</TabsTrigger>}
             <TabsTrigger value="risk">Rischio</TabsTrigger>
             {!archived && <TabsTrigger value="settings">Impostazioni</TabsTrigger>}
           </TabsList>
@@ -705,12 +713,12 @@ export default function PortfolioDetail() {
             <Positions portfolioId={portfolio.id} liveState={portfolio.live_state} />
           </TabsContent>
           <TabsContent value="orders">
-            <Orders portfolioId={portfolio.id} linked={Boolean(portfolio.broker_link_id)} liveState={portfolio.live_state} readOnly={archived} />
+            <Orders portfolioId={portfolio.id} linked={Boolean(portfolio.broker_link_id)} liveState={portfolio.live_state} readOnly={readOnly} />
           </TabsContent>
           <TabsContent value="movements">
-            <Movements portfolioId={portfolio.id} timezone={portfolio.timezone} readOnly={archived} />
+            <Movements portfolioId={portfolio.id} timezone={portfolio.timezone} readOnly={readOnly} />
           </TabsContent>
-          {!archived && (
+          {!readOnly && (
             <TabsContent value="operations">
               <Operations portfolio={portfolio} />
             </TabsContent>
@@ -720,7 +728,9 @@ export default function PortfolioDetail() {
           </TabsContent>
           {!archived && (
             <TabsContent value="settings">
-              <PortfolioSettings portfolio={portfolio} />
+              <AdminFieldset>
+                <PortfolioSettings portfolio={portfolio} />
+              </AdminFieldset>
             </TabsContent>
           )}
         </Tabs>

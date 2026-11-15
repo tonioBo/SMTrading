@@ -16,6 +16,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { normalizeAmount, toInputDecimal } from "@/lib/decimal";
 import { errorField, errorMessage } from "@/lib/errors";
+import { AdminFieldset, AdminOnly } from "@/components/AdminOnly";
 
 const DESCRIPTION_MAX = 500;
 const ASSET_CLASSES: AssetClass[] = ["us_equity", "eu_equity", "crypto", "forex"];
@@ -175,10 +176,12 @@ function ProfilesSection() {
     <Card>
       <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 space-y-0">
         <CardTitle>Profili di rischio</CardTitle>
-        <Button onClick={() => setEditing("new")}>
-          <Plus />
-          Nuovo profilo
-        </Button>
+        <AdminOnly>
+          <Button onClick={() => setEditing("new")}>
+            <Plus />
+            Nuovo profilo
+          </Button>
+        </AdminOnly>
       </CardHeader>
       <CardContent>
         {isError && <p className="mb-4 text-loss">Impossibile caricare i profili</p>}
@@ -269,7 +272,11 @@ function RatesSection() {
       </CardHeader>
       <CardContent>
         {isError && <p className="text-loss">Impossibile caricare i tassi</p>}
-        {data && <RatesEditor initial={data} />}
+        {data && (
+          <AdminFieldset>
+            <RatesEditor initial={data} />
+          </AdminFieldset>
+        )}
       </CardContent>
     </Card>
   );
@@ -335,7 +342,11 @@ function SettingsSection() {
       </CardHeader>
       <CardContent>
         {isError && <p className="text-loss">Impossibile caricare le impostazioni</p>}
-        {data && <SettingsEditor initial={data} />}
+        {data && (
+          <AdminFieldset>
+            <SettingsEditor initial={data} />
+          </AdminFieldset>
+        )}
       </CardContent>
     </Card>
   );

@@ -20,6 +20,8 @@ import { Input } from "@/components/ui/input";
 import { amountError, normalizeAmount } from "@/lib/decimal";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatDecimal } from "@/lib/format";
+import { AdminOnly } from "@/components/AdminOnly";
+import { useIsAdmin } from "@/api/hooks/auth";
 
 const baseColumns: Column<Portfolio>[] = [
   {
@@ -211,6 +213,7 @@ export default function Portfolios() {
   const [creating, setCreating] = useState(false);
   const [archiving, setArchiving] = useState<Portfolio | null>(null);
   const toggleId = useId();
+  const admin = useIsAdmin();
 
   const columns: Column<Portfolio>[] = [
     ...baseColumns,
@@ -219,7 +222,7 @@ export default function Portfolios() {
       header: <span className="sr-only">Azioni</span>,
       align: "right",
       cell: (p) =>
-        p.status === "archived" ? (
+        !admin ? null : p.status === "archived" ? (
           <Button size="sm" variant="outline" aria-label={`Ripristina ${p.name}`} onClick={() => setArchiving(p)}>
             <ArchiveRestore />
             Ripristina
@@ -247,10 +250,12 @@ export default function Portfolios() {
             />
             <label htmlFor={toggleId}>Mostra archiviati</label>
           </div>
-          <Button onClick={() => setCreating(true)}>
-            <Plus />
-            Nuovo portafoglio
-          </Button>
+          <AdminOnly>
+            <Button onClick={() => setCreating(true)}>
+              <Plus />
+              Nuovo portafoglio
+            </Button>
+          </AdminOnly>
         </div>
       </PageHeader>
       {isError && <p className="mb-4 text-loss">Impossibile caricare i portafogli</p>}

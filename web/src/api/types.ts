@@ -1,8 +1,34 @@
 /** Admin API payloads. Decimals are strings on the wire. */
 
+export type UserRole = "admin" | "viewer";
+
+/** The logged-in user (/api/auth/me). `role` and `must_change_password` may be missing
+ * from an older server: treated as an admin without a password to change. */
 export interface AdminUser {
   email: string;
   totp_enabled: boolean;
+  role?: UserRole;
+  must_change_password?: boolean;
+}
+
+/** A portal user in «Impostazioni → Utenti» (/api/users). */
+export interface PortalUser {
+  id: string;
+  email: string;
+  role: UserRole;
+  totp_enabled: boolean;
+  must_change_password: boolean;
+  active: boolean;
+  disabled_at: string | null;
+  last_login_at: string | null;
+  created_at: string;
+  created_by: string | null;
+}
+
+/** Create and password-reset answers: the temporary password is shown once. */
+export interface PortalUserWithPassword {
+  user: PortalUser;
+  temp_password: string;
 }
 
 export interface LoginRequest {

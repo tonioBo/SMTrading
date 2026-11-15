@@ -10,7 +10,9 @@ import { errorMessage } from "@/lib/errors";
 
 const MIN_LEN = 10;
 
-export function ChangePasswordSection() {
+/** `forced`: the first login with a temporary password (nothing else is reachable until
+ * it is changed). */
+export function ChangePasswordSection({ forced = false }: { forced?: boolean }) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -40,20 +42,25 @@ export function ChangePasswordSection() {
           setNext("");
           setConfirm("");
           setSubmitted(false);
-          toast.success("Password aggiornata. Le altre sessioni sono state chiuse.");
+          toast.success(forced ? "Password aggiornata: benvenuto in SMTrading" : "Password aggiornata. Le altre sessioni sono state chiuse.");
         },
       },
     );
   }
 
   return (
-    <Card className="mt-6">
+    <Card className={forced ? undefined : "mt-6"}>
       <CardHeader>
         <CardTitle>Cambia password</CardTitle>
       </CardHeader>
       <CardContent>
+        {forced && (
+          <p className="mb-3 text-sm text-muted">
+            Stai usando una password temporanea: scegline una nuova (almeno 10 caratteri) per continuare.
+          </p>
+        )}
         <form onSubmit={onSubmit} className="max-w-sm space-y-3" noValidate>
-          <FormField label="Password attuale" error={currentError}>
+          <FormField label={forced ? "Password temporanea" : "Password attuale"} error={currentError}>
             <Input type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} />
           </FormField>
           <FormField label="Nuova password" error={newError}>
@@ -70,7 +77,7 @@ export function ChangePasswordSection() {
           <Button type="submit" disabled={change.isPending}>
             Aggiorna password
           </Button>
-          <p className="text-xs text-muted">Ricorda di aggiornare SMT_ADMIN_PASSWORD nel file .env per i test end-to-end.</p>
+          {!forced && <p className="text-xs text-muted">Ricorda di aggiornare SMT_ADMIN_PASSWORD nel file .env per i test end-to-end.</p>}
         </form>
       </CardContent>
     </Card>

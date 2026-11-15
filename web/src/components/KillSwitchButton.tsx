@@ -3,15 +3,18 @@ import { OctagonX, ShieldCheck } from "lucide-react";
 import { useId, useState } from "react";
 import { toast } from "sonner";
 import { apiFetch } from "@/api/client";
+import { useIsAdmin } from "@/api/hooks/auth";
 import { dashboardKey } from "@/api/hooks/dashboard";
 import { killSwitchKey, useKillSwitch } from "@/api/hooks/killSwitch";
 import type { KillSwitchResult } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 
-/** Red button that turns the kill-switch on (optionally cancelling open orders) or off. */
+/** Red button that turns the kill-switch on (optionally cancelling open orders) or off.
+ * A «Sola lettura» user may only turn it on: «Disattiva» is disabled for them. */
 export function KillSwitchButton() {
   const { data } = useKillSwitch();
+  const admin = useIsAdmin();
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
@@ -46,6 +49,8 @@ export function KillSwitchButton() {
     <>
       <Button
         variant={turningOn ? "destructive" : "outline"}
+        disabled={!turningOn && !admin}
+        title={!turningOn && !admin ? "Solo un amministratore può disattivare il kill-switch" : undefined}
         onClick={() => {
           setCancelOpen(false);
           setIntentOn(turningOn);

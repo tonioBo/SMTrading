@@ -31,6 +31,8 @@ import {
   liveKindInfo,
 } from "@/lib/live";
 import { cn } from "@/lib/utils";
+import { AdminFieldset, AdminOnly } from "@/components/AdminOnly";
+import { useIsAdmin } from "@/api/hooks/auth";
 
 function Alert({ children }: { children: ReactNode }) {
   return (
@@ -299,9 +301,11 @@ function TestStep({ link }: { link: LiveLink }) {
         Solo letture (GET): nessun ordine. Il conto deve avere <strong>zero posizioni e zero ordini aperti</strong>. Il test vale 15
         minuti per attivare o collegare.
       </p>
-      <Button type="button" size="sm" variant="outline" onClick={() => test.mutate()} disabled={test.isPending}>
-        {test.isPending ? "Test in corso…" : "Esegui il test in sola lettura"}
-      </Button>
+      <AdminOnly>
+        <Button type="button" size="sm" variant="outline" onClick={() => test.mutate()} disabled={test.isPending}>
+          {test.isPending ? "Test in corso…" : "Esegui il test in sola lettura"}
+        </Button>
+      </AdminOnly>
       {test.error && <Alert>{errorMessage(test.error)}</Alert>}
       {snap ? (
         <>
@@ -417,24 +421,27 @@ function PortfolioStep({ link }: { link: LiveLink }) {
 
 function DryRunStep({ link }: { link: LiveLink }) {
   const dry = useSetLiveDryRun(link.id);
+  const admin = useIsAdmin();
   return (
     <div className="space-y-2">
       <p className="text-xs text-muted">
         Facoltativa, consigliata: gli ordini passano da rischio e invio ma si fermano prima del broker (rifiutati con il payload
         salvato). Le letture sono vere.
       </p>
-      {link.live_state === "configured" && (
+      {link.live_state === "configured" && admin && (
         <Button type="button" size="sm" variant="outline" disabled={dry.isPending} onClick={() => dry.mutate(true, { onSuccess: () => toast.success("Prova a secco avviata") })}>
           Avvia la prova a secco
         </Button>
       )}
-      {link.live_state === "dry_run" && (
+      {link.live_state === "dry_run" && admin && (
         <Button type="button" size="sm" variant="outline" disabled={dry.isPending} onClick={() => dry.mutate(false, { onSuccess: () => toast.success("Prova a secco terminata") })}>
           Termina la prova a secco
         </Button>
       )}
       {dry.error && <Alert>{errorMessage(dry.error)}</Alert>}
-      <PortfolioStep link={link} />
+      <AdminFieldset>
+        <PortfolioStep link={link} />
+      </AdminFieldset>
     </div>
   );
 }
@@ -467,10 +474,12 @@ function ArmStep({ link }: { link: LiveLink }) {
       ) : (
         <p className="text-xs text-muted">Richiede il test in sola lettura degli ultimi 15 minuti, Telegram funzionante e il TOTP.</p>
       )}
-      <Button type="button" size="sm" variant="destructive" disabled={armed} onClick={() => setOpen(true)}>
-        <ShieldAlert aria-hidden />
-        Attiva denaro reale
-      </Button>
+      <AdminOnly>
+        <Button type="button" size="sm" variant="destructive" disabled={armed} onClick={() => setOpen(true)}>
+          <ShieldAlert aria-hidden />
+          Attiva denaro reale
+        </Button>
+      </AdminOnly>
       {open &&
         (link.portfolio ? (
           <ArmWithPortfolio link={link} portfolioId={link.portfolio.id} onClose={() => setOpen(false)} />
@@ -570,7 +579,9 @@ export function LiveLinkWizard({ link }: { link: LiveLink }) {
                 </>
               )}
             </p>
-            <ReplaceKeys link={link} />
+            <AdminOnly>
+              <ReplaceKeys link={link} />
+            </AdminOnly>
           </Step>
           <Step n={2} title="Test in sola lettura">
             <TestStep link={link} />
