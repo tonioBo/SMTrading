@@ -12,6 +12,7 @@ from starlette.routing import Route
 
 import smtrading.models  # noqa: F401  (complete mapper registry before any session)
 from smtrading.admin.errors import install_error_handlers
+from smtrading.admin.routes_activity_log import router as activity_log_router
 from smtrading.admin.routes_agent_docs import router as agent_docs_router
 from smtrading.admin.routes_agents import router as agents_router
 from smtrading.admin.routes_auth import router as auth_router
@@ -41,6 +42,7 @@ from smtrading.marketdata.router import MarketDataRouter
 from smtrading.mcp.auth import MCP_PATH, McpAuthMiddleware
 from smtrading.mcp.runtime import McpRuntime, get_runtime, set_runtime
 from smtrading.mcp.server import build_mcp, build_mcp_endpoint
+from smtrading.useractivity.recorder import ActivityMiddleware
 
 log = logging.getLogger(__name__)
 HEARTBEAT_MAX_AGE_S = 30.0
@@ -169,6 +171,8 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     # raw ASGI routes (all methods) at /mcp and /mcp/: no slash redirect either way
     app.router.routes.append(Route(MCP_PATH, endpoint=mcp_endpoint))
     app.router.routes.append(Route(MCP_PATH + "/", endpoint=mcp_endpoint))
+    # every unsafe /api request of a person goes to the «Registro attività»
+    app.add_middleware(ActivityMiddleware)
     app.add_middleware(McpAuthMiddleware, get_sessionmaker=lambda: get_runtime().sessionmaker)
     app.add_middleware(_BuildHeader)
     install_error_handlers(app)
@@ -190,6 +194,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(watch_router)
     app.include_router(telegram_router)
     app.include_router(users_router)
+    app.include_router(activity_log_router)
     app.include_router(ws_router)
 
     @app.get("/health")

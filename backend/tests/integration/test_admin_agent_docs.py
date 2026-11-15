@@ -151,9 +151,11 @@ async def _audits(admin, method):
     from smtrading.agents.models import McpAuditLog
 
     async with admin.sm() as s:
-        return list(await s.scalars(select(McpAuditLog.params)
+        rows = list(await s.scalars(select(McpAuditLog.params)
                                     .where(McpAuditLog.method == method)
                                     .order_by(McpAuditLog.id)))
+    # a portal request's row carries its activity log request_id (see test_user_activity)
+    return [{k: v for k, v in p.items() if k != "request_id"} for p in rows]
 
 
 async def test_list_and_get(admin):

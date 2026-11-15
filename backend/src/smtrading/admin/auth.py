@@ -44,6 +44,8 @@ from smtrading.common.config import get_settings
 from smtrading.common.crypto import decrypt_json, encrypt_json
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.logsetup import register_secret
+from smtrading.useractivity import context as activity
+from smtrading.useractivity.recorder import bind_session
 
 log = logging.getLogger(__name__)
 
@@ -173,6 +175,7 @@ async def check_step_up_totp(redis: Redis, user: AdminUser, code: str | None) ->
     if not _totp_ok(_totp_secret(user), code):
         if count == TOTP_FAIL_LIMIT:
             await redis.expire(key, TOTP_FAIL_WINDOW_S)  # a full lockout from this failure
+            activity.note_event("auth.totp_lockout")
         log.warning("wrong step-up TOTP code for admin user %s (%d/%d)", user.id, count,
                     TOTP_FAIL_LIMIT)
         raise _bad_totp()
@@ -320,6 +323,7 @@ async def change_password(user: AdminUser, current: str, new: str) -> None:
 
 async def get_db(request: Request) -> AsyncIterator[AsyncSession]:
     async with request.app.state.sessionmaker() as session:
+        bind_session(session)  # its first commit carries the activity row (useractivity)
         yield session
 
 
@@ -376,6 +380,7 @@ async def require_session_user(
     if loaded is None:
         raise NotAuthenticated()
     user, data = loaded
+    activity.note_actor(user)
     if request.method not in _SAFE_METHODS:
         sent = request.headers.get(CSRF_HEADER, "")
         if not secrets.compare_digest(sent.encode(), data["csrf"].encode()):

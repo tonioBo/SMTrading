@@ -16,4 +16,5 @@ import smtrading.portfolios.models
 import smtrading.positions.models
 import smtrading.risk.models
 import smtrading.telegram.models
+import smtrading.useractivity.models
 import smtrading.watch.models  # noqa: F401

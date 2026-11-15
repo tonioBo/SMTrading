@@ -40,7 +40,12 @@ VIEWER_UNSAFE_EXCEPTIONS = {
     ("POST", "/api/kill-switch"),  # only towards "on" (tested below)
 }
 # reads only an admin may make
-ADMIN_ONLY_READS = {("GET", "/api/users")}
+ADMIN_ONLY_READS = {
+    ("GET", "/api/users"),
+    ("GET", "/api/activity-log"),
+    ("GET", "/api/activity-log.csv"),
+    ("GET", "/api/activity-log/catalog"),
+}
 SKIPPED_PATHS = {"/health", "/mcp", "/mcp/"}
 
 
