@@ -41,6 +41,13 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe("Login", () => {
+  it("shows the brand header with the logo and the name", async () => {
+    renderApp("/login");
+    const logo = await screen.findByTestId("app-logo");
+    expect(logo).toHaveAttribute("aria-hidden", "true");
+    expect(logo.parentElement).toHaveTextContent("SMTrading");
+  });
+
   it("asks for the TOTP code when required, then goes to ?next", async () => {
     const user = userEvent.setup();
     const { router } = renderApp("/login?next=%2Fagenti");

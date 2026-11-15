@@ -5,6 +5,7 @@ import { useLogout, useMe } from "@/api/hooks/auth";
 import { KillSwitchIndicator } from "@/components/KillSwitchIndicator";
 import { ModeBanner } from "@/components/ModeBanner";
 import { NewVersionBanner } from "@/components/NewVersionBanner";
+import { Logo } from "@/components/Logo";
 import { Sidebar } from "@/components/Sidebar";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
@@ -29,9 +30,12 @@ function LiveDot() {
 /** Authenticated shell: the session is checked with /api/auth/me (401 → /login). */
 function Brand({ short = false }: { short?: boolean }) {
   return (
-    <span className="text-lg font-semibold">
-      <span className="text-accent">SM</span>
-      {short ? null : "Trading"}
+    <span className="flex items-center gap-2 text-lg font-semibold">
+      <Logo />
+      <span>
+        <span className="text-accent">SM</span>
+        {short ? null : "Trading"}
+      </span>
     </span>
   );
 }
