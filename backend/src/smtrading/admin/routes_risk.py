@@ -43,7 +43,7 @@ from smtrading.risk.settings import (
     DEFAULT_STALE_QUOTE_S,
     is_kill_switch_on,
 )
-from smtrading.telegram import preopen, weekly_goal
+from smtrading.telegram import preopen_settings, weekly_goal
 
 router = APIRouter(prefix="/api", tags=["risk"], dependencies=[Depends(require_access)])
 # protective actions every user may take, viewers included: the kill switch towards «on»
@@ -263,7 +263,8 @@ async def _app_settings(session: AsyncSession) -> dict[str, Any]:
         "timezone": stored.get("timezone") or DEFAULT_TIMEZONE,
         "mcp_hide_mode": _hide_mode(stored.get("mcp_hide_mode")),
         "weekly_goal": weekly_goal.weekly_goal_dto(stored.get(weekly_goal.SETTINGS_KEY)),
-        "preopen_check": preopen.preopen_dto(stored.get(preopen.SETTINGS_KEY)),
+        "preopen_check": preopen_settings.preopen_dto(
+            stored.get(preopen_settings.SETTINGS_KEY)),
     }
 
 
@@ -307,7 +308,7 @@ async def put_app_settings(body: AppSettingsIn, session: DbSession, redis: Redis
         updates[weekly_goal.SETTINGS_KEY] = weekly_goal.clean_weekly_goal(
             body.weekly_goal.model_dump(), current["weekly_goal"])
     if body.preopen_check is not None:
-        updates[preopen.SETTINGS_KEY] = preopen.clean_preopen(
+        updates[preopen_settings.SETTINGS_KEY] = preopen_settings.clean_preopen(
             body.preopen_check.model_dump(), current["preopen_check"])
     async with _transaction(session, redis):
         for key, value in updates.items():

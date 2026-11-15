@@ -16,8 +16,14 @@ What is checked:
 2. the markets of today: open, closed, early closes (manual ones marked);
 3. worker heartbeat, Redis and database reachable, BrokerSync and LiveMonitor holding
    their advisory locks (their loops are running);
-4. kill switch off, no active trading halt, no portfolio locked or reduce-only.
+4. kill switch off, no active trading halt, no portfolio locked or reduce-only (at most
+   LIST_MAX halts and names, then «… e altri K»);
+5. broker links: every enabled link in `status` error (its short last error), and the
+   real-money links armed or in dry run whose account data (`last_snapshot_at`, kept by
+   the LiveMonitor) is missing or older than LIVE_SNAPSHOT_MAX_AGE.
 (Paperclip reader status: added once the reader of Task 8 is on this branch.)
+The text is always split with `render.split_message`, every part queued in the same
+transaction, so it never exceeds Telegram's limit.
 
 Archived portfolios are left out. Idempotent per local date (`job_runs`, job
 `telegram.preopen`, claimed in the same transaction as the outbox row). While Telegram is
@@ -27,11 +33,9 @@ database in short sessions and do their network I/O with no transaction open (R9
 
 import asyncio
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, time, timedelta
-from typing import Any
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, text
@@ -39,9 +43,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.activity.models import ActivityLevel
 from smtrading.brokers.live.monitor import ADVISORY_LOCK_KEY as MONITOR_LOCK_KEY
+from smtrading.brokers.models import BrokerLink
 from smtrading.brokers.sync import ADVISORY_LOCK_KEY as SYNC_LOCK_KEY
 from smtrading.common.config import get_settings
-from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.heartbeat import heartbeat_age_s
 from smtrading.engine.quotesource import QuoteSource
 from smtrading.instruments.market_hours import manual_closure, session_on
@@ -49,16 +53,16 @@ from smtrading.jobs.runs import job_done, run_job_once
 from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
 from smtrading.positions.models import Position
 from smtrading.risk import halts
-from smtrading.risk.models import AppSetting, RiskProfile
+from smtrading.risk.models import RiskProfile
 from smtrading.risk.settings import is_kill_switch_on
 from smtrading.telegram.config import is_ready, load_config
 from smtrading.telegram.outbox import enqueue
+from smtrading.telegram.preopen_settings import load_preopen_settings
+from smtrading.telegram.render import split_message
 
 log = logging.getLogger(__name__)
 
 JOB = "telegram.preopen"
-SETTINGS_KEY = "preopen_check"
-DEFAULT_AT = time(8, 45)
 SEND_WINDOW = timedelta(hours=2)  # after the set time a missed check is not sent any more
 MAIN_MARKETS = ("NYSE", "NASDAQ", "MTA", "XETRA")
 MAX_SYMBOLS = 20
@@ -66,61 +70,10 @@ QUOTE_MAX_AGE = timedelta(days=4)  # a weekend plus a holiday since the last clo
 QUOTE_MAX_AGE_S = 60  # asked of the router: a fresh read, not an old cache entry
 HEARTBEAT_MAX_AGE_S = 60
 REASON_MAX = 80
+LIST_MAX = 5  # halts and portfolio names listed, then «… e altri K»
+LIVE_SNAPSHOT_MAX_AGE = timedelta(minutes=30)  # account data of an armed/dry-run link
+MONITORED_LIVE_STATES = ("armed", "dry_run")
 TICK_S = 30
-_AT = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
-
-
-# -- setting ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class PreopenSettings:
-    on: bool = True
-    at: time = DEFAULT_AT
-
-
-def _invalid(message: str) -> SMTError:
-    return SMTError(ErrorCode.INVALID_ORDER, message, {"field": "preopen_check"})
-
-
-def _parse_at(value: Any) -> time:
-    match = _AT.match(value) if isinstance(value, str) else None
-    if match is None:
-        raise _invalid("controllo pre-apertura: orario non valido (HH:MM)")
-    return time(int(match[1]), int(match[2]))
-
-
-def _stored(raw: Any) -> PreopenSettings:
-    if not isinstance(raw, dict):
-        return PreopenSettings()
-    try:
-        at = _parse_at(raw.get("at", "08:45"))
-    except SMTError:
-        at = DEFAULT_AT
-    return PreopenSettings(on=bool(raw.get("on", True)), at=at)
-
-
-async def load_preopen_settings(session: AsyncSession) -> PreopenSettings:
-    return _stored(await session.scalar(
-        select(AppSetting.value).where(AppSetting.key == SETTINGS_KEY)))
-
-
-def preopen_dto(raw: Any) -> dict[str, Any]:
-    """The admin view of the stored value: {"on": bool, "at": "08:45"}."""
-    s = _stored(raw)
-    return {"on": s.on, "at": s.at.strftime("%H:%M")}
-
-
-def clean_preopen(body: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
-    """`current` (a `preopen_dto`) with the fields of `body` validated and applied."""
-    out = dict(current)
-    if body.get("on") is not None:
-        if not isinstance(body["on"], bool):
-            raise _invalid("controllo pre-apertura: on deve essere vero o falso")
-        out["on"] = body["on"]
-    if body.get("at") is not None:
-        out["at"] = _parse_at(body["at"]).strftime("%H:%M")
-    return out
 
 
 # -- report ----------------------------------------------------------------------------
@@ -159,6 +112,12 @@ def market_days(day: date, zone: ZoneInfo) -> list[MarketDay]:
     return out
 
 
+def capped(items: list[str], limit: int = LIST_MAX) -> str:
+    """`a, b, c` with at most `limit` items, then «… e altri K» (pure)."""
+    shown = ", ".join(items[:limit])
+    return shown if len(items) <= limit else f"{shown} … e altri {len(items) - limit}"
+
+
 def _plural(n: int, one: str, many: str) -> str:
     return f"{n} {one if n == 1 else many}"
 
@@ -185,7 +144,7 @@ def render_report(report: PreopenReport) -> str:
         lines.append("Quotazioni: " + (
             f"{_plural(report.quotes_checked, 'simbolo aggiornato', 'simboli aggiornati')}"
             if report.quotes_checked else "nessun simbolo da controllare"))
-        lines.append("Sistema: worker, broker e monitor attivi; database e Redis ok")
+        lines.append("Sistema: servizi attivi; database e Redis ok")
         lines.append("Rischio: kill switch spento, nessun blocco aperture, "
                      "nessun portafoglio bloccato")
     return "\n".join(lines)
@@ -224,7 +183,8 @@ def _short(reason: str | None) -> str:
     return reason if len(reason) <= REASON_MAX else reason[:REASON_MAX - 1].rstrip() + "…"
 
 
-async def _database_problems(session: AsyncSession) -> tuple[list[str], list[str]]:
+async def _database_problems(session: AsyncSession,
+                             now: datetime) -> tuple[list[str], list[str]]:
     """(problems, symbols to check) from the database."""
     problems = []
     if not await _holds_lock(session, SYNC_LOCK_KEY):
@@ -233,10 +193,13 @@ async def _database_problems(session: AsyncSession) -> tuple[list[str], list[str
         problems.append("Monitor del denaro reale non attivo")
     if await is_kill_switch_on(session):
         problems.append("Kill switch attivo")
-    for h in await halts.halt_dtos(session, await halts.active_halts(session)):
+    active = await halts.active_halts(session)
+    for h in await halts.halt_dtos(session, active[:LIST_MAX]):
         where = "globale" if h["scope"] == "global" else f"su {h['portfolio'] or 'portafoglio'}"
         reason = _short(h["reason"])
         problems.append(f"Blocco aperture {where} attivo{': ' + reason if reason else ''}")
+    if len(active) > LIST_MAX:
+        problems.append(f"… e altri {len(active) - LIST_MAX} blocchi aperture")
     rows = (await session.execute(
         select(Portfolio.name, Portfolio.status)
         .where(Portfolio.status.in_((PortfolioStatus.locked, PortfolioStatus.reduce_only)))
@@ -245,8 +208,29 @@ async def _database_problems(session: AsyncSession) -> tuple[list[str], list[str
                           (PortfolioStatus.reduce_only, "Portafogli in sola riduzione")):
         names = [name for name, st in rows if st == status]
         if names:
-            problems.append(f"{label}: {', '.join(names)}")
+            problems.append(f"{label}: {capped(names)}")
+    problems += await _link_problems(session, now)
     return problems, await _symbols(session)
+
+
+async def _link_problems(session: AsyncSession, now: datetime) -> list[str]:
+    links = list(await session.scalars(
+        select(BrokerLink).where(BrokerLink.enabled.is_(True)).order_by(BrokerLink.name)))
+    problems = []
+    for link in links:
+        name = " ".join(link.name.split())
+        if link.status == "error":
+            reason = _short(link.last_error)
+            problems.append(f"Collegamento broker {name} in errore"
+                            f"{': ' + reason if reason else ''}")
+        elif link.live_state in MONITORED_LIVE_STATES:
+            if link.last_snapshot_at is None:
+                problems.append(f"Collegamento broker {name}: nessun dato del conto")
+            elif now - link.last_snapshot_at > LIVE_SNAPSHOT_MAX_AGE:
+                minutes = int((now - link.last_snapshot_at).total_seconds() // 60)
+                problems.append(f"Collegamento broker {name}: dati del conto fermi da "
+                                f"{minutes} min")
+    return problems
 
 
 async def _quote_problems(qs: QuoteSource, symbols: list[str], now: datetime) -> list[str]:
@@ -299,7 +283,7 @@ async def build_report(sm: async_sessionmaker, qs: QuoteSource, redis, now: date
     symbols: list[str] = []
     try:
         async with sm() as session:
-            db_problems, symbols = await _database_problems(session)
+            db_problems, symbols = await _database_problems(session, now)
         problems += db_problems
     except Exception:
         log.exception("pre-open check: database checks failed")
@@ -326,7 +310,7 @@ class PreopenCheck:
         self._clock = clock
         self._zone = ZoneInfo(tz or get_settings().tz)
         self._tick_s = tick_s
-        self._done: set[str] = set()  # local dates known done (or given up)
+        self._done: str | None = None  # the local date known done (or given up)
 
     async def run(self) -> None:
         while True:
@@ -340,7 +324,7 @@ class PreopenCheck:
         now = self._clock()
         local = now.astimezone(self._zone)
         key = local.date().isoformat()
-        if local.weekday() >= 5 or key in self._done:
+        if local.weekday() >= 5 or key == self._done:
             return
         async with self._sm() as session:
             settings = await load_preopen_settings(session)
@@ -350,7 +334,7 @@ class PreopenCheck:
             if local < start:
                 return
             if await job_done(session, JOB, key):
-                self._done.add(key)
+                self._done = key
                 return
             ready = is_ready(await load_config(session))
         late = local >= start + SEND_WINDOW
@@ -361,7 +345,7 @@ class PreopenCheck:
                 if await run_job_once(session, JOB, key):
                     log.warning("%s of %s skipped: not sent within %s of %s", JOB, key,
                                 SEND_WINDOW, settings.at.strftime("%H:%M"))
-            self._done.add(key)
+            self._done = key
             return
         markets = market_days(local.date(), self._zone)
         if not any(m.open for m in markets):
@@ -375,6 +359,7 @@ class PreopenCheck:
             if not is_ready(cfg):
                 return  # turned off meanwhile: tried again next tick
             if await run_job_once(session, JOB, key):  # else another worker sent it
-                await enqueue(session, source="system", category="system", level=level,
-                              text=message, cfg=cfg)
-        self._done.add(key)
+                for part, entities in split_message(message):
+                    await enqueue(session, source="system", category="system", level=level,
+                                  text=part, entities=entities, cfg=cfg)
+        self._done = key

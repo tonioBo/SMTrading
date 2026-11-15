@@ -569,7 +569,7 @@ async def test_app_settings_weekly_goal_and_preopen(admin):
     assert body["weekly_goal"] == {"on": False, "pct": "2.5"}
     assert body["preopen_check"] == {"on": False, "at": "09:05"}
 
-    from smtrading.telegram.preopen import load_preopen_settings
+    from smtrading.telegram.preopen_settings import load_preopen_settings
     from smtrading.telegram.weekly_goal import load_weekly_goal
 
     async with admin.sm() as s:  # the worker reads the stored values
@@ -580,8 +580,8 @@ async def test_app_settings_weekly_goal_and_preopen(admin):
 
     for bad in ({"weekly_goal": {"pct": "0"}}, {"weekly_goal": {"pct": "x"}},
                 {"weekly_goal": {"pct": "150"}}, {"preopen_check": {"at": "24:00"}},
-                {"preopen_check": {"at": "nove"}}):
-        assert (await c.put("/api/settings/app", json=bad)).status_code in (400, 422), bad
+                {"preopen_check": {"at": "nove"}}, {"weekly_goal": {"pct": "1.234"}}):
+        assert (await c.put("/api/settings/app", json=bad)).status_code == 400, bad
     assert (await c.get("/api/settings/app")).json() == body
 
 

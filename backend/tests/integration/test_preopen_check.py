@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from smtrading.activity.models import Activity
 from smtrading.brokers.live.monitor import ADVISORY_LOCK_KEY as MONITOR_LOCK
+from smtrading.brokers.models import BrokerLink
 from smtrading.brokers.sync import ADVISORY_LOCK_KEY as SYNC_LOCK
 from smtrading.common.db import make_engine
 from smtrading.common.heartbeat import HEARTBEAT_KEY, write_heartbeat
@@ -32,6 +33,7 @@ from smtrading.telegram import config as tg_config
 from smtrading.telegram.config import TelegramConfig, save_config
 from smtrading.telegram.models import TelegramOutbox
 from smtrading.telegram.preopen import JOB, PreopenCheck
+from smtrading.telegram.render import MAX_LEN, utf16_len
 
 D = Decimal
 TZ = "Europe/Rome"
@@ -180,6 +182,7 @@ async def test_ready_at_0845_once(env):
     assert (msg.category, msg.level, msg.source) == ("system", "info", "system")
     lines = msg.text.split("\n")
     assert lines[0] == "✅ Pronti per l'apertura — 15/03/2027", msg.text
+    assert "Sistema: servizi attivi; database e Redis ok" in lines
     assert "Mercati aperti oggi: NYSE, NASDAQ, MTA, XETRA" in lines
     assert "Quotazioni: 2 simboli aggiornati" in lines
     assert 3 <= len(lines) - 1 <= 6
@@ -306,3 +309,61 @@ async def test_not_ready_waits_then_window_ends(env, caplog):
     assert "skipped" in caplog.text
     async with sm() as s:
         assert await job_done(s, JOB, "2027-03-16")
+
+
+async def test_many_halts_and_portfolios_fit_in_telegram(env):
+    sm, engine, redis = env
+    await _configure(sm)
+    pids = [await _portfolio(sm, f"Test 260 Portafoglio {i:02d}") for i in range(30)]
+    for i in range(8):
+        await _portfolio(sm, f"Test 260 Bloccato {i}", status=PortfolioStatus.locked)
+    async with sm() as s:
+        for pid in pids:
+            await halts.set_halt(s, scope="portfolio", portfolio_id=pid, reason="x" * 400,
+                                 by="admin:admin@example.com")
+        discard_post_commit(s)
+        await s.commit()
+    clock = Clock(rome(MON, 8, 45))
+    async with Locks(engine):
+        await write_heartbeat(redis)
+        await _check(env, FakeQuoteSource(), clock).tick()
+    out = await _outbox(sm)
+    assert out and all(utf16_len(m.text) <= MAX_LEN for m in out)
+    text_ = "\n".join(m.text for m in out)
+    halt_lines = [ln for ln in text_.split("\n") if ln.startswith("• Blocco aperture su ")]
+    assert len(halt_lines) == 5
+    assert "• … e altri 25 blocchi aperture" in text_
+    assert ("• Portafogli bloccati: Test 260 Bloccato 0, Test 260 Bloccato 1, "
+            "Test 260 Bloccato 2, Test 260 Bloccato 3, Test 260 Bloccato 4 … e altri 3") in text_
+
+
+async def test_broker_link_health(env):
+    sm, engine, redis = env
+    await _configure(sm)
+    clock = Clock(rome(MON, 8, 45))
+    async with sm() as s:
+        s.add_all([
+            BrokerLink(name="Alpaca prova", kind="alpaca_paper", enabled=True, status="error",
+                       last_error="401  unauthorized:\n" + "y" * 300, health_failures=3),
+            BrokerLink(name="Spento", kind="t212_demo", enabled=False, status="error",
+                       last_error="vecchio"),
+            BrokerLink(name="T212 reale", kind="t212_live", enabled=True, status="ok",
+                       live_state="armed", last_snapshot_at=clock.t - timedelta(minutes=45)),
+            BrokerLink(name="Alpaca reale", kind="alpaca_live", enabled=True, status="ok",
+                       live_state="dry_run", last_snapshot_at=clock.t - timedelta(minutes=5)),
+            BrokerLink(name="Mai letto", kind="alpaca_live", enabled=True, status="ok",
+                       live_state="armed"),
+            BrokerLink(name="Solo configurato", kind="alpaca_live", enabled=True, status="ok",
+                       live_state="configured"),
+        ])
+        await s.commit()
+    async with Locks(engine):
+        await write_heartbeat(redis)
+        await _check(env, FakeQuoteSource(), clock).tick()
+    [msg] = await _outbox(sm)
+    problems = sorted(ln for ln in msg.text.split("\n") if ln.startswith("• "))
+    assert len(problems) == 3, msg.text
+    assert problems[0].startswith("• Collegamento broker Alpaca prova in errore: 401 unauthorized: y")
+    assert problems[0].endswith("…") and len(problems[0]) < 140
+    assert problems[1] == "• Collegamento broker Mai letto: nessun dato del conto"
+    assert problems[2] == "• Collegamento broker T212 reale: dati del conto fermi da 45 min"

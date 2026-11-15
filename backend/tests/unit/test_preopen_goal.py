@@ -12,11 +12,12 @@ from smtrading.instruments.market_hours import Closure, session_on, set_closures
 from smtrading.telegram.preopen import (
     MarketDay,
     PreopenReport,
-    clean_preopen,
+    capped,
     market_days,
     render_closed,
     render_report,
 )
+from smtrading.telegram.preopen_settings import clean_preopen
 from smtrading.telegram.weekly_goal import clean_weekly_goal, goal_line
 
 D = Decimal
@@ -134,3 +135,21 @@ def test_goal_line_without_data():
     assert goal_line(D("2"), None, None) == (
         "🎯 Obiettivo settimana +2%: dati della settimana non ancora disponibili")
     assert goal_line(D("2"), D("0"), D("0")).endswith("non ancora disponibili")
+
+
+def test_capped_lists():
+    assert capped(["a", "b"]) == "a, b"
+    assert capped([str(i) for i in range(7)]) == "0, 1, 2, 3, 4 … e altri 2"
+
+
+def test_admin_routes_do_not_import_brokers():
+    import ast
+    import pathlib
+
+    import smtrading.admin.routes_risk as routes
+
+    tree = ast.parse(pathlib.Path(routes.__file__).read_text())
+    names = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
+    names |= {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+              for a in n.names if n.module == "smtrading.telegram"}
+    assert "preopen" not in names and "smtrading.telegram.preopen" not in names
