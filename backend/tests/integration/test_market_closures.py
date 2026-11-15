@@ -156,7 +156,7 @@ async def test_closure_validation(admin, body, field):
     payload = {"market": "NYSE", "day": day.isoformat(), "kind": "closed", "note": "x"}
     payload.update(body)
     if payload["day"] == "past":
-        payload["day"] = (date.today() - timedelta(days=1)).isoformat()
+        payload["day"] = (datetime.now(UTC).date() - timedelta(days=2)).isoformat()
     r = await admin.client.post("/api/market-closures", json=payload)
     assert r.status_code == 400 and r.json()["details"]["field"] == field, r.text
 

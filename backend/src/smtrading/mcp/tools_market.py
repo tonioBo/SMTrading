@@ -378,7 +378,8 @@ def register(mcp: MCPServer) -> None:
     @mcp.tool(structured_output=False)
     async def get_market_status(market: str | None = None) -> CallToolResult:
         """Open/closed status and next open/close of a market (NASDAQ, NYSE, MTA, XETRA,
-        EURONEXT_PARIS, CRYPTO, FX, LSE), or of all markets when omitted."""
+        EURONEXT_PARIS, CRYPTO, FX), or of all markets when omitted. LSE (London) is listed
+        for its hours only: its instruments are not tradable here."""
         return await run_tool("get_market_status", {"market": market},
                               lambda ctx: _async(_market_status, market))
 
