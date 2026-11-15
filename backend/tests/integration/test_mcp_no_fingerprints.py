@@ -14,7 +14,8 @@ Allowlist (documented, not scanned):
   seeded "Demo" portfolio and "test-agent" agent to neutral names, since the words would
   be false positives of the data, not of the code.
 - market data provider names come from the real providers in production; the fixture's
-  fake source is given a real provider name ("yahoo").
+  fake source is given a real provider name ("yahoo"); in the `etoro_source` flavor
+  quotes and bars come from the real eToro provider on the fake eToro server.
 """
 
 import dataclasses
@@ -91,6 +92,64 @@ async def _setup(server, flavor: str) -> str:
     return str(pid)
 
 
+DEMO_TEXT = "Instrument history not available in Demo environment"
+
+
+async def _etoro_source(server, redis_url: str) -> None:
+    """The `etoro_source` flavor: quotes and bars of the sweep come from the real
+    EtoroProvider through a real MarketDataRouter, on the fake eToro server (never the
+    real host). The fake's candles answer a 400 whose text names the environment, so the
+    bars tools take the router's miss path with an agent-visible error."""
+    import asyncio
+
+    import httpx
+    import redis.asyncio as aioredis
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from smtrading.brokers.live.fake import FakeLiveBroker
+    from smtrading.connectors.models import ProviderPriority
+    from smtrading.connectors.service import update_connector
+    from smtrading.instruments.models import AssetClass
+    from smtrading.marketdata.router import MarketDataRouter
+    from smtrading.marketdata.types import Capability
+
+    async with _Db(server.db_url) as s:
+        await update_connector(s, "etoro", enabled=True, config={
+            "api_key": "CANARYAPIKEY0001", "user_key": "CANARYUSERKEY-do-not-use"})
+        for cap in (Capability.quote, Capability.bars):
+            row = await s.get(ProviderPriority, (AssetClass.crypto, cap))
+            row.providers = ["etoro"]
+        await s.commit()
+
+    fake = FakeLiveBroker(price=D(50000))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/history/candles/" in request.url.path:
+            return httpx.Response(400, json={"errorMessage": DEMO_TEXT})
+        return fake.transport().handle_request(request)
+
+    routers: dict = {}  # one router per event loop (the MCP server runs its own)
+
+    def router() -> MarketDataRouter:
+        loop = asyncio.get_running_loop()
+        if loop not in routers:
+            sm = async_sessionmaker(make_engine(server.db_url), expire_on_commit=False)
+            http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            redis = aioredis.from_url(redis_url, decode_responses=True)
+            routers[loop] = MarketDataRouter(sm, redis, http)
+        return routers[loop]
+
+    async def get_quotes(symbols, *, max_age_s=5):
+        return await router().get_quotes(symbols, max_age_s=max_age_s)
+
+    async def get_bars(symbol, timeframe, start, end):
+        return await router().get_bars(symbol, timeframe, start, end)
+
+    server.qs.get_quotes = get_quotes
+    server.qs.get_bars = get_bars
+    server.etoro_fake = fake
+
+
 async def _read_resource(url: str, token: str, uri: str):
     """The resource's JSON content, or the error text."""
     from mcp.client.session import ClientSession
@@ -111,10 +170,12 @@ async def _read_resource(url: str, token: str, uri: str):
     return json.loads(result.contents[0].text)
 
 
-@pytest.mark.parametrize("flavor", ["simulated", "paper_linked"])
-async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, flavor):
+@pytest.mark.parametrize("flavor", ["simulated", "paper_linked", "etoro_source"])
+async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, flavor, redis_url):
     _market(mcp_server.qs)
     pid = await _setup(mcp_server, flavor)
+    if flavor == "etoro_source":
+        await _etoro_source(mcp_server, redis_url)
     outputs: list[tuple[str, object]] = []
 
     async def call(tool, args=None):
@@ -178,7 +239,14 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
     # the sweep saw the facts it is about
     feed = next(p for t, p in outputs if t == "get_activity_feed")
     assert {i["type"] for i in feed["items"]} >= {"portfolio.cash", "decision.strategy"}
-    if flavor == "simulated":
+    if flavor == "etoro_source":  # the real provider answered, on the fake server only
+        quote = next(p for t, p in outputs if t == "get_quote")
+        assert "etoro" in json.dumps(quote), quote
+        assert any("/market-data/instruments/rates" in p for _, p in mcp_server.etoro_fake.calls)
+        bars = next(p for t, p in outputs if t == "get_bars")
+        assert "etoro" in json.dumps(bars) and "HTTP 400" in json.dumps(bars), bars
+        assert all("Demo environment" not in json.dumps(p) for _, p in outputs)
+    if flavor in ("simulated", "etoro_source"):
         assert filled["status"] == "filled", filled
         assert "order.filled" in {i["type"] for i in feed["items"]}
         got = next(p for t, p in outputs if t == "get_order" and "fills" in p)
@@ -189,4 +257,6 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
         text = json.dumps(payload, ensure_ascii=False)
         for m in FINGERPRINT.finditer(text):
             leaks.append((tool, text[max(0, m.start() - 60): m.end() + 40]))
+        if "/demo/" in text:
+            leaks.append((tool, "/demo/"))
     assert not leaks, "\n".join(f"{t}: …{ctx}…" for t, ctx in leaks)

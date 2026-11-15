@@ -18,5 +18,9 @@ def adapter_class(kind: str) -> type[BrokerAdapter]:
 
 
 def _load() -> None:
-    from smtrading.brokers import alpaca_paper, t212_demo  # noqa: F401  (registers on import)
+    from smtrading.brokers import (  # noqa: F401  (registers on import)
+        alpaca_paper,
+        etoro_demo,
+        t212_demo,
+    )
     from smtrading.brokers.live import alpaca_live, t212_live  # noqa: F401

@@ -1,0 +1,6 @@
+{
+  "rates": [
+    {"instrumentID": 1001, "bid": 189.21, "ask": 189.35, "lastExecution": 189.28, "conversionRateBid": 1, "conversionRateAsk": 1, "date": "2026-11-15T15:30:12.345Z", "priceRateID": 7712345, "unitMarginBid": 1, "unitMarginAsk": 1, "bidDiscounted": 189.2, "askDiscounted": 189.3},
+    {"instrumentID": 100000, "bid": 64250.5, "ask": 64310.25, "lastExecution": 64280.0, "date": "2026-11-15T15:30:11Z", "priceRateID": 7712346}
+  ]
+}

@@ -600,6 +600,8 @@ export interface Connector {
   implemented: boolean;
   /** secret leaves are masked ("••••abcd") */
   config_masked: Record<string, unknown>;
+  /** config fields shown even when empty (besides `api_key` when `requires_key`) */
+  config_fields: string[];
   /** top-level config keys holding secrets (decided by the server) */
   secret_keys: string[];
   rate_limit_per_min: number | null;

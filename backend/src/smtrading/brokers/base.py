@@ -79,6 +79,11 @@ class BrokerAdapter:
         it needs data only `prepare` loads; BrokerSync checks `supports` before sending."""
         return self.supports(order, instrument)
 
+    def unsupported_reason(self, order: Order, instrument: Instrument) -> str | None:
+        """Why `routable` refuses the order, in a text for the user (None: the generic
+        «not supported» message). No network I/O."""
+        return None
+
     async def prepare(self, instruments: Iterable[Instrument] = ()) -> None:
         """Load what `supports` and the symbol mapping need (network); no-op by default."""
 

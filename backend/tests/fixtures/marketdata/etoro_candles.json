@@ -1,0 +1,27 @@
+{
+  "interval": "OneHour",
+  "candles": [
+    {
+      "instrumentId": 1001,
+      "candles": [
+        {"instrumentID": 1001, "fromDate": "2026-11-15T12:00:00Z", "open": 190.0, "high": 191.0, "low": 189.5, "close": 190.5, "volume": 1200},
+        {"instrumentID": 1001, "fromDate": "2026-11-15T11:00:00Z", "open": 189.0, "high": 190.2, "low": 188.8, "close": 190.0, "volume": 1500},
+        {"instrumentId": 1001, "fromDate": "2026-11-14T10:00:00", "open": 188.0, "high": 189.1, "low": 187.9, "close": 189.0, "volume": 900},
+        {"instrumentID": 1001, "fromDate": "2026-11-13T09:00:00Z", "open": 187.0, "high": null, "low": 186.5, "close": 187.5, "volume": 800},
+        {"instrumentID": 1001, "fromDate": "2026-11-12T12:00:00Z", "open": 186.0, "high": 187.0, "low": 185.5, "close": 186.5, "volume": 700},
+        {"instrumentID": 1001, "fromDate": "2026-11-12T11:00:00Z", "open": 185.0, "high": 186.0, "low": 184.5, "close": 185.5, "volume": 600}
+      ],
+      "rangeOpen": 185.0,
+      "rangeClose": 190.5,
+      "rangeHigh": 191.0,
+      "rangeLow": 184.5,
+      "volume": 5700
+    },
+    {
+      "instrumentID": 1002,
+      "candles": [
+        {"instrumentID": 1002, "fromDate": "2026-11-14T10:00:00Z", "open": 400.0, "high": 401.0, "low": 399.0, "close": 400.5, "volume": 10}
+      ]
+    }
+  ]
+}

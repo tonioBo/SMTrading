@@ -1,4 +1,5 @@
-"""Contract of the shared broker protocol cores (_AlpacaProtocol, _T212Protocol),
+"""Contract of the shared broker protocol cores (_AlpacaProtocol, _T212Protocol,
+_EtoroProtocol),
 parametrized over the concrete adapter classes. Never reaches the network: respx mocks
 every request (assert_all_mocked) and every mocked route must be hit (assert_all_called).
 """
@@ -14,9 +15,10 @@ import httpx
 import pytest
 import respx
 
-from smtrading.brokers import alpaca_core, t212_core
+from smtrading.brokers import alpaca_core, etoro_core, t212_core
 from smtrading.brokers.alpaca_paper import AlpacaPaperAdapter
 from smtrading.brokers.base import AccountSnapshot, BrokerAdapter, RateLimited
+from smtrading.brokers.etoro_demo import EtoroDemoAdapter
 from smtrading.brokers.live.alpaca_live import AlpacaLiveAdapter
 from smtrading.brokers.live.gate import make_live_client
 from smtrading.brokers.live.t212_live import T212LiveAdapter
@@ -39,7 +41,7 @@ def _fixture(name: str) -> dict:
 @dataclass(frozen=True)
 class Case:
     cls: type[BrokerAdapter]
-    family: str  # "alpaca" | "t212"
+    family: str  # "alpaca" | "t212" | "etoro"
     config: dict
 
     @property
@@ -55,15 +57,19 @@ class Case:
 
 ALPACA_CFG = {"key_id": "CANARYKEYID0001", "secret_key": "CANARYSECRET-do-not-use"}
 T212_CFG = {"api_key": "CANARYKEYID0001", "api_secret": "CANARYSECRET-do-not-use"}
+ETORO_ASSET = {"instrumentId": 1001, "settlementType": "real", "leverage": 1, "side": "buy"}
+ETORO_CFG = {"api_key": "CANARYAPIKEY0001", "user_key": "CANARYUSERKEY-do-not-use"}
 # The live classes run on a LiveClient (make_live_client) on an armed link of the test db.
 CASES = [
     Case(AlpacaPaperAdapter, "alpaca", ALPACA_CFG),
     Case(T212DemoAdapter, "t212", T212_CFG),
     Case(AlpacaLiveAdapter, "alpaca", ALPACA_CFG),
     Case(T212LiveAdapter, "t212", T212_CFG),
+    Case(EtoroDemoAdapter, "etoro", ETORO_CFG),
 ]
 ALPACA_CASES = [c for c in CASES if c.family == "alpaca"]
 T212_CASES = [c for c in CASES if c.family == "t212"]
+ETORO_CASES = [c for c in CASES if c.family == "etoro"]
 
 
 def _ids(cases):
@@ -153,9 +159,27 @@ def _mock_t212_instruments(mock, case: Case):
     )
 
 
+def _mock_etoro_instruments(mock, case: Case):
+    mock.get(case.url(etoro_core.MARKET_DATA_PREFIX + "search")).mock(
+        return_value=httpx.Response(200, json={"items": [
+            {"instrumentId": 1001, "internalSymbolFull": "AAPL", "isBuyEnabled": True,
+             "isDelisted": False}]})
+    )
+    mock.post(case.url(case.cls.INFO_V2 + "/eligibility")).mock(
+        return_value=httpx.Response(200, json={"instruments": [
+            {"instrumentId": 1001, "allowOpenPosition": True,
+             "allowPartialClosePosition": True,
+             "leverageConfigs": [{"settlementType": "real", "direction": "buy",
+                                  "leverageValues": [1]}]}]})
+    )
+
+
 def _mock_place(mock, case: Case, response: httpx.Response):
     if case.family == "alpaca":
         return mock.post(case.url("/v2/orders")).mock(return_value=response)
+    if case.family == "etoro":
+        _mock_etoro_instruments(mock, case)
+        return mock.post(case.url(case.cls.EXEC_V2 + "/orders")).mock(return_value=response)
     _mock_t212_instruments(mock, case)
     return mock.post(_t212_api(case, "/orders/market")).mock(return_value=response)
 
@@ -163,6 +187,8 @@ def _mock_place(mock, case: Case, response: httpx.Response):
 def _accepted(case: Case) -> httpx.Response:
     if case.family == "alpaca":
         return httpx.Response(200, json={"id": "b1", "status": "new", "filled_qty": "0"})
+    if case.family == "etoro":
+        return httpx.Response(200, json={"token": "t", "orderId": 42, "referenceId": "r"})
     return httpx.Response(200, json={"id": 42, "status": "NEW", "filledQuantity": 0})
 
 
@@ -182,6 +208,11 @@ async def test_place_payload_shape(case, http, mock):
             "qty": "10",
         }
         assert res.broker_order_id == "b1"
+    elif case.family == "etoro":
+        assert body == {"action": "open", "transaction": "buy", "instrumentId": 1001,
+                        "settlementType": "real", "orderType": "mkt", "leverage": 1,
+                        "units": 10}
+        assert res.broker_order_id == "42"
     else:
         assert body == {"ticker": "AAPL_US_EQ", "quantity": 10}
         assert res.broker_order_id == "42"
@@ -192,11 +223,20 @@ async def test_place_payload_shape(case, http, mock):
 @pytest.mark.parametrize(
     ("case", "raw", "expected"),
     [(c, raw, exp) for c in ALPACA_CASES for raw, exp in alpaca_core._STATUS.items()]
-    + [(c, raw, exp) for c in T212_CASES for raw, exp in t212_core._STATUS.items()],
+    + [(c, raw, exp) for c in T212_CASES for raw, exp in t212_core._STATUS.items()]
+    + [(c, raw, exp) for c in ETORO_CASES for raw, exp in etoro_core._STATUS.items()],
     ids=lambda v: v.id if isinstance(v, Case) else str(v),
 )
 async def test_status_mapping(case, raw, expected, http, mock):
-    if case.family == "alpaca":
+    if case.family == "etoro":
+        mock.get(case.url(case.cls.INFO_V2 + "/orders:lookup"), params={"orderId": "11"}).mock(
+            return_value=httpx.Response(200, json={
+                "orderId": 11, "status": {"id": raw}, "asset": ETORO_ASSET,
+                "positionExecutions": [{"positionId": 1, "openingData": {
+                    "units": 1, "avgPrice": 100, "fees": 0}}]})
+        )
+        bo = await case.adapter(http).get_order("11")
+    elif case.family == "alpaca":
         mock.get(case.url("/v2/orders/x1")).mock(
             return_value=httpx.Response(200, json={"id": "x1", "status": raw})
         )
@@ -222,6 +262,13 @@ async def test_find_order_contract(case, http, mock):
             return_value=httpx.Response(
                 200, json={"id": "b7", "status": "filled", "filled_qty": "10"}
             )
+        )
+    elif case.family == "etoro":
+        ref = str(uuid.uuid5(etoro_core.ETORO_NS, str(order.id)))
+        mock.get(case.url(case.cls.INFO_V2 + "/orders:lookup"), params={"referenceId": ref}).mock(
+            return_value=httpx.Response(
+                200, json={"orderId": 7, "referenceId": ref, "status": {"id": 2},
+                           "asset": ETORO_ASSET})
         )
     else:
         _mock_t212_instruments(mock, case)
@@ -262,6 +309,10 @@ async def test_get_account_snapshot(case, http, mock):
         orders = mock.get(case.url("/v2/orders"), params={"status": "open"}).mock(
             return_value=httpx.Response(200, json=[])
         )
+    elif case.family == "etoro":
+        acct = orders = mock.get(case.url(case.cls.INFO_V1 + "/pnl")).mock(
+            return_value=httpx.Response(200, json=_fixture("etoro_pnl.json"))
+        )
     else:
         acct = mock.get(_t212_api(case, "/account/summary")).mock(
             return_value=httpx.Response(200, json=_fixture("t212_account_summary.json"))
@@ -289,6 +340,14 @@ async def test_get_account_snapshot(case, http, mock):
             order_types=None,
             raw=_fixture("alpaca_account.json"),
         )
+    elif case.family == "etoro":
+        assert snap.account_id == etoro_core.account_digest(ETORO_CFG["user_key"])
+        assert snap.account_type == "cash"
+        assert snap.currency == "USD"
+        assert snap.cash_available == Decimal(875)
+        assert snap.open_orders_count == 3
+        assert snap.crypto_enabled is None
+        assert Decimal(snap.raw["credit"]) == 1000 and snap.raw["accountCurrencyId"] == 1
     else:
         assert snap.account_id == "20001234"
         assert snap.account_type is None
@@ -322,7 +381,8 @@ async def test_alpaca_account_cash_capped_by_buying_power(case, http, mock):
 
 @pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
 async def test_get_account_rejects_malformed_response(case, http, mock):
-    path = "/v2/account" if case.family == "alpaca" else "/api/v0/equity/account/summary"
+    path = {"alpaca": "/v2/account", "t212": "/api/v0/equity/account/summary"}.get(
+        case.family) or case.cls.INFO_V1 + "/pnl"
     mock.get(case.url(path)).mock(return_value=httpx.Response(200, json={"currency": "EUR"}))
     with pytest.raises(RuntimeError, match="unexpected account response"):
         await case.adapter(http).get_account()
@@ -337,6 +397,10 @@ async def test_order_requests_carry_order_id_extension(case, http, mock):
     if case.family == "t212":  # metadata reads are not order requests
         meta = next(c for c in mock.calls if c.request.method == "GET")
         assert "smt_order_id" not in meta.request.extensions
+    if case.family == "etoro":  # instrument search and eligibility are not order requests
+        others = [c.request for c in mock.calls if c.request is not route.calls[0].request]
+        assert len(others) == 2
+        assert all("smt_order_id" not in (r.extensions or {}) for r in others)
 
 
 @pytest.mark.parametrize("case", T212_CASES, ids=_ids(T212_CASES))
@@ -428,6 +492,14 @@ async def test_fees_parsed_when_present(case, http, mock):
         )
         bo = await case.adapter(http).get_order("s1")
         assert bo.fees == Decimal("0.02")
+    elif case.family == "etoro":
+        mock.get(case.url(case.cls.INFO_V2 + "/orders:lookup"), params={"orderId": "77"}).mock(
+            return_value=httpx.Response(200, json=_fixture("etoro_order_lookup.json"))
+        )
+        bo = await case.adapter(http).get_order("77")
+        assert (bo.status, bo.filled_qty) == ("filled", Decimal(2))
+        assert bo.avg_fill_price == Decimal("190.25")
+        assert bo.fees == Decimal("0.54")
     else:
         mock.get(_t212_api(case, "/orders/77")).mock(return_value=httpx.Response(404))
         mock.get(_t212_api(case, "/history/orders"), params={"limit": "50"}).mock(

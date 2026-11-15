@@ -66,9 +66,13 @@ async def _dto(session: DbSession, c: Connector) -> dict[str, Any]:
     cls = PROVIDERS.get(c.name)
     config = mask_config(await get_connector_config(session, c.name))
     requires_key = bool(cls and cls.requires_key)
+    # the fields the portal shows even when empty (requires_key adds api_key client-side)
+    config_fields = list(getattr(cls, "config_fields", ())) if cls else []
     # the top-level config keys the web app treats as secrets (never re-derived client-side)
     secret_keys = sorted(
-        {k for k in config if is_secret(k)} | ({"api_key"} if requires_key else set())
+        {k for k in config if is_secret(k)}
+        | ({"api_key"} if requires_key else set())
+        | {k for k in config_fields if is_secret(k)}
     )
     return {
         "name": c.name,
@@ -78,6 +82,7 @@ async def _dto(session: DbSession, c: Connector) -> dict[str, Any]:
         "asset_classes": sorted(str(x) for x in cls.asset_classes) if cls else [],
         "implemented": cls is not None,
         "config_masked": config,
+        "config_fields": config_fields,
         "secret_keys": secret_keys,
         "rate_limit_per_min": c.rate_limit_per_min,
         "health_status": c.health_status,

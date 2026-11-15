@@ -1,0 +1,11 @@
+{
+  "orderId": 77,
+  "referenceId": "8d0a1c6e-1111-5222-8333-944455556666",
+  "status": {"id": 3, "name": "Filled", "errorCode": null, "errorMessage": null},
+  "asset": {"instrumentId": 1001, "settlementType": "real", "leverage": 1, "side": "buy"},
+  "positionExecutions": [
+    {"positionId": 601, "openingData": {"units": 1, "avgPrice": 190.00, "fees": 0.25}},
+    {"positionId": 602, "openingData": {"units": 1, "avgPrice": 190.50, "fees": 0.29}}
+  ],
+  "totalCosts": 0.54
+}

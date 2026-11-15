@@ -28,6 +28,8 @@ class DataProvider:
     capabilities: ClassVar[frozenset[Capability]] = frozenset()
     asset_classes: ClassVar[frozenset[AssetClass]] = frozenset()
     requires_key: ClassVar[bool] = False
+    # config fields the portal shows even when empty (`requires_key` adds `api_key`)
+    config_fields: ClassVar[tuple[str, ...]] = ()
     default_rate_limit_per_min: ClassVar[int] = 60
 
     def __init__(self, config: dict, http: httpx.AsyncClient):

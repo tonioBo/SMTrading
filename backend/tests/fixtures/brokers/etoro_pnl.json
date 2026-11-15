@@ -1,0 +1,18 @@
+{
+  "clientPortfolio": {
+    "credit": 1000.00,
+    "accountCurrencyId": 1,
+    "positions": [
+      {"positionID": 501, "instrumentID": 1001, "isBuy": true, "units": 2, "openRate": 190.5,
+       "amount": 381, "leverage": 1, "mirrorID": 0, "settlementTypeID": 1, "totalFees": 0,
+       "openDateTime": "2026-11-10T14:30:00Z"}
+    ],
+    "orders": [{"orderID": 9001, "instrumentID": 1002, "amount": 25}],
+    "ordersForOpen": [
+      {"orderID": 9002, "instrumentID": 1001, "amount": 100, "mirrorID": 0},
+      {"orderID": 9003, "instrumentID": 1001, "amount": 50, "mirrorID": 7}
+    ],
+    "ordersForClose": [],
+    "mirrors": []
+  }
+}

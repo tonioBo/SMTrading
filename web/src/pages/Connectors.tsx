@@ -11,7 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { errorMessage } from "@/lib/errors";
-import { buildConnectorPatch, isScalar, isSecret } from "@/lib/connectorPatch";
+import { buildConnectorPatch, emptyFields, isScalar, isSecret } from "@/lib/connectorPatch";
 import { formatDateTime } from "@/lib/format";
 import { AdminFieldset } from "@/components/AdminOnly";
 
@@ -22,6 +22,23 @@ const ASSET_CLASS_LABELS: Record<AssetClass, string> = {
   forex: "Forex",
 };
 const HEALTH_LABELS: Record<string, string> = { ok: "Operativo", error: "Errore", unknown: "Non verificato" };
+/** Field labels of a connector (the config key otherwise). */
+const FIELD_LABELS: Record<string, Record<string, string>> = {
+  etoro: { api_key: "Chiave API (x-api-key)", user_key: "Chiave utente (x-user-key)" },
+};
+const ETORO_AUTH_URL = "https://api-portal.etoro.com/core/getting-started/authentication.md";
+
+function EtoroGuide() {
+  return (
+    <p className="text-xs text-muted">
+      Usa una chiave dedicata, ambiente Demo, permesso Read; non riusare le chiavi dei collegamenti eToro. Guida:{" "}
+      <a className="underline" href={ETORO_AUTH_URL} target="_blank" rel="noreferrer">
+        autenticazione eToro
+      </a>
+      .
+    </p>
+  );
+}
 
 function ConnectorCard({ connector }: { connector: Connector }) {
   const patch = usePatchConnector();
@@ -31,8 +48,8 @@ function ConnectorCard({ connector }: { connector: Connector }) {
   const [removed, setRemoved] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
-  const keys = Object.keys(connector.config_masked).filter((k) => isScalar(connector.config_masked[k]));
-  if (connector.requires_key && !keys.includes("api_key") && !("api_key" in connector.config_masked)) keys.push("api_key");
+  // the stored keys plus the fields to show even when empty (config_fields, api_key)
+  const keys = [...Object.keys(connector.config_masked).filter((k) => isScalar(connector.config_masked[k])), ...emptyFields(connector)];
 
   function save() {
     const { patch: body, error: err } = buildConnectorPatch(connector, { rate, fields, removed });
@@ -82,7 +99,7 @@ function ConnectorCard({ connector }: { connector: Connector }) {
             {keys.map((key) => {
               const stored = connector.config_masked[key];
               const secret = isSecret(connector, key);
-              const label = key;
+              const label = FIELD_LABELS[connector.name]?.[key] ?? key;
               return (
                 <div key={key} className="flex items-end gap-2">
                   <div className="flex-1">
@@ -121,6 +138,7 @@ function ConnectorCard({ connector }: { connector: Connector }) {
             <FormField label="Limite richieste al minuto">
               <Input value={rate} inputMode="numeric" onChange={(e) => setRate(e.target.value)} />
             </FormField>
+            {connector.name === "etoro" && <EtoroGuide />}
           </>
         )}
 

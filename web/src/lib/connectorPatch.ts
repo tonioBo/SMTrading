@@ -4,6 +4,12 @@ import type { Connector, ConnectorPatch } from "@/api/types";
 export const isSecret = (connector: Connector, key: string) => connector.secret_keys.includes(key);
 export const isScalar = (v: unknown): v is string | number | null => v === null || typeof v === "string" || typeof v === "number";
 
+/** The fields the card shows although the stored config lacks them: `config_fields`, and `api_key` when the connector requires a key. */
+export function emptyFields(connector: Connector): string[] {
+  const wanted = [...(connector.config_fields ?? []), ...(connector.requires_key ? ["api_key"] : [])];
+  return [...new Set(wanted)].filter((k) => !(k in connector.config_masked));
+}
+
 /** The PATCH body for what the user changed: untouched masked secrets are left out (the server keeps them). */
 export function buildConnectorPatch(
   connector: Connector,
@@ -40,9 +46,11 @@ export function buildConnectorPatch(
       config[key] = stored; // nested values pass through (their masked leaves merge back)
     }
   }
-  if (connector.requires_key && !("api_key" in connector.config_masked) && edits.fields.api_key) {
-    config.api_key = edits.fields.api_key;
-    dirty = true;
+  for (const key of emptyFields(connector)) {
+    if (edits.fields[key]) {
+      config[key] = edits.fields[key];
+      dirty = true;
+    }
   }
   if (dirty) patch.config = config;
   return { patch, error: null };
