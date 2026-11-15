@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import ClassVar
 
+import httpx
 import pytest
 from redis.asyncio import Redis
 from sqlalchemy import select, text
@@ -52,6 +53,7 @@ from smtrading.ledger.models import (
 )
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
+from smtrading.positions.models import Position
 from smtrading.risk import halts
 from smtrading.risk.margin import check_portfolio_margin
 from smtrading.risk.models import Notification, TradingHalt
@@ -1377,3 +1379,95 @@ async def test_broker_sync_releases_the_lock_when_stopped(maker, redis, qs, fres
             )) == 0
     finally:
         await engine.dispose()
+
+
+# --- eToro demo (plan 9 Task 15): the real adapter on the FakeLiveBroker transport ------
+
+ETORO_KEYS = {"api_key": "CANARYAPIKEY0001", "user_key": "CANARYUSERKEY-0002"}
+
+
+async def _etoro_portfolio(maker, cash=100000):
+    async with maker() as s:
+        p = await create_portfolio(
+            s, name=f"P-{uuid.uuid4().hex[:8]}", initial_cash=D(cash), leverage=D(1),
+        )
+        link = await create_link(s, f"L-{uuid.uuid4().hex[:8]}", "etoro_demo",
+                                 dict(ETORO_KEYS))
+        await link_portfolio(s, p.id, link.id)
+        await s.commit()
+        return p.id, link.id
+
+
+@pytest.fixture
+async def etoro():
+    """(fake, http client on its transport): no request ever leaves the process."""
+    from smtrading.brokers.live.fake import FakeLiveBroker
+
+    fake = FakeLiveBroker(price=D(100))
+    async with httpx.AsyncClient(transport=fake.transport()) as http:
+        yield fake, http
+
+
+def _etoro_sync(maker, redis, qs, http, now=OPEN):
+    return BrokerSync(maker, redis, qs, http, clock=Clock(now))
+
+
+def _etoro_fee(fake, fee: Decimal) -> None:
+    """The broker's fee on every execution of the demo orders opened so far."""
+    for record in fake.etoro["demo"].orders.values():
+        for execution in record["positionExecutions"]:
+            execution["openingData"]["fees"] = fee
+
+
+async def test_sync_etoro_demo_buy_fill_with_broker_fee(maker, redis, qs, etoro):
+    """A buy goes out to the eToro demo, is looked up (`get_order`) and filled at the
+    broker's price, with the broker's fee (`BrokerOrder.fees`), not the fee rules'."""
+    fake, http = etoro
+    pid, _ = await _etoro_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, qty=D(2))
+    sync = _etoro_sync(maker, redis, qs, http)
+    await sync.tick()  # sent: the fake fills it at once
+    o = await _order(maker, oid)
+    assert o.broker_replicated and o.broker_order_id
+    _etoro_fee(fake, D("0.42"))
+    for _ in range(2):
+        await sync.tick()
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.filled and o.filled_qty == D(2)
+    assert o.avg_fill_price == D(100)
+    fills = await _fills(maker, oid)
+    assert [(f.qty, f.price, f.source, f.fee_amount, f.fee_currency, f.fee_rule_id)
+            for f in fills] == [(D(2), D(100), "broker", D("0.42"), "USD", None)]
+    paths = [p for m, p in fake.calls if m == "POST" and "/orders" in p]
+    assert paths and all("/demo/" in p for p in paths)
+
+
+async def test_sync_etoro_sell_composite_partial(maker, redis, qs, etoro):
+    """Two buys open two eToro positions (2 + 2); a sell of 3 with no partial close
+    allowed closes the first one whole: `get_order` of the composite id reports the order
+    canceled with 2 filled, recorded as a partial execution."""
+    fake, http = etoro
+    fake.etoro_partial_close = False
+    pid, _ = await _etoro_portfolio(maker)
+    sync = _etoro_sync(maker, redis, qs, http)
+    for _ in range(2):
+        oid = await _place(maker, redis, qs, pid, qty=D(2))
+        for _ in range(3):
+            await sync.tick()
+        assert (await _order(maker, oid)).status == OrderStatus.filled
+    assert len(fake.etoro["demo"].positions) == 2
+
+    sell = await _place(maker, redis, qs, pid, qty=D(3), side=OrderSide.sell)
+    for _ in range(3):
+        await sync.tick()
+    o = await _order(maker, sell)
+    assert o.broker_order_id.startswith("close:")
+    assert o.status == OrderStatus.canceled and o.filled_qty == D(2)
+    assert o.broker_status == "canceled"
+    fills = await _fills(maker, sell)
+    assert [(f.qty, f.price, f.source) for f in fills] == [(D(2), D(100), "broker")]
+    assert [p["units"] for p in fake.etoro["demo"].positions.values()] == [D(2)]
+    async with maker() as s:
+        pos = await s.scalar(select(Position.qty).where(
+            Position.portfolio_id == pid, Position.symbol == "AAPL"))
+    assert pos == D(2)

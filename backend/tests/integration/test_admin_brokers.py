@@ -10,13 +10,17 @@ from typing import ClassVar
 
 import httpx
 import pytest
+import respx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from smtrading.admin.common import redact
 from smtrading.brokers import registry
 from smtrading.brokers.alpaca_paper import AlpacaPaperAdapter
+from smtrading.brokers.etoro_core import ETORO_URL
+from smtrading.brokers.etoro_demo import EtoroDemoAdapter
 from smtrading.brokers.live.alpaca_live import AlpacaLiveAdapter
+from smtrading.brokers.live.service import NOT_DEDICATED_MESSAGE
 from smtrading.brokers.live.t212_live import T212LiveAdapter
 from smtrading.brokers.models import Reconciliation
 from smtrading.brokers.service import get_link_config
@@ -465,3 +469,89 @@ async def test_positions_success_clears_the_link_error(admin, fake_alpaca):
     assert (await admin.client.get(f"/api/broker-links/{link['id']}/positions")).status_code == 200
     listed = (await admin.client.get("/api/broker-links")).json()[0]
     assert listed["status"] == "ok" and listed["last_error"] is None
+
+
+ETORO_KEYS = {"api_key": "CANARYAPIKEY0001", "user_key": "CANARYUSERKEY-0002"}
+ETORO_PNL = ETORO_URL + EtoroDemoAdapter.INFO_V1 + "/pnl"
+
+
+def _pnl(positions=(), orders=()) -> httpx.Response:
+    return httpx.Response(200, json={"clientPortfolio": {
+        "credit": 1000, "accountCurrencyId": 1, "positions": list(positions),
+        "orders": list(orders), "ordersForOpen": [], "ordersForClose": [], "mirrors": []}})
+
+
+async def test_create_etoro_demo_link_keys_masked(admin):
+    c = admin.client
+    link = await _link(c, "eToro", "etoro_demo", dict(ETORO_KEYS))
+    assert link["kind"] == "etoro_demo" and link["base_url"] == ETORO_URL
+    assert link["secret_keys"] == ["api_key", "user_key"]
+    assert link["config_masked"] == {"api_key": "••••0001", "user_key": "••••0002"}
+    listed = await c.get("/api/broker-links")
+    assert all(v not in listed.text for v in ETORO_KEYS.values())
+    async with admin.sm() as s:
+        assert await get_link_config(s, uuid.UUID(link["id"])) == ETORO_KEYS
+
+    r = await c.post("/api/broker-links", json={
+        "name": "X", "kind": "etoro_demo", "config": {**ETORO_KEYS, "api_secret": "s"}})
+    assert r.status_code == 400 and r.json()["details"]["field"] == "config"
+    r = await c.post("/api/broker-links", json={
+        "name": "Y", "kind": "etoro_demo",
+        "config": {**ETORO_KEYS, "base_url": "https://elsewhere.example.com"}})
+    assert r.status_code == 403 and r.json()["code"] == "FORBIDDEN"
+    r = await c.post("/api/broker-links", json={"name": "Z", "kind": "revolut", "config": {}})
+    assert r.status_code == 400 and "etoro_demo" in r.json()["message"]
+
+
+async def test_link_refused_when_demo_account_not_empty(admin):
+    """Linking a portfolio to an eToro demo link reads the account (GET only) first: a
+    position or an open order refuses it with NOT_DEDICATED; an empty account links it.
+    A second portfolio on a link already in use is not refused (the account is in use)."""
+    c = admin.client
+    link = await _link(c, "eToro", "etoro_demo", dict(ETORO_KEYS))
+    pf = await _portfolio(c)
+    position = {"positionID": 501, "instrumentID": 1001, "isBuy": True, "units": 2,
+                "openRate": 190, "amount": 380, "leverage": 1, "mirrorID": 0,
+                "settlementTypeID": 1, "totalFees": 0}
+    with respx.mock(assert_all_mocked=True) as mock:
+        pnl = mock.get(ETORO_PNL)
+        for state in ({"positions": [position]},
+                      {"orders": [{"orderID": 9001, "instrumentID": 1002, "amount": 25}]}):
+            pnl.mock(return_value=_pnl(**state))
+            r = await c.put(f"/api/portfolios/{pf['id']}/broker-link",
+                            json={"broker_link_id": link["id"]})
+            assert r.status_code == 400, r.text
+            body = r.json()
+            assert (body["code"], body["message"]) == ("INVALID_ORDER", NOT_DEDICATED_MESSAGE)
+            assert body["details"]["field"] == "account"
+            assert (await c.get(f"/api/portfolios/{pf['id']}")).json()["broker_link_id"] is None
+
+        pnl.mock(return_value=_pnl())
+        r = await c.put(f"/api/portfolios/{pf['id']}/broker-link",
+                        json={"broker_link_id": link["id"]})
+        assert r.status_code == 200, r.text
+        assert r.json()["broker_link_id"] == link["id"]
+        assert r.json()["mode_label"] == "eToro · demo"
+        assert {call.request.method for call in mock.calls} == {"GET"}
+        assert pnl.call_count == 3
+
+        pnl.mock(return_value=_pnl(positions=[position]))  # the first portfolio's position
+        other = await _portfolio(c)
+        r = await c.put(f"/api/portfolios/{other['id']}/broker-link",
+                        json={"broker_link_id": link["id"]})
+        assert r.status_code == 200, r.text
+        assert pnl.call_count == 3  # the account is in use: not read again
+
+
+async def test_link_demo_account_read_failure_is_redacted(admin):
+    c = admin.client
+    link = await _link(c, "eToro", "etoro_demo", dict(ETORO_KEYS))
+    pf = await _portfolio(c)
+    with respx.mock(assert_all_mocked=True) as mock:
+        mock.get(ETORO_PNL).mock(return_value=httpx.Response(
+            401, json={"errorMessage": f"bad key {ETORO_KEYS['user_key']}"}))
+        r = await c.put(f"/api/portfolios/{pf['id']}/broker-link",
+                        json={"broker_link_id": link["id"]})
+    assert r.status_code == 400 and r.json()["code"] == "PROVIDER_UNAVAILABLE"
+    assert all(v not in r.text for v in ETORO_KEYS.values())
+    assert (await c.get(f"/api/portfolios/{pf['id']}")).json()["broker_link_id"] is None

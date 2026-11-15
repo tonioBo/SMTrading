@@ -137,6 +137,30 @@ describe("Brokers", () => {
     await waitFor(() => expect(JSON.stringify(queryClient.getMutationCache().getAll().map((m) => m.state.variables))).not.toContain("T212KEY"));
   });
 
+  it("etoro demo kind with two keys and guide", async () => {
+    const user = userEvent.setup();
+    renderApp("/broker");
+    await user.click(await screen.findByRole("button", { name: "Nuovo collegamento" }));
+    const form = screen.getByRole("form", { name: "Nuovo collegamento broker" });
+    expect(within(form).queryByRole("note", { name: "Guida eToro" })).not.toBeInTheDocument();
+    await user.type(within(form).getByLabelText("Nome"), "eToro");
+    await user.selectOptions(within(form).getByLabelText("Broker"), "etoro_demo");
+    expect(within(form).getByRole("option", { name: "eToro — prova" })).toBeInTheDocument();
+    const guide = within(form).getByRole("note", { name: "Guida eToro" });
+    expect(guide).toHaveTextContent("Demo");
+    expect(guide).toHaveTextContent("azzera il portafoglio virtuale dall'app eToro");
+    expect(within(form).queryByLabelText("API secret")).not.toBeInTheDocument();
+    await user.type(within(form).getByLabelText("API key"), "ETKEY");
+    await user.type(within(form).getByLabelText("User key"), "ETUSER");
+    await user.click(within(form).getByRole("button", { name: "Crea collegamento" }));
+    await waitFor(() => expect(creates).toHaveLength(1));
+    expect(creates[0].body).toEqual({
+      name: "eToro",
+      kind: "etoro_demo",
+      config: { api_key: "ETKEY", user_key: "ETUSER" },
+    });
+  });
+
   it("tests the connection and shows the failure", async () => {
     const user = userEvent.setup();
     renderApp("/broker");

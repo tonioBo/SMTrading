@@ -33,6 +33,35 @@ import { useIsAdmin } from "@/api/hooks/auth";
 
 const PAPER_NOTE = "Solo conti paper/demo: nessun denaro reale";
 
+/** Before an eToro demo link: the Demo key and an empty virtual account (NOT_DEDICATED). */
+function EtoroDemoGuide() {
+  return (
+    <div role="note" aria-label="Guida eToro" className="space-y-1 rounded-md border p-3 text-sm text-muted-foreground md:col-span-2">
+      <p>
+        Crea la chiave per l'ambiente <strong>Demo</strong> con permesso di scrittura (Write) e incolla qui la API key e
+        la User key di quell'ambiente: ogni chiave vale per un solo ambiente, una chiave del conto reale non funziona con
+        questo collegamento.
+      </p>
+      <p>
+        Il conto virtuale deve essere vuoto: prima di collegare il primo portafoglio chiudi posizioni e ordini, oppure
+        azzera il portafoglio virtuale dall'app eToro. Con posizioni o ordini aperti il collegamento viene rifiutato.
+      </p>
+      <p>
+        Guida alle chiavi:{" "}
+        <a
+          className="underline"
+          href="https://api-portal.etoro.com/core/getting-started/authentication.md"
+          target="_blank"
+          rel="noreferrer"
+        >
+          portale API di eToro
+        </a>
+        .
+      </p>
+    </div>
+  );
+}
+
 function statusVariant(status: string) {
   return status === "ok" ? "default" : status === "error" ? "destructive" : "secondary";
 }
@@ -96,6 +125,7 @@ function NewLinkForm({ onDone }: { onDone: () => void }) {
               ))}
             </select>
           </FormField>
+          {kind === "etoro_demo" && <EtoroDemoGuide />}
           {keys.map((k) => (
             <FormField key={k} label={SECRET_LABELS[k] ?? k}>
               <Input

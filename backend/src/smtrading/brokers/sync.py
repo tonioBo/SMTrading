@@ -176,6 +176,9 @@ FILL_PRICE_WAIT = timedelta(minutes=10)
 LIQUIDATION_WAIT_NOTIFY = timedelta(minutes=10)
 ADVISORY_LOCK_KEY = 0x534D5442524B  # "SMTBRK"
 UNSUPPORTED = "Ordine non supportato dal broker collegato"
+# demo kinds whose fills take the broker's fee, as their real account does (eToro: the
+# demo reports the fees of the real price list); the others take the fee rules
+BROKER_FEE_DEMO_KINDS = frozenset({"etoro_demo"})
 _SYNCED = tuple(s for s in OrderStatus if s in OPEN_STATUSES - {OrderStatus.held})
 _FINAL = {"canceled": OrderStatus.canceled, "rejected": OrderStatus.rejected,
           "expired": OrderStatus.expired}
@@ -279,7 +282,7 @@ class BrokerSync:
         # real money: one LiveClient per link, kept across passes (the gate reads the
         # state again at every request), with the recorder of what passed the gate
         self._live_clients: dict[UUID, tuple[LiveClient, _SentRecorder]] = {}
-        self._live_kind: dict[UUID, bool] = {}
+        self._link_kinds: dict[UUID, str] = {}
         self._account_read_at: dict[UUID, datetime] = {}
         # real orders waiting for account data / quotes since (kept in memory: a restart
         # starts the wait again, never shorter)
@@ -410,16 +413,26 @@ class BrokerSync:
                 make_live_client(self._sm, link_id, inner=recorder), recorder)
         return self._live_clients[link_id]
 
-    async def _is_live(self, session: AsyncSession, link_id: UUID | None) -> bool:
-        """The link moves real money (its kind never changes: cached)."""
+    async def _link_kind(self, session: AsyncSession, link_id: UUID | None) -> str | None:
+        """The link's kind (it never changes: cached), None for no or a missing link."""
         if link_id is None:
-            return False
-        if link_id not in self._live_kind:
+            return None
+        if link_id not in self._link_kinds:
             kind = await session.scalar(select(BrokerLink.kind).where(BrokerLink.id == link_id))
             if kind is None:
-                return False
-            self._live_kind[link_id] = kind in LIVE_KINDS
-        return self._live_kind[link_id]
+                return None
+            self._link_kinds[link_id] = kind
+        return self._link_kinds[link_id]
+
+    async def _is_live(self, session: AsyncSession, link_id: UUID | None) -> bool:
+        """The link moves real money."""
+        return await self._link_kind(session, link_id) in LIVE_KINDS
+
+    async def _broker_fees(self, session: AsyncSession, link_id: UUID | None) -> bool:
+        """A fill takes the broker's fee (`BrokerOrder.fees`): real money and the demo
+        kinds that charge like their real account (BROKER_FEE_DEMO_KINDS)."""
+        kind = await self._link_kind(session, link_id)
+        return kind in LIVE_KINDS or kind in BROKER_FEE_DEMO_KINDS
 
     async def _live_note(self, session: AsyncSession, order: Order, phase: str, *,
                          bo: BrokerOrder | None = None, message: str | None = None,
@@ -472,7 +485,7 @@ class BrokerSync:
             return self._qs
         memo = MemoQuoteSource.wrap(self._qs)
         await prefetch_portfolio(session, memo, row.portfolio_id, symbols=[row.symbol])
-        if bo.fees is not None and await self._is_live(session, row.broker_link_id):
+        if bo.fees is not None and await self._broker_fees(session, row.broker_link_id):
             link = await session.get(BrokerLink, row.broker_link_id)  # the fee's currency
             snap = link.last_account_snapshot if link is not None else None
             if isinstance(snap, dict) and snap.get("currency"):
@@ -889,11 +902,11 @@ class BrokerSync:
 
     async def _fee_override(self, session: AsyncSession, order: Order,
                             bo: BrokerOrder) -> tuple[Decimal | None, str | None]:
-        """The broker's fee for this fill of a real order: its cumulative fee for the
+        """The broker's fee for this fill (`_broker_fees` links): its cumulative fee for the
         order (in the account currency) less what earlier fills took, every earlier fee
         converted to that currency first (through EUR, the prefetched memo), or (None,
         None)."""
-        if bo.fees is None or not await self._is_live(session, order.broker_link_id):
+        if bo.fees is None or not await self._broker_fees(session, order.broker_link_id):
             return None, None
         link = await session.get(BrokerLink, order.broker_link_id)
         snap = link.last_account_snapshot if link is not None else None

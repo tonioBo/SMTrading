@@ -258,8 +258,10 @@ _FILL_SOURCES = frozenset({"sim", "broker"})
 @functools.cache
 def _broker_texts() -> tuple[tuple[str, str], ...]:
     """(paper/demo text, live text): the hosts come from the adapters' BASE_URL (only
-    brokers/live spells a live host), loaded on first use (no import cycle)."""
+    brokers/live spells a live host), loaded on first use (no import cycle). eToro has
+    one host for both: its demo path prefixes (`/demo`) read as the real ones."""
     from smtrading.brokers.alpaca_paper import AlpacaPaperAdapter
+    from smtrading.brokers.etoro_demo import EtoroDemoAdapter
     from smtrading.brokers.live import hostname
     from smtrading.brokers.live.alpaca_live import AlpacaLiveAdapter
     from smtrading.brokers.live.t212_live import T212LiveAdapter
@@ -268,7 +270,25 @@ def _broker_texts() -> tuple[tuple[str, str], ...]:
     pairs = ((AlpacaPaperAdapter, AlpacaLiveAdapter), (T212DemoAdapter, T212LiveAdapter))
     hosts = tuple((hostname(p.BASE_URL), hostname(live.BASE_URL)) for p, live in pairs)
     kinds = tuple((p.kind, live.kind) for p, live in pairs)
-    return tuple((a, b) for a, b in hosts + kinds if a and b)
+    return tuple((a, b) for a, b in hosts + kinds + _etoro_texts(EtoroDemoAdapter)
+                 if a and b and a != b)
+
+
+def _etoro_texts(demo) -> tuple[tuple[str, str], ...]:
+    """The eToro demo kind and path prefixes -> the real adapter's (its ClassVars). Until
+    the real adapter exists (plan 9 Task 16) neutral stand-ins derived from the demo ones
+    take their place, so no demo text reaches agents meanwhile: the kind with `_live`,
+    the prefixes without their `/demo` segment."""
+    attrs = ("EXEC_V1", "EXEC_V2", "INFO_V1", "INFO_V2")
+    demo_prefixes = tuple(getattr(demo, a) for a in attrs)
+    try:
+        from smtrading.brokers.live.etoro_live import EtoroLiveAdapter as real
+    except ImportError:
+        real_kind = demo.kind.removesuffix("_demo") + "_live"
+        real_prefixes = tuple(p.replace("/demo", "") for p in demo_prefixes)
+    else:
+        real_kind, real_prefixes = real.kind, tuple(getattr(real, a) for a in attrs)
+    return ((demo.kind, real_kind), *zip(demo_prefixes, real_prefixes, strict=True))
 
 
 def _scrub(value: Any) -> Any:

@@ -750,7 +750,7 @@ export interface BackupFile {
 
 // --- broker ---------------------------------------------------------------------------
 
-export type BrokerKind = "alpaca_paper" | "t212_demo";
+export type BrokerKind = "alpaca_paper" | "t212_demo" | "etoro_demo";
 
 export interface BrokerLink {
   id: string;

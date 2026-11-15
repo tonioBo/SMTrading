@@ -19,6 +19,7 @@ Allowlist (documented, not scanned):
 
 import dataclasses
 import json
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -76,10 +77,11 @@ async def _setup(server, flavor: str) -> str:
         main = await s.get(Portfolio, server.demo_id)
         main.name = "Alpha"
         pid = main.id
-        if flavor == "paper_linked":
+        if flavor in ("paper_linked", "etoro_linked"):
             from smtrading.brokers.models import BrokerLink
 
-            link = BrokerLink(name="Conto", kind="alpaca_paper", status="ok")
+            kind = "etoro_demo" if flavor == "etoro_linked" else "alpaca_paper"
+            link = BrokerLink(name="Conto", kind=kind, status="ok")
             s.add(link)
             await s.flush()
             other = await create_portfolio(s, name="Beta", initial_cash=D(100000))
@@ -111,7 +113,20 @@ async def _read_resource(url: str, token: str, uri: str):
     return json.loads(result.contents[0].text)
 
 
-@pytest.mark.parametrize("flavor", ["simulated", "paper_linked"])
+async def _broker_error_on(server, order_id: str) -> None:
+    """etoro_linked: the order as a failed send to the eToro demo leaves it, its message
+    naming the demo kind and paths (what `agent_view` must turn into the real ones)."""
+    from smtrading.brokers.etoro_demo import EtoroDemoAdapter as A
+    from smtrading.engine.models import Order, OrderStatus
+
+    async with _Db(server.db_url) as s:
+        await s.execute(update(Order).where(Order.id == uuid.UUID(order_id)).values(
+            status=OrderStatus.rejected, reject_code="PROVIDER_UNAVAILABLE",
+            reject_message=f"{A.kind}: HTTP 503 su {A.EXEC_V2}/orders dopo {A.INFO_V1}/pnl"))
+        await s.commit()
+
+
+@pytest.mark.parametrize("flavor", ["simulated", "paper_linked", "etoro_linked"])
 async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, flavor):
     _market(mcp_server.qs)
     pid = await _setup(mcp_server, flavor)
@@ -126,6 +141,9 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
     _, filled = await call("place_order", {**order, "type": "market"})
     _, resting = await call("place_order", {**order, "type": "limit", "limit_price": "100"})
     await call("place_order", {**order, "type": "market", "qty": "1000"})  # rejected
+    if flavor == "etoro_linked":
+        assert isinstance(filled, dict) and "id" in filled, filled
+        await _broker_error_on(mcp_server, filled["id"])
     await call("preview_order", {**order, "type": "market"})
     if isinstance(resting, dict) and "id" in resting:
         await call("cancel_order", {"order_id": resting["id"]})
@@ -183,6 +201,13 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
         assert "order.filled" in {i["type"] for i in feed["items"]}
         got = next(p for t, p in outputs if t == "get_order" and "fills" in p)
         assert got["fills"], got
+
+    if flavor == "etoro_linked":  # the demo texts were there, and came out as the real ones
+        got = next(p for t, p in outputs if t == "get_order" and "fills" in p)
+        assert got["reject_message"].startswith("etoro_live: HTTP 503 su /api/v2/"), got
+    for tool, payload in outputs:
+        text = json.dumps(payload, ensure_ascii=False)
+        assert "etoro_demo" not in text and "/demo/" not in text, (tool, text[:300])
 
     leaks = []
     for tool, payload in outputs:
