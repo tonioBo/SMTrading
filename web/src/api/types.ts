@@ -254,6 +254,43 @@ export interface Order {
   broker_order_id?: string | null;
 }
 
+export type OrderType = "market" | "limit" | "stop" | "stop_limit" | "trailing_stop";
+/** engine TimeInForce */
+export type TimeInForce = "day" | "gtc";
+
+/** Body of POST /api/portfolios/{id}/orders[/preview]: decimals as strings. */
+export interface OrderInput {
+  symbol: string;
+  side: "buy" | "sell";
+  type: OrderType;
+  tif: TimeInForce;
+  qty?: string;
+  notional?: string;
+  limit_price?: string;
+  stop_price?: string;
+  trail_pct?: string;
+  trail_amount?: string;
+  /** only for placing on a real-money portfolio */
+  totp?: string;
+}
+
+/** POST /api/portfolios/{id}/orders/preview: a refused check is ok=false with its code. */
+export interface OrderPreview {
+  ok: boolean;
+  code: string | null;
+  message: string | null;
+  /** in the instrument's currency */
+  estimated_price: string | null;
+  estimated_notional_eur: string | null;
+  estimated_fee: { rule_id: string; amount: string; currency: string } | null;
+  estimated_fx_fee_eur: string | null;
+  buying_power_after_eur: string | null;
+  /** the portfolio is linked to a real-money broker (dry run included) */
+  real: boolean;
+  /** the portfolio's base currency */
+  currency: string;
+}
+
 export type JournalType =
   | "DEPOSIT"
   | "WITHDRAWAL"

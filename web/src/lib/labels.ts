@@ -11,3 +11,12 @@ export const ASSET_CLASS_LABELS: Record<AssetClass, string> = {
 export function assetClassLabel(value: string): string {
   return ASSET_CLASS_LABELS[value as AssetClass] ?? value;
 }
+
+/** Italian names of the order types (the order form and the real-money confirm). */
+export const ORDER_TYPE_LABELS: Record<string, string> = {
+  market: "A mercato",
+  limit: "Limite",
+  stop: "Stop",
+  stop_limit: "Stop limite",
+  trailing_stop: "Trailing stop",
+};

@@ -25,6 +25,17 @@ export function useInstruments({ query, market, offset }: InstrumentFilter) {
   });
 }
 
+/** Catalogue instruments matching `query` (symbol or name), none fetched for an empty query. */
+export function useInstrumentSearch(query: string, limit = 10) {
+  const q = query.trim();
+  return useQuery({
+    queryKey: [...instrumentsKey, "search", q, limit],
+    queryFn: () => apiFetch<InstrumentsPage>(`/api/instruments?${new URLSearchParams({ query: q, limit: String(limit) }).toString()}`),
+    enabled: q.length > 0,
+    placeholderData: keepPreviousData,
+  });
+}
+
 export function useAutoAdd() {
   return useQuery({ queryKey: autoAddKey, queryFn: () => apiFetch<AutoAddSetting>("/api/instruments/auto-add") });
 }

@@ -7,6 +7,8 @@ import type {
   EquityPeriod,
   JournalType,
   Order,
+  OrderInput,
+  OrderPreview,
   Performance,
   Portfolio,
   PortfolioCreate,
@@ -172,6 +174,24 @@ export function useCancelOrder(portfolioId: string) {
   return useMutation({
     mutationFn: (orderId: string) => apiFetch<Order>(`/api/orders/${orderId}/cancel`, { method: "POST" }),
     onSuccess: invalidate,
+  });
+}
+
+/** The pre-trade check of a manual order: nothing is stored. */
+export function usePreviewOrder(portfolioId: string) {
+  return useMutation({
+    mutationFn: (body: OrderInput) => apiFetch<OrderPreview>(`/api/portfolios/${portfolioId}/orders/preview`, { method: "POST", body }),
+  });
+}
+
+/** Places a manual order; the caller passes the Idempotency-Key of the previewed order. */
+export function usePlaceOrder(portfolioId: string) {
+  const invalidate = useInvalidatePortfolio(portfolioId);
+  return useMutation({
+    mutationFn: ({ body, key }: { body: OrderInput; key: string }) =>
+      apiFetch<Order>(`/api/portfolios/${portfolioId}/orders`, { method: "POST", body, idempotencyKey: key }),
+    // a refused order is stored too (rejected): reload the orders either way
+    onSettled: invalidate,
   });
 }
 

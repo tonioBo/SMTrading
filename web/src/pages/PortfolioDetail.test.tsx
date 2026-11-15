@@ -310,6 +310,7 @@ describe("PortfolioDetail", () => {
     await user.click(screen.getByRole("tab", { name: "Ordini" }));
     await screen.findByText("MSFT");
     expect(screen.queryByRole("button", { name: "Annulla" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Nuovo ordine" })).not.toBeInTheDocument();
 
     await user.click(within(banner).getByRole("button", { name: "Ripristina" }));
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Ripristina" }));
@@ -441,7 +442,7 @@ describe("PortfolioDetail", () => {
     expect(within(dialog).getByText("= 10.000,50 €")).toBeInTheDocument();
   });
 
-  it("filters orders by status and cancels an open order", async () => {
+  it("cancel button calls cancel endpoint (orders filtered by status)", async () => {
     const user = await openTab("Ordini");
     const table = await screen.findByRole("table", { name: "Ordini" });
     await within(table).findByText("MSFT");
@@ -452,6 +453,53 @@ describe("PortfolioDetail", () => {
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Annulla ordine" }));
     await waitFor(() => expect(canceled).toEqual(["o1"]));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("opens the order form from Nuovo ordine and sends a previewed order", async () => {
+    const previews: unknown[] = [];
+    const placed: unknown[] = [];
+    server.use(
+      http.get("*/api/instruments", () =>
+        HttpResponse.json({
+          items: [{ symbol: "MSFT", name: "Microsoft", asset_class: "us_equity", market: "US", currency: "USD", lot_size: "1", tick_size: "0.01", shortable: true, active: true, provider_symbols: {}, source: "catalog", added_by: null }],
+          total: 1,
+          offset: 0,
+          limit: 10,
+        }),
+      ),
+      http.post("*/api/portfolios/p1/orders/preview", async ({ request }) => {
+        previews.push(await request.json());
+        return HttpResponse.json({
+          ok: true,
+          code: null,
+          message: null,
+          estimated_price: "400",
+          estimated_notional_eur: "370",
+          estimated_fee: { rule_id: "f1", amount: "1", currency: "EUR" },
+          estimated_fx_fee_eur: "0",
+          buying_power_after_eur: "16629",
+          real: false,
+          currency: "EUR",
+        });
+      }),
+      http.post("*/api/portfolios/p1/orders", async ({ request }) => {
+        placed.push(await request.json());
+        return HttpResponse.json({ ...openOrder, id: "o9" });
+      }),
+    );
+    const user = await openTab("Ordini");
+    await user.click(await screen.findByRole("button", { name: "Nuovo ordine" }));
+    const dialog = screen.getByRole("dialog", { name: "Nuovo ordine" });
+    await user.type(within(dialog).getByLabelText("Simbolo"), "ms");
+    await user.click(await within(dialog).findByRole("button", { name: /MSFT/ }));
+    await user.type(within(dialog).getByLabelText("Quantità"), "1");
+    expect(within(dialog).getByRole("button", { name: "Invia" })).toBeDisabled();
+    await user.click(within(dialog).getByRole("button", { name: "Anteprima" }));
+    await within(dialog).findByLabelText("Anteprima dell'ordine");
+    await user.click(within(dialog).getByRole("button", { name: "Invia" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(previews).toEqual([{ symbol: "MSFT", side: "buy", type: "market", tif: "gtc", qty: "1" }]);
+    expect(placed).toEqual(previews);
   });
 
   it("shows the broker state of routed orders and marks the simulated ones", async () => {

@@ -1,4 +1,4 @@
-import { ArchiveRestore, ArrowLeft, ShieldAlert } from "lucide-react";
+import { ArchiveRestore, ArrowLeft, Plus, ShieldAlert } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Link, useParams } from "react-router-dom";
@@ -24,6 +24,7 @@ import { Money } from "@/components/Money";
 import { HaltBanner } from "@/components/HaltBanner";
 import { LiveDisarmButton } from "@/components/LiveLinkWizard";
 import { LiveTotpDialog } from "@/components/LiveTotpDialog";
+import { OrderForm } from "@/components/OrderForm";
 import { PageHeader } from "@/components/PageHeader";
 import { Pnl } from "@/components/Pnl";
 import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
@@ -244,18 +245,12 @@ function BrokerCell({ order, linked }: { order: Order; linked: boolean }) {
   return linked ? <Badge variant="outline">Solo simulato</Badge> : <span className="text-muted">—</span>;
 }
 
-function Orders({
-  portfolioId,
-  linked,
-  liveState,
-  readOnly,
-}: {
-  portfolioId: string;
-  linked: boolean;
-  liveState?: LiveState | null;
-  readOnly: boolean;
-}) {
+function Orders({ portfolio, readOnly }: { portfolio: Portfolio; readOnly: boolean }) {
+  const portfolioId = portfolio.id;
+  const linked = Boolean(portfolio.broker_link_id);
+  const liveState = portfolio.live_state;
   const real = Boolean(liveState);
+  const [ordering, setOrdering] = useState(false);
   const [status, setStatus] = useState("open");
   const { data, isLoading, isError, error } = useOrders(portfolioId, status);
   const cancel = useCancelOrder(portfolioId);
@@ -338,10 +333,16 @@ function Orders({
               </option>
             ))}
           </select>
+          {!readOnly && (
+            <Button className="ml-auto" onClick={() => setOrdering(true)}>
+              <Plus className="h-4 w-4" /> Nuovo ordine
+            </Button>
+          )}
         </div>
         {isError && <p className="text-sm text-loss">{errorMessage(error, "Impossibile caricare gli ordini")}</p>}
         <DataTable aria-label="Ordini" columns={columns} rows={data} rowKey={(o) => o.id} loading={isLoading} empty="Nessun ordine" />
       </CardContent>
+      {ordering && <OrderForm portfolio={portfolio} onClose={() => setOrdering(false)} />}
       {target && (
         <ConfirmDialog
           open
@@ -705,7 +706,7 @@ export default function PortfolioDetail() {
             <Positions portfolioId={portfolio.id} liveState={portfolio.live_state} />
           </TabsContent>
           <TabsContent value="orders">
-            <Orders portfolioId={portfolio.id} linked={Boolean(portfolio.broker_link_id)} liveState={portfolio.live_state} readOnly={archived} />
+            <Orders portfolio={portfolio} readOnly={archived} />
           </TabsContent>
           <TabsContent value="movements">
             <Movements portfolioId={portfolio.id} timezone={portfolio.timezone} readOnly={archived} />
