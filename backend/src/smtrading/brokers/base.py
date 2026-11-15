@@ -30,6 +30,12 @@ class RateLimited(RuntimeError):  # retryable, like any RuntimeError
     and the request was not processed."""
 
 
+class OutcomeUnknown(RuntimeError):
+    """A real order's state cannot be read safely (e.g. an eToro lookup without the
+    asset's leverage and settlement): BrokerSync marks its outcome unknown (reduce-only)
+    and keeps reading it; never a rejection."""
+
+
 @dataclass(frozen=True)
 class AccountSnapshot:
     """A read-only view of the broker account (GET requests only)."""

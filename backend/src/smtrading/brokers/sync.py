@@ -101,6 +101,7 @@ from smtrading.brokers.base import (
     BROKER_REJECTED_MESSAGE,
     BrokerAdapter,
     BrokerOrder,
+    OutcomeUnknown,
     RateLimited,
 )
 from smtrading.brokers.live import LIVE_KINDS
@@ -199,18 +200,27 @@ WAIT_TOO_LONG_MESSAGE = ("dati del conto o quotazioni non disponibili da 30 minu
 class _SentRecorder(httpx.AsyncBaseTransport):
     """The inner transport of BrokerSync's live clients: notes the body of every order
     request (non-GET with `smt_order_id`) that passed the gate, i.e. could reach the
-    broker. An order whose request is not noted was never sent."""
+    broker, in order (an eToro sell sends one close per position). An order whose
+    request is not noted was never sent."""
 
     def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
         self._inner = inner
-        self.reached: dict[str, dict] = {}
+        self.reached: dict[str, list[dict]] = {}
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         order_id = request.extensions.get(ORDER_EXTENSION)
         if order_id is not None and request.method.upper() not in READ_METHODS:
             await request.aread()
-            self.reached[str(order_id)] = _payload(request)
+            self.reached.setdefault(str(order_id), []).append(_payload(request))
         return await self._inner.handle_async_request(request)
+
+
+def _sent_payload(sent: list[dict] | None) -> dict | None:
+    """The live audit's request payload: the one request, or {"requests": [...]} for
+    several (an eToro sell closing several positions)."""
+    if not sent:
+        return None
+    return sent[0] if len(sent) == 1 else {"requests": sent}
 
     async def aclose(self) -> None:
         await self._inner.aclose()
@@ -288,6 +298,7 @@ class BrokerSync:
         # real orders waiting for account data / quotes since (kept in memory: a restart
         # starts the wait again, never shorter)
         self._waiting: dict[UUID, datetime] = {}
+        self._unknown_reads: set[UUID] = set()  # orders marked unknown by a read (_get_order)
 
     async def aclose(self) -> None:
         """Closes the per-link LiveClients (run() does it when it ends)."""
@@ -760,7 +771,8 @@ class BrokerSync:
             else:
                 await self._update(order_id, lambda s, o: self._mark_unknown(s, o, reason))
             return
-        payload = self._live_client(link.id)[1].reached.pop(str(order_id), None) if live else None
+        payload = _sent_payload(
+            self._live_client(link.id)[1].reached.pop(str(order_id), None)) if live else None
         await self._update(order_id, lambda s, o: self._placed(s, o, bo, payload), bo)
         if live and order.side == OrderSide.buy and bo.status != "rejected":
             await self._mark_stale(link.id)
@@ -1186,8 +1198,23 @@ class BrokerSync:
         if read is None:
             return
         order, adapter = read
-        bo = await adapter.get_order(order.broker_order_id)
-        await self._update(order_id, lambda s, o: self._apply_same(s, o, bo), bo)
+        bo = await self._get_order(order_id, order, adapter)
+        if bo is not None:
+            await self._update(order_id, lambda s, o: self._apply_same(s, o, bo), bo)
+
+    async def _get_order(self, order_id: UUID, order: Order, adapter: BrokerAdapter
+                         ) -> BrokerOrder | None:
+        """The broker's view of the order; None when it cannot be read safely
+        (OutcomeUnknown: the outcome is marked unknown, reduce-only; read again next pass)."""
+        try:
+            return await adapter.get_order(order.broker_order_id)
+        except OutcomeUnknown as e:
+            log.error("order %s: %s", order_id, e)
+            if order_id not in self._unknown_reads:  # once per process, not every pass
+                reason = str(e)
+                await self._update(order_id, lambda s, o: self._mark_unknown(s, o, reason))
+                self._unknown_reads.add(order_id)
+            return None
 
     async def _cancel(self, order_id: UUID) -> None:
         read = await self._read(order_id)
@@ -1198,8 +1225,9 @@ class BrokerSync:
             await adapter.cancel_order(order.broker_order_id)
         except (RuntimeError, LiveGateClosed) as e:  # read it back anyway: fills (I2)
             log.warning("order %s: broker cancel failed (%s); retried next pass", order_id, e)
-        bo = await adapter.get_order(order.broker_order_id)
-        await self._update(order_id, lambda s, o: self._apply_same(s, o, bo), bo)
+        bo = await self._get_order(order_id, order, adapter)
+        if bo is not None:
+            await self._update(order_id, lambda s, o: self._apply_same(s, o, bo), bo)
 
     async def _apply_same(self, session: AsyncSession, order: Order, bo: BrokerOrder) -> None:
         if order.broker_order_id == bo.broker_order_id:  # not resubmitted meanwhile

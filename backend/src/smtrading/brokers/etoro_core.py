@@ -36,6 +36,7 @@ from smtrading.brokers.base import (
     BrokerAdapter,
     BrokerOrder,
     BrokerStatus,
+    OutcomeUnknown,
     RateLimited,
 )
 from smtrading.brokers.t212_core import _body, _dec, _jsonable, _num
@@ -678,7 +679,10 @@ class _EtoroProtocol(BrokerAdapter):
         message = None
         asset = data.get("asset")
         if not isinstance(asset, dict):
-            # leverage and settlement unknown: fail-closed (only openings are looked up)
+            # leverage and settlement unknown: a real order may be a real position, so its
+            # outcome is unknown (reduce-only); the demo stays fail-closed (rejected)
+            if self.live:
+                raise OutcomeUnknown(f"{self.kind}: order {bid} without asset in the lookup")
             if bid not in _warned_no_asset:
                 _warned_no_asset.add(bid)
                 log.warning("eToro order %s without asset: treated as rejected", bid)

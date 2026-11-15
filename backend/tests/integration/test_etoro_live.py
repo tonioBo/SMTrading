@@ -338,6 +338,7 @@ async def test_eligibility_post_is_a_read_only_on_its_exact_url(sm, fake):
             (f"{ETORO_URL}{A.INFO_V2}/eligibility", {"smt_order_id": str(order.id)}),
             (f"https://other.invalid{A.INFO_V2}/eligibility", None),
             (f"{ETORO_URL}:8443{A.INFO_V2}/eligibility", None),
+            (f"https://u:p@{ETORO_URL.split('//')[1]}{A.INFO_V2}/eligibility", None),
             (f"{ETORO_URL}{A.EXEC_V2}/orders", None),
         ]:
             with pytest.raises(LiveGateClosed) as e:
@@ -405,6 +406,86 @@ async def test_kill_switch_flatten_through_the_adapter(sm, fake):
     assert e.value.code == ErrorCode.KILL_SWITCH_ACTIVE
     assert [p for m, p in fake.writes() if p.endswith("/orders")] == []
     await adapter.http.aclose()
+
+
+HALT, KILL = "halt", "kill"
+
+
+async def _closing_order(sm, mode: str, *, qty="3", filled="0"):
+    """An armed link whose order may close only through the gate's close match: a
+    flatten order under the kill switch, or a plain reducing sell under a halt."""
+    if mode == KILL:
+        link_id, order = await _gate_link(sm, state="armed", kill=True, flatten=True, qty=qty)
+    else:
+        link_id, order = await _gate_link(sm, state="armed", qty=qty, held="5")
+        async with sm() as s:
+            s.add(TradingHalt(scope="portfolio", portfolio_id=order.portfolio_id,
+                              reason="Stop", set_by="admin:admin@example.com"))
+            await s.commit()
+    if filled != "0":
+        async with sm() as s:
+            o = await s.get(Order, order.id)
+            o.filled_qty = D(filled)
+            await s.commit()
+    return link_id, order
+
+
+async def _close(client, order, path, body, units):
+    return await client.post(f"{ETORO_URL}{path}", json=body,
+                             headers={"x-api-key": "k", "x-user-key": "u"},
+                             extensions={"smt_order_id": str(order.id),
+                                         "smt_close": _close_ext(units=units)})
+
+
+@pytest.mark.parametrize("mode", [KILL, HALT])
+@pytest.mark.parametrize(("path", "body"), [
+    (f"{A.EXEC_V2}/orders", {"InstrumentID": AAPL_ID, "UnitsToDeduct": None}),
+    (f"{A.EXEC_V1}/orders", {"InstrumentID": AAPL_ID, "UnitsToDeduct": None}),
+    (f"{CLOSE_PATH}/901/x", {"InstrumentID": AAPL_ID, "UnitsToDeduct": None}),
+    (f"{CLOSE_PATH}/abc", {"InstrumentID": AAPL_ID, "UnitsToDeduct": None}),
+    (f"{CLOSE_PATH}/901", {"InstrumentID": AAPL_ID, "UnitsToDeduct": None, "leverage": 2}),
+    (f"{CLOSE_PATH}/901", {"InstrumentID": AAPL_ID, "UnitsToDeduct": None,
+                           "transaction": "buy"}),
+])
+async def test_close_match_needs_the_close_endpoint_and_its_keys_only(sm, fake, mode, path,
+                                                                      body):
+    """A close body sent to another endpoint, or carrying any other key, is no close:
+    refused under the kill switch and under a halt."""
+    link_id, order = await _closing_order(sm, mode, qty="1" if mode == HALT else "3")
+    async with make_live_client(sm, link_id, inner=fake.transport()) as client:
+        with pytest.raises(LiveGateClosed) as e:
+            await _close(client, order, path, body, "1")
+    assert e.value.code == (ErrorCode.KILL_SWITCH_ACTIVE if mode == KILL
+                            else ErrorCode.TRADING_HALTED)
+    assert fake.seen == []
+
+
+@pytest.mark.parametrize("mode", [KILL, HALT])
+async def test_closes_of_one_order_are_bounded_cumulatively(sm, fake, mode):
+    """Two closes of 2 for an order of 3: the second would close more than the order,
+    refused (the first is reserved before it is sent and never released)."""
+    link_id, order = await _closing_order(sm, mode)
+    body = {"InstrumentID": AAPL_ID, "UnitsToDeduct": None}
+    async with make_live_client(sm, link_id, inner=fake.transport()) as client:
+        await _close(client, order, f"{CLOSE_PATH}/901", body, "2")
+        with pytest.raises(LiveGateClosed) as e:
+            await _close(client, order, f"{CLOSE_PATH}/902", body, "2")
+        assert e.value.code == (ErrorCode.KILL_SWITCH_ACTIVE if mode == KILL
+                                else ErrorCode.TRADING_HALTED)
+        await _close(client, order, f"{CLOSE_PATH}/903", body, "1")  # exactly the rest
+        with pytest.raises(LiveGateClosed):
+            await _close(client, order, f"{CLOSE_PATH}/904", body, "0.001")
+    assert [p for _, p in fake.seen] == [f"{CLOSE_PATH}/901", f"{CLOSE_PATH}/903"]
+
+
+async def test_close_bound_counts_the_filled_quantity(sm, fake):
+    link_id, order = await _closing_order(sm, KILL, qty="3", filled="2")
+    body = {"InstrumentID": AAPL_ID, "UnitsToDeduct": None}
+    async with make_live_client(sm, link_id, inner=fake.transport()) as client:
+        with pytest.raises(LiveGateClosed):
+            await _close(client, order, f"{CLOSE_PATH}/901", body, "2")
+        await _close(client, order, f"{CLOSE_PATH}/901", body, "1")
+    assert len(fake.seen) == 1
 
 
 @pytest.mark.parametrize(("ext", "passes"), [(_close_ext(units="1"), True), (None, False)])
@@ -705,3 +786,83 @@ async def test_etoro_canary_keys_never_leak(sm, redis, fake, caplog):
     text_all = "\n".join(seen) + "\n" + await _all_rows_text(sm) + "\n" + caplog.text
     for canary in CANARIES:
         assert canary not in text_all, canary
+
+
+async def _agent_order(maker, redis, qs, pid, side, qty) -> uuid.UUID:
+    async with maker() as s:
+        order = await place_order(s, qs, PlaceOrderRequest(
+            portfolio_id=pid, symbol="AAPL", side=side, type=OrderType.market,
+            qty=D(qty), agent_id="agent-1"), now=OPEN)
+        await s.commit()
+        await dispatch_post_commit(s, redis)
+        return order.id
+
+
+async def _ticks(maker, sync, oid, n=4) -> Order:
+    for _ in range(n):
+        await sync.tick()
+        async with maker() as s:
+            o = await s.get(Order, oid)
+        if o.status in (OrderStatus.filled, OrderStatus.canceled, OrderStatus.rejected,
+                        OrderStatus.expired):
+            return o
+    return o
+
+
+async def test_live_audit_records_every_close_of_a_sell(maker, redis, fake, monkeypatch):
+    """A sell closing two positions: the `order_sent` live audit has both close requests."""
+    monkeypatch.setattr("smtrading.brokers.sync._default_inner", fake.transport)
+    qs = _qs()
+    pid, _ = await _committed_link(maker)
+    sync = BrokerSync(maker, redis, qs, None, clock=_Clock())
+    try:
+        for _ in range(2):
+            buy = await _agent_order(maker, redis, qs, pid, OrderSide.buy, "1")
+            assert (await _ticks(maker, sync, buy)).status == OrderStatus.filled
+        assert len(fake.etoro["real"].positions) == 2
+        sell = await _agent_order(maker, redis, qs, pid, OrderSide.sell, "2")
+        o = await _ticks(maker, sync, sell)
+    finally:
+        await sync.aclose()
+    assert o.status == OrderStatus.filled, o.reject_message
+    async with maker() as s:
+        sent = await s.scalar(select(LiveAudit).where(
+            LiveAudit.order_id == sell, LiveAudit.action == "order_sent"))
+    requests = sent.details["payload"]["requests"]
+    assert [r["InstrumentID"] for r in requests] == [AAPL_ID, AAPL_ID]
+    assert fake.etoro["real"].positions == {}
+
+
+class _NoAssetFake(Fake):
+    """The real order lookup answers without `asset` (leverage and settlement unknown)."""
+
+    def _handle(self, request):
+        resp = super()._handle(request)
+        if request.method == "GET" and request.url.path == f"{A.INFO_V2}/orders:lookup" \
+                and resp.status_code == 200:
+            data = resp.json()
+            data.pop("asset", None)
+            return httpx.Response(200, json=data)
+        return resp
+
+
+async def test_live_lookup_without_asset_is_unknown_not_rejected(maker, redis, monkeypatch):
+    """Real money: an opening whose lookup lacks `asset` may be a real (even leveraged)
+    position: its outcome is unknown, the portfolio goes reduce-only, the order is kept
+    (never rejected, never sent again)."""
+    fake = _NoAssetFake()
+    monkeypatch.setattr("smtrading.brokers.sync._default_inner", fake.transport)
+    qs = _qs()
+    pid, _ = await _committed_link(maker)
+    sync = BrokerSync(maker, redis, qs, None, clock=_Clock())
+    try:
+        oid = await _agent_order(maker, redis, qs, pid, OrderSide.buy, "1")
+        o = await _ticks(maker, sync, oid, n=2)
+    finally:
+        await sync.aclose()
+    async with maker() as s:
+        p = await s.get(Portfolio, pid)
+    assert o.status != OrderStatus.rejected and o.broker_order_id
+    assert (p.status, p.reduce_only_reason) == (PortfolioStatus.reduce_only,
+                                                "live_order_unknown")
+    assert [m for m, path in fake.writes() if path == f"{A.EXEC_V2}/orders"] == ["POST"]
