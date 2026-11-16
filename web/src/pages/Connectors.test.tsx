@@ -49,6 +49,14 @@ const server = setupServer(
         secret_keys: ["api_key", "user_key"],
       }),
       connector({
+        name: "rssnews",
+        requires_key: false,
+        capabilities: ["news"],
+        asset_classes: ["crypto"],
+        config_masked: {},
+        secret_keys: [],
+      }),
+      connector({
         name: "alpaca",
         enabled: false,
         capabilities: ["bars", "news", "quote", "stream"],
@@ -130,6 +138,15 @@ describe("Connectors", () => {
     await user.click(within(card).getByRole("button", { name: "Salva" }));
     await waitFor(() => expect(patches).toHaveLength(2));
     expect(patches[1].body).toEqual({ config: { api_key: "NEWSECRET", ws_url: "wss://example.test" } });
+  });
+
+  it("keyless crypto news connector shows its description and no key field", async () => {
+    renderApp("/connettori");
+    const card = await screen.findByLabelText("Connettore rssnews");
+    expect(within(card).getByText("Notizie crypto (CoinDesk, Cointelegraph)")).toBeInTheDocument();
+    expect(within(card).queryByLabelText("api_key")).not.toBeInTheDocument();
+    const other = await screen.findByLabelText("Connettore twelvedata");
+    expect(within(other).queryByText(/Notizie crypto/)).not.toBeInTheDocument();
   });
 
   it("sends null to remove a key", async () => {
