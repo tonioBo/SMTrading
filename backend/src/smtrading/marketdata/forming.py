@@ -2,10 +2,10 @@
 from the current quote, to read an indicator as if the market closed now.
 
 Only while the symbol's market is open (CRYPTO always; holidays, weekends and the admin's
-manual closures are closed) and with a quote that is fresh (no older than the asset
-class's stale_quote_s) and from today's session. The bar carries the period's date at
-00:00 UTC like the providers' closed bars (exchange local date; UTC for CRYPTO/FX, Monday
-for 1wk); open = the previous close (the period's first price is not fetched: a cheap
+manual closures are closed; FX not before Monday 00:00 UTC) and with a quote that is
+fresh (no older than the asset class's stale_quote_s) and from today's session. The bar
+carries the period's date at 00:00 UTC like the providers' closed bars (exchange local
+date; UTC for CRYPTO/FX, Monday for 1wk); open = the previous close (the period's first price is not fetched: a cheap
 approximation), high/low = max/min of open and the price, close = the quote's last (mid
 when it has none), volume 0. Intraday timeframes are never extended.
 """
@@ -79,6 +79,10 @@ async def forming_bar(
     except SMTError:
         is_open = False
     if not is_open:
+        return skip(MARKET_CLOSED)
+    if market == "FX" and now.astimezone(UTC).weekday() == 6:
+        # FX opens Sunday 22:00 UTC, but its daily/weekly bars start Monday 00:00 UTC:
+        # no Sunday bar, and the week's Monday would be the previous one
         return skip(MARKET_CLOSED)
     if price is None or ts is None:
         return skip(NO_QUOTE)

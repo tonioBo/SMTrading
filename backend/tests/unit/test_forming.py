@@ -143,3 +143,17 @@ async def test_after_the_close_the_real_bar_is_used_never_a_provisional_one():
     f = await forming_bar(_qs("SPY", "110", after - timedelta(seconds=5)), SPY, Timeframe.d1,
                           today, 120, now=after)
     assert f.bar is None and f.skipped == "market closed"
+
+
+async def test_fx_sunday_evening_adds_nothing_until_monday():
+    eur = Instrument(symbol="EURUSD", name="EUR/USD", asset_class=AssetClass.forex, market="FX",
+                     currency="USD")
+    sunday = datetime(2026, 11, 22, 23, 0, tzinfo=UTC)  # FX open since 22:00 UTC
+    closed = _daily(date(2026, 11, 20))  # Friday's bar
+    for tf in (Timeframe.d1, Timeframe.w1):
+        f = await forming_bar(_qs("EURUSD", "1.1", sunday), eur, tf, closed, 120, now=sunday)
+        assert f.bar is None and f.skipped == "market closed" and f.price == D("1.1")
+    monday = datetime(2026, 11, 23, 0, 5, tzinfo=UTC)
+    f = await forming_bar(_qs("EURUSD", "1.1", monday), eur, Timeframe.d1, closed, 600,
+                          now=monday)
+    assert f.bar is not None and f.bar.ts == datetime(2026, 11, 23, tzinfo=UTC)
