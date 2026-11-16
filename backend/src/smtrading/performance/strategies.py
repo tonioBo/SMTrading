@@ -12,8 +12,9 @@ attributed to a strategy, round trips by FIFO lots, P/L and costs in EUR.
   `system_fees` lines of its FX journal); an exit fill's costs are split over the lots it
   closes (and the flip remainder) by quantity.
 - EUR: realised P/L (instrument currency) and costs are converted at the current FX rate
-  (like the valuation); unrealised P/L = (mark − lot price) × open qty with the
-  portfolio valuation's mark. Without a mark or a rate the value is None («—»), never 0.
+  (like the valuation); unrealised P/L = Σ (mark − lot price) × lot qty over
+  the trade's open lots (not its average entry) with the portfolio valuation's mark.
+  Without a mark or a rate the value is None («—»), never 0.
 - P/L are gross; `costs_eur` apart; `total_pnl_eur` = realised + unrealised − costs. A
   closed trade wins when its realised P/L minus its costs is > 0; `win_rate_pct` is over
   the closed trades (None without any).
@@ -77,6 +78,7 @@ class Trade:
     closed_at: datetime | None = None
     qty: Decimal = Decimal(0)  # opened
     open_qty: Decimal = Decimal(0)
+    open_value: Decimal = Decimal(0)  # Σ lot price × qty of the lots still open
     entry_value: Decimal = Decimal(0)
     exit_qty: Decimal = Decimal(0)
     exit_value: Decimal = Decimal(0)
@@ -96,6 +98,13 @@ class Trade:
         with localcontext() as ctx:
             ctx.prec = _PREC
             return self.exit_value / self.exit_qty
+
+    def unrealized(self, mark: Decimal) -> Decimal:
+        """Gross P/L of the open lots at `mark` (instrument currency)."""
+        sign = 1 if self.direction == "long" else -1
+        with localcontext() as ctx:
+            ctx.prec = _PREC
+            return (mark * self.open_qty - self.open_value) * sign
 
     def add_costs(self, costs: dict[str, Decimal], part: Decimal, whole: Decimal) -> None:
         for ccy, amount in costs.items():
@@ -130,6 +139,7 @@ def fifo_trades(fills: Iterable[FillIn]) -> list[Trade]:
                 t.exit_qty += closed
                 t.exit_value += f.price * closed
                 t.open_qty -= closed
+                t.open_value -= lot.price * closed
                 t.add_costs(f.costs, closed, f.qty)
                 lot.qty -= closed * sign
                 left += closed * sign
@@ -150,6 +160,7 @@ def fifo_trades(fills: Iterable[FillIn]) -> list[Trade]:
                 trades.append(t)
             t.qty += abs(left)
             t.open_qty += abs(left)
+            t.open_value += f.price * abs(left)
             t.entry_value += f.price * abs(left)
             t.closed_at = None
             t.add_costs(f.costs, abs(left), f.qty)
@@ -300,7 +311,6 @@ async def strategy_performance(
     groups: dict[tuple, list[tuple[Trade, TradeView]]] = defaultdict(list)
     for t in trades:
         mark = marks.get(t.portfolio_id, {}).get(t.symbol)
-        sign = 1 if t.direction == "long" else -1
         with localcontext() as ctx:
             ctx.prec = _PREC
             if t.open_qty == 0:
@@ -308,8 +318,7 @@ async def strategy_performance(
             elif mark is None:
                 unreal = None
             else:
-                unreal = await rates.eur((mark - t.entry_price) * t.open_qty * sign,
-                                         t.currency)
+                unreal = await rates.eur(t.unrealized(mark), t.currency)
             real = await rates.eur(t.realized, t.currency)
             costs = _sum([await rates.eur(a, c) for c, a in sorted(t.costs.items())])
             pnl = None if None in (real, unreal, costs) else real + unreal - costs
