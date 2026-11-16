@@ -16,6 +16,9 @@ messages (now), digest entries (quiet hours, non-critical) or `skipped`.
   (old news); critical rows are always sent.
 - Quiet hours are evaluated when the row is planned; the sender evaluates them again
   when it sends (silent or not).
+- Fill notifications (`order.filled`, `live.order.filled`/`partial`) add the fill details
+  of `telegram.details.fill_lines` (strategy, stop and target, risk at stop in EUR);
+  details that cannot be read are left out, never block the message.
 - Each row is planned in its own savepoint: a row that cannot be planned is marked
   `failed` (and logged) instead of blocking the batch forever.
 """
@@ -38,6 +41,7 @@ from smtrading.common.config import get_settings
 from smtrading.engine.models import Order
 from smtrading.portfolios.models import Portfolio
 from smtrading.telegram.config import TelegramConfig, is_ready, load_config
+from smtrading.telegram.details import FILL_TYPES, fill_lines
 from smtrading.telegram.outbox import LIVE_CATEGORY, STALE_AFTER, enqueue
 from smtrading.telegram.quiet import is_quiet
 from smtrading.telegram.render import Names, render_activity
@@ -99,8 +103,9 @@ async def _covered_by_live(session: AsyncSession, rows: list[Activity]) -> set[i
 class TelegramPlanner:
     def __init__(self, sessionmaker: async_sessionmaker, *,
                  clock: Callable[[], datetime] = _utcnow, tz: str | None = None,
-                 interval_s: float = 2.0):
+                 interval_s: float = 2.0, qs=None):
         self._sm = sessionmaker
+        self._qs = qs  # FX of the risk at stop in EUR; None: shown in the instrument currency
         self._clock = clock
         self._tz = tz or get_settings().tz
         self._interval_s = interval_s
@@ -148,10 +153,24 @@ class TelegramPlanner:
                     a.telegram = TelegramState.failed
             return len(rows)
 
+    async def _fill_lines(self, session: AsyncSession, a: Activity) -> list[str]:
+        if a.type not in FILL_TYPES:
+            return []
+        activity_id = a.id  # read before a rollback can expire the row
+        try:
+            async with session.begin_nested():
+                return await fill_lines(session, a, qs=self._qs)
+        except Exception:
+            log.exception("telegram planner: fill details of activity %s not read",
+                          activity_id)
+            return []
+
     async def _plan_live(self, session: AsyncSession, cfg: TelegramConfig, a: Activity,
                          names: Names) -> None:
         msg = await enqueue(session, source="system", category=LIVE_CATEGORY, level=a.level,
-                            text=render_live_activity(a, names, self._tz), cfg=cfg)
+                            text=render_live_activity(a, names, self._tz,
+                                                     await self._fill_lines(session, a)),
+                            cfg=cfg)
         a.telegram = TelegramState.queued
         a.outbox_id = msg.id
 
@@ -163,6 +182,8 @@ class TelegramPlanner:
             a.telegram = TelegramState.digest
         else:
             msg = await enqueue(session, source="system", category="event", level=a.level,
-                                text=render_activity(a, names, self._tz), cfg=cfg)
+                                text=render_activity(a, names, self._tz,
+                                                     await self._fill_lines(session, a)),
+                                cfg=cfg)
             a.telegram = TelegramState.queued
             a.outbox_id = msg.id

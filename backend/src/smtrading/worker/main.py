@@ -144,14 +144,15 @@ async def run() -> None:
                                                        http=http).run())
                     ),
                     tg.create_task(
-                        supervise("telegram planner", lambda: TelegramPlanner(sessionmaker).run())
+                        supervise("telegram planner", lambda: TelegramPlanner(sessionmaker, qs=router).run())
                     ),
                     tg.create_task(
                         supervise("telegram sender",
                                   lambda: OutboxSender(sessionmaker, http).run())
                     ),
                     tg.create_task(supervise("telegram summaries",
-                                             lambda: SummaryScheduler(sessionmaker).run())),
+                                             lambda: SummaryScheduler(sessionmaker, qs=router,
+                                                                      redis=redis).run())),
                     tg.create_task(supervise("paperclip reader",
                                              lambda: PaperclipReader(sessionmaker).run())),
                     tg.create_task(

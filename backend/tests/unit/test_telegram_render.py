@@ -186,3 +186,10 @@ def test_decision_groups():
         (("strategy",), "Strategie"), (("risk_rule",), "Rischio"),
         (("allocation",), "Allocazioni"), (("veto", "approval", "proposal"), "Veti e approvazioni"),
         (("other",), "Altro"))
+
+
+def test_render_fill_details_after_summary():
+    text = render_activity(_act(), Names(), TZ,
+                           ["Strategia: STR-103", "Rischio allo stop: 7,75 €"])
+    assert text == ("🟢 Ordine eseguito\nOrdine eseguito: buy 1 AAPL\n"
+                    "Strategia: STR-103\nRischio allo stop: 7,75 €\n10:05")

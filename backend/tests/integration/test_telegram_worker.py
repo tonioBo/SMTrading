@@ -721,10 +721,10 @@ async def test_bad_row_does_not_poison_the_batch(maker, monkeypatch, caplog):
     await _fill(maker)
     real = planner_mod.render_activity
 
-    def render(a, names, tz):
+    def render(a, names, tz, extra=None):
         if a.level == "critical":
             raise RuntimeError("boom")
-        return real(a, names, tz)
+        return real(a, names, tz, extra)
 
     monkeypatch.setattr(planner_mod, "render_activity", render)
     assert await TelegramPlanner(maker, clock=Clock(DAY), tz=TZ).tick() == 3

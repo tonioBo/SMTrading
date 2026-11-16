@@ -39,6 +39,7 @@ from smtrading.jobs.runs import run_job_once
 from smtrading.performance.service import get_performance
 from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
 from smtrading.telegram.config import is_ready, load_config
+from smtrading.telegram.details import open_positions_lines
 from smtrading.telegram.outbox import enqueue
 from smtrading.telegram.quiet import QUIET_START
 from smtrading.telegram.render import PREFIX, split_message
@@ -289,10 +290,11 @@ def _window(kind: Kind, now: datetime, zone: ZoneInfo) -> datetime:
 
 
 async def build_summary(session: AsyncSession, kind: Kind, now: datetime, *,
-                        tz: str | None = None) -> Parts:
+                        tz: str | None = None, qs=None, redis=None) -> Parts:
     """The daily (from local midnight) or weekly (last 7 days) summary: executed and
     rejected orders, critical and warning events, the weekly goal line (when on, see
-    `weekly_goal`), the decisions of the period grouped by
+    `weekly_goal`), «📌 Posizioni aperte» (with a quote source `qs`: one line per open
+    position, see `details.open_positions_lines`; nothing when none), the decisions of the period grouped by
     kind (one plain line each, see `decision_line`) and the portfolio
     ranking as a `pre` block, split into messages of at most 4096 characters. Archived
     portfolios are left out."""
@@ -331,6 +333,9 @@ async def build_summary(session: AsyncSession, kind: Kind, now: datetime, *,
          f"eventi critici: {len(critical)} · avvisi: {len(warnings)}"),
     ]
     lines += await goal_lines(session, now, zone)
+    if qs is not None:
+        lines += _section("📌 Posizioni aperte",
+                          await open_positions_lines(session, qs, redis=redis))
     lines += _section(f"{PREFIX['executed']}Ordini eseguiti", filled)
     lines += _section(f"{PREFIX['warning']}Ordini rifiutati", rejected)
     lines += _section(f"{PREFIX['critical']}Eventi critici", critical)
@@ -350,8 +355,10 @@ async def build_summary(session: AsyncSession, kind: Kind, now: datetime, *,
 class SummaryScheduler:
     def __init__(self, sessionmaker: async_sessionmaker, *,
                  clock: Callable[[], datetime] = _utcnow, tz: str | None = None,
-                 tick_s: float = TICK_S):
+                 tick_s: float = TICK_S, qs=None, redis=None):
         self._sm = sessionmaker
+        self._qs = qs  # None: the summaries go out without «Posizioni aperte»
+        self._redis = redis
         self._clock = clock
         self._tz = tz or get_settings().tz
         self._tick_s = tick_s
@@ -398,6 +405,7 @@ class SummaryScheduler:
         if job.category == "digest":
             await build_digest(session, now, tz=self._tz)
             return
-        for text, entities in await build_summary(session, job.category, now, tz=self._tz):
+        for text, entities in await build_summary(session, job.category, now, tz=self._tz,
+                                                  qs=self._qs, redis=self._redis):
             await enqueue(session, source="system", category=job.category,
                           level=ActivityLevel.info, text=text, entities=entities)
