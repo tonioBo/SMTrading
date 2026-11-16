@@ -19,8 +19,9 @@ NEWS_LOOKBACK_DAYS = 7
 INVALID_KEY = "finnhub: chiave non valida"
 NOT_IN_PLAN = "finnhub: non incluso nel piano Finnhub"
 # 403 bodies meaning "valid key, but this market/endpoint is outside your plan" (free plan on EU
-# symbols answers {"error": "You don't have access to this resource."})
-_PLAN_403 = re.compile(r"(?i)access|premium|plan|subscription")
+# symbols answers {"error": "You don't have access to this resource."}); whole phrases only:
+# any other 403 («Access denied», «explanation») is a key problem
+_PLAN_403 = re.compile(r"(?i)\bdon['\u2019]?t have access\b|\b(?:premium|subscription|plan)\b")
 MILLION = Decimal(1_000_000)
 
 

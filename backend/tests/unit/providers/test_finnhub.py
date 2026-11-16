@@ -165,6 +165,29 @@ async def test_403_plan_not_accessible_is_unsupported_not_invalid_key(provider):
 
 
 @respx.mock
+@pytest.mark.parametrize("body", [
+    "Access denied: invalid token", "Forbidden. See the explanation in the docs",
+    "Plane crashed", "Subscriptions endpoint unavailable for this key",
+])
+async def test_403_without_a_plan_phrase_is_an_invalid_key(provider, body):
+    """Only whole plan phrases mean «not in your plan» (plan 10 review)."""
+    respx.get(f"{API}/quote").respond(403, text=body)
+    with pytest.raises(RuntimeError, match="chiave non valida"):
+        await provider.get_quotes([("ENI.MI", "ENI.MI")])
+
+
+@respx.mock
+@pytest.mark.parametrize("body", [
+    "You don\u2019t have access to this resource.", "This endpoint needs a premium plan",
+    "Upgrade your subscription", "Not available on your plan.",
+])
+async def test_403_plan_phrases_are_unsupported(provider, body):
+    respx.get(f"{API}/quote").respond(403, text=body)
+    with pytest.raises(ProviderUnsupported, match="non incluso nel piano Finnhub"):
+        await provider.get_quotes([("ENI.MI", "ENI.MI")])
+
+
+@respx.mock
 async def test_403_plan_on_health_check_leaves_health_untouched(provider):
     from smtrading.marketdata.router import MarketDataRouter
 
