@@ -142,14 +142,28 @@ def _first(*values: Any) -> Any:
     return next((v for v in values if v not in (None, "", [], {})), None)
 
 
-async def _approved(session: AsyncSession) -> list[_Approved]:
+@dataclass
+class StrategyState:
+    """A ref's latest CEO status decision and its name (the «Strategie» page)."""
+    ref: str
+    name: str
+    status: str  # approvata | modificata | respinta | sospesa | revocata
+
+
+async def _choose(session: AsyncSession) -> tuple[dict[str, _Chosen], dict[str, StrategyState]]:
+    """(the effective approval of each approved ref, the latest status of every ref)."""
     chosen: dict[str, _Chosen] = {}
+    states: dict[str, StrategyState] = {}
     for d in await session.scalars(
         select(Decision).where(Decision.kind == DecisionKind.strategy).order_by(Decision.id)
     ):
         ref, status = _ref(d), _status(d)
         if ref is None or status not in STATUS_DECISIONS:
             continue
+        prev_state = states.get(ref)
+        keep_name = status == MODIFIED and ref in chosen and prev_state is not None
+        states[ref] = StrategyState(
+            ref, _text(d.subject) or (prev_state.name if keep_name else d.summary), status)
         if status not in APPROVALS:
             chosen.pop(ref, None)
             continue
@@ -165,6 +179,18 @@ async def _approved(session: AsyncSession) -> list[_Approved]:
                 symbols or prev.symbols, d.portfolio_id or prev.portfolio_id,
                 _text(d.subject) or prev.subject, prev.summary,  # the name stays
             )
+    return chosen, states
+
+
+async def strategy_states(session: AsyncSession) -> dict[str, StrategyState]:
+    """Every ref with a status decision: its latest status and name (approvals as
+    `strategy_signals` sees them; a modificata keeps the approval's name unless it has a
+    subject)."""
+    return (await _choose(session))[1]
+
+
+async def _approved(session: AsyncSession) -> list[_Approved]:
+    chosen, _ = await _choose(session)
     if not chosen:
         return []
     quant: dict[str, dict] = {}
