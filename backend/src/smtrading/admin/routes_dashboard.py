@@ -7,6 +7,8 @@ an admin session (router level). Read-only: nothing is committed.
   day P&Ls; `day_pnl_pct` is the summed day P&L over the summed day_open equity of the
   portfolios with a defined day %. An unreadable heartbeat gives `worker_heartbeat_age_s`
   null.
+- `GET /api/weekly-goal`: the weekly goal of the home page (total and per portfolio, from
+  `telegram.weekly_goal`, the same figures as the Telegram goal line).
 - `GET /api/dashboard/equity?period=`: the `periodic` snapshots binned in SQL (UTC) to
   `bucket_s` = max(300s, period span / 500; for `all` the span since the first snapshot);
   per portfolio the last snapshot of each bucket. The total of a bucket sums every
@@ -23,6 +25,7 @@ import math
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends
 from redis.exceptions import RedisError
@@ -31,6 +34,7 @@ from sqlalchemy.dialects.postgresql import distinct_on
 
 from smtrading.admin.auth import DbSession, RedisClient, require_access
 from smtrading.admin.common import Quotes
+from smtrading.common.config import get_settings
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.heartbeat import heartbeat_age_s
 from smtrading.common.money import quantize_money
@@ -49,6 +53,7 @@ from smtrading.portfolios.queries import day_pnl_detail
 from smtrading.positions.models import Position
 from smtrading.risk.models import EquitySnapshot, Notification, SnapshotKind
 from smtrading.risk.settings import is_kill_switch_on
+from smtrading.telegram.weekly_goal import weekly_goal_view
 from smtrading.valuation.service import value_portfolio
 
 log = logging.getLogger("smtrading.admin.dashboard")
@@ -72,6 +77,15 @@ async def dashboard_modes(session: DbSession) -> dict[str, int]:
     for p in portfolios:
         modes[mode_fields(p, links.get(p.broker_link_id))["mode"].value] += 1
     return modes
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+@router.get("/weekly-goal")
+async def weekly_goal(session: DbSession) -> dict[str, Any]:
+    return to_jsonable(await weekly_goal_view(session, _now(), ZoneInfo(get_settings().tz)))
 
 
 @router.get("/dashboard")

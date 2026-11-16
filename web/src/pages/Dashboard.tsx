@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { useDashboard, useLiveFeed, FEED_EVENT_LABELS } from "@/api/hooks/dashboard";
-import type { Dashboard as DashboardData, DashboardConnector, MarginAlert } from "@/api/types";
+import { useDashboard, useLiveFeed, useWeeklyGoal, FEED_EVENT_LABELS } from "@/api/hooks/dashboard";
+import type { Dashboard as DashboardData, DashboardConnector, MarginAlert, WeeklyGoalProgress } from "@/api/types";
 import { EquityChart } from "@/components/EquityChart";
 import { HaltBanner } from "@/components/HaltBanner";
 import { KillSwitchButton } from "@/components/KillSwitchButton";
@@ -12,7 +12,8 @@ import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { formatDateTime, formatMoney, formatQty } from "@/lib/format";
+import { formatDateTime, formatMoney, formatPct, formatQty } from "@/lib/format";
+import { goalProgress } from "@/lib/signals";
 import { MODE_INFO } from "@/lib/portfolioMode";
 import { heartbeatState } from "@/lib/heartbeat";
 import { cn } from "@/lib/utils";
@@ -120,6 +121,83 @@ function LiveIndicator({ live, updatedAt }: { live: boolean; updatedAt: number }
       <span className={live ? "font-medium text-gain" : ""}>{live ? "Live" : "In pausa"}</span>
       <span>{` · ultimo aggiornamento ${time}`}</span>
     </span>
+  );
+}
+
+function GoalBar({ pct, target, label }: { pct: string | null; target: string; label: string }) {
+  const value = goalProgress(pct, target);
+  return (
+    <div
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={value}
+      className="h-2 w-full overflow-hidden rounded-full bg-border"
+    >
+      <div className={cn("h-full rounded-full", value >= 100 ? "bg-gain" : "bg-accent")} style={{ width: `${value}%` }} />
+    </div>
+  );
+}
+
+function GoalPct({ pct }: { pct: string | null }) {
+  if (pct == null) return <span className="num text-muted">—</span>;
+  const text = formatPct(pct);
+  return <span className={cn("num", text.startsWith("-") ? "text-loss" : /[1-9]/.test(text) ? "text-gain" : "text-muted")}>{text}</span>;
+}
+
+function money(v: string | null): string {
+  return v == null ? "—" : formatMoney(v, "EUR");
+}
+
+/** «Obiettivo settimanale»: Monday opening → now, total and per portfolio, against the
+ * target % (same figures as the Telegram goal line); hidden while the goal is off. */
+function WeeklyGoalCard({ goal }: { goal: WeeklyGoalProgress }) {
+  const { total } = goal;
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle>Obiettivo settimanale</CardTitle>
+        <p className="text-xs text-muted">
+          {`obiettivo ${formatPct(goal.target_pct)}`}
+          {total.target_eur != null && ` · ${money(total.target_eur)}`}
+          {` · dal lunedì ${goal.week_start.split("-").reverse().join("/")}`}
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {total.start_eur == null ? (
+          <p className="text-sm text-muted">Dati della settimana non ancora disponibili</p>
+        ) : (
+          <>
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <span className="num text-lg font-semibold">{`${money(total.start_eur)} → ${money(total.current_eur)}`}</span>
+                <GoalPct pct={total.pct} />
+              </div>
+              <GoalBar pct={total.pct} target={goal.target_pct} label="Obiettivo settimanale totale" />
+            </div>
+            {goal.portfolios.length > 0 && (
+              <ul className="space-y-2 text-sm" aria-label="Obiettivo per portafoglio">
+                {goal.portfolios.map((p) => (
+                  <li key={p.portfolio_id} className="space-y-1">
+                    <div className="flex flex-wrap items-baseline justify-between gap-2">
+                      <span>
+                        <Link to={`/portafogli/${p.portfolio_id}`} className="text-accent hover:underline">
+                          {p.name}
+                        </Link>
+                        <span className="num ml-2 text-muted">{`${money(p.start_eur)} → ${money(p.current_eur)}`}</span>
+                      </span>
+                      <GoalPct pct={p.pct} />
+                    </div>
+                    <GoalBar pct={p.pct} target={goal.target_pct} label={`Obiettivo settimanale ${p.name}`} />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -232,6 +310,7 @@ function PortfolioTable({ portfolios }: { portfolios: DashboardData["portfolios"
 
 export default function Dashboard() {
   const { data, isError, live, dataUpdatedAt } = useDashboard();
+  const goal = useWeeklyGoal().data;
 
   return (
     <div>
@@ -268,6 +347,7 @@ export default function Dashboard() {
               })()}
             </Kpi>
           </div>
+          {goal?.on && <WeeklyGoalCard goal={goal} />}
           <Card>
             <CardHeader>
               <CardTitle>Equity aggregata</CardTitle>

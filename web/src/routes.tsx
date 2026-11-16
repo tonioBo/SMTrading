@@ -19,6 +19,7 @@ import PortfolioDetail from "@/pages/PortfolioDetail";
 import Portfolios from "@/pages/Portfolios";
 import Risk from "@/pages/Risk";
 import Settings from "@/pages/Settings";
+import Signals from "@/pages/Signals";
 
 export const routes: RouteObject[] = [
   { path: "/login", element: <Login />, errorElement: <RouteError /> },
@@ -34,6 +35,7 @@ export const routes: RouteObject[] = [
           { index: true, element: <Dashboard /> },
           { path: "portafogli", element: <Portfolios /> },
           { path: "portafogli/:id", element: <PortfolioDetail /> },
+          { path: "segnali", element: <Signals /> },
           { path: "agenti", element: <Agents /> },
           { path: "agenti/:id", element: <AgentDetail /> },
           { path: "costi-agenti", element: <AgentCosts /> },

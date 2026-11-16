@@ -46,6 +46,7 @@ describe("Layout", () => {
     expect(within(nav).getAllByRole("link").map((a) => a.textContent)).toEqual([
       "Dashboard",
       "Portafogli",
+      "Segnali",
       "Agenti",
       "Costi agenti",
       "Istruzioni agenti",
