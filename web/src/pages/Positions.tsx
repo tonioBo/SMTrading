@@ -18,6 +18,11 @@ const PROTECTION_BADGE: Record<Protection, { text: string; className: string; hi
     className: "border-warn text-warn",
     hint: "lo stop o il target è giornaliero: scade alla chiusura di oggi",
   },
+  "copre parziale": {
+    text: "🟠 copre parziale",
+    className: "border-warn text-warn",
+    hint: "gli stop attivi coprono solo una parte della quantità",
+  },
   "senza stop": { text: "🔴 senza stop", className: "border-loss text-loss", hint: "nessuno stop attivo sulla posizione" },
 };
 
@@ -99,6 +104,7 @@ function PortfolioCard({ t, rows }: { t: OpenPositionsPortfolio; rows: OpenPosit
             {riskLine(t)}
           </span>
           {t.unprotected > 0 && <span className="text-loss">{`${t.unprotected} senza stop`}</span>}
+          {t.partial_cover > 0 && <span className="text-warn">{`${t.partial_cover} copre parziale`}</span>}
           {t.risk_unknown > 0 && <span className="text-muted">{`${t.risk_unknown} senza quotazione: rischio non calcolato`}</span>}
           <span className="text-muted">
             Valore <Money value={t.value_eur} /> · P/L <Pnl value={t.pnl_eur} />

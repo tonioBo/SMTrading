@@ -241,3 +241,33 @@ async def test_without_quote_source_no_section(maker, qs):
     async with maker() as s:
         parts = await build_summary(s, "daily", NOW, tz=TZ)
     assert "Posizioni aperte" not in "\n".join(t for t, _ in parts)
+
+
+async def test_summary_stop_follows_the_protection_rules(maker, qs):
+    """«stop» in the summary: a held bracket child or a stop being canceled is no stop; a
+    trailing stop shows its level."""
+    from smtrading.engine.models import OrderStatus
+    from smtrading.telegram.details import open_positions_lines
+
+    pid = await _portfolio(maker)
+    await _market(maker, qs, pid)  # long 1 AAPL
+    async with maker() as s:
+        s.add_all([
+            Order(portfolio_id=pid, symbol="AAPL", side=OrderSide.sell, type=OrderType.stop,
+                  qty=D(1), stop_price=D(195), status=OrderStatus.held),
+            Order(portfolio_id=pid, symbol="AAPL", side=OrderSide.sell, type=OrderType.stop,
+                  qty=D(1), stop_price=D(196), status=OrderStatus.pending,
+                  broker_status="cancel_requested"),
+        ])
+        await s.commit()
+    async with maker() as s:
+        [line] = await open_positions_lines(s, qs)
+    assert "stop nessuno" in line
+    async with maker() as s:
+        s.add(Order(portfolio_id=pid, symbol="AAPL", side=OrderSide.sell,
+                    type=OrderType.trailing_stop, qty=D(1), trail_pct=D(10),
+                    trail_ref_price=D(200), status=OrderStatus.pending))
+        await s.commit()
+    async with maker() as s:
+        [line] = await open_positions_lines(s, qs)
+    assert "stop 180,00 USD" in line

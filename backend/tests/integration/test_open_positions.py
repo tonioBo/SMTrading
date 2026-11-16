@@ -195,3 +195,44 @@ async def test_day_open_equity_sets_the_pct_limit_and_archived_is_hidden(env):
     assert t["risk_at_stop_eur"] == D("8.00") and t["risk_pct_of_limit"] == D("20.00")
     assert all(r["portfolio_id"] != old.id for r in out["positions"])
     assert all(t["portfolio_id"] != old.id for t in out["portfolios"])
+
+
+async def test_protection_matches_the_alarm(env):
+    """Same rules as the protection alarm: partial cover, a stop being canceled protects
+    nothing, one being modified does."""
+    p = await env.portfolio("ZZ Allineato")
+    await env.fill(p, "ZZAMZ", OrderSide.buy, "2", 200)
+    await env.order(p, "ZZAMZ", OrderSide.sell, OrderType.stop, qty="1", stop_price=D(190))
+    await env.fill(p, "ZZMSF", OrderSide.buy, "1", 100)
+    await env.order(p, "ZZMSF", OrderSide.sell, OrderType.stop, stop_price=D(90),
+                    broker_status="cancel_requested")
+    await env.fill(p, "ZZQQ", OrderSide.buy, "1", 50)
+    await env.order(p, "ZZQQ", OrderSide.sell, OrderType.stop, stop_price=D(45),
+                    broker_status="replace_requested")
+    rows = _rows(await open_positions(env.s, env.qs, NOW))
+    assert rows[("ZZ Allineato", "ZZAMZ")]["protection"] == "copre parziale"
+    assert rows[("ZZ Allineato", "ZZMSF")]["protection"] == "senza stop"
+    assert rows[("ZZ Allineato", "ZZQQ")]["protection"] == "ok"
+    out = await open_positions(env.s, env.qs, NOW)
+    [t] = [t for t in out["portfolios"] if t["portfolio_id"] == p.id]
+    assert t["partial_cover"] == 1 and t["unprotected"] == 1
+
+
+async def test_pct_limit_from_the_current_equity_without_a_second_valuation(env, monkeypatch):
+    from smtrading.positions import open_view
+    from smtrading.valuation import service
+    from smtrading.valuation.service import value_portfolio
+
+    p = await env.portfolio("ZZ Equity")  # Default profile: 10% of the equity
+    await env.fill(p, "ZZAMZ", OrderSide.buy, "2", 200)
+    env.qs.set_quote("ZZAMZ", D(210), D(210), D(210))
+    equity = (await value_portfolio(env.s, env.qs, p.id)).equity_raw
+
+    async def no_valuation(*_a, **_k):
+        raise AssertionError("value_portfolio called again")
+
+    monkeypatch.setattr(service, "value_portfolio", no_valuation)
+    monkeypatch.setattr(open_view, "value_portfolio", no_valuation, raising=False)
+    out = await open_positions(env.s, env.qs, NOW)
+    [t] = [t for t in out["portfolios"] if t["portfolio_id"] == p.id]
+    assert t["daily_loss_limit_eur"] == (equity / 10).quantize(D("0.01"))

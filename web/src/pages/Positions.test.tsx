@@ -28,18 +28,18 @@ const body: OpenPositionsResponse = {
     pos({}),
     pos({ portfolio_id: "p2", portfolio_name: "Prudente", symbol: "ENI.MI", name: null, currency: "EUR", stop: null, target: null, distance_to_stop_pct: null, risk_at_stop_eur: null, protection: "senza stop" }),
     pos({ portfolio_id: "p2", portfolio_name: "Prudente", symbol: "BTC-USD", stop: { order_id: "o3", price: "90000", tif: "day" }, protection: "scade oggi" }),
-    pos({ portfolio_id: "p2", portfolio_name: "Prudente", symbol: "ZZZ", last: null, value_eur: null, pnl_eur: null, pnl_pct: null, distance_to_stop_pct: null, risk_at_stop_eur: null }),
+    pos({ portfolio_id: "p2", portfolio_name: "Prudente", symbol: "ZZZ", last: null, value_eur: null, pnl_eur: null, pnl_pct: null, distance_to_stop_pct: null, risk_at_stop_eur: null, protection: "copre parziale" }),
   ],
   portfolios: [
     {
       portfolio_id: "p1", portfolio_name: "Portafoglio Aggressivo", mode: "reale", live_state: "armed", mode_label: "eToro · reale",
       positions: 1, value_eur: "115.32", pnl_eur: "1.93", risk_at_stop_eur: "7.75", risk_unknown: 0, unprotected: 0,
-      expiring_today: 0, daily_loss_limit_eur: "40", risk_pct_of_limit: "19.38",
+      partial_cover: 0, expiring_today: 0, daily_loss_limit_eur: "40", risk_pct_of_limit: "19.38",
     },
     {
       portfolio_id: "p2", portfolio_name: "Prudente", mode: "simulazione", live_state: null, mode_label: "SMTrading (simulato)",
       positions: 3, value_eur: null, pnl_eur: null, risk_at_stop_eur: "0", risk_unknown: 1, unprotected: 1,
-      expiring_today: 1, daily_loss_limit_eur: null, risk_pct_of_limit: null,
+      partial_cover: 1, expiring_today: 1, daily_loss_limit_eur: null, risk_pct_of_limit: null,
     },
   ],
 };
@@ -89,6 +89,8 @@ describe("Positions", () => {
     expect(within(rows[3]).queryByText("0,00 €")).not.toBeInTheDocument();
     expect(screen.getByText("Rischio agli stop: 0,00 € (nessun limite di perdita giornaliera)")).toBeInTheDocument();
     expect(screen.getByText("1 senza stop")).toBeInTheDocument();
+    expect(within(rows[3]).getByText("🟠 copre parziale")).toBeInTheDocument();
+    expect(screen.getByText("1 copre parziale")).toBeInTheDocument();
   });
 
   it("shows the empty state", async () => {
