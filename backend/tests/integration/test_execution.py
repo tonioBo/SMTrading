@@ -470,3 +470,21 @@ async def test_increasing_fill_on_stale_valuation_is_retryable(db_session, seede
         assert await _bal(db_session, p.id, "ENI.MI", AccountKind.position) == D(5)
     finally:
         await r.aclose()
+
+
+async def test_fill_fee_uses_the_portfolio_asset_class_rule(db_session, seeded, qs):
+    """A fill takes the portfolio rule of its asset class over the portfolio's plain rule."""
+    from smtrading.fees.models import FeeRule, FeeScope, FeeSide
+
+    p = await _portfolio(db_session)
+    plain = FeeRule(name="tutte", scope=FeeScope.portfolio, scope_ref=str(p.id),
+                    side=FeeSide.both, currency="EUR", fixed=D(3), pct=D(0), fx_pct=D(0))
+    eu = FeeRule(name="eu", scope=FeeScope.portfolio, scope_ref=str(p.id),
+                 asset_class="eu_equity", side=FeeSide.both, currency="EUR", fixed=D(7),
+                 pct=D(0), fx_pct=D(0))
+    db_session.add_all([plain, eu])
+    await db_session.flush()
+    eni = await _fill(db_session, qs, await _order(db_session, p, "ENI.MI", OrderSide.buy, qty=D(1)))
+    assert (eni.fill.fee_amount, eni.fill.fee_rule_id) == (D("7.00"), eu.id)
+    aapl = await _fill(db_session, qs, await _order(db_session, p, "AAPL", OrderSide.buy, qty=D(1)))
+    assert (aapl.fill.fee_amount, aapl.fill.fee_rule_id) == (D("3.00"), plain.id)

@@ -123,6 +123,7 @@ class FeeRuleCreateIn(BaseModel):
     name: str
     scope: str = "global"
     scope_ref: str | None = None
+    asset_class: str | None = None  # portfolio scope only (null: every class)
     side: str = "both"
     currency: str = "EUR"
     fixed: Num = 0
@@ -141,6 +142,7 @@ class FeeRulePatchIn(BaseModel):
     name: str | None = None
     scope: str | None = None
     scope_ref: str | None = None
+    asset_class: str | None = None
     side: str | None = None
     currency: str | None = None
     fixed: Num | None = None

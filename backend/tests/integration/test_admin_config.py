@@ -324,11 +324,54 @@ async def test_fee_rule_field_validation(admin):
         ({"currency": "euro!"}, "currency"),
         ({"name": " "}, "name"),
         ({"pct": "abc"}, "pct"),
+        ({"asset_class": "crypto"}, "asset_class"),  # a global rule: no class filter
+        ({"scope": "asset_class", "scope_ref": "crypto", "asset_class": "crypto"}, "asset_class"),
     ]
     for extra, field in cases:
         r = await c.post("/api/fee-rules", json={**base, **extra})
         assert r.status_code == 400, extra
         assert r.json()["details"]["field"] == field, (extra, r.json())
+
+
+async def test_portfolio_fee_rule_per_asset_class(admin):
+    """`asset_class` on a portfolio rule: stored, editable, validated, and preferred by the
+    previews (/api/fees/simulate and the order preview) for its class only."""
+    c = admin.client
+    pid = (await _portfolio(c))["id"]
+    plain = (await c.post("/api/fee-rules", json={
+        "name": "Tutte", "scope": "portfolio", "scope_ref": pid, "fixed": "3", "pct": "0",
+    })).json()
+    r = await c.post("/api/fee-rules", json={
+        "name": "Crypto", "scope": "portfolio", "scope_ref": pid, "asset_class": "crypto",
+        "fixed": "0", "pct": "1",
+    })
+    assert r.status_code == 200, r.text
+    crypto = r.json()
+    assert crypto["asset_class"] == "crypto" and plain["asset_class"] is None
+    bad = await c.post("/api/fee-rules", json={
+        "name": "Bond", "scope": "portfolio", "scope_ref": pid, "asset_class": "bonds"})
+    assert bad.status_code == 400 and bad.json()["details"]["field"] == "asset_class"
+
+    sim = {"portfolio_id": pid, "side": "buy", "notional": "1000", "currency": "EUR"}
+    by_class = {ac: (await c.post("/api/fees/simulate", json={**sim, "asset_class": ac})).json()
+                for ac in ("crypto", "us_equity")}
+    assert (by_class["crypto"]["rule_name"], by_class["crypto"]["fee"]) == ("Crypto", "10")
+    assert (by_class["us_equity"]["rule_name"], by_class["us_equity"]["fee"]) == ("Tutte", "3")
+    order = {"portfolio_id": pid, "side": "buy", "qty": "1"}
+    btc = (await c.post("/api/fee-rules/simulate",
+                       json={**order, "symbol": "BTC-USD", "qty": "0.01"})).json()
+    aapl = (await c.post("/api/fee-rules/simulate", json={**order, "symbol": "AAPL"})).json()
+    assert btc.get("rule_id") == crypto["id"], btc
+    assert aapl.get("rule_id") == plain["id"], aapl
+
+    # PATCH: the filter is removed (null) or changed; a non-portfolio scope refuses it
+    r = await c.patch(f"/api/fee-rules/{crypto['id']}", json={"asset_class": "forex"})
+    assert r.status_code == 200 and r.json()["asset_class"] == "forex"
+    r = await c.patch(f"/api/fee-rules/{crypto['id']}", json={"asset_class": None})
+    assert r.status_code == 200 and r.json()["asset_class"] is None
+    r = await c.patch(f"/api/fee-rules/{crypto['id']}", json={
+        "asset_class": "crypto", "scope": "global", "scope_ref": None})
+    assert r.status_code == 400 and r.json()["details"]["field"] == "asset_class"
 
 
 async def test_fee_simulator_uses_portfolio_rule(admin):

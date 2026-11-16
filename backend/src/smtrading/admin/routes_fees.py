@@ -37,7 +37,7 @@ MAX_NAME_LEN = 128
 MAX_PRIORITY = 1_000_000
 _CURRENCY = re.compile(r"^[A-Z0-9]{2,16}$")
 RULE_FIELDS = (
-    "id", "name", "scope", "scope_ref", "side", "currency", "fixed", "pct", "min_fee",
+    "id", "name", "scope", "scope_ref", "asset_class", "side", "currency", "fixed", "pct", "min_fee",
     "max_fee", "tiers", "fx_pct", "priority", "active", "created_at",
 )
 _VALUE_FIELDS = ("fixed", "pct", "min_fee", "max_fee", "fx_pct")
@@ -114,6 +114,11 @@ async def _validated(session: AsyncSession, raw: dict[str, Any], exclude: UUID |
             exists = False
         if not exists:
             raise _invalid("scope_ref", "portafoglio non trovato")
+    asset_class = raw.get("asset_class") or None
+    if asset_class is not None:
+        if scope != FeeScope.portfolio:
+            raise _invalid("asset_class", "la classe si indica solo per una regola di portafoglio")
+        asset_class = parse_enum(AssetClass, asset_class, "asset_class").value
     currency = (raw["currency"] or "").strip().upper()
     if not _CURRENCY.match(currency):
         raise _invalid("currency", "valuta non valida")
@@ -135,7 +140,8 @@ async def _validated(session: AsyncSession, raw: dict[str, Any], exclude: UUID |
     if await session.scalar(taken.limit(1)) is not None:
         raise _duplicate_name(name)
     return {
-        "name": name, "scope": scope, "scope_ref": scope_ref, "side": side,
+        "name": name, "scope": scope, "scope_ref": scope_ref, "asset_class": asset_class,
+        "side": side,
         "currency": currency, **values, "tiers": _tiers(raw["tiers"]), "priority": priority,
         "active": bool(raw["active"]),
     }
