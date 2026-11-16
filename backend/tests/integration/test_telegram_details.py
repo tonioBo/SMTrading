@@ -150,6 +150,32 @@ async def test_fill_with_strategy_bracket_and_risk_in_eur(maker, qs):
     assert lines[4] == "Rischio allo stop: 16,16 €"  # (200,10 - 190) × 2 / 1,25
 
 
+async def test_fill_fx_is_read_with_no_transaction_open(maker, qs):
+    """The FX rate of the risk at stop is fetched before the planner's transaction (a
+    network call never holds row locks); inside it only the cached rate is used."""
+    from sqlalchemy import text as sql
+
+    seen: list[int] = []
+    real = qs.get_fx_rate
+
+    async def spy(base, quote):
+        async with maker() as s:
+            seen.append(await s.scalar(sql(
+                "select count(*) from pg_stat_activity where datname = current_database()"
+                " and state like 'idle in transaction%'")))
+        return await real(base, quote)
+
+    pid = await _portfolio(maker)
+    await _proposal(maker, pid)
+    await _bracket(maker, qs, pid)
+    qs.get_fx_rate = spy  # the planner's calls only
+    planner = TelegramPlanner(maker, clock=Clock(NOW), tz=TZ, qs=qs)
+    await planner.tick()
+    [text] = await _texts(maker)
+    assert "Rischio allo stop: 16,16 €" in text
+    assert seen and set(seen) == {0}
+
+
 async def test_fill_risk_in_instrument_currency_without_fx(maker, qs):
     pid = await _portfolio(maker)
     await _bracket(maker, qs, pid, coid="manual-1")
