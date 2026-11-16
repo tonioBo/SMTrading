@@ -234,3 +234,42 @@ async def test_screen(env):
     assert err and out["code"] == "INVALID_ORDER"
     err, out = await env["call"]("screen", {"min_volume": "lots"})
     assert err and out["code"] == "INVALID_ORDER"
+
+
+async def test_get_indicators_include_forming(env):
+    """include_forming: the bar «se chiudesse ora» from the quote (crypto: always open),
+    with the closed-bar values next to it; nothing provisional on a stale quote or an
+    intraday timeframe; default false = the closed bars only."""
+    now = datetime.now(UTC).replace(microsecond=0)  # NOW is the import time: may be stale
+    day = timedelta(days=1)
+    today = now.replace(hour=0, minute=0, second=0)
+    env["qs"].set_bars(SYM, [Bar(today - day * (30 - i), D(100), D(101), D(99), D(100 + i),
+                                 D(10)) for i in range(30)])  # closes 100..129, to yesterday
+    env["qs"].set_quote(SYM, None, None, D("229"), now)
+    args = {"symbol": SYM, "timeframe": "1d", "lookback": 3,
+            "indicators": [{"name": "sma", "params": {"period": 10}}]}
+
+    err, out = await env["call"]("get_indicators", args)
+    assert not err and "provisional" not in out and "closed" not in out
+    assert D(out["sma"][-1]) == D("124.5")  # closes 120..129
+
+    err, out = await env["call"]("get_indicators", {**args, "include_forming": True})
+    assert not err, out
+    assert out["provisional"] is True
+    assert datetime.fromisoformat(out["as_of"]) == now
+    assert D(out["sma"][-1]) == D("135.4")  # closes 121..129 + 229
+    assert datetime.fromisoformat(out["ts"][-1]) == today
+    assert D(out["closed"]["sma"][-1]) == D("124.5")
+    assert datetime.fromisoformat(out["closed"]["ts"][-1]) == today - day
+
+    env["qs"].set_quote(SYM, None, None, D("229"), now - timedelta(hours=1))  # crypto: 60 s
+    err, out = await env["call"]("get_indicators", {**args, "include_forming": True})
+    assert not err and out["provisional"] is False
+    assert out["provisional_reason"] == "stale quote" and "closed" not in out
+    assert D(out["sma"][-1]) == D("124.5")
+
+    env["qs"].set_quote(SYM, None, None, D("229"), now)
+    err, out = await env["call"](
+        "get_indicators", {**args, "timeframe": "1h", "include_forming": True})
+    assert not err and out["provisional"] is False
+    assert out["provisional_reason"] == "timeframe not supported"

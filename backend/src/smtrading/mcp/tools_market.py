@@ -25,13 +25,19 @@ from smtrading.instruments.market_hours import (
 )
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.instruments.service import canonical_symbol
-from smtrading.marketdata.indicators_service import IndicatorSpec, compute_indicators
+from smtrading.marketdata.forming import forming_bar
+from smtrading.marketdata.indicators_service import (
+    IndicatorSpec,
+    indicator_bars,
+    indicators_from_bars,
+)
 from smtrading.marketdata.types import ScreenFilter, Timeframe
 from smtrading.mcp.dto import instrument_dto, parse_decimal, parse_enum, parse_int, parse_ts
 from smtrading.mcp.instruments import ensure_instrument
 from smtrading.mcp.runtime import ToolCtx, run_tool
 from smtrading.portfolios.models import live_portfolio_ids
 from smtrading.positions.models import Position
+from smtrading.risk.settings import get_stale_threshold
 
 MAX_QUOTE_SYMBOLS = 50
 MAX_BARS = 1000
@@ -259,14 +265,31 @@ def _specs(indicators: Any) -> list[IndicatorSpec]:
 
 
 async def _get_indicators(
-    ctx: ToolCtx, symbol: Any, timeframe: Any, indicators: Any, lookback: Any
+    ctx: ToolCtx, symbol: Any, timeframe: Any, indicators: Any, lookback: Any,
+    include_forming: Any = False,
 ) -> dict:
     sym = _str(symbol, "symbol")
     tf = _timeframe(timeframe)
     specs = _specs(indicators)
     n = _int(lookback, "lookback", 100, MAX_LOOKBACK)
+    if not isinstance(include_forming, bool):
+        raise _invalid("include_forming", "include_forming must be a boolean")
     await ensure_instrument(ctx, sym)
-    return await compute_indicators(_router(ctx), sym, tf, specs, n)
+    router = _router(ctx)
+    bars = await indicator_bars(router, sym, tf, specs, n)
+    out = indicators_from_bars(bars, sym, tf, specs, n)
+    if not include_forming:
+        return out
+    instr = await ctx.session.get(Instrument, canonical_symbol(sym))
+    if instr is None:
+        raise SMTError(ErrorCode.SYMBOL_NOT_FOUND, f"unknown symbol {sym}", {"symbol": sym})
+    stale_s = await get_stale_threshold(ctx.session, instr.asset_class)
+    forming = await forming_bar(router, instr, tf, bars, stale_s)
+    if forming.bar is None:
+        return {**out, "provisional": False, "provisional_reason": forming.skipped}
+    closed = {k: out[k] for k in ("ts", *(s["key"] for s in out["specs"]))}
+    now = indicators_from_bars([*bars, forming.bar], sym, tf, specs, n)
+    return {**now, "provisional": True, "as_of": forming.quote_ts, "closed": closed}
 
 
 async def _held_symbols(ctx: ToolCtx) -> list[str]:
@@ -385,19 +408,29 @@ def register(mcp: MCPServer) -> None:
 
     @mcp.tool(structured_output=False)
     async def get_indicators(
-        symbol: str, timeframe: str, indicators: list[dict], lookback: int | str | None = 100
+        symbol: str, timeframe: str, indicators: list[dict], lookback: int | str | None = 100,
+        include_forming: bool = False,
     ) -> CallToolResult:
         """Technical indicators over the last `lookback` bars. indicators is a list of
         {name, params}: sma/ema/rsi/atr/bollinger take {period} (bollinger also k), macd
         {fast, slow, signal}, vwap {}; periods are integers 1-1000. Result: {symbol,
         timeframe, ts, specs: [{key, name, params}], <key>: values}; the key is the name,
         or name_<param values> (e.g. sma_50) when a name is asked more than once. Values
-        are returned as strings for exact precision."""
+        are returned as strings for exact precision.
+        include_forming (1d and 1wk only; default false = closed bars only): "as if the
+        bar closed now". While the symbol's market is open (crypto always) and its quote
+        is fresh, today's (1wk: this week's) bar is added from the current quote (open =
+        previous close, close = last price or mid) before computing: the result then has
+        provisional: true, as_of (the quote's time: EU quotes may be some minutes late)
+        and closed: {ts, <key>: values} with the values on the closed bars only. Otherwise
+        provisional: false and provisional_reason (market closed, stale quote, no quote,
+        bar already closed, timeframe not supported) with the closed-bar values."""
         params = {"symbol": symbol, "timeframe": timeframe, "indicators": indicators,
-                  "lookback": lookback}
+                  "lookback": lookback, "include_forming": include_forming}
         return await run_tool(
             "get_indicators", params,
-            lambda ctx: _get_indicators(ctx, symbol, timeframe, indicators, lookback))
+            lambda ctx: _get_indicators(
+                ctx, symbol, timeframe, indicators, lookback, include_forming))
 
     @mcp.tool(structured_output=False)
     async def get_fx_rate(base: str, quote: str) -> CallToolResult:

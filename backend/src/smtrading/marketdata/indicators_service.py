@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.marketdata import indicators as ind
-from smtrading.marketdata.types import Timeframe
+from smtrading.marketdata.types import Bar, Timeframe
 
 IndicatorName = Literal["sma", "ema", "rsi", "macd", "bollinger", "atr", "vwap"]
 
@@ -87,36 +87,53 @@ def _tail(result: Any, lookback: int) -> Any:
     return result[-lookback:]
 
 
-async def compute_indicators(
-    router: Any,
-    symbol: str,
-    timeframe: Timeframe,
-    specs: list[IndicatorSpec],
-    lookback: int = 200,
-) -> dict:
-    """{symbol, timeframe, ts, specs: [{key, name, params}], <key>: values...}: one result
-    per spec under its name, or under `spec_key` when a name is requested more than once.
-    Huge or invalid parameters are INVALID_ORDER."""
+def _check_specs(specs: list[IndicatorSpec], lookback: int) -> None:
     if lookback < 1:
         raise _invalid("lookback must be positive", lookback=lookback)
     for spec in specs:
         if spec.name not in _DEFAULT_PERIOD and spec.name not in ("macd", "vwap"):
             raise _invalid("unknown indicator", name=str(spec.name))
+
+
+async def fetch_bars(
+    router: Any, symbol: str, timeframe: Timeframe, n_bars: int, now: datetime | None = None
+) -> list[Bar]:
+    """The last `n_bars` closed bars (fewer when the history is shorter), oldest first."""
     try:
         tf = Timeframe(timeframe)
-        max_period = max((_max_period(s) for s in specs), default=0)
-        n_bars = lookback + max_period * 3
-        end = datetime.now(UTC)
+        end = now or datetime.now(UTC)
         start = end - _BAR_SPAN[tf] * n_bars
     except (ValueError, TypeError, OverflowError) as exc:
         raise _invalid("bad timeframe or parameters") from exc
     bars = await router.get_bars(symbol, tf, start, end)
-    bars = list(bars)[-n_bars:]
+    return list(bars)[-n_bars:]
 
+
+async def indicator_bars(
+    router: Any, symbol: str, timeframe: Timeframe, specs: list[IndicatorSpec],
+    lookback: int = 200,
+) -> list[Bar]:
+    """The closed bars `compute_indicators` needs: `lookback` plus a warm-up of three
+    times the longest period."""
+    _check_specs(specs, lookback)
+    try:
+        max_period = max((_max_period(s) for s in specs), default=0)
+        n_bars = lookback + max_period * 3
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise _invalid("bad timeframe or parameters") from exc
+    return await fetch_bars(router, symbol, timeframe, n_bars)
+
+
+def indicators_from_bars(
+    bars: list[Bar], symbol: str, timeframe: Timeframe, specs: list[IndicatorSpec],
+    lookback: int = 200,
+) -> dict:
+    """`compute_indicators` over the given bars (oldest first)."""
+    _check_specs(specs, lookback)
     keys = _result_keys(specs)
     out: dict = {
         "symbol": symbol,
-        "timeframe": tf.value,
+        "timeframe": Timeframe(timeframe).value,
         "ts": [b.ts for b in bars][-lookback:],
         "specs": [
             {"key": key, "name": spec.name, "params": spec.params}
@@ -129,3 +146,17 @@ async def compute_indicators(
         except (TypeError, ValueError, InvalidOperation, OverflowError) as exc:
             raise _invalid("bad indicator parameters", name=spec.name, params=spec.params) from exc
     return out
+
+
+async def compute_indicators(
+    router: Any,
+    symbol: str,
+    timeframe: Timeframe,
+    specs: list[IndicatorSpec],
+    lookback: int = 200,
+) -> dict:
+    """{symbol, timeframe, ts, specs: [{key, name, params}], <key>: values...}: one result
+    per spec under its name, or under `spec_key` when a name is requested more than once.
+    Huge or invalid parameters are INVALID_ORDER."""
+    bars = await indicator_bars(router, symbol, timeframe, specs, lookback)
+    return indicators_from_bars(bars, symbol, timeframe, specs, lookback)

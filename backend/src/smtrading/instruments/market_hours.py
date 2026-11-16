@@ -138,6 +138,16 @@ def manual_closure(market: str, day: date) -> Closure | None:
     return _closures.get((market, day))
 
 
+def local_date(market: str, at: datetime) -> date:
+    """The exchange's local date at `at` (the date its daily bars carry); UTC for CRYPTO,
+    FX and any market without a calendar."""
+    if at.tzinfo is None:
+        raise ValueError("at must be timezone-aware")
+    if market in CALENDARS:
+        return at.astimezone(_calendar(CALENDARS[market]).tz).date()
+    return at.astimezone(UTC).date()
+
+
 def session_on(market: str, day: date) -> tuple[datetime, datetime, bool] | None:
     """The session of an exchange on its local date `day`, manual closures applied:
     (open, close, early) in UTC, `early` when it closes before its regular time (a
