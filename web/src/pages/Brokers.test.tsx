@@ -49,6 +49,7 @@ const server = setupServer(
   ...commonHandlers,
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
+  http.get("*/api/fee-rules", () => HttpResponse.json([])),
   http.get("*/api/broker-links", () => HttpResponse.json([link()])),
   http.get("*/api/live-links", () => HttpResponse.json([])),
   http.get("*/api/portfolios", () =>
