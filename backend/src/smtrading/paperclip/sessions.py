@@ -162,6 +162,12 @@ class SessionRefresher:
                              waiting=list(state["waiting"]),
                              last_error=f"sessioni agenti non aggiornate: {e.message}")
             return
+        except Exception:
+            # keep the resets already made: they must not be made again on the next pass
+            await self._save(state, done=done, attempts=attempts, given_up=given_up,
+                             waiting=list(state["waiting"]),
+                             last_error="sessioni agenti non aggiornate: errore interno")
+            raise
         last_error = ("sessione non azzerata per " + "; ".join(errors)) if errors else None
         if errors:
             log.warning("paperclip session reset failed for %s agent(s)", len(errors))

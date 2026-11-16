@@ -366,3 +366,30 @@ async def test_reader_errors_do_not_stop_the_refresh(sm):
     assert _reset_ids(route) == ["a1"]
     async with sm() as s:
         assert (await load_state(s))["consecutive_errors"] == 1
+
+
+async def test_an_unexpected_error_keeps_the_resets_already_made(sm):
+    await _seed(sm)
+    await _configure(sm)
+    agents = [AGENTS[0], {**AGENTS[2], "status": "idle"}]
+
+    def reset(request, aid):
+        if aid == "a3":
+            raise RuntimeError("boom")
+        return httpx.Response(200, json={"sessionId": None})
+
+    with _respx() as router:
+        _mock(router, agents=agents)
+        route = router.post(url__regex=RESET).mock(side_effect=reset)
+        await _reader(sm, "fp-new").tick()  # logged, never raised
+    assert _reset_ids(route) == ["a1", "a3"]
+    st = await _sessions(sm)
+    assert st["done"] == ["a1"] and st["pending"] == "fp-new"
+    assert st["last_error"] == "sessioni agenti non aggiornate: errore interno"
+    with _respx() as router:
+        route = _mock(router, agents=agents)
+        await _reader(sm, "fp-new").tick()
+    assert _reset_ids(route) == ["a3"]  # never a1 again
+    assert (await _sessions(sm))["fingerprint"] == "fp-new"
+    (alert,) = await _alerts(sm)
+    assert alert.text.endswith("per 2 agenti")
