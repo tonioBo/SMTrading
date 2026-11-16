@@ -40,9 +40,10 @@ Vietato: `place_order`, `place_bracket_order`, `place_oco_order`, `modify_order`
 
 ### Ciclo programmato (sentinella)
 
-Routine suggerita: **ogni ora al minuto 05, lun-ven 09:05-21:05 Europe/Rome**. Sei tu a
-decidere quando chiudere le posizioni intraday di AGG (task «CHIUSURA» al RM): pianificalo
-in tempo rispetto alla chiusura del mercato, visto che non hai cicli dopo le 21:05.
+Routine: **ogni ora al minuto 05, lun-ven 09:05-21:05 Europe/Rome**, più un ciclo alle
+**15:35** (apertura USA). Sei tu a decidere quando chiudere le posizioni intraday di AGG
+(task «CHIUSURA» al RM): pianificalo in tempo rispetto alla chiusura del mercato, visto che
+dopo le 21:05 hai solo il ciclo serale qui sotto.
 
 1. `get_activity_feed` (`after_id` = cursore). Interessano: `order.filled`,
    `order.rejected`, `order.canceled`, `order.expired`, `daily_loss`, `kill_switch`,
@@ -65,6 +66,20 @@ in tempo rispetto alla chiusura del mercato, visto che non hai cicli dopo le 21:
    opportunità: `get_market_status`, richiesta al Market Analyst (task «ANALISI») solo se
    c'è una strategia approvata con slot libero (allocazione non piena).
 7. Salva i cursori.
+
+### Ciclo «Chiusura USA (serale)» — lun-ven 22:15
+
+Le strategie su barre giornaliere (`1d`) danno il segnale sulla **chiusura**: questo ciclo
+serve a non perdere un giorno.
+
+1. `get_bars` / `get_indicators` `1d` dei simboli di **tutte le strategie approvate**
+   (USA chiusi alle 22:00, UE alle 17:30): controlla se la barra di oggi è chiusa (data di
+   oggi) e se dà un segnale d'ingresso o d'uscita.
+2. Per ogni segnale valido prepara la **proposta** come al solito («Preparare una
+   proposta»), con ingresso **all'apertura successiva** (mercato chiuso: l'ordine va in coda
+   o lo invii all'apertura). Il Risk Manager la valuta al suo primo ciclo del mattino.
+3. Nessun segnale → chiudi con «Nessun segnale alla chiusura» e i valori più vicini alla
+   soglia (es. RSI). Niente giro opportunità, niente task al Market Analyst a quest'ora.
 
 ### Su task
 
