@@ -12,7 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
-import { expiryText, isolationInactive } from "@/lib/paperclip";
+import { expiryText, hostChanged, isolationInactive } from "@/lib/paperclip";
 
 /**
  * «Ultima lettura: …», the last reader error (also a successful read without isolation rules),
@@ -185,7 +185,13 @@ function EditForm({ config, status, statusError }: { config: PaperclipConfig; st
       <FormField
         label="Chiave board"
         error={fieldError("board_key")}
-        hint={config.board_key_masked ? "Lascia vuoto per tenere la chiave salvata; non viene più mostrata dopo il salvataggio" : "Una chiave board pcp_board_… di sola lettura"}
+        hint={
+          config.board_key_masked
+            ? hostChanged(config.base_url, baseUrl)
+              ? "Indirizzo cambiato: reinserisci la chiave board (quella salvata non viene inviata al nuovo indirizzo)"
+              : "Lascia vuoto per tenere la chiave salvata; non viene più mostrata dopo il salvataggio"
+            : "Una chiave board pcp_board_… di sola lettura"
+        }
       >
         <Input
           type="password"

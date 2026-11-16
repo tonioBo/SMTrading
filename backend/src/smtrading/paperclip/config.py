@@ -11,12 +11,13 @@ import copy
 import logging
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from smtrading.admin.common import MASK, mask_value
+from smtrading.admin.common import MASK, _invalid, mask_value
 from smtrading.agents.service import write_audit
 from smtrading.common.config import get_settings
 from smtrading.common.crypto import decrypt_json, encrypt_json
@@ -98,6 +99,22 @@ def _encrypt_key(key: str) -> str:
     return base64.b64encode(blob).decode("ascii")
 
 
+NEW_HOST_NEEDS_KEY = "indirizzo cambiato: reinserisci la chiave board per il nuovo indirizzo"
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin(url: str | None) -> tuple[str, int | None] | None:
+    """(host, port) the board key is sent to; None without a usable URL."""
+    if not url:
+        return None
+    try:
+        parts = urlsplit(url)
+        port = parts.port or _DEFAULT_PORTS.get(parts.scheme)
+    except ValueError:
+        return None
+    return (parts.hostname, port) if parts.hostname else None
+
+
 async def load_config(session: AsyncSession) -> PaperclipConfig:
     raw = await _raw(session, SETTINGS_KEY)
     if not isinstance(raw, dict):
@@ -124,13 +141,20 @@ async def load_config(session: AsyncSession) -> PaperclipConfig:
 async def save_config(session: AsyncSession, *, base_url: str | None, company_id: str | None,
                       board_key: str | None, enabled: bool, agent_map: dict[str, str], by: str
                       ) -> PaperclipConfig:
-    """`board_key=None` keeps the stored key. Writes the admin audit (never the key).
+    """`board_key=None` keeps the stored key, but only for the same host: a `base_url`
+    on another host or port with a stored key and no new one is refused (field
+    `board_key`), so the key never reaches a host it was not entered for. Writes the
+    admin audit (never the key).
 
     In the same transaction: a change of company or URL of an existing configuration
     resets the reader state (the next snapshot is the new baseline, notified once); a new
     key forgets the old key's expiry."""
     raw = await _raw(session, SETTINGS_KEY)
     raw = raw if isinstance(raw, dict) else {}
+    new_origin = _origin(base_url)
+    if (board_key is None and raw.get("board_key_enc") and new_origin is not None
+            and new_origin != _origin(_str_or_none(raw.get("base_url")))):
+        raise _invalid("board_key", NEW_HOST_NEEDS_KEY)
     baseline_reset = any(
         _str_or_none(raw.get(k)) is not None and _str_or_none(raw.get(k)) != new
         for k, new in (("company_id", company_id), ("base_url", base_url)))

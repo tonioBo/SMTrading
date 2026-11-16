@@ -159,6 +159,11 @@ def test_agent_view_drops_fill_provenance_and_paper_broker_names():
     assert dto.agent_view({"items": [item]})["items"][0]["data"] == {"order_id": "o1"}
     # an order's source (who placed it) is not a fingerprint and stays
     assert dto.agent_view({"source": "agent"}) == {"source": "agent"}
+    # ...but a manual admin order reads like an agent's (activity data too, plan 10 M2)
+    assert dto.agent_view({"source": "admin"}) == {"source": "agent"}
+    live = {"type": "live.order.placed", "data": {"order_id": "o1", "source": "admin"}}
+    assert dto.agent_view(live)["data"] == {"order_id": "o1", "source": "agent"}
+    assert dto.agent_view({"source": "system"}) == {"source": "system"}
     from smtrading.brokers.alpaca_paper import PAPER_URL
     from smtrading.brokers.live.t212_live import T212LiveAdapter
     from smtrading.brokers.t212_demo import DEMO_URL
@@ -190,3 +195,27 @@ async def test_execute_scrubs_error_text_only_under_hide_mode(hide):
     with pytest.raises(SMTError) as info:
         await runtime._execute(_runtime(_Session()), uuid.uuid4(), fn, False)
     assert info.value.message == f"down: {DEMO_URL}"
+
+
+# --- broker texts: word-level fingerprints (plan 10, M3) ------------------------------
+
+
+@pytest.mark.parametrize("text", [
+    "Il testo dell'ordine non è valido", "Ordini simultanei non ammessi",
+    "Esecuzione simultanea", "Non è possibile demolire la posizione",
+    "Serve un attestato", "Testi non validi", "Contestato dal broker",
+])
+def test_broker_text_with_innocent_italian_words_is_kept(text):
+    assert dto.agent_view({"reject_message": text}) == {"reject_message": text}
+    assert dto.agent_view({"message": text}) == {"message": text}
+
+
+@pytest.mark.parametrize("text", [
+    "Demo account cannot trade", "test order refused", "simulazione non permessa",
+    "Paper trading only", "dry run: not sent", "Sandbox limit", "DemoAccount closed",
+    "Testnet only", "ordine simulato", "Simulated fill", "virtual portfolio", "PROVA",
+    "testing environment", "demo-account", "TEST", "mock broker", "fake fill",
+])
+def test_broker_text_with_a_fingerprint_reads_as_a_plain_refusal(text):
+    assert dto.agent_view({"reject_message": text}) == {
+        "reject_message": dto.AGENT_REJECT_MESSAGE}

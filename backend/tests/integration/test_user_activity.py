@@ -450,14 +450,19 @@ async def test_a_pending_row_without_its_final_row_is_shown_pending(env, monkeyp
     assert [x["outcome"] for x in listed] == ["pending"]
 
 
-async def test_anonymous_failures_are_rate_limited_and_coalesced(env):
+async def test_anonymous_failures_are_rate_limited_and_coalesced(env, monkeypatch):
     import time
+    from types import SimpleNamespace
 
     import httpx
     from redis.asyncio import Redis
 
     from smtrading.useractivity import throttle
 
+    # the windows are fixed minutes: the throttle's clock is frozen mid-minute, so the
+    # requests never straddle two windows (the test only; the app keeps the real clock)
+    frozen = (time.time() // throttle.WINDOW_S) * throttle.WINDOW_S + throttle.WINDOW_S / 2
+    monkeypatch.setattr(throttle, "time", SimpleNamespace(time=lambda: frozen))
     anon = httpx.AsyncClient(transport=env.transport, base_url="http://test",
                              headers={"User-Agent": "bot/" + "x" * 300})
     env.clients.append(anon)
@@ -472,8 +477,8 @@ async def test_anonymous_failures_are_rate_limited_and_coalesced(env):
     redis = Redis.from_url(env.redis_url)
     try:
         assert await throttle.flush_suppressed(env.sm, redis) == 0  # the window is open
-        assert await throttle.flush_suppressed(env.sm, redis, now=time.time() + 120) == 1
-        assert await throttle.flush_suppressed(env.sm, redis, now=time.time() + 120) == 0
+        assert await throttle.flush_suppressed(env.sm, redis, now=frozen + 120) == 1
+        assert await throttle.flush_suppressed(env.sm, redis, now=frozen + 120) == 0
     finally:
         await redis.aclose()
     rows = await _rows(env.sm, action="portfolios.create")

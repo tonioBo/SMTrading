@@ -205,13 +205,17 @@ def decision_line(d: Decision, agent: str, portfolio: str | None) -> str:
             f"{' — ' + reason if reason else ''} ({_one_line(agent)})")
 
 
+REMOVED_AGENT = "Agente rimosso"
+
+
 async def _decision_section(session: AsyncSession, kind: Kind, since: datetime,
                             now: datetime, zone: ZoneInfo) -> list[str]:
     """«🧭 Decisioni di oggi (N)» (or «della settimana»), grouped by kind, decisions of
-    archived portfolios left out; at most 15 lines, then «… e altre N»."""
+    archived portfolios left out; at most 15 lines, then «… e altre N». A decision whose
+    agent row is gone is still listed, by «Agente rimosso»."""
     rows = (await session.execute(
-        select(Decision, Agent.name, Portfolio.name)
-        .join(Agent, Agent.id == Decision.agent_id)
+        select(Decision, func.coalesce(Agent.name, REMOVED_AGENT), Portfolio.name)
+        .outerjoin(Agent, Agent.id == Decision.agent_id)
         .outerjoin(Portfolio, Portfolio.id == Decision.portfolio_id)
         .where(Decision.created_at >= since, Decision.created_at <= now,
                or_(Decision.portfolio_id.is_(None),
