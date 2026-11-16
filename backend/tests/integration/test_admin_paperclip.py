@@ -114,6 +114,39 @@ async def test_config_key_masked_and_kept_when_omitted(admin):
         assert (await load_state(s))["rebaseline_reason"] == "config"
 
 
+async def test_new_host_needs_the_board_key_again(admin):
+    """The stored key is never sent to another host: a base_url on a new host (or port)
+    needs `board_key` in the same request; the same host keeps it (plan 10, M1)."""
+    await _configure(admin)
+    for url in ("https://evil.example.org", "https://paperclip.example.test:8443",
+                "https://user@evil.example.org"):
+        r = await _put(admin, base_url=url)
+        assert r.status_code == 400, r.text
+        body = r.json()
+        assert body["details"] == {"field": "board_key"}
+        assert body["message"] == ("indirizzo cambiato: reinserisci la chiave board per il "
+                                   "nuovo indirizzo")
+        assert KEY not in r.text
+    async with admin.sm() as s:
+        cfg = await load_config(s)
+    assert (cfg.base_url, cfg.board_key) == (BASE, KEY)  # nothing saved
+    # same host (other path, case, trailing slash): the key is kept
+    r = await _put(admin, base_url="https://PAPERCLIP.example.test/x/")
+    assert r.status_code == 200, r.text
+    assert r.json()["board_key_masked"] == "••••0001"
+    # new host with its key: saved
+    r = await _put(admin, base_url="https://new.example.test", board_key=KEY2)
+    assert r.status_code == 200, r.text
+    async with admin.sm() as s:
+        cfg = await load_config(s)
+    assert (cfg.base_url, cfg.board_key) == ("https://new.example.test", KEY2)
+    # clearing the URL sends the key nowhere: allowed; a URL again needs the key
+    r = await _put(admin, base_url="", enabled=False)
+    assert r.status_code == 200, r.text
+    r = await _put(admin, base_url="https://new.example.test")
+    assert r.status_code == 400 and r.json()["details"] == {"field": "board_key"}
+
+
 async def test_verify_reports_agents_and_matches(admin):
     trader = await _agent(admin.sm, "Trader")
     mapped = await _agent(admin.sm, "Analyst")

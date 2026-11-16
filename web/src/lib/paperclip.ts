@@ -23,6 +23,25 @@ export function isolationInactive(status: PaperclipStatus): boolean {
   return status.enabled && status.isolation === "unknown" && status.rebaseline_reason !== "config";
 }
 
+function origin(url: string): string | null {
+  try {
+    const u = new URL(url.trim());
+    return u.hostname ? `${u.hostname}:${u.port || (u.protocol === "http:" ? "80" : "443")}` : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The typed address is on another host (or port) than the saved one: the server keeps the
+ * stored board key only for the same host, so a new key is needed. False while the typed
+ * text is not a URL yet, or nothing was saved.
+ */
+export function hostChanged(saved: string | null, typed: string): boolean {
+  const next = origin(typed);
+  return next !== null && next !== (saved ? origin(saved) : null);
+}
+
 /**
  * USD as Paperclip reports it, it-IT format: "1.234,50 $"; below 1 $ three decimals ("0,123 $"),
  * a non-zero amount under half a cent "< 0,01 $".

@@ -131,6 +131,26 @@ describe("PaperclipSection", () => {
     expect(puts[0]).toEqual({ base_url: "https://pc.example.org" });
   });
 
+  it("a new host asks for the board key again; the same host keeps it", async () => {
+    config = baseConfig();
+    status = baseStatus();
+    const user = userEvent.setup();
+    renderApp("/impostazioni");
+    const region = await section();
+    const url = await within(region).findByLabelText("Indirizzo");
+    const hint = "Indirizzo cambiato: reinserisci la chiave board (quella salvata non viene inviata al nuovo indirizzo)";
+    expect(within(region).queryByText(hint)).toBeNull();
+    await user.clear(url);
+    await user.type(url, "https://PAPERCLIP.example.com/x/");
+    expect(within(region).queryByText(hint)).toBeNull();
+    await user.clear(url);
+    await user.type(url, "https://pc.example.org");
+    expect(within(region).getByText(hint)).toBeInTheDocument();
+    await user.clear(url);
+    await user.type(url, "https://paperclip.example.com:8443");
+    expect(within(region).getByText(hint)).toBeInTheDocument();
+  });
+
   it("a refused save shows the field error and keeps nothing of the key", async () => {
     config = baseConfig();
     status = baseStatus();
