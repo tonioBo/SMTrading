@@ -914,6 +914,26 @@ async def test_daily_bar_closed_after_the_session_and_cache_follows(env, monkeyp
     assert len(_bar_calls(FakeA)) == 2
 
 
+async def test_daily_bars_before_the_calendar_window_are_served(env):
+    """NYSE's calendar starts 2006-11-16: a range spanning 2005-2007 (a backtest) is
+    served, the bars before the window by the duration rule, not PROVIDER_UNAVAILABLE."""
+    router, sm = env
+    async with sm() as s:
+        s.add(Instrument(symbol="ZZOLD", name="ZZ", asset_class=AssetClass.us_equity,
+                         market="NYSE", currency="USD"))
+        s.add(ProviderPriority(asset_class=AssetClass.us_equity, capability=Capability.bars,
+                               providers=["fake_a"]))
+        await s.commit()
+    days = [datetime(2000, 1, 3, tzinfo=UTC), datetime(2005, 6, 1, tzinfo=UTC),
+            datetime(2006, 11, 15, tzinfo=UTC), datetime(2006, 11, 16, tzinfo=UTC),
+            datetime(2007, 6, 1, tzinfo=UTC)]
+    FakeA.mode = [Bar(d, Decimal(1), Decimal(2), Decimal(1), Decimal(1), Decimal(1))
+                  for d in days]
+    bars = await router.get_bars("ZZOLD", Timeframe.d1, datetime(1999, 12, 1, tzinfo=UTC),
+                                 datetime(2007, 12, 31, tzinfo=UTC))
+    assert [b.ts for b in bars] == days
+
+
 async def test_crypto_daily_bar_keeps_the_midnight_rule(env, monkeypatch):
     import smtrading.marketdata.router as router_mod
 

@@ -6,8 +6,8 @@ hours after the exchange closed. For an exchange-traded instrument a 1d bar is c
 once that exchange's regular session of the bar's local date has closed (calendar early
 closes and the admin's manual closures included: `market_hours.session_on`), a 1wk bar
 once the week's last session has; plus CLOSE_GRACE for the final print to reach the
-providers (EU data can be 15 minutes late). CRYPTO, FX, intraday bars and bars dated a
-day without a session keep the duration rule.
+providers (EU data can be 15 minutes late). CRYPTO, FX, intraday bars, bars dated a
+day without a session and bars outside the calendar's window keep the duration rule.
 
 A bars list cached at T is final up to T: `bars_cache_ttl` caps the cache entry so it
 expires when the next bar becomes closed (the next session close + grace for exchanges,
@@ -16,7 +16,7 @@ close.
 """
 
 import math
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from smtrading.instruments.market_hours import (
     CALENDARS,
@@ -49,6 +49,16 @@ def _sessions(market: str | None, tf: Timeframe) -> bool:
     return market in CALENDARS and tf in SESSION_TIMEFRAMES
 
 
+def _session(market: str, day: date) -> tuple[datetime, datetime, bool] | None:
+    """`session_on`, None outside the calendar's window (exchange_calendars raises
+    DateOutOfBounds, a ValueError, e.g. before NYSE's first session 2006-11-16): such
+    bars keep the duration rule."""
+    try:
+        return session_on(market, day)
+    except ValueError:
+        return None
+
+
 def bar_close_time(market: str | None, tf: Timeframe, ts: datetime) -> datetime | None:
     """When the session bar starting at `ts` is closed (grace included); None when the
     duration rule applies."""
@@ -59,7 +69,7 @@ def bar_close_time(market: str | None, tf: Timeframe, ts: datetime) -> datetime 
     # the day before; New York: 05:00 UTC) still names its session
     day = (ts.astimezone(UTC) + timedelta(hours=12)).date()
     for offset in range(days - 1, -1, -1):  # the period's last session
-        session = session_on(market, day + timedelta(days=offset))  # type: ignore[arg-type]
+        session = _session(market, day + timedelta(days=offset))  # type: ignore[arg-type]
         if session is not None:
             return session[1] + close_grace(market)  # type: ignore[arg-type]
     return None
@@ -74,7 +84,7 @@ def bar_is_closed(market: str | None, tf: Timeframe, ts: datetime, now: datetime
 
 def _next_bar_close(market: str, now: datetime) -> datetime:
     grace = close_grace(market)
-    today = session_on(market, local_date(market, now))
+    today = _session(market, local_date(market, now))
     if today is not None and today[1] + grace > now:
         return today[1] + grace
     status = market_status(market, now)

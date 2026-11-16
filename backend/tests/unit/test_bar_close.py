@@ -2,7 +2,7 @@
 manual closes included) has closed, plus a short grace for the final print; CRYPTO/FX
 (and intraday bars) keep ts + duration <= now. And until when a cached bars list holds."""
 
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 
@@ -92,3 +92,18 @@ def test_cache_ttl_ends_when_the_next_bar_closes():
     # intraday: unchanged
     assert bars_cache_ttl("NYSE", H1, utc(2026, 11, 17, 20, 0)) == 3600
     assert bars_cache_ttl("NYSE", D1, utc(2026, 11, 17, 21, 9, 59, 500000)) == 1
+
+
+def test_dates_outside_the_calendar_window_keep_the_duration_rule():
+    # NYSE's calendar starts 2006-11-16: earlier bars must not raise
+    assert bar_is_closed("NYSE", D1, utc(2000, 1, 3), utc(2000, 1, 4))
+    assert not bar_is_closed("NYSE", D1, utc(2000, 1, 3), utc(2000, 1, 3, 23))
+    assert bar_is_closed("NYSE", W1, utc(2000, 1, 3), utc(2000, 1, 10))
+    # a backtest-like range spanning 2005-2007: every bar is classified
+    now = utc(2026, 11, 17, 12)
+    day, closed = utc(2005, 1, 3), 0
+    while day < utc(2007, 12, 31):
+        closed += bar_is_closed("NYSE", D1, day, now)
+        closed += bar_is_closed("MTA", W1, day, now)
+        day += timedelta(days=1)
+    assert closed > 0
