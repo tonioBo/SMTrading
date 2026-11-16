@@ -40,6 +40,14 @@ Note operative sulla tabella:
    `daily_loss.limit_eur`, `daily_loss.current_eur`; `get_portfolio` → `equity_eur`.
 2. Con 500 € il vincolo che conta è quasi sempre **la posizione massima in % dell'equity**,
    non l'ordine massimo. Esempio: su PRU una posizione non può superare circa 75 €.
+   Il limite vale **per singola posizione**, non per il portafoglio: si possono tenere **più
+   posizioni in parallelo** (simboli diversi, segnali di strategie approvate) fino a investire
+   quasi tutto il capitale. Esempio: PRU 4 posizioni da 75 € + AGG 2 da 200 € = 700 €
+   investiti; per +20 € (il 2% di 1000 €) basta circa +3% medio. Ogni posizione ha il suo
+   stop, e **la somma delle perdite agli stop** delle posizioni aperte deve restare
+   sostenibile rispetto alla perdita giornaliera massima del profilo (`daily_loss.limit_eur`):
+   è questo, non il limite per posizione, il vero freno. Evita di concentrare più posizioni
+   sullo stesso rischio (stesso settore o indice) oltre quanto il Risk Manager accetta.
 3. Il profilo effettivo può essere cambiato solo da un umano. Se `get_risk_limits` mostra
    un profilo diverso da quello in tabella, vale quello di `get_risk_limits` e va segnalato.
 4. Lo short è possibile solo se il profilo lo consente (`profile.short_allowed`) **e** lo
