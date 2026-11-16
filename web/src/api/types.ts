@@ -1159,6 +1159,8 @@ export interface PaperclipStatus {
   key_expiring: boolean;
   /** the agents' session refresh after an MCP tool catalog change */
   sessions?: PaperclipSessionsStatus;
+  /** the last «PROTEGGI» issue the protection alarm could not create in Paperclip */
+  protection_error?: string | null;
 }
 
 export interface PaperclipSessionsStatus {

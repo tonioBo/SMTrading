@@ -104,6 +104,7 @@ def _idle_telegram_loops(monkeypatch):
     monkeypatch.setattr(worker, "OutboxSender", _IdleProcessor)
     monkeypatch.setattr(worker, "SummaryScheduler", _IdleProcessor)
     monkeypatch.setattr(worker, "LiveMonitor", _IdleProcessor)
+    monkeypatch.setattr(worker, "ProtectionAlarm", _IdleProcessor)
     monkeypatch.setattr(worker, "register_live_secrets", _no_live_keys)
 
 
@@ -453,6 +454,35 @@ async def test_run_supervises_paperclip_reader(monkeypatch):
         monkeypatch.setattr(worker, name, _IdleProcessor)
     monkeypatch.setattr(worker, "health_checks", lambda router: asyncio.sleep(3600))
     monkeypatch.setattr(worker, "PaperclipReader", FakeReader)
+    await asyncio.wait_for(worker.run(), 2)
+    assert started.is_set()
+    assert seen["sessionmaker"] is not None and seen["kwargs"] == {}
+
+
+async def test_run_supervises_protection_alarm(monkeypatch):
+    started = asyncio.Event()
+    seen = {}
+
+    class FakeAlarm:
+        def __init__(self, sessionmaker, **kwargs):
+            seen.update(sessionmaker=sessionmaker, kwargs=kwargs)
+
+        async def run(self):
+            started.set()
+            signal.raise_signal(signal.SIGTERM)
+            await asyncio.sleep(3600)
+
+    monkeypatch.setattr(
+        worker, "get_settings",
+        lambda: SimpleNamespace(redis_url="redis://unused:6379/0", database_url="x"),
+    )
+    monkeypatch.setattr(worker.Redis, "from_url", staticmethod(lambda url: _FlakyRedis()))
+    monkeypatch.setattr(worker, "make_engine", lambda url: _FakeEngine())
+    for name in ("StreamManager", "OrderProcessor", "AlertEvaluator", "JobScheduler",
+                 "PaperclipReader"):
+        monkeypatch.setattr(worker, name, _IdleProcessor)
+    monkeypatch.setattr(worker, "health_checks", lambda router: asyncio.sleep(3600))
+    monkeypatch.setattr(worker, "ProtectionAlarm", FakeAlarm)
     await asyncio.wait_for(worker.run(), 2)
     assert started.is_set()
     assert seen["sessionmaker"] is not None and seen["kwargs"] == {}

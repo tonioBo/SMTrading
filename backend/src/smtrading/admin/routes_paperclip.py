@@ -40,6 +40,7 @@ from smtrading.paperclip.reader import isolation_policies, key_expiring, set_bas
 from smtrading.paperclip.sessions import load_sessions, sessions_dto
 from smtrading.performance.service import get_performance
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
+from smtrading.positions.protection import load_state as load_protection_state
 from smtrading.risk.models import AppSetting
 
 router = APIRouter(prefix="/api", tags=["paperclip"], dependencies=[Depends(require_access)])
@@ -127,6 +128,8 @@ async def _status(session: AsyncSession) -> dict[str, Any]:
         "key_expires_at": state["key_expires_at"],
         "key_expiring": key_expiring(state, datetime.now(UTC)),
         "sessions": sessions_dto(await load_sessions(session)),
+        # the last failed «PROTEGGI» issue of the protection alarm (cleared by a success)
+        "protection_error": (await load_protection_state(session))["last_error"],
     }
 
 
