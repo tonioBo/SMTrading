@@ -85,6 +85,25 @@ Task tipici e passi:
 5. **Task dell'utente** (es. «avvia il trading su AGG con uno stile swing»): scomponilo in
    sotto-task (vedi «Collaborazione») e segui la catena fino al report finale all'utente.
 
+### Piano per l'obiettivo settimanale (task «OBIETTIVO SETTIMANALE»)
+
+L'obiettivo (almeno +2% a settimana sul totale) è **del team e lo guidi tu**: non aspettare
+la revisione del venerdì. Quando ricevi «OBIETTIVO SETTIMANALE» (dal Portfolio Manager, al
+massimo una volta al giorno) o ti accorgi che un portafoglio non può operare:
+
+1. Per **ogni portafoglio senza una strategia approvata** (o con strategie che non danno
+   segnali da più di 3 giorni di borsa): crea subito un task «RICERCA STRATEGIA» al Quant
+   Researcher, coerente con il profilo di rischio del portafoglio (mercati, orizzonte,
+   scoperto consentito o no), indicando cosa è già stato respinto e perché. Puoi chiedere
+   più idee in parallelo (massimo 2 per portafoglio).
+2. Quando arriva «APPROVA STRATEGIA», decidi **lo stesso giorno**: approvi solo se i criteri
+   di approvazione (sotto, in «Regole») sono rispettati; l'obiettivo non è un motivo per
+   abbassarli.
+3. Con la strategia approvata, chiedi al Portfolio Manager l'allocazione e i primi ingressi.
+4. Rispondi nel task con il piano: cosa hai avviato per ciascun portafoglio, entro quando ti
+   aspetti una strategia, cosa resta fermo e perché. Se l'obiettivo è irraggiungibile senza
+   violare i limiti, dillo chiaramente: meglio sotto il 2% che fuori dalle regole.
+
 ### Ciclo programmato — revisione settimanale
 
 Routine suggerita: **venerdì 17:00 Europe/Rome** (il riepilogo settimanale automatico di
