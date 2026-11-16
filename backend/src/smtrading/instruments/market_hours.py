@@ -38,12 +38,17 @@ class Closure:
 
 
 _closures: dict[tuple[str, date], Closure] = {}
+# session_on per (market, day): it depends on the calendar and the closures only
+_sessions: dict[tuple[str, date], "tuple[datetime, datetime, bool] | None"] = {}
+_MAX_MEMO = 100_000
 
 
 def set_closures(rows: Iterable[Closure]) -> None:
-    """Replaces the whole registry of this process (one reference swap)."""
-    global _closures
+    """Replaces the whole registry of this process (one reference swap); the memoised
+    sessions are dropped."""
+    global _closures, _sessions
     _closures = {(c.market, c.day): c for c in rows}
+    _sessions = {}
 
 
 @dataclass(frozen=True)
@@ -151,7 +156,21 @@ def local_date(market: str, at: datetime) -> date:
 def session_on(market: str, day: date) -> tuple[datetime, datetime, bool] | None:
     """The session of an exchange on its local date `day`, manual closures applied:
     (open, close, early) in UTC, `early` when it closes before its regular time (a
-    calendar early close or a manual one); None when it does not trade that day."""
+    calendar early close or a manual one); None when it does not trade that day.
+    Memoised until the closures change; raises ValueError (DateOutOfBounds) outside the
+    calendar's window."""
+    key = (market, day)
+    if key in _sessions:
+        return _sessions[key]
+    memo = _sessions  # the dict of the closures this computation sees
+    result = _session_on(market, day)
+    if len(memo) >= _MAX_MEMO:
+        memo.clear()
+    memo[key] = result
+    return result
+
+
+def _session_on(market: str, day: date) -> tuple[datetime, datetime, bool] | None:
     cal = _calendar(CALENDARS[market])
     ts = pd.Timestamp(day)
     if not cal.is_session(ts):

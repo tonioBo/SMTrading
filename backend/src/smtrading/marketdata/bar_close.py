@@ -12,11 +12,12 @@ day without a session and bars outside the calendar's window keep the duration r
 A bars list cached at T is final up to T: `bars_cache_ttl` caps the cache entry so it
 expires when the next bar becomes closed (the next session close + grace for exchanges,
 the next 00:00 UTC for CRYPTO/FX), so no list without today's bar is served after the
-close.
+close; for an hour after the close + grace it is capped at 15 minutes, so a close the
+providers have not finalised yet is refreshed.
 """
 
 import math
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 from smtrading.instruments.market_hours import (
     CALENDARS,
@@ -31,6 +32,10 @@ SESSION_TIMEFRAMES = frozenset({Timeframe.d1, Timeframe.w1})
 _EU_MARKETS = frozenset({"MTA", "XETRA", "EURONEXT_PARIS", "LSE"})
 CLOSE_GRACE_US = timedelta(minutes=10)
 CLOSE_GRACE_EU = timedelta(minutes=20)  # quotes and closes can come 15 minutes late
+# right after close + grace a provider's close may not be final yet: a list cached then
+# is refreshed every SETTLING_TTL for SETTLING_WINDOW
+SETTLING_WINDOW = timedelta(hours=1)
+SETTLING_TTL = 15 * 60
 _DURATION = {
     Timeframe.m1: timedelta(minutes=1),
     Timeframe.m5: timedelta(minutes=5),
@@ -65,9 +70,11 @@ def bar_close_time(market: str | None, tf: Timeframe, ts: datetime) -> datetime 
     if not _sessions(market, tf):
         return None
     days = 1 if tf == Timeframe.d1 else 7
-    # the nearest UTC date: a stamp at the exchange's local midnight (Europe: 23:00 UTC
-    # the day before; New York: 05:00 UTC) still names its session
-    day = (ts.astimezone(UTC) + timedelta(hours=12)).date()
+    # a stamp at 00:00 UTC names its UTC date; any other (the exchange's local midnight:
+    # Europe 23:00 UTC the day before, New York 05:00 UTC; or a session time) the
+    # exchange's local date
+    utc_ts = ts.astimezone(UTC)
+    day = utc_ts.date() if utc_ts.time() == time(0) else local_date(market, ts)  # type: ignore[arg-type]
     for offset in range(days - 1, -1, -1):  # the period's last session
         session = _session(market, day + timedelta(days=offset))  # type: ignore[arg-type]
         if session is not None:
@@ -101,6 +108,11 @@ def bars_cache_ttl(market: str | None, tf: Timeframe, now: datetime) -> int:
         return ttl
     if _sessions(market, tf):
         until = _next_bar_close(market, now)  # type: ignore[arg-type]
+        today = _session(market, local_date(market, now))  # type: ignore[arg-type]
+        if today is not None:
+            closed = today[1] + close_grace(market)  # type: ignore[arg-type]
+            if closed <= now < closed + SETTLING_WINDOW:
+                ttl = min(ttl, SETTLING_TTL)
     else:
         midnight = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         until = midnight + timedelta(days=1)

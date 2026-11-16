@@ -81,8 +81,10 @@ def test_cache_ttl_ends_when_the_next_bar_closes():
     assert bars_cache_ttl("NYSE", D1, utc(2026, 11, 17, 20, 0)) == 70 * 60
     # inside the grace: still today's
     assert bars_cache_ttl("NYSE", D1, utc(2026, 11, 17, 21, 5)) == 5 * 60
-    # after it: the next close is tomorrow's, beyond the 6 h cap
-    assert bars_cache_ttl("NYSE", D1, utc(2026, 11, 17, 21, 15)) == 21600
+    # just after it: today's close may not be final yet, refreshed within 15 minutes
+    assert bars_cache_ttl("NYSE", D1, utc(2026, 11, 17, 21, 15)) == 15 * 60
+    # later: the next close is tomorrow's, beyond the 6 h cap
+    assert bars_cache_ttl("NYSE", D1, utc(2026, 11, 17, 23, 0)) == 21600
     assert bars_cache_ttl("NYSE", W1, utc(2026, 11, 17, 20, 0)) == 70 * 60
     # weekend: next close Monday, capped
     assert bars_cache_ttl("NYSE", D1, utc(2026, 11, 21, 12)) == 21600
@@ -107,3 +109,11 @@ def test_dates_outside_the_calendar_window_keep_the_duration_rule():
         closed += bar_is_closed("MTA", W1, day, now)
         day += timedelta(days=1)
     assert closed > 0
+
+
+def test_session_date_of_the_stamp():
+    # a stamp at 00:00 UTC names its UTC date; any other stamp the exchange's local date
+    assert not bar_is_closed("NYSE", D1, utc(2026, 11, 17, 14, 30), utc(2026, 11, 17, 20))
+    assert bar_is_closed("NYSE", D1, utc(2026, 11, 17, 14, 30), utc(2026, 11, 17, 21, 15))
+    # 17/11 at 15:00 Milan (14:00 UTC) is the 17th's MTA session, not the 18th's
+    assert bar_is_closed("MTA", D1, utc(2026, 11, 17, 14), utc(2026, 11, 17, 16, 50))

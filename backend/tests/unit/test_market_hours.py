@@ -139,3 +139,18 @@ def test_previous_session_open_fx():
     assert previous_session_open("FX", at) == at - timedelta(hours=24)
     # closed on Saturday: the weekly close (Friday 22:00) minus 24 h
     assert previous_session_open("FX", utc(2026, 11, 14, 12, 0)) == utc(2026, 11, 12, 22, 0)
+
+
+def test_session_on_is_memoised_until_the_closures_change(monkeypatch):
+    import smtrading.instruments.market_hours as mh
+
+    day = date(2026, 11, 18)
+    first = mh.session_on("NYSE", day)
+    calls = []
+    real = mh._calendar
+    monkeypatch.setattr(mh, "_calendar", lambda code: calls.append(code) or real(code))
+    assert mh.session_on("NYSE", day) == first
+    assert calls == []  # served from the memo
+    set_closures([Closure("NYSE", day, "early_close", time(12))])
+    assert mh.session_on("NYSE", day)[1] == utc(2026, 11, 18, 17, 0)  # recomputed
+    assert calls
