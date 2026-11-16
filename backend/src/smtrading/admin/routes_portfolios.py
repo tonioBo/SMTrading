@@ -352,7 +352,7 @@ ORDER_BROKER_FIELDS = (
 
 
 def _order_dto(o) -> dict[str, Any]:
-    """order_dto plus the broker replication state (admin only; the MCP DTO is unchanged)."""
+    """order_dto (truthful `source`) plus the broker replication state (admin only)."""
     out = order_dto(o)
     out.update({f: to_jsonable(getattr(o, f)) for f in ORDER_BROKER_FIELDS})
     return out

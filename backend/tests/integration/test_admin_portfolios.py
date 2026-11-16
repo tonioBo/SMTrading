@@ -461,8 +461,10 @@ async def test_orders_list_and_cancel(admin):
         await s.commit()
     orders = (await c.get(f"/api/portfolios/{pid}/orders")).json()
     assert [x["id"] for x in orders] == [str(o.id)] and orders[0]["status"] == "pending"
+    assert orders[0]["source"] == "admin"  # a manual order: «Origine» keeps the truth
     r = await c.post(f"/api/orders/{o.id}/cancel")
     assert r.status_code == 200 and r.json()["status"] == "canceled"
+    assert r.json()["source"] == "admin"
     again = await c.post(f"/api/orders/{o.id}/cancel")
     assert again.status_code == 400
     assert (await c.get(f"/api/portfolios/{pid}/orders", params={"status": "open"})).json() == []

@@ -238,6 +238,7 @@ async def test_admin_place_simulated_order_source_admin(admin):
     assert out["status"] == "filled" and out["symbol"] == "BTC-USD"
     listed = (await c.get(f"/api/portfolios/{pid}/orders")).json()
     assert listed == [out]  # the same DTO as the order list
+    assert out["source"] == "admin"  # the portal «Origine» column keeps the truth
     (order,) = await _orders(admin.sm, pid)
     assert order.source == "admin" and order.agent_id is None
     # the same Idempotency-Key gives the same response, no second order

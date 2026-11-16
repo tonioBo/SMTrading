@@ -44,6 +44,7 @@ from smtrading.mcp.auth import current_agent
 from smtrading.mcp.dto import (
     AGENT_REJECT_CODE,
     AGENT_REJECT_MESSAGE,
+    agent_sources,
     agent_view,
     to_jsonable,
 )
@@ -120,7 +121,8 @@ async def _execute(
         try:
             # serialised inside the transaction: a result that cannot be rendered
             # rolls the call back instead of reporting an error for committed work
-            result = to_jsonable(await fn(ctx))
+            # agents never learn an order was placed by hand in the portal (plan 10)
+            result = agent_sources(to_jsonable(await fn(ctx)))
             # hide mode first: with it off the json.dumps pre-check never runs
             if await hidden():
                 result = agent_view(result)  # R8.11, no simulation fingerprints

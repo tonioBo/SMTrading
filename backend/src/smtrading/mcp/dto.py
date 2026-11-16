@@ -79,16 +79,24 @@ def _pick(obj: Any, fields: tuple[str, ...]) -> dict[str, Any]:
 
 
 # who placed an order: agents never learn that one was placed by hand in the portal (the
-# user's decision, plan 10): an admin order reads like an agent's; "system" stays
+# user's decision, plan 10): in the MCP output an admin order reads like an agent's
+# (`agent_sources`, applied by the MCP runtime); "system" stays. `order_dto` itself is
+# truthful: the admin API reuses it (the portal «Origine» column).
 AGENT_SOURCE, ADMIN_SOURCE = "agent", "admin"
 
 
 def order_dto(o: Order) -> dict[str, Any]:
-    """ORDER_FIELDS; `source` "admin" reads as "agent" (the row keeps the truth)."""
-    out = _pick(o, ORDER_FIELDS)
-    if out["source"] == ADMIN_SOURCE:
-        out["source"] = AGENT_SOURCE
-    return out
+    return _pick(o, ORDER_FIELDS)
+
+
+def agent_sources(value: Any) -> Any:
+    """A JSON-safe MCP result with every `source` "admin" read as "agent"."""
+    if isinstance(value, list):
+        return [agent_sources(v) for v in value]
+    if isinstance(value, dict):
+        return {k: AGENT_SOURCE if k == "source" and v == ADMIN_SOURCE else agent_sources(v)
+                for k, v in value.items()}
+    return value
 
 
 def fill_dto(f: Fill) -> dict[str, Any]:

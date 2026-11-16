@@ -461,6 +461,30 @@ async def test_mcp_hide_mode_setting(mcp_server, mcp_call, book):
     assert got["mode"] == "simulazione"
 
 
+async def test_manual_orders_read_as_agent_orders_with_hide_mode_off(mcp_server, mcp_call,
+                                                                     book):
+    """Agents never learn an order was placed by hand in the portal, whatever the hide
+    mode: `source` "admin" reaches them as "agent" (plan 10, review I2)."""
+    from sqlalchemy import update
+
+    url, token = mcp_server.url, mcp_server.token
+    is_error, placed = await mcp_call(url, token, "place_order", {
+        "portfolio_id": str(mcp_server.demo_id), "symbol": "ENI.MI", "side": "buy",
+        "type": "limit", "limit_price": "1", "qty": "1"})
+    assert not is_error, placed
+    async with _Db(mcp_server.db_url) as s:
+        await s.execute(update(Order).where(Order.id == UUID(placed["id"]))
+                        .values(source="admin"))
+        await s.commit()
+    for on in (True, False):
+        await _set_hide_mode(mcp_server.db_url, on)
+        _, got = await mcp_call(url, token, "get_order", {"order_id": placed["id"]})
+        _, listed = await mcp_call(url, token, "list_orders",
+                                   {"portfolio_id": str(mcp_server.demo_id)})
+        assert got["source"] == "agent", (on, got)
+        assert '"admin"' not in json.dumps(listed), (on, listed)
+
+
 async def _live_link_for_demo(db_url, demo_id, state):
     """A real-money link row (canary keys, never used: no network) linked to Demo."""
     from smtrading.brokers.live.account import encrypt_live_config

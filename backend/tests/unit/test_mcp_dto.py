@@ -61,21 +61,26 @@ def test_order_dto_fixed_fields_and_dispatch():
 
 
 @pytest.mark.parametrize("source", ["agent", "admin"])
-def test_order_dto_shows_admin_orders_as_agent_orders(source):
-    """A manual admin order reads to agents like any other order (plan 10, M2)."""
+def test_order_dto_is_truthful_agent_sources_remaps(source):
+    """order_dto keeps the truth (the admin API reuses it: the portal «Origine» column);
+    only the agent-facing MCP output reads a manual order as an agent's (plan 10, M2;
+    review I2)."""
     o = Order(
         id=uuid.uuid4(), portfolio_id=uuid.uuid4(), symbol="AAPL", side=OrderSide.buy,
         type=OrderType.market, tif=TimeInForce.day, qty=Decimal(1), filled_qty=Decimal(0),
         status=OrderStatus.new, source=source, reduce_only=False,
         created_at=datetime(2026, 1, 1, tzinfo=UTC), updated_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
-    assert dto.order_dto(o)["source"] == "agent"
-    assert o.source == source  # the row (and the admin API) keep the truth
+    assert dto.order_dto(o)["source"] == source
+    assert dto.to_jsonable(o)["source"] == source
+    seen = dto.agent_sources({"orders": [dto.order_dto(o)], "order": dto.order_dto(o)})
+    assert seen["orders"][0]["source"] == seen["order"]["source"] == "agent"
 
 
 def test_order_dto_keeps_system_orders():
     o = Order(id=uuid.uuid4(), symbol="AAPL", source="system")
     assert dto.order_dto(o)["source"] == "system"
+    assert dto.agent_sources(dto.order_dto(o))["source"] == "system"
 
 
 def test_quote_and_bar_dto():
