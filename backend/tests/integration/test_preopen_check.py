@@ -355,7 +355,16 @@ async def test_broker_link_health(env):
                        live_state="armed"),
             BrokerLink(name="Solo configurato", kind="alpaca_live", enabled=True, status="ok",
                        live_state="configured"),
+            # armed but no portfolio linked yet: the monitor never reads it (no false alarm)
+            BrokerLink(name="Armato senza portafogli", kind="alpaca_live", enabled=True,
+                       status="ok", live_state="armed",
+                       last_snapshot_at=clock.t - timedelta(hours=11)),
         ])
+        await s.flush()
+        for link_name in ("T212 reale", "Alpaca reale", "Mai letto"):
+            link_id = await s.scalar(select(BrokerLink.id).where(BrokerLink.name == link_name))
+            p = await create_portfolio(s, name=f"P {link_name}", initial_cash=Decimal(0))
+            p.broker_link_id = link_id
         await s.commit()
     async with Locks(engine):
         await write_heartbeat(redis)

@@ -247,6 +247,9 @@ async def _paperclip_problems(session: AsyncSession) -> list[str]:
 async def _link_problems(session: AsyncSession, now: datetime) -> list[str]:
     links = list(await session.scalars(
         select(BrokerLink).where(BrokerLink.enabled.is_(True)).order_by(BrokerLink.name)))
+    # the account monitor reads a real-money link only while a portfolio is linked to it
+    linked = set(await session.scalars(
+        select(Portfolio.broker_link_id).where(Portfolio.broker_link_id.is_not(None))))
     problems = []
     for link in links:
         name = " ".join(link.name.split())
@@ -254,7 +257,7 @@ async def _link_problems(session: AsyncSession, now: datetime) -> list[str]:
             reason = _short(link.last_error)
             problems.append(f"Collegamento broker {name} in errore"
                             f"{': ' + reason if reason else ''}")
-        elif link.live_state in MONITORED_LIVE_STATES:
+        elif link.live_state in MONITORED_LIVE_STATES and link.id in linked:
             if link.last_snapshot_at is None:
                 problems.append(f"Collegamento broker {name}: nessun dato del conto")
             elif now - link.last_snapshot_at > LIVE_SNAPSHOT_MAX_AGE:
