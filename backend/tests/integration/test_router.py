@@ -72,6 +72,8 @@ class _Fake(DataProvider):
             ]
         if type(self).mode == "empty":
             return []
+        if isinstance(type(self).mode, list):  # these bars, whatever the range
+            return list(type(self).mode)
         if isinstance(type(self).mode, timedelta):  # Kraken-like: only the last `mode` of data
             step = _TF_STEP[timeframe]
             ts, out = end - type(self).mode, []
@@ -878,3 +880,50 @@ async def test_news_empty_falls_through_to_next_provider(env, monkeypatch):
 
     monkeypatch.setattr(FakeA, "get_news", empty)
     assert await router.get_news(["ETH-USD"]) == []
+
+
+async def test_daily_bar_closed_after_the_session_and_cache_follows(env, monkeypatch):
+    """A US daily bar is closed once NYSE has closed (not at midnight UTC): fetched at
+    21:00 Rome today's bar is missing, at 22:15 Rome it is there; the 21:00 cache entry
+    expires at the close (+ grace), so the same range is fetched again then."""
+    import smtrading.marketdata.router as router_mod
+
+    router, sm = env
+    async with sm() as s:
+        s.add(Instrument(symbol="ZZUS", name="ZZ", asset_class=AssetClass.us_equity,
+                         market="NYSE", currency="USD"))
+        s.add(ProviderPriority(asset_class=AssetClass.us_equity, capability=Capability.bars,
+                               providers=["fake_a"]))
+        await s.commit()
+    days = [datetime(2026, 11, d, tzinfo=UTC) for d in (12, 13, 16, 17)]
+    FakeA.mode = [Bar(d, Decimal(1), Decimal(2), Decimal(1), Decimal(1), Decimal(1))
+                  for d in days]
+    start, end = datetime(2026, 11, 1, tzinfo=UTC), datetime(2026, 11, 18, tzinfo=UTC)
+
+    monkeypatch.setattr(router_mod, "_now", lambda: datetime(2026, 11, 17, 20, 0, tzinfo=UTC))
+    bars = await router.get_bars("ZZUS", Timeframe.d1, start, end)
+    assert [b.ts for b in bars] == days[:3]  # 21:00 Rome: the session is still open
+    redis = router._redis
+    [key] = [k async for k in redis.scan_iter("md:bars:*")]
+    assert 0 < await redis.ttl(key) <= 70 * 60  # until 21:10 UTC, not the 6 h default
+
+    await redis.delete(key)  # the entry has expired by 22:15 Rome
+    monkeypatch.setattr(router_mod, "_now", lambda: datetime(2026, 11, 17, 21, 15, tzinfo=UTC))
+    bars = await router.get_bars("ZZUS", Timeframe.d1, start, end)
+    assert [b.ts for b in bars] == days  # 22:15 Rome: today's bar is closed
+    assert len(_bar_calls(FakeA)) == 2
+
+
+async def test_crypto_daily_bar_keeps_the_midnight_rule(env, monkeypatch):
+    import smtrading.marketdata.router as router_mod
+
+    router, _ = env
+    days = [datetime(2026, 11, d, tzinfo=UTC) for d in (16, 17)]
+    FakeA.mode = FakeB.mode = [Bar(d, Decimal(1), Decimal(2), Decimal(1), Decimal(1), Decimal(1))
+                  for d in days]
+    monkeypatch.setattr(router_mod, "_now", lambda: datetime(2026, 11, 17, 23, 0, tzinfo=UTC))
+    bars = await router.get_bars("BTC-USD", Timeframe.d1, datetime(2026, 11, 1, tzinfo=UTC),
+                                 datetime(2026, 11, 18, tzinfo=UTC))
+    assert [b.ts for b in bars] == days[:1]
+    [key] = [k async for k in router._redis.scan_iter("md:bars:*")]
+    assert 0 < await router._redis.ttl(key) <= 3600

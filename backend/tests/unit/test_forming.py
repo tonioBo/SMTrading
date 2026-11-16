@@ -135,3 +135,11 @@ async def test_weekly_and_crypto():
     f = await forming_bar(_qs("BTC-USD", "70", sunday), BTC, Timeframe.d1, [], 60,
                           now=sunday)
     assert f.bar is not None and f.bar.open == D(70)  # no previous close: the price
+
+
+async def test_after_the_close_the_real_bar_is_used_never_a_provisional_one():
+    after = datetime(2026, 11, 17, 21, 15, tzinfo=UTC)  # 22:15 Rome: today's bar closed
+    today = _daily(date(2026, 11, 17))
+    f = await forming_bar(_qs("SPY", "110", after - timedelta(seconds=5)), SPY, Timeframe.d1,
+                          today, 120, now=after)
+    assert f.bar is None and f.skipped == "market closed"

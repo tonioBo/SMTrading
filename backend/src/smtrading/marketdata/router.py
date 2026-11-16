@@ -36,9 +36,9 @@ from smtrading.connectors.service import (
 from smtrading.instruments.models import AssetClass
 from smtrading.instruments.service import canonical_symbol, get_instrument
 from smtrading.marketdata import serialization
+from smtrading.marketdata.bar_close import bar_is_closed, bars_cache_ttl
 from smtrading.marketdata.cache import (
     CACHE_TTL,
-    bars_ttl,
     cache_get,
     cache_set,
     read_quote_meta,
@@ -79,6 +79,7 @@ class _Instr:
     symbol: str
     asset_class: AssetClass
     provider_symbols: dict
+    market: str | None = None  # the session rule of daily/weekly bars (bar_close)
 
     def override(self, provider: str) -> str | None:
         return self.provider_symbols.get(provider)
@@ -244,11 +245,18 @@ def _floor(dt: datetime, step: timedelta) -> datetime:
     return dt - (dt - _EPOCH) % step
 
 
-async def _closed_bars(provider: DataProvider, args: tuple, tf: Timeframe) -> list[Bar]:
-    """Drop still-forming candles (ts + duration > now); providers return raw bars."""
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+async def _closed_bars(
+    provider: DataProvider, args: tuple, tf: Timeframe, market: str | None
+) -> list[Bar]:
+    """Drop still-forming candles; providers return raw bars. Closed = `bar_is_closed`:
+    an exchange's 1d/1wk bar once its session has closed, otherwise ts + duration."""
     bars = await provider.get_bars(*args)
-    now = datetime.now(UTC)
-    return [b for b in bars if b.ts + _TF_DURATION[tf] <= now]
+    now = _now()
+    return [b for b in bars if bar_is_closed(market, tf, b.ts, now)]
 
 
 def _bars_coverage(
@@ -350,7 +358,8 @@ class MarketDataRouter:
                 if sym in out:
                     continue
                 inst = await get_instrument(session, sym)
-                out[sym] = _Instr(sym, inst.asset_class, dict(inst.provider_symbols or {}))
+                out[sym] = _Instr(sym, inst.asset_class, dict(inst.provider_symbols or {}),
+                                  inst.market)
         return out
 
     async def _cache_read(self, key: str) -> str | None:
@@ -642,12 +651,13 @@ class MarketDataRouter:
 
         def call(p: DataProvider):
             ps = p.map_symbol(instr.symbol, instr.asset_class, instr.override(p.name))
-            return _closed_bars(p, (instr.symbol, ps, tf, start, end), tf)
+            return _closed_bars(p, (instr.symbol, ps, tf, start, end), tf, instr.market)
 
+        # a cached list is final up to its fetch: it expires when the next bar closes
         return await self._fetch_one(
             Capability.bars, instr.asset_class,
             {"symbol": instr.symbol, "timeframe": tf, "start": start, "end": end},
-            bars_ttl(tf), call, _dumps_list, _loads_list(Bar), {"symbol": instr.symbol},
+            bars_cache_ttl(instr.market, tf, _now()), call, _dumps_list, _loads_list(Bar), {"symbol": instr.symbol},
             coverage=_bars_coverage(instr.asset_class, tf, start, end),
         )
 
