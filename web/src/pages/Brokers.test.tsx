@@ -86,7 +86,7 @@ const server = setupServer(
   }),
   http.post("*/api/portfolios/:id/fee-rule/apply-preset", async ({ request, params }) => {
     applies.push({ id: String(params.id), body: await request.json() });
-    return HttpResponse.json({ rule: {}, created: true, deactivated: [], preset: {} });
+    return HttpResponse.json({ rules: [], created: [], deactivated: [], preset: {} });
   }),
   http.get("*/api/broker-links/:id/reconciliations", () => HttpResponse.json(reconciliations)),
   http.post("*/api/broker-links/:id/reconcile", () => {
@@ -198,8 +198,11 @@ describe("Brokers", () => {
     const card = await screen.findByLabelText("Broker Alpaca prova");
     const box = await within(card).findByRole("checkbox", { name: /Usa le commissioni di Alpaca/ });
     expect(box).toBeChecked();
-    expect(card).toHaveTextContent("commissione 0% · cambio valuta 0%");
-    expect(card).toHaveTextContent("listino pubblico, da verificare");
+    const entries = within(card).getByRole("list", { name: "Commissioni di Alpaca" });
+    expect(within(entries).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Azioni ed ETF (e altre classi): commissione 0% · cambio valuta 0% (listino pubblico, da verificare)",
+      "Crypto: commissione 0,25% · cambio valuta 0% (fonte non ufficiale, da verificare)",
+    ]);
     await user.click(box);
     const select = within(card).getByLabelText("Collega un portafoglio");
     await waitFor(() => expect(within(select).getAllByRole("option")).toHaveLength(2));

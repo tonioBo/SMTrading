@@ -7,7 +7,21 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { errorMessage } from "@/lib/errors";
-import { presetSummary } from "@/lib/feePreset";
+import { entryLabel, feeSummary, presetRuleName } from "@/lib/feePreset";
+import { assetClassLabel } from "@/lib/labels";
+
+/** Each rule of a preset: what it covers, its fees and how sure the figures are. */
+export function PresetEntries({ preset }: { preset: BrokerFeePreset }) {
+  return (
+    <ul aria-label={`Commissioni di ${preset.broker}`} className="space-y-0.5 text-xs text-muted">
+      {preset.entries.map((e) => (
+        <li key={e.asset_class ?? "all"}>
+          {entryLabel(e, preset)}: {feeSummary(e)} ({e.source_note})
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 /**
  * The «Usa le commissioni di <broker>» checkbox of a link flow (checked by default): the
@@ -34,9 +48,8 @@ export function FeePresetCheckbox({
       />
       <span>
         Usa le commissioni di {preset.broker}
-        <span className="block text-xs text-muted">
-          {presetSummary(preset)} ({preset.source_note}). Se togli la spunta resta la regola attuale del portafoglio.
-        </span>
+        <PresetEntries preset={preset} />
+        <span className="block text-xs text-muted">Se togli la spunta restano le regole attuali del portafoglio.</span>
       </span>
     </label>
   );
@@ -66,7 +79,10 @@ export function PortfolioFees({ portfolio }: { portfolio: Portfolio }) {
           <ul aria-label="Regole del portafoglio" className="space-y-1">
             {own.map((r) => (
               <li key={r.id}>
-                <span className="font-medium">{r.name}</span> <span className="text-muted">· {presetSummary(r)}</span>
+                <span className="font-medium">{r.name}</span>{" "}
+                <span className="text-muted">
+                  · {r.asset_class ? `classe ${assetClassLabel(r.asset_class)}` : "tutte le classi"} · {feeSummary(r)}
+                </span>
               </li>
             ))}
           </ul>
@@ -77,15 +93,13 @@ export function PortfolioFees({ portfolio }: { portfolio: Portfolio }) {
               <Button type="button" size="sm" variant="outline" onClick={() => { apply.reset(); setOpen(true); }}>
                 Usa le commissioni di {preset.broker}
               </Button>
-              <p className="text-xs text-muted">
-                {presetSummary(preset)} ({preset.source_note})
-              </p>
+              <PresetEntries preset={preset} />
             </div>
             <ConfirmDialog
               open={open}
               onOpenChange={setOpen}
               title={`Usare le commissioni di ${preset.broker}?`}
-              description={`La regola «${portfolio.name} – ${preset.broker}» (${presetSummary(preset)}) diventa la regola del portafoglio; le altre regole del portafoglio vengono disattivate, non cancellate.`}
+              description={`${preset.entries.map((e) => `«${presetRuleName(portfolio.name, preset, e)}»`).join(", ")} ${preset.entries.length > 1 ? "diventano le regole" : "diventa la regola"} del portafoglio; le altre regole del portafoglio vengono disattivate, non cancellate.`}
               confirmLabel="Applica"
               pending={apply.isPending}
               error={apply.error ? errorMessage(apply.error) : null}
@@ -100,7 +114,9 @@ export function PortfolioFees({ portfolio }: { portfolio: Portfolio }) {
                   },
                 )
               }
-            />
+            >
+              <PresetEntries preset={preset} />
+            </ConfirmDialog>
           </AdminOnly>
         )}
       </CardContent>

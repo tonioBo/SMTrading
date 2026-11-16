@@ -1,19 +1,22 @@
 import { http, HttpResponse } from "msw";
-import type { BrokerFeePreset } from "@/api/types";
+import type { AssetClass, BrokerFeePreset, BrokerFeePresetEntry } from "@/api/types";
 
-const preset = (broker_kind: string, broker: string, fx_pct: string): BrokerFeePreset => ({
-  broker_kind, broker, pct: "0", fixed: "0", fx_pct, note: "", source_note: "listino pubblico, da verificare",
-  rule_name_suffix: broker,
+const entry = (asset_class: AssetClass | null, pct: string, fx_pct: string, source_note: string): BrokerFeePresetEntry => ({
+  asset_class, pct, fixed: "0", fx_pct, note: "", source_note,
 });
+const ALPACA = [entry(null, "0", "0", "listino pubblico, da verificare"), entry("crypto", "0.25", "0", "fonte non ufficiale, da verificare")];
+const T212 = [entry(null, "0", "0.15", "più fonti concordi")];
+const ETORO_NOTE = "guida giugno 2026; fonti discordanti 0,5–1%, da verificare";
+const ETORO = [entry(null, "0", "0.75", ETORO_NOTE), entry("crypto", "1", "0.75", ETORO_NOTE)];
 
 /** GET /api/brokers/fee-presets (the backend table fees/broker_presets.py). */
 export const FEE_PRESETS: BrokerFeePreset[] = [
-  preset("alpaca_paper", "Alpaca", "0"),
-  preset("alpaca_live", "Alpaca", "0"),
-  preset("t212_demo", "Trading 212", "0.15"),
-  preset("t212_live", "Trading 212", "0.15"),
-  preset("etoro_demo", "eToro", "0.5"),
-  preset("etoro_live", "eToro", "0.5"),
+  { broker_kind: "alpaca_paper", broker: "Alpaca", entries: ALPACA },
+  { broker_kind: "alpaca_live", broker: "Alpaca", entries: ALPACA },
+  { broker_kind: "t212_demo", broker: "Trading 212", entries: T212 },
+  { broker_kind: "t212_live", broker: "Trading 212", entries: T212 },
+  { broker_kind: "etoro_demo", broker: "eToro", entries: ETORO },
+  { broker_kind: "etoro_live", broker: "eToro", entries: ETORO },
 ];
 
 /** Requests every authenticated page makes (Layout, halt, mode and Paperclip banners): mocked once for all page tests. */

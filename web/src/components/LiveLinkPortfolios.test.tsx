@@ -78,7 +78,7 @@ const server = setupServer(
   }),
   http.post("*/api/portfolios/:id/fee-rule/apply-preset", async ({ request, params }) => {
     applies.push({ id: String(params.id), body: await request.json() });
-    return HttpResponse.json({ rule: {}, created: true, deactivated: [], preset: {} });
+    return HttpResponse.json({ rules: [], created: [], deactivated: [], preset: {} });
   }),
 );
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
@@ -158,7 +158,7 @@ describe("LiveLinkPortfolios", () => {
     const dialog = await screen.findByRole("dialog", { name: "Collegare un portafoglio a T212 vero?" });
     const check = await within(dialog).findByRole("checkbox", { name: /Usa le commissioni di Trading 212/ });
     expect(check).toBeChecked();
-    expect(dialog).toHaveTextContent("commissione 0% · cambio valuta 0,15%");
+    expect(dialog).toHaveTextContent("Tutte le classi: commissione 0% · cambio valuta 0,15% (più fonti concordi)");
     await user.click(check);
     await waitFor(() => expect(within(dialog).getAllByRole("option")).toHaveLength(2));
     await user.selectOptions(within(dialog).getByLabelText("Portafoglio da collegare"), "p3");
