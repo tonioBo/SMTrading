@@ -4,7 +4,7 @@ Read-only (a viewer can read it).
 `GET /api/signals` → {as_of, portfolios: [{portfolio_id, portfolio_name, strategies:
 [{ref, name, type, params, timeframe, status, symbols: [{symbol, last, indicator,
 value_closed, value_now, threshold, direction, distance, triggered_closed, triggered_now,
-as_of}]}]}]}: numbers as strings, value_now null without a forming bar (market closed,
+as_of, position: {qty, avg_price}|null, open_entry}]}]}]}: numbers as strings, value_now null without a forming bar (market closed,
 stale quote...). Portfolios by name (a strategy without portfolio last, portfolio_id
 null). The answer is cached CACHE_TTL_S in redis: open tabs refreshing every minute
 cost one computation per minute; `as_of` is when it was computed.
