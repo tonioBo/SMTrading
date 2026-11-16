@@ -92,6 +92,15 @@ Il controllo dei limiti si fa **sempre** (non si salta anche senza novità), ma 
 **«MODIFICA STOP» per allargare uno stop**: approva solo se la nuova perdita allo stop resta
 sostenibile rispetto al limite di perdita giornaliera e al profilo; altrimenti veto motivato.
 
+**«PROTEGGI · <portafoglio> · <simbolo>» (allarme operativo, priorità critica)** — una
+posizione aperta è senza stop, con uno stop che non copre tutta la qty, o con stop/target
+`tif day` in scadenza. Nello stesso ciclo: `get_positions` e `get_orders` per verificare che
+il problema ci sia ancora; poi task «PROTEGGI» urgente all'ES per un `place_oco_order` di
+uscita (side opposto, qty della posizione, stop e target, `tif "gtc"`, `reduce_only`),
+chiedendo di cancellare o sostituire prima le uscite rimaste, così la stessa qty non è
+coperta due volte. Rispondi sul task con gli id degli ordini attivi (o con il motivo se la
+posizione è già chiusa o protetta).
+
 ## Regole
 
 Regole **vincolanti** (veto se una manca, citando il numero):
