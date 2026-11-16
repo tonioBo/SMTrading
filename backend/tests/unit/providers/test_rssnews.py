@@ -168,6 +168,30 @@ async def test_items_without_date_link_or_title_are_skipped(provider):
     assert news[0].summary is None
 
 
+@respx.mock
+async def test_out_of_range_dates_skip_the_item_not_the_feed(provider):
+    respx.get(COINDESK_URL).respond(200, text=_feed(
+        _item("Bitcoin overflow", "https://e.com/1", "Fri, 31 Dec 9999 23:00:00 -0500"),
+        _item("Bitcoin year", "https://e.com/2", "Mon, 01 Jan 99999 00:00:00 +0000"),
+        _item("Bitcoin offset", "https://e.com/3", "Mon, 16 Nov 2026 10:00:00 +9999"),
+        _item("Bitcoin ok", "https://e.com/4", "Mon, 16 Nov 2026 10:00:00 +0000"),
+    ))
+    respx.get(COINTELEGRAPH_URL).respond(200, text=_feed())
+    news = await provider.get_news([("BTC-USD", "BTC")], 20)
+    assert [n.headline for n in news] == ["Bitcoin ok"]
+
+
+@respx.mock
+async def test_summary_drops_script_and_style(provider):
+    desc = ("<style>p{color:red}</style><p>Bitcoin rises</p><script>alert('x')</script>"
+            "<SCRIPT type='t'>var a = 1;</SCRIPT> today")
+    respx.get(COINDESK_URL).respond(200, text=_feed(
+        _item("Bitcoin up", "https://e.com/1", "Mon, 16 Nov 2026 10:00:00 +0000", desc)))
+    respx.get(COINTELEGRAPH_URL).respond(200, text=_feed())
+    (item,) = await provider.get_news([("BTC-USD", "BTC")], 20)
+    assert item.summary == "Bitcoin rises today"
+
+
 @pytest.mark.parametrize("bad", [
     {"text": "<rss><channel><item>"},  # malformed
     {"text": "<html><body>not a feed</body></html>"},  # not RSS
@@ -175,6 +199,16 @@ async def test_items_without_date_link_or_title_are_skipped(provider):
     {"content": b"<rss>" + b" " * (MAX_FEED_BYTES + 1) + b"</rss>"},  # oversized
     {"text": '<?xml version="1.0"?><!DOCTYPE r [<!ENTITY a "bitcoin">]>'
              "<rss><channel><item><title>&a;</title></item></channel></rss>"},
+    # the same in UTF-16: no `<!ENTITY` bytes to find, refused by the parser (review I4)
+    {"content": ('<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE rss [<!ENTITY a "x">'
+                 "]><rss><channel><item><title>Bitcoin &a;</title><link>https://e.com/u"
+                 "</link><pubDate>Mon, 16 Nov 2026 10:00:00 +0000</pubDate></item>"
+                 "</channel></rss>").encode("utf-16")},
+    # an internal DTD subset even without entities (e.g. a parameter entity's home)
+    {"content": ('<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE rss [<!ELEMENT rss ANY>'
+                 "]><rss><channel><item><title>Bitcoin</title><link>https://e.com/u"
+                 "</link><pubDate>Mon, 16 Nov 2026 10:00:00 +0000</pubDate></item>"
+                 "</channel></rss>").encode("utf-16")},
 ])
 @respx.mock
 async def test_one_broken_feed_still_returns_the_other(provider, bad):

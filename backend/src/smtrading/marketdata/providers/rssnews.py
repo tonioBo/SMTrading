@@ -1,7 +1,9 @@
 """Crypto news from the public CoinDesk and Cointelegraph RSS 2.0 feeds (no key).
 
-The feeds are parsed with the stdlib: a document over MAX_FEED_BYTES or declaring XML
-entities is refused before parsing (no entity expansion). Items are matched to symbols by
+The feeds are parsed with the stdlib: a document over MAX_FEED_BYTES, declaring XML
+entities or carrying an internal DTD subset is refused before the tree is built (no
+entity expansion): an expat pass whose declaration handlers refuse, whatever the
+document's encoding. Items are matched to symbols by
 word over headline and summary: the ticker and the coin's name (BTC → bitcoin|BTC,
 ETH → ethereum|ether|ETH, others → ticker and CoinGecko-style name when known). Names
 match in any case; tickers of up to 4 letters only in UPPERCASE.
@@ -15,6 +17,7 @@ from email.utils import parsedate_to_datetime
 from hashlib import sha256
 from html.parser import HTMLParser
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from xml.parsers import expat
 
 import httpx
 
@@ -39,12 +42,26 @@ class _FeedError(Exception):
 
 
 class _Text(HTMLParser):
+    """The text of an HTML fragment, without the content of <script> and <style>."""
+
+    _HIDDEN = frozenset({"script", "style"})
+
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
+        self._hidden = 0
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag in self._HIDDEN:
+            self._hidden += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._HIDDEN and self._hidden:
+            self._hidden -= 1
 
     def handle_data(self, data: str) -> None:
-        self.parts.append(data)
+        if not self._hidden:
+            self.parts.append(data)
 
 
 def _strip_html(raw: str | None) -> str | None:
@@ -76,11 +93,39 @@ def _pub_ts(raw: str | None) -> datetime | None:
         return None
     try:
         ts = parsedate_to_datetime(raw.strip())
-    except (TypeError, ValueError, IndexError):
-        return None
-    if ts is None:
-        return None
-    return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts.astimezone(UTC)
+        if ts is None:
+            return None
+        return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts.astimezone(UTC)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None  # the item is skipped, the feed is not
+
+
+class _Declaration(Exception):
+    pass
+
+
+def _refuse_declarations(body: bytes) -> None:
+    """An expat pass over the raw bytes (expat decodes them: UTF-16 included) refusing
+    any entity declaration and any internal DTD subset (and malformed XML)."""
+
+    def doctype(_name, _system_id, _public_id, has_internal_subset) -> None:
+        if has_internal_subset:
+            raise _Declaration("DTD internal subset not allowed")
+
+    def entity(*_args) -> None:
+        raise _Declaration("entity declarations not allowed")
+
+    parser = expat.ParserCreate()
+    parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
+    parser.StartDoctypeDeclHandler = doctype
+    parser.EntityDeclHandler = entity
+    parser.UnparsedEntityDeclHandler = entity
+    try:
+        parser.Parse(body, True)
+    except _Declaration as exc:
+        raise _FeedError(str(exc)) from None
+    except expat.ExpatError:
+        raise _FeedError("malformed XML") from None
 
 
 # tickers this short are matched only as written in UPPERCASE («sol», «ada» are words)
@@ -135,8 +180,7 @@ class RssNewsProvider(DataProvider):
 
     @staticmethod
     def _parse(body: bytes) -> list[ET.Element]:
-        if b"<!ENTITY" in body:
-            raise _FeedError("entity declarations not allowed")
+        _refuse_declarations(body)
         try:
             root = ET.fromstring(body)
         except ET.ParseError:
