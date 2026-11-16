@@ -670,6 +670,7 @@ class MarketDataRouter:
     async def _per_group(
         self, capability: Capability, symbols: list[str], key_args: dict, ttl: int,
         make_call, dumps, loads,
+        coverage: Callable[[Any], tuple[bool, Any]] | None = None,
     ) -> list:
         """Fetch per asset class and merge. A class with no enabled provider for the
         capability (nothing attempted) contributes nothing; a real failure raises."""
@@ -680,7 +681,7 @@ class MarketDataRouter:
             outcome = _Outcome()
             got = await self._fetch(
                 capability, asset_class, {"symbols": syms, **key_args}, ttl,
-                make_call(group), dumps, loads, outcome,
+                make_call(group), dumps, loads, outcome, coverage=coverage,
             )
             if got is _MISS:
                 if not outcome.attempted:
@@ -698,6 +699,8 @@ class MarketDataRouter:
             Capability.news, symbols, {"limit": limit}, CACHE_TTL["news"],
             lambda group: lambda p: p.get_news(self._map_items(p, group), limit),
             _dumps_list, _loads_list(NewsItem),
+            # an empty answer is not final: ask the next provider (all empty -> empty)
+            coverage=lambda result: (bool(result), 0),
         )
         seen: set[str] = set()
         unique = []

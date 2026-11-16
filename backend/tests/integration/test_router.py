@@ -856,3 +856,25 @@ async def test_bars_equity_weekend_gap_is_covered(env):
     FakeA.mode = datetime(2026, 1, 25, 14, 30, tzinfo=UTC)
     await router.get_bars("AAPL", Timeframe.h1, saturday, saturday + timedelta(days=30))
     assert len(_bar_calls(FakeB)) == 1
+
+
+async def test_news_empty_falls_through_to_next_provider(env, monkeypatch):
+    """An empty news answer is not final: the next provider in priority is asked; if every
+    provider is empty the answer is simply empty (never an error)."""
+    router, sm = env
+    async with sm() as s:
+        row = await s.get(ProviderPriority, (AssetClass.crypto, Capability.news))
+        row.providers = ["fake_b", "fake_a"]
+        await s.commit()
+
+    async def empty(self, symbols, limit):
+        type(self).calls.append(("news", [s for s, _ in symbols]))
+        return []
+
+    monkeypatch.setattr(FakeB, "get_news", empty)
+    news = await router.get_news(["BTC-USD"])
+    assert {n.id for n in news} == {"shared", "fake_a-1"}
+    assert FakeB.calls == [("news", ["BTC-USD"])] and FakeA.calls == [("news", ["BTC-USD"])]
+
+    monkeypatch.setattr(FakeA, "get_news", empty)
+    assert await router.get_news(["ETH-USD"]) == []
