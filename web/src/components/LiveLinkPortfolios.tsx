@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { ApiError } from "@/api/client";
+import { useApplyPresetAfterLink, useBrokerFeePreset } from "@/api/hooks/fees";
 import { useSetLivePortfolio } from "@/api/hooks/live";
 import { usePortfolios } from "@/api/hooks/portfolios";
 import type { LiveLink, LiveLinkPortfolio } from "@/api/types";
 import { AdminOnly } from "@/components/AdminOnly";
+import { FeePresetCheckbox } from "@/components/BrokerFeePreset";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FormField, selectClass } from "@/components/FormField";
 import { LiveTotpDialog } from "@/components/LiveTotpDialog";
@@ -40,6 +42,9 @@ function LinkDialog({ link, onClose }: { link: LiveLink; onClose: () => void }) 
   const portfolios = usePortfolios();
   const setPf = useSetLivePortfolio();
   const [selected, setSelected] = useState("");
+  const preset = useBrokerFeePreset(link.kind);
+  const [usePreset, setUsePreset] = useState(true);
+  const applyPreset = useApplyPresetAfterLink();
   const available = (portfolios.data ?? []).filter((p) => !p.broker_link_id && !p.archived_at && p.status !== "archived");
   const chosen = available.find((p) => p.id === selected);
   return (
@@ -58,6 +63,8 @@ function LinkDialog({ link, onClose }: { link: LiveLink; onClose: () => void }) 
           {
             onSuccess: () => {
               toast.success(`${chosen.name} collegato a ${link.name}`);
+              // a separate request after the link: never part of the link or arming itself
+              if (preset && usePreset) applyPreset(chosen.id, preset);
               onClose();
             },
           },
@@ -81,6 +88,7 @@ function LinkDialog({ link, onClose }: { link: LiveLink; onClose: () => void }) 
           ))}
         </select>
       </FormField>
+      <FeePresetCheckbox preset={preset} checked={usePreset} onChange={setUsePreset} />
       <CashRefusal error={setPf.error} currency={link.currency} />
     </LiveTotpDialog>
   );

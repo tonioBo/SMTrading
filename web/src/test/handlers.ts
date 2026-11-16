@@ -1,4 +1,20 @@
 import { http, HttpResponse } from "msw";
+import type { BrokerFeePreset } from "@/api/types";
+
+const preset = (broker_kind: string, broker: string, fx_pct: string): BrokerFeePreset => ({
+  broker_kind, broker, pct: "0", fixed: "0", fx_pct, note: "", source_note: "listino pubblico, da verificare",
+  rule_name_suffix: broker,
+});
+
+/** GET /api/brokers/fee-presets (the backend table fees/broker_presets.py). */
+export const FEE_PRESETS: BrokerFeePreset[] = [
+  preset("alpaca_paper", "Alpaca", "0"),
+  preset("alpaca_live", "Alpaca", "0"),
+  preset("t212_demo", "Trading 212", "0.15"),
+  preset("t212_live", "Trading 212", "0.15"),
+  preset("etoro_demo", "eToro", "0.5"),
+  preset("etoro_live", "eToro", "0.5"),
+];
 
 /** Requests every authenticated page makes (Layout, halt, mode and Paperclip banners): mocked once for all page tests. */
 export const commonHandlers = [
@@ -24,4 +40,6 @@ export const commonHandlers = [
   ),
   // «Impostazioni → Utenti» (admins): an empty list unless a test overrides it
   http.get("*/api/users", () => HttpResponse.json([])),
+  // link flows and the portfolio «Commissioni»: the brokers' fee presets
+  http.get("*/api/brokers/fee-presets", () => HttpResponse.json(FEE_PRESETS)),
 ];

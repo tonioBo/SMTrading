@@ -231,6 +231,8 @@ describe("LiveLinkWizard", () => {
     await user.click(confirm);
     await waitFor(() => expect(linkPuts).toEqual([{ link_id: "l1", totp: "123456" }]));
     expect(await within(dialog).findByText("codice TOTP non valido")).toBeInTheDocument();
+    // the Alpaca fee preset is proposed in the link step (applied only after a successful link)
+    expect(within(dialog).getByRole("checkbox", { name: /Usa le commissioni di Alpaca/ })).toBeChecked();
   });
 
   it("disarm is one click without totp", async () => {

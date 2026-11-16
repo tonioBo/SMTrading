@@ -523,6 +523,28 @@ export interface FeeRule {
 
 export type FeeRuleInput = Omit<FeeRule, "id" | "created_at">;
 
+/** GET /api/brokers/fee-presets: the fee preset of a broker kind (public price list, to verify). */
+export interface BrokerFeePreset {
+  broker_kind: string;
+  /** «Alpaca», «Trading 212», «eToro»: the rule is named «<portafoglio> – <broker>» */
+  broker: string;
+  pct: string;
+  fixed: string;
+  fx_pct: string;
+  note: string;
+  source_note: string;
+  rule_name_suffix: string;
+}
+
+/** POST /api/portfolios/{id}/fee-rule/apply-preset */
+export interface FeePresetApplyResult {
+  rule: FeeRule;
+  created: boolean;
+  /** the portfolio's previous portfolio-scope rules, now deactivated */
+  deactivated: { id: string; name: string }[];
+  preset: BrokerFeePreset;
+}
+
 export interface FeeSimulateRequest {
   portfolio_id: string;
   symbol: string;

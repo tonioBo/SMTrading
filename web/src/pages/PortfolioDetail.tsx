@@ -42,6 +42,7 @@ import { LIVE_BADGE, LIVE_STATE_LABELS, TRAILING_NOTE, isLiveReason, reduceOnlyR
 import { Movements } from "@/pages/PortfolioDetailMovements";
 import { Operations } from "@/pages/PortfolioDetailOperations";
 import { PortfolioSettings } from "@/pages/PortfolioDetailSettings";
+import { PortfolioFees } from "@/components/BrokerFeePreset";
 import { AdminFieldset, AdminOnly } from "@/components/AdminOnly";
 import { useIsAdmin } from "@/api/hooks/auth";
 
@@ -728,10 +729,11 @@ export default function PortfolioDetail() {
             <Risk portfolio={portfolio} />
           </TabsContent>
           {!archived && (
-            <TabsContent value="settings">
+            <TabsContent value="settings" className="space-y-4">
               <AdminFieldset>
                 <PortfolioSettings portfolio={portfolio} />
               </AdminFieldset>
+              <PortfolioFees portfolio={portfolio} />
             </TabsContent>
           )}
         </Tabs>
