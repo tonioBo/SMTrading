@@ -34,6 +34,7 @@ interface FormState {
   name: string;
   scope: FeeScope;
   scope_ref: string;
+  asset_class: AssetClass | "";
   side: FeeSide;
   currency: string;
   fixed: string;
@@ -49,7 +50,7 @@ interface FormState {
 function initialForm(rule: FeeRule | null): FormState {
   if (!rule) {
     return {
-      name: "", scope: "global", scope_ref: "", side: "both", currency: "EUR", fixed: "0", pct: "0",
+      name: "", scope: "global", scope_ref: "", asset_class: "", side: "both", currency: "EUR", fixed: "0", pct: "0",
       min_fee: "", max_fee: "", fx_pct: "0", priority: "0", active: true, tiers: [],
     };
   }
@@ -57,6 +58,7 @@ function initialForm(rule: FeeRule | null): FormState {
     name: rule.name,
     scope: rule.scope,
     scope_ref: rule.scope_ref ?? "",
+    asset_class: rule.asset_class ?? "",
     side: rule.side,
     currency: rule.currency,
     fixed: toInputDecimal(rule.fixed),
@@ -70,7 +72,7 @@ function initialForm(rule: FeeRule | null): FormState {
   };
 }
 
-const FORM_FIELDS = ["name", "scope", "scope_ref", "side", "currency", "fixed", "pct", "min_fee", "max_fee", "fx_pct", "priority", "tiers", "active"];
+const FORM_FIELDS = ["name", "scope", "scope_ref", "asset_class", "side", "currency", "fixed", "pct", "min_fee", "max_fee", "fx_pct", "priority", "tiers", "active"];
 
 /** Mounted per opening: the form is initialised from `rule` (null = new rule). */
 function RuleDialog({ rule, onClose }: { rule: FeeRule | null; onClose: () => void }) {
@@ -118,6 +120,7 @@ function RuleDialog({ rule, onClose }: { rule: FeeRule | null; onClose: () => vo
       name: form.name.trim(),
       scope: form.scope,
       scope_ref: form.scope === "global" ? null : form.scope_ref,
+      asset_class: form.scope === "portfolio" && form.asset_class ? form.asset_class : null,
       side: form.side,
       currency: form.currency.trim().toUpperCase(),
       fixed: fixed!,
@@ -149,7 +152,7 @@ function RuleDialog({ rule, onClose }: { rule: FeeRule | null; onClose: () => vo
             <select
               className={selectClass}
               value={form.scope}
-              onChange={(e) => setForm((f) => ({ ...f, scope: e.target.value as FeeScope, scope_ref: "" }))}
+              onChange={(e) => setForm((f) => ({ ...f, scope: e.target.value as FeeScope, scope_ref: "", asset_class: "" }))}
             >
               {(Object.keys(SCOPE_LABEL) as FeeScope[]).map((s) => (
                 <option key={s} value={s}>
@@ -175,6 +178,18 @@ function RuleDialog({ rule, onClose }: { rule: FeeRule | null; onClose: () => vo
                         {p.name}
                       </option>
                     ))}
+              </select>
+            </FormField>
+          )}
+          {form.scope === "portfolio" && (
+            <FormField label="Classe" error={fieldError("asset_class")} hint="vuoto = tutte le classi">
+              <select className={selectClass} value={form.asset_class} onChange={text("asset_class")}>
+                <option value="">Tutte</option>
+                {ASSET_CLASSES.map((c) => (
+                  <option key={c} value={c}>
+                    {assetClassLabel(c)}
+                  </option>
+                ))}
               </select>
             </FormField>
           )}
@@ -431,10 +446,15 @@ export default function Fees() {
     return `Portafoglio: ${p.name}${p.status === "archived" ? " (archiviato)" : ""}`;
   };
   const rows = data?.filter((r) => showInactive || r.active);
+  const ruleClass = (r: FeeRule): string => {
+    if (r.scope === "asset_class") return assetClassLabel(r.scope_ref ?? "");
+    return r.asset_class ? assetClassLabel(r.asset_class) : "tutte";
+  };
 
   const columns: Column<FeeRule>[] = [
     { key: "name", header: "Nome", sortValue: (r) => r.name, cell: (r) => r.name },
     { key: "applies", header: "Si applica a", sortValue: (r) => appliesTo(r), cell: (r) => appliesTo(r) },
+    { key: "class", header: "Classe", sortValue: (r) => ruleClass(r), cell: (r) => ruleClass(r) },
     { key: "side", header: "Lato", cell: (r) => SIDE_LABEL[r.side] },
     { key: "fee", header: "Commissione", cell: (r) => <FeeSummary rule={r} /> },
     { key: "fx", header: "Cambio %", align: "right", cell: (r) => <span className="num">{formatQty(r.fx_pct)}%</span> },

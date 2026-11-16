@@ -17,6 +17,7 @@ const rule: FeeRule = {
   name: "Globale",
   scope: "global",
   scope_ref: null,
+  asset_class: null,
   side: "both",
   currency: "EUR",
   fixed: "1",
@@ -109,7 +110,7 @@ describe("Fees", () => {
     await userEvent.setup().click(within(row).getByRole("button", { name: "scaglioni" }));
     expect(within(row).getByText("fino a 1.000: 0,2%; oltre: 0,1%")).toBeInTheDocument();
     expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual([
-      "Nome", "Si applica a", "Lato", "Commissione", "Cambio %", "Priorità", "Attiva", "Azioni",
+      "Nome", "Si applica a", "Classe", "Lato", "Commissione", "Cambio %", "Priorità", "Attiva", "Azioni",
     ]);
   });
 
@@ -135,6 +136,44 @@ describe("Fees", () => {
     expect(within(table).queryByText("Vecchia")).not.toBeInTheDocument();
     await user.click(screen.getByLabelText("Mostra disattivate"));
     expect(within(table).getByText("Vecchia")).toBeInTheDocument();
+  });
+
+  it("edits the «Classe» of a portfolio rule (empty = tutte), hidden for other scopes", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("*/api/fee-rules", () =>
+        HttpResponse.json([
+          rule,
+          { ...rule, id: "r6", name: "Alfa crypto", scope: "portfolio", scope_ref: "p1", asset_class: "crypto", tiers: null },
+          { ...rule, id: "r7", name: "Alfa tutte", scope: "portfolio", scope_ref: "p1", asset_class: null, tiers: null },
+        ]),
+      ),
+    );
+    renderApp("/commissioni");
+    const table = await screen.findByRole("table", { name: "Regole di commissione" });
+    const cls = (name: string) => within(within(table).getByText(name).closest("tr")!).getAllByRole("cell")[2].textContent;
+    await within(table).findByText("Alfa crypto");
+    expect([cls("Globale"), cls("Alfa crypto"), cls("Alfa tutte")]).toEqual(["tutte", "Crypto", "tutte"]);
+
+    await user.click(screen.getByRole("button", { name: "Modifica Alfa crypto" }));
+    let dialog = await screen.findByRole("dialog", { name: "Regola di commissione" });
+    expect(within(dialog).getByLabelText("Classe")).toHaveValue("crypto");
+    await user.selectOptions(within(dialog).getByLabelText("Classe"), "");
+    await user.click(within(dialog).getByRole("button", { name: "Salva" }));
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toMatchObject({ scope: "portfolio", scope_ref: "p1", asset_class: null });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Nuova regola" }));
+    dialog = await screen.findByRole("dialog", { name: "Regola di commissione" });
+    expect(within(dialog).queryByLabelText("Classe")).not.toBeInTheDocument(); // global
+    await user.type(within(dialog).getByLabelText("Nome"), "Solo crypto");
+    await user.selectOptions(within(dialog).getByLabelText("Portata"), "portfolio");
+    await user.selectOptions(within(dialog).getByLabelText("Riferimento"), "p1");
+    await user.selectOptions(within(dialog).getByLabelText("Classe"), "crypto");
+    await user.click(within(dialog).getByRole("button", { name: "Salva" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toMatchObject({ name: "Solo crypto", scope: "portfolio", scope_ref: "p1", asset_class: "crypto" });
   });
 
   it("forces the last tier to 'oltre' and rejects a missing limit client-side", async () => {
