@@ -14,6 +14,7 @@ import {
   ScrollText,
   Settings,
   ShieldAlert,
+  Target,
   Wallet,
   type LucideIcon,
 } from "lucide-react";
@@ -33,6 +34,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/portafogli", label: "Portafogli", icon: Wallet },
   { to: "/segnali", label: "Segnali", icon: Radar },
+  { to: "/strategie", label: "Strategie", icon: Target },
   { to: "/agenti", label: "Agenti", icon: Bot },
   { to: "/costi-agenti", label: "Costi agenti", icon: CircleDollarSign },
   { to: "/istruzioni-agenti", label: "Istruzioni agenti", icon: BookOpen },
