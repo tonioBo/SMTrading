@@ -12,6 +12,7 @@ import httpx
 import pytest
 import respx
 from sqlalchemy import select, update
+from sqlalchemy import text as sql
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from smtrading.activity.models import Activity, Decision
@@ -549,6 +550,20 @@ async def test_daily_summary_groups_decisions(maker):
             "Veti e approvazioni\n"
             "❌ acquisto TSLA — Prudente — troppo volatile (CEO)\n") in text
     assert "Allocazioni" not in text and "Altro" not in text
+
+
+async def test_decision_of_a_removed_agent_is_still_listed(maker):
+    """An agent row gone (outer join): the decision stays, «Agente rimosso» (plan 10, M4)."""
+    await _decisions(maker, [{"kind": "strategy", "summary": "Momentum su NVDA"}],
+                     at=rome(FRI, 9), agent="Ex")
+    async with maker() as s:  # no delete path exists: the FK is bypassed to simulate one
+        await s.execute(sql("SET LOCAL session_replication_role = replica"))
+        await s.execute(sql("DELETE FROM agents WHERE name = 'Ex'"))
+        await s.commit()
+    async with maker() as s:
+        [(out, _)] = await build_summary(s, "daily", rome(FRI, 18), tz=TZ)
+    assert "🧭 Decisioni di oggi (1)\nStrategie\n• Momentum su NVDA — generale " \
+           "(Agente rimosso)\n" in out
 
 
 async def test_decisions_capped_at_15(maker):
