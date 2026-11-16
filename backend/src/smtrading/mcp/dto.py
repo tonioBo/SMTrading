@@ -18,7 +18,7 @@ from typing import Any
 from smtrading.brokers.base import BROKER_REJECTED_MESSAGE
 from smtrading.brokers.live.protect import order_summary
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.common.fingerprints import FINGERPRINT
+from smtrading.common.fingerprints import has_fingerprint
 from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import Fill, Order
 from smtrading.instruments.models import Instrument
@@ -78,8 +78,17 @@ def _pick(obj: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     return {f: to_jsonable(getattr(obj, f)) for f in fields}
 
 
+# who placed an order: agents never learn that one was placed by hand in the portal (the
+# user's decision, plan 10): an admin order reads like an agent's; "system" stays
+AGENT_SOURCE, ADMIN_SOURCE = "agent", "admin"
+
+
 def order_dto(o: Order) -> dict[str, Any]:
-    return _pick(o, ORDER_FIELDS)
+    """ORDER_FIELDS; `source` "admin" reads as "agent" (the row keeps the truth)."""
+    out = _pick(o, ORDER_FIELDS)
+    if out["source"] == ADMIN_SOURCE:
+        out["source"] = AGENT_SOURCE
+    return out
 
 
 def fill_dto(f: Fill) -> dict[str, Any]:
@@ -253,10 +262,12 @@ def agent_safe(value: Any) -> Any:
 # real fills look the same; paper/demo broker hosts and kinds in any text (e.g. a
 # transport error kept as the reason of an unknown outcome) read as the live ones; a
 # broker text still giving the simulation away reads as a plain refusal; the dry-run
-# masking of `agent_safe` follows. Humans (portal, Telegram) keep everything.
+# masking of `agent_safe` follows; an order's `source` "admin" (in activity data) reads
+# as "agent", as in `order_dto`. Humans (portal, Telegram) keep everything.
 _FILL_SOURCES = frozenset({"sim", "broker"})
 # the fields holding a broker's refusal or error text (an order's reject_message, the
-# `message` of an order.rejected notification): one that still matches FINGERPRINT once
+# `message` of an order.rejected notification): one that still holds a simulation word
+# (`has_fingerprint`: «testo», «simultaneo» ... pass) once
 # the broker names are replaced (e.g. eToro's «Demo account ...») reads as a plain
 # broker refusal (AGENT_REJECT_MESSAGE)
 _BROKER_TEXT_KEYS = frozenset({"reject_message", "message"})
@@ -317,7 +328,9 @@ def _scrub(value: Any) -> Any:
             if k == "source" and v in _FILL_SOURCES:
                 continue
             v = _scrub(v)
-            if k in _BROKER_TEXT_KEYS and isinstance(v, str) and FINGERPRINT.search(v):
+            if k == "source" and v == ADMIN_SOURCE:
+                v = AGENT_SOURCE  # a manual admin order reads like an agent's
+            elif k in _BROKER_TEXT_KEYS and isinstance(v, str) and has_fingerprint(v):
                 v = AGENT_REJECT_MESSAGE  # a broker's own words gave the demo away
             out[k] = v
         return out

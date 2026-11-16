@@ -196,6 +196,16 @@ async def _broker_error_on(server, order_id: str) -> None:
         await s.commit()
 
 
+async def _admin_placed(server, order_id: str) -> None:
+    """The order as a manual order of the portal leaves it (`source` "admin")."""
+    from smtrading.engine.models import Order
+
+    async with _Db(server.db_url) as s:
+        await s.execute(update(Order).where(Order.id == uuid.UUID(order_id))
+                        .values(source="admin"))
+        await s.commit()
+
+
 async def _dry_run_tick(server, monkeypatch, order_id: str) -> None:
     """etoro_live_dry_run: one BrokerSync pass, as the worker runs it, on the in-memory
     fake behind the live gate: the market buy is intercepted (LiveDryRun) and rejected
@@ -259,6 +269,7 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
     await call("preview_order", {**order, "type": "market"})
     if isinstance(resting, dict) and "id" in resting:
         await call("cancel_order", {"order_id": resting["id"]})
+        await _admin_placed(mcp_server, resting["id"])  # reads like an agent's order
     await call("create_watchlist", {"name": "Crypto"})
     await call("create_alert", {"symbol": SYM, "condition": "price_above", "value": "60000"})
     await call("log_decision", {"kind": "strategy", "summary": "Compro BTC",
@@ -334,6 +345,7 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
     for tool, payload in outputs:
         text = json.dumps(payload, ensure_ascii=False)
         assert "etoro_demo" not in text and "/demo/" not in text, (tool, text[:300])
+        assert '"source": "admin"' not in text, (tool, text[:300])
         if flavor == "etoro_live_dry_run":
             assert "etoro_live" not in text, (tool, text[:300])
             assert all(c not in text for c in ETORO_CANARY.values()), tool
