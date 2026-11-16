@@ -100,6 +100,8 @@ describe("EquityHistoryCard", () => {
     expect(within(legend).getByText("-10,00 €")).toBeInTheDocument();
     expect(within(legend).queryByText("Vuoto")).toBeNull();
     expect(within(legend).getByText(/Obiettivo settimana \+2%/)).toBeInTheDocument();
+    expect(within(legend).getByText("variazione del valore (include depositi/prelievi)")).toBeInTheDocument();
+    expect(within(legend).getByText("Prudente").closest("li")).toHaveAttribute("title", "variazione del valore (include depositi/prelievi)");
     expect(screen.getByRole("img", { name: /dei portafogli \(%\)/ })).toBeInTheDocument();
     expect(screen.getByText("+2%")).toBeInTheDocument(); // a y tick
 

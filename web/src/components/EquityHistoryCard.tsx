@@ -13,6 +13,8 @@ function signed(v: number, places: number): string {
   return (v > 0 && /[1-9]/.test(text) ? "+" : "") + text;
 }
 
+const CHANGE_HINT = "variazione del valore (include depositi/prelievi)";
+
 const FORMAT: Record<Unit, { value: (v: number) => string; tick: (v: number, step: number) => string }> = {
   eur: {
     value: (v) => `${chartNumber(v, 2)} €`,
@@ -86,7 +88,7 @@ export function EquityHistoryCard({ portfolioId }: { portfolioId?: string }) {
             />
             <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm" aria-label="Legenda">
               {shown.map((p) => (
-                <li key={p.id} className="flex items-center gap-1.5">
+                <li key={p.id} className="flex items-center gap-1.5" title={CHANGE_HINT}>
                   <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: colors.get(p.id) }} />
                   <span>{p.name}</span>
                   <Pnl value={p.change_eur} pct={p.change_pct} />
@@ -98,6 +100,7 @@ export function EquityHistoryCard({ portfolioId }: { portfolioId?: string }) {
                   Obiettivo settimana {formatPct(data.goal_pct).replace(/,?0+%$/, "%")}
                 </li>
               )}
+              <li className="text-xs text-muted">{CHANGE_HINT}</li>
             </ul>
           </>
         )}
