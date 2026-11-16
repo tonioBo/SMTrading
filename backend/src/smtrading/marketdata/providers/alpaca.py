@@ -57,12 +57,19 @@ def _is_crypto(provider_symbol: str) -> bool:
     return "/" in provider_symbol
 
 
-def parse_alpaca_ws(msg_list: list, reverse_map: dict[str, str] | None = None) -> list[Quote]:
-    """Pure parser for a WS frame (a JSON array). Only quote messages (T == "q") yield quotes.
+def parse_alpaca_ws(
+    msg_list: list, reverse_map: dict[str, str] | None = None, state: dict[str, Quote] | None = None
+) -> list[Quote]:
+    """Pure parser for a WS frame (a JSON array) of quote (T == "q") and trade (T == "t")
+    messages, merged per symbol: a quote sets bid/ask keeping the last known trade price, a
+    trade sets last keeping the last known bid/ask; ts is the newest message time seen.
+    state: canonical -> last emitted Quote, kept across frames by the caller (one per socket).
     reverse_map: Alpaca symbol -> canonical; unmapped symbols fall back to "BTC/USD" -> "BTC-USD"."""
+    if state is None:
+        state = {}
     quotes: list[Quote] = []
     for msg in msg_list:
-        if not isinstance(msg, dict) or msg.get("T") != "q":
+        if not isinstance(msg, dict) or msg.get("T") not in ("q", "t"):
             continue
         symbol = msg.get("S")
         if not isinstance(symbol, str):
@@ -76,16 +83,19 @@ def parse_alpaca_ws(msg_list: list, reverse_map: dict[str, str] | None = None) -
         ts = _ts(msg.get("t"))
         if ts is None:
             continue
-        quotes.append(
-            Quote(
-                symbol=canonical,
-                bid=_price(msg.get("bp")),
-                ask=_price(msg.get("ap")),
-                last=None,
-                ts=ts,
-                provider="alpaca",
-            )
-        )
+        prev = state.get(canonical)
+        if prev is not None and prev.ts > ts:
+            ts = prev.ts  # a late message never moves the quote time backwards
+        if msg["T"] == "q":
+            bid, ask, last = _price(msg.get("bp")), _price(msg.get("ap")), prev.last if prev else None
+        else:
+            last = _price(msg.get("p"))
+            if last is None:
+                continue
+            bid, ask = (prev.bid, prev.ask) if prev else (None, None)
+        quote = Quote(symbol=canonical, bid=bid, ask=ask, last=last, ts=ts, provider="alpaca")
+        state[canonical] = quote
+        quotes.append(quote)
     return quotes
 
 
@@ -232,7 +242,9 @@ class AlpacaProvider(DataProvider):
             f"{WS_BASE}/v1beta3/crypto/us" if crypto else f"{WS_BASE}/v2/{self.feed}"
         )
         auth = {"action": "auth", "key": key_id, "secret": secret}
-        subscribe = {"action": "subscribe", "quotes": list(reverse)}
+        # trades too (free IEX and crypto feeds): quotes alone carry no last price
+        subscribe = {"action": "subscribe", "quotes": list(reverse), "trades": list(reverse)}
+        merged: dict[str, Quote] = {}
         try:
             async with websockets.connect(url) as ws:
                 async for raw in ws:
@@ -245,7 +257,8 @@ class AlpacaProvider(DataProvider):
                             await ws.send(json.dumps(auth))
                         elif kind == "success" and msg.get("msg") == "authenticated":
                             await ws.send(json.dumps(subscribe))
-                    for quote in parse_alpaca_ws(frame if isinstance(frame, list) else [frame], reverse):
+                    msgs = frame if isinstance(frame, list) else [frame]
+                    for quote in parse_alpaca_ws(msgs, reverse, merged):
                         yield quote
         except (TimeoutError, websockets.WebSocketException, OSError) as exc:
             raise ConnectionError(f"alpaca websocket: {exc}") from exc

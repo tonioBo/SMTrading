@@ -272,7 +272,7 @@ async def test_stream_auth_subscribe_two_quotes():
                     quotes.append(q)
     assert received == [
         {"action": "auth", "key": "KID", "secret": "SEC"},
-        {"action": "subscribe", "quotes": ["AAPL", "TSLA"]},
+        {"action": "subscribe", "quotes": ["AAPL", "TSLA"], "trades": ["AAPL", "TSLA"]},
     ]
     assert [q.symbol for q in quotes] == ["AAPL", "TSLA"] and quotes[1].ask == Decimal("911.6")
 
@@ -282,7 +282,8 @@ async def test_stream_crypto_maps_symbols_back():
         await ws.send('[{"T":"success","msg":"connected"}]')
         await ws.recv()
         await ws.send('[{"T":"success","msg":"authenticated"}]')
-        assert json.loads(await ws.recv())["quotes"] == ["BTC/USD"]
+        sub = json.loads(await ws.recv())
+        assert sub["quotes"] == ["BTC/USD"] and sub["trades"] == ["BTC/USD"]
         await ws.send(fixture("alpaca_ws_crypto_quote.json"))  # BAT/USD: not subscribed, dropped
         await ws.send('[{"T":"q","S":"BTC/USD","bp":1,"ap":2,"t":"2026-11-13T10:00:00Z"}]')
 
@@ -318,6 +319,61 @@ async def test_stream_handshake_failure_is_connection_error():
         with pytest.raises(ConnectionError):
             async for _ in p.stream([("AAPL", "AAPL")]):
                 pass
+
+
+def test_parse_alpaca_ws_merges_trades_and_quotes_per_symbol():
+    rev = {"SPY": "SPY", "QQQ": "QQQ"}
+    state: dict = {}
+    # a trade before any quote: last only
+    [a] = parse_alpaca_ws([{"T": "t", "S": "SPY", "i": 1, "x": "V", "p": 741.05, "s": 100,
+                            "t": "2026-11-16T15:00:00.1Z", "c": ["@"], "z": "B"}], rev, state)
+    assert (a.bid, a.ask, a.last) == (None, None, Decimal("741.05"))
+    assert a.ts == datetime(2026, 11, 16, 15, 0, 0, 100000, tzinfo=UTC)
+    # a quote keeps the last known trade price
+    [b] = parse_alpaca_ws([{"T": "q", "S": "SPY", "bx": "V", "bp": 741.0, "bs": 2, "ax": "V",
+                            "ap": 741.1, "as": 3, "t": "2026-11-16T15:00:01Z", "c": ["R"], "z": "B"}],
+                          rev, state)
+    assert (b.bid, b.ask, b.last) == (Decimal("741.0"), Decimal("741.1"), Decimal("741.05"))
+    assert b.ts == datetime(2026, 11, 16, 15, 0, 1, tzinfo=UTC)
+    # a trade keeps the last known bid/ask; symbols do not mix
+    [c, d] = parse_alpaca_ws([{"T": "t", "S": "SPY", "p": 741.2, "t": "2026-11-16T15:00:02Z"},
+                              {"T": "q", "S": "QQQ", "bp": 610, "ap": 611, "t": "2026-11-16T15:00:02Z"}],
+                             rev, state)
+    assert (c.symbol, c.bid, c.ask, c.last) == ("SPY", Decimal("741.0"), Decimal("741.1"), Decimal("741.2"))
+    assert c.ts == datetime(2026, 11, 16, 15, 0, 2, tzinfo=UTC)
+    assert (d.symbol, d.last) == ("QQQ", None)
+    # a late (older) message never moves the time backwards
+    [e] = parse_alpaca_ws([{"T": "q", "S": "SPY", "bp": 740.9, "ap": 741.3, "t": "2026-11-16T14:59:59Z"}],
+                          rev, state)
+    assert (e.bid, e.last, e.ts) == (Decimal("740.9"), Decimal("741.2"), datetime(2026, 11, 16, 15, 0, 2, tzinfo=UTC))
+    # a trade without a valid price or time is dropped
+    assert parse_alpaca_ws([{"T": "t", "S": "SPY", "p": 0, "t": "2026-11-16T15:00:03Z"},
+                            {"T": "t", "S": "SPY", "p": 742}], rev, state) == []
+
+
+async def test_stream_trades_fill_last_keeping_bid_ask():
+    async def handler(ws):
+        await ws.send('[{"T":"success","msg":"connected"}]')
+        await ws.recv()
+        await ws.send('[{"T":"success","msg":"authenticated"}]')
+        await ws.recv()
+        await ws.send('[{"T":"subscription","trades":["SPY"],"quotes":["SPY"]}]')
+        await ws.send('[{"T":"q","S":"SPY","bp":741.0,"ap":741.1,"t":"2026-11-16T15:00:00Z"}]')
+        await ws.send('[{"T":"t","S":"SPY","i":52983525029461,"x":"V","p":741.05,"s":10,'
+                      '"t":"2026-11-16T15:00:01Z","c":["@","I"],"z":"B"}]')
+
+    async with websockets.serve(handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        async with httpx.AsyncClient() as http:
+            p = AlpacaProvider({**CONFIG, "ws_url": f"ws://127.0.0.1:{port}"}, http)
+            quotes = []
+            with pytest.raises(ConnectionError):
+                async for q in p.stream([("SPY", "SPY")]):
+                    quotes.append(q)
+    assert [(q.bid, q.ask, q.last) for q in quotes] == [
+        (Decimal("741.0"), Decimal("741.1"), None),
+        (Decimal("741.0"), Decimal("741.1"), Decimal("741.05")),
+    ]
 
 
 def test_quotes_need_a_valid_timestamp(provider):
