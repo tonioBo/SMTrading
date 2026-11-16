@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from smtrading.admin.auth import DbSession, RedisClient, require_access
 from smtrading.admin.common import Quotes, _invalid, _transaction
 from smtrading.admin.schemas import (
+    FeePresetApplyIn,
     FeeRuleCreateIn,
     FeeRulePatchIn,
     FeeRuleSimulateIn,
@@ -22,6 +23,7 @@ from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import OrderSide, OrderType
 from smtrading.engine.service import PlaceOrderRequest, preview_order
+from smtrading.fees.broker_presets import apply_broker_preset, preset_dto, preset_for, presets_dto
 from smtrading.fees.calculator import compute_fx_fee, compute_trade_fee
 from smtrading.fees.models import FeeRule, FeeScope, FeeSide
 from smtrading.fees.resolver import load_rules, resolve_rule
@@ -289,3 +291,33 @@ async def simulate_rule(body: FeeRuleSimulateIn, session: DbSession, qs: Quotes)
         "fx_fee": decimal_to_str(fx_fee),
         "fx_currency": base,
     }
+
+
+# --- broker fee presets ------------------------------------------------------------------
+
+
+@router.get("/brokers/fee-presets")
+async def list_fee_presets() -> list[dict]:
+    """The fee preset of every broker kind (fees.broker_presets), with its source note."""
+    return presets_dto()
+
+
+@router.post("/portfolios/{portfolio_id}/fee-rule/apply-preset")
+async def apply_fee_preset(
+    portfolio_id: UUID, body: FeePresetApplyIn, session: DbSession, redis: RedisClient
+) -> dict:
+    """The broker's preset becomes the portfolio's fee rule «<portafoglio> – <broker>»
+    (created or updated); the portfolio's other active portfolio-scope rules are
+    deactivated. Never touches the broker link or the real-money state."""
+    preset = preset_for(body.broker_kind)
+    if preset is None:
+        raise _invalid("broker_kind", "broker senza commissioni predefinite")
+    async with _transaction(session, redis):
+        applied = await apply_broker_preset(session, portfolio_id, preset)
+        out = {
+            "rule": _rule_dto(applied.rule),
+            "created": applied.created,
+            "deactivated": [{"id": str(r.id), "name": r.name} for r in applied.deactivated],
+            "preset": preset_dto(body.broker_kind, preset),
+        }
+    return out

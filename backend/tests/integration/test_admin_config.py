@@ -414,6 +414,87 @@ async def test_fees_simulate_by_class_priority_and_portfolio_override(admin):
     assert r.status_code == 404
 
 
+# --- broker fee presets ------------------------------------------------------------------
+
+
+async def test_broker_fee_presets_list(admin):
+    r = await admin.client.get("/api/brokers/fee-presets")
+    assert r.status_code == 200, r.text
+    rows = {p["broker_kind"]: p for p in r.json()}
+    assert set(rows) == {"alpaca_paper", "alpaca_live", "t212_demo", "t212_live",
+                         "etoro_demo", "etoro_live"}
+    assert (rows["alpaca_live"]["pct"], rows["alpaca_live"]["fx_pct"]) == ("0", "0")
+    assert rows["t212_demo"]["fx_pct"] == "0.15" and rows["etoro_live"]["fx_pct"] == "0.5"
+    assert all(p["source_note"] == "listino pubblico, da verificare" for p in rows.values())
+
+
+async def test_apply_broker_fee_preset(admin):
+    """The rule «<portafoglio> – <broker>» is created (then updated, never duplicated); the
+    portfolio's other active portfolio-scope rules are deactivated, never deleted."""
+    c = admin.client
+    pf = await _portfolio(c)
+    pid, name = pf["id"], pf["name"]
+    old = (await c.post("/api/fee-rules", json={
+        "name": f"{name} – zero commissioni", "scope": "portfolio", "scope_ref": pid,
+    })).json()
+    other_pf = await _portfolio(c)
+    untouched = (await c.post("/api/fee-rules", json={
+        "name": "Altro portafoglio", "scope": "portfolio", "scope_ref": other_pf["id"],
+    })).json()
+    url = f"/api/portfolios/{pid}/fee-rule/apply-preset"
+
+    r = await c.post(url, json={"broker_kind": "t212_demo"})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    rule = out["rule"]
+    assert out["created"] is True
+    assert (rule["name"], rule["scope"], rule["scope_ref"]) == (
+        f"{name} – Trading 212", "portfolio", pid)
+    assert (rule["side"], rule["pct"], rule["fixed"], rule["fx_pct"], rule["active"]) == (
+        "both", "0", "0", "0.15", True)
+    assert rule["currency"] == pf["base_currency"]
+    assert out["deactivated"] == [{"id": old["id"], "name": old["name"]}]
+    assert out["preset"]["broker"] == "Trading 212"
+
+    rules = {x["id"]: x for x in (await c.get("/api/fee-rules")).json()}
+    assert rules[old["id"]]["active"] is False
+    assert rules[untouched["id"]]["active"] is True
+    sim = {"portfolio_id": pid, "asset_class": "us_equity", "side": "sell",
+           "notional": "1000", "currency": "USD"}
+    sim_out = (await c.post("/api/fees/simulate", json=sim)).json()
+    assert sim_out["rule_name"] == rule["name"] and sim_out["fee"] == "0"
+    assert D(sim_out["fx_fee"]) == D("1.2")  # 0.15% of 800 EUR
+
+    # applied again: the same rule, updated (a manual edit is overwritten)
+    await c.patch(f"/api/fee-rules/{rule['id']}", json={"fx_pct": "3", "active": False})
+    again = (await c.post(url, json={"broker_kind": "t212_live"})).json()
+    assert again["created"] is False and again["rule"]["id"] == rule["id"]
+    assert (again["rule"]["fx_pct"], again["rule"]["active"]) == ("0.15", True)
+    assert again["deactivated"] == []
+
+    # another broker: its own rule, the Trading 212 one deactivated
+    etoro = (await c.post(url, json={"broker_kind": "etoro_live"})).json()
+    assert etoro["rule"]["name"] == f"{name} – eToro" and etoro["rule"]["fx_pct"] == "0.5"
+    assert etoro["deactivated"] == [{"id": rule["id"], "name": rule["name"]}]
+    names = [x["name"] for x in (await c.get("/api/fee-rules")).json()
+             if x["scope_ref"] == pid]
+    assert sorted(names) == sorted([old["name"], rule["name"], etoro["rule"]["name"]])
+
+
+async def test_apply_broker_fee_preset_refusals(admin):
+    c = admin.client
+    pid = (await _portfolio(c))["id"]
+    url = f"/api/portfolios/{pid}/fee-rule/apply-preset"
+    r = await c.post(url, json={"broker_kind": "ibkr_live"})
+    assert r.status_code == 400 and r.json()["details"]["field"] == "broker_kind"
+    assert (await c.post(url, json={})).status_code in (400, 422)
+    r = await c.post(f"/api/portfolios/{uuid.uuid4()}/fee-rule/apply-preset",
+                     json={"broker_kind": "alpaca_paper"})
+    assert r.status_code == 404
+    before = len((await c.get("/api/fee-rules")).json())
+    assert before == 1  # nothing created by the refusals (only the seeded global rule)
+
+
 async def test_risk_profiles_count_active_portfolios(admin):
     c = admin.client
     profiles = (await c.get("/api/risk-profiles")).json()

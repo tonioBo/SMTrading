@@ -172,6 +172,12 @@ class FeeRuleSimulateIn(BaseModel):
     currency: str
 
 
+class FeePresetApplyIn(BaseModel):
+    """The broker kind whose fee preset becomes the portfolio's fee rule."""
+
+    broker_kind: str
+
+
 class RiskProfileCreateIn(BaseModel):
     name: str
     max_order_notional_eur: Num | None = None
