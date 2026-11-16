@@ -5,7 +5,7 @@ import { setupServer } from "msw/node";
 import { toast } from "sonner";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { QueryClient } from "@tanstack/react-query";
-import type { LiveLink, Order, Portfolio, Position, Transaction, Valuation } from "@/api/types";
+import type { Composition, LiveLink, Order, Portfolio, Position, Transaction, Valuation } from "@/api/types";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
 import { haltFixture } from "@/test/halts";
@@ -183,6 +183,35 @@ const liveLinkFixture: LiveLink = {
 };
 let liveLinks: LiveLink[] = [liveLinkFixture];
 
+const compositionFixture: Composition = {
+  as_of: "2026-11-16T21:00:00Z",
+  equity_eur: "880.22",
+  cash_eur: "380.22",
+  positions: [
+    {
+      symbol: "AMZN", name: "Amazon.com, Inc.", asset_class: "us_equity", market: "NASDAQ", currency: "USD",
+      qty: "0.51", avg_price: "232.1", last: "222.4", value_eur: "97.6", weight_pct: "11.09",
+      pnl_eur: "-4.26", pnl_pct: "-4.18", stale: false,
+    },
+    {
+      symbol: "ENI.MI", name: "Eni S.p.A.", asset_class: "eu_equity", market: "MTA", currency: "EUR",
+      qty: "30", avg_price: "13.1", last: "13.4", value_eur: "402.4", weight_pct: "45.72",
+      pnl_eur: "9", pnl_pct: "2.29", stale: false,
+    },
+  ],
+  by_asset_class: [
+    { key: "eu_equity", label: "Azioni EU", value_eur: "402.4", weight_pct: "45.72" },
+    { key: "cash", label: "Contante", value_eur: "380.22", weight_pct: "43.19" },
+    { key: "us_equity", label: "Azioni USA", value_eur: "97.6", weight_pct: "11.09" },
+  ],
+  by_currency: [
+    { key: "EUR", label: "EUR", value_eur: "782.62", weight_pct: "88.91" },
+    { key: "USD", label: "USD", value_eur: "97.6", weight_pct: "11.09" },
+  ],
+  unpriced_symbols: [],
+};
+let composition: Composition = compositionFixture;
+
 const server = setupServer(
   ...commonHandlers,
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
@@ -195,6 +224,7 @@ const server = setupServer(
     return HttpResponse.json(current);
   }),
   http.get("*/api/portfolios/p1/valuation", () => HttpResponse.json(valuation)),
+  http.get("*/api/portfolios/p1/composition", () => HttpResponse.json(composition)),
   http.get("*/api/portfolios/p1/positions", () => HttpResponse.json(positions.map((p) => ({ ...p, mark: positionsMark })))),
   http.get("*/api/portfolios/p1/performance", () =>
     HttpResponse.json({ series: [], return_pct: "5", max_drawdown_pct: "-2.5", sharpe: "1.234" }),
@@ -274,6 +304,7 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
   server.resetHandlers();
   current = portfolio;
+  composition = compositionFixture;
   positionsMark = "190.5";
   queryClient = null;
   txRequests = [];
@@ -333,6 +364,60 @@ describe("PortfolioDetail", () => {
     const cash = await screen.findByRole("list", { name: "Cash per valuta" });
     expect(within(cash).getByText("8.000,50 €")).toBeInTheDocument();
     expect(within(cash).getByText("1.200,00 $")).toBeInTheDocument();
+  });
+
+  it("shows the composition: donut with cash slice, groups and positions with weight and P&L", async () => {
+    renderApp("/portafogli/p1");
+    const card = await screen.findByRole("region", { name: "Composizione" });
+    const legend = await within(card).findByRole("list", { name: "Legenda composizione" });
+    const items = within(legend).getAllByRole("listitem").map((li) => li.textContent);
+    expect(items).toEqual(["AMZN11,1%", "ENI.MI45,7%", "Contante43,2%"]);
+    expect(screen.getByTestId("slice-cash")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Composizione per titolo" })).toHaveTextContent("880 €");
+    const byClass = screen.getByRole("list", { name: "Per mercato/tipo" });
+    expect(within(byClass).getByText("Azioni EU")).toBeInTheDocument();
+    expect(within(byClass).getByText("402,40 €")).toBeInTheDocument();
+    const byCcy = screen.getByRole("list", { name: "Per valuta" });
+    expect(within(byCcy).getByText("USD")).toBeInTheDocument();
+    expect(within(byCcy).getByText("782,62 €")).toBeInTheDocument();
+    const table = screen.getByRole("table", { name: "Composizione per titolo" });
+    const amzn = within(table).getByText("AMZN").closest("tr")!;
+    expect(within(amzn).getByText("222,40 $")).toBeInTheDocument();
+    expect(within(amzn).getByText("97,60 €")).toBeInTheDocument();
+    expect(within(amzn).getByText("-4,26 €")).toHaveClass("text-loss");
+    expect(within(amzn).getByText("11,1%")).toBeInTheDocument();
+  });
+
+  it("shows «Solo contante» when the portfolio holds no position", async () => {
+    composition = {
+      ...compositionFixture, equity_eur: "500", cash_eur: "500", positions: [],
+      by_asset_class: [{ key: "cash", label: "Contante", value_eur: "500", weight_pct: "100" }],
+      by_currency: [{ key: "EUR", label: "EUR", value_eur: "500", weight_pct: "100" }],
+    };
+    renderApp("/portafogli/p1");
+    expect(await screen.findByText("Solo contante")).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Legenda composizione" })).not.toBeInTheDocument();
+  });
+
+  it("shows a position without quote with dashes, never zero", async () => {
+    composition = {
+      ...compositionFixture,
+      equity_eur: null,
+      positions: [
+        compositionFixture.positions[1],
+        { ...compositionFixture.positions[0], last: null, value_eur: null, weight_pct: null, pnl_eur: null, pnl_pct: null },
+      ],
+      unpriced_symbols: ["AMZN"],
+    };
+    renderApp("/portafogli/p1");
+    const table = await screen.findByRole("table", { name: "Composizione per titolo" });
+    const amzn = within(table).getByText("AMZN").closest("tr")!;
+    expect(within(amzn).getByText("nessuna quotazione")).toBeInTheDocument();
+    expect(within(amzn).getAllByText("—")).toHaveLength(4);
+    expect(within(amzn).queryByText(/^0,00/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Senza quotazione: AMZN/)).toBeInTheDocument();
+    expect(screen.queryByTestId("slice-AMZN")).not.toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Composizione per titolo" })).toHaveTextContent("—");
   });
 
   it("disables Deposita while the request is pending and reuses the key on retry", async () => {

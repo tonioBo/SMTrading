@@ -75,6 +75,7 @@ from smtrading.portfolios.service import (
     withdraw,
 )
 from smtrading.risk.models import RiskProfile
+from smtrading.valuation.composition import portfolio_composition
 from smtrading.valuation.service import value_portfolio
 
 log = logging.getLogger("smtrading.admin.portfolios")
@@ -336,6 +337,15 @@ async def get_positions(
         {**position_valuation_dto(p), "side": "long" if p.qty > 0 else "short"}
         for p in v.positions
     ]
+
+
+@router.get("/portfolios/{portfolio_id}/composition")
+async def get_composition(
+    portfolio_id: UUID, session: DbSession, redis: RedisClient, qs: Quotes
+) -> dict:
+    """«Composizione»: positions with EUR value/weight/P&L, by asset class, by currency
+    (valuation.composition). A position without any quote has nulls, not zeros."""
+    return await portfolio_composition(session, qs, portfolio_id, redis=redis)
 
 
 @router.get("/portfolios/{portfolio_id}/performance")

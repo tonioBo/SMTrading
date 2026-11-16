@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { AMBIGUOUS_AMOUNT_MESSAGE, amountError, multiplyDecimal, normalizeAmount, subtractDecimal, toInputDecimal } from "@/lib/decimal";
+import { AMBIGUOUS_AMOUNT_MESSAGE, addDecimal, amountError, multiplyDecimal, normalizeAmount, subtractDecimal, toInputDecimal } from "@/lib/decimal";
+
+describe("addDecimal", () => {
+  it("adds plain decimal strings exactly, signs included", () => {
+    expect(addDecimal("0.1", "0.2")).toBe("0.3");
+    expect(addDecimal("10.5", "-12")).toBe("-1.5");
+    expect(addDecimal("-0.25", "0.25")).toBe("0");
+    expect(addDecimal("-1", "-2.5")).toBe("-3.5");
+    expect(addDecimal("x", "1")).toBeNull();
+  });
+});
 
 describe("subtractDecimal", () => {
   it("subtracts plain decimal strings exactly", () => {
