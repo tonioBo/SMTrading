@@ -19,8 +19,15 @@ async def catalog_fingerprint(mcp: MCPServer) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
-async def tool_catalog_fingerprint() -> str:
-    """The fingerprint of the SMTrading MCP server (the one the API serves)."""
-    from smtrading.mcp.server import build_mcp  # lazy: the worker imports this module
+_cached: str | None = None
 
-    return await catalog_fingerprint(build_mcp())
+
+async def tool_catalog_fingerprint() -> str:
+    """The fingerprint of the SMTrading MCP server (the one the API serves), computed once
+    per process (the catalog is code: it changes only with a new release)."""
+    global _cached
+    if _cached is None:
+        from smtrading.mcp.server import build_mcp  # lazy: the worker imports this module
+
+        _cached = await catalog_fingerprint(build_mcp())
+    return _cached

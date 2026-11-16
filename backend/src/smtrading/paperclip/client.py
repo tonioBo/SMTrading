@@ -1,7 +1,11 @@
-"""Read-only Paperclip client. Board keys cannot be scoped read-only in Paperclip, so the
-read-only rule is enforced here: `GetOnlyTransport` refuses every method but GET before
-any network I/O. Errors are short Italian texts that never contain the key."""
+"""Paperclip client, read-only but for one write. Board keys cannot be scoped read-only in
+Paperclip, so the rule is enforced here: `GetOnlyTransport` refuses every method but GET
+before any network I/O; a client built with `allow_session_reset=True` also lets through
+`POST /api/agents/{id}/runtime-state/reset-session` (the agents' session refresh after an
+MCP tool catalog change) and nothing else. Errors are short Italian texts that never
+contain the key."""
 
+import re
 from typing import Any, Self
 from urllib.parse import quote
 
@@ -13,6 +17,7 @@ from smtrading.paperclip.config import PaperclipConfig
 READ_ONLY_MESSAGE = "Paperclip: solo lettura"
 MAX_RUNS = 1000
 _ENVELOPES = ("items", "data", "results")
+SESSION_RESET_PATH = re.compile(r"^/api/agents/[^/]+/runtime-state/reset-session$")
 
 
 class PaperclipError(Exception):
@@ -24,11 +29,21 @@ class PaperclipError(Exception):
 
 
 class GetOnlyTransport(httpx.AsyncBaseTransport):
-    def __init__(self, inner: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(self, inner: httpx.AsyncBaseTransport | None = None, *,
+                 allow_session_reset: bool = False) -> None:
         self._inner = inner or httpx.AsyncHTTPTransport()
+        self._allow_session_reset = allow_session_reset
+
+    def _allowed(self, request: httpx.Request) -> bool:
+        if request.method == "GET":
+            return True
+        # the raw (still encoded) path: an id is one segment, "%2F" included
+        path = request.url.raw_path.split(b"?", 1)[0].decode("ascii", "replace")
+        return (self._allow_session_reset and request.method == "POST"
+                and SESSION_RESET_PATH.match(path) is not None)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        if request.method != "GET":
+        if not self._allowed(request):
             raise RuntimeError(READ_ONLY_MESSAGE)
         return await self._inner.handle_async_request(request)
 
@@ -49,14 +64,14 @@ def unwrap_list(body: Any, *names: str) -> list:
 
 class PaperclipClient:
     def __init__(self, cfg: PaperclipConfig, *, transport: httpx.AsyncBaseTransport | None = None,
-                 timeout: float = 10.0) -> None:
+                 timeout: float = 10.0, allow_session_reset: bool = False) -> None:
         if not cfg.complete:
             raise PaperclipError("configurazione incompleta: URL, id azienda e chiave board")
         register_secret(cfg.board_key or "")
         self._company = quote(str(cfg.company_id), safe="")
         self._http = httpx.AsyncClient(
             base_url=str(cfg.base_url).rstrip("/"),
-            transport=GetOnlyTransport(transport),
+            transport=GetOnlyTransport(transport, allow_session_reset=allow_session_reset),
             timeout=timeout,
             headers={"Authorization": f"Bearer {cfg.board_key}", "Accept": "application/json"},
             follow_redirects=False,
@@ -72,9 +87,12 @@ class PaperclipClient:
         await self._http.aclose()
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        return await self._request("GET", path, params={
+            k: v for k, v in (params or {}).items() if v is not None})
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         try:
-            r = await self._http.get(path, params={k: v for k, v in (params or {}).items()
-                                                   if v is not None})
+            r = await self._http.request(method, path, **kwargs)
         except httpx.TimeoutException:
             raise PaperclipError("timeout") from None
         except httpx.HTTPError:
@@ -106,6 +124,12 @@ class PaperclipClient:
         body = await self._get("/api/cli-auth/me")
         key_id = body.get("keyId") if isinstance(body, dict) else None
         return str(key_id) if key_id else None
+
+    async def reset_session(self, agent_id: str) -> Any:
+        """Clears the agent's Paperclip session (`sessionId` null): its next run starts a
+        new one, with the current MCP tool catalog. Needs `allow_session_reset=True`."""
+        path = f"/api/agents/{quote(str(agent_id), safe='')}/runtime-state/reset-session"
+        return await self._request("POST", path, json={})
 
     async def board_api_keys(self) -> list[dict]:
         body = await self._get("/api/board-api-keys")

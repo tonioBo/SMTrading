@@ -215,6 +215,10 @@ async def test_baseline_reconfirm_audited(admin):
     st = (await admin.client.get("/api/paperclip/status")).json()
     assert st["isolation"] == "changed" and st["changes"]["changed"] == ["p1"]
     assert st["enabled"] is True and st["consecutive_errors"] == 0
+    # the first pass stored the MCP tool catalog fingerprint: no session refresh pending
+    assert st["sessions"] == {"pending": False, "refreshed": 0, "waiting": [],
+                              "given_up": [], "last_error": None,
+                              "updated_at": st["sessions"]["updated_at"]}
     with _respx() as router:
         _mock(router, policies=[{**POLICY, "enabled": False}])
         r = await admin.client.post("/api/paperclip/baseline", json={})

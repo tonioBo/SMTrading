@@ -85,7 +85,7 @@ async def sm(reader_db, redis_url, monkeypatch):
     maker = async_sessionmaker(engine, expire_on_commit=False)
     async with maker() as s:
         await s.execute(delete(AppSetting).where(
-            AppSetting.key.in_(["paperclip", "paperclip_state"])))
+            AppSetting.key.in_(["paperclip", "paperclip_state", "paperclip_sessions"])))
         await s.execute(delete(AgentCostDay))
         await s.execute(text("delete from telegram_outbox"))
         await s.commit()

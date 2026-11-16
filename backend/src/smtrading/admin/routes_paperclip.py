@@ -37,6 +37,7 @@ from smtrading.paperclip.config import (
 )
 from smtrading.paperclip.models import AgentCostDay
 from smtrading.paperclip.reader import isolation_policies, key_expiring, set_baseline
+from smtrading.paperclip.sessions import load_sessions, sessions_dto
 from smtrading.performance.service import get_performance
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.risk.models import AppSetting
@@ -125,6 +126,7 @@ async def _status(session: AsyncSession) -> dict[str, Any]:
         "baseline_count": len(state["baseline"] or []),
         "key_expires_at": state["key_expires_at"],
         "key_expiring": key_expiring(state, datetime.now(UTC)),
+        "sessions": sessions_dto(await load_sessions(session)),
     }
 
 

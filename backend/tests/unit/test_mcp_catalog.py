@@ -1,6 +1,7 @@
 """The MCP tool catalog fingerprint: sha256 of the registered tools (name, description,
 input schema), independent of the registration order and stable across processes."""
 
+import asyncio
 import subprocess
 import sys
 
@@ -55,8 +56,8 @@ async def test_fingerprint_changes_with_description_schema_or_name():
         assert await catalog_fingerprint(_server(alpha, other)) != base
 
 
-async def test_smtrading_catalog_stable_across_processes():
-    here = await tool_catalog_fingerprint()
+def test_smtrading_catalog_stable_across_processes():
+    here = asyncio.run(tool_catalog_fingerprint())
     code = ("import asyncio; from smtrading.mcp.catalog import tool_catalog_fingerprint; "
             "print(asyncio.run(tool_catalog_fingerprint()))")
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,

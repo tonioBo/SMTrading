@@ -91,6 +91,19 @@ non serve piu':
 docker compose exec api python -m smtrading.cli agent deactivate smoke-agent
 ```
 
+### Nuovi strumenti: sessioni degli agenti ripartite da sole
+
+Un agente Paperclip tiene la sua sessione (e l'elenco degli strumenti ricevuto) tra un
+giro e l'altro. Quando una nuova versione di SMTrading cambia gli strumenti MCP (nomi,
+descrizioni o parametri), il worker se ne accorge (impronta sha256 del catalogo) e, se la
+lettura Paperclip e' configurata e attiva, azzera la sessione di ogni agente dell'azienda
+che non sta lavorando (`POST /api/agents/{id}/runtime-state/reset-session`, l'unica
+scrittura verso Paperclip). Gli agenti in esecuzione vengono ripresi ai controlli
+successivi (ogni 5 minuti); a lavoro finito arriva un solo messaggio Telegram «Strumenti
+degli agenti aggiornati: sessioni ripartite per N agenti». Alla prima installazione
+l'impronta viene solo memorizzata. Errori e agenti in attesa compaiono nello stato
+Paperclip del portale; un azzeramento che fallisce viene ritentato al massimo 3 volte.
+
 ## 4. Metodi
 
 Portafogli collegati a un broker paper/demo (pagina *Broker*): per l'agente gli ordini
