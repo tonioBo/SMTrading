@@ -162,3 +162,26 @@ def test_session_does_not_enable_yfinance_sqlite_caches(monkeypatch):
     monkeypatch.setattr(yahoo, "_shared_session", None)
     yahoo._session()
     assert calls == []  # sqlite caches lock up under concurrent threads ("database is locked")
+
+
+def test_daily_bars_keep_the_exchange_session_date(fake):
+    """Yahoo stamps a daily candle at local midnight: a Milan session of Fri 13/11 is
+    2026-11-13 00:00+01:00 = 12/11 23:00 UTC. Daily/weekly bars carry the session date
+    (00:00 UTC of the local day), so agents never read Friday's close as Thursday's."""
+    idx = pd.DatetimeIndex([pd.Timestamp("2026-11-13 00:00", tz="Europe/Rome")])
+    df = pd.DataFrame({"Open": [1.0], "High": [2.0], "Low": [0.5], "Close": [1.5],
+                       "Volume": [10]}, index=idx)
+    fake.script["history"] = [df, df]
+    [row] = _YF().history("A2A.MI", "1d", START, END)
+    assert row["ts"] == "2026-11-13T00:00:00+00:00"
+    [row] = _YF().history("A2A.MI", "1wk", START, END)
+    assert row["ts"] == "2026-11-13T00:00:00+00:00"
+
+
+def test_intraday_bars_stay_exact_utc(fake):
+    idx = pd.DatetimeIndex([pd.Timestamp("2026-11-13 09:00", tz="Europe/Rome")])
+    df = pd.DataFrame({"Open": [1.0], "High": [2.0], "Low": [0.5], "Close": [1.5],
+                       "Volume": [10]}, index=idx)
+    fake.script["history"] = [df]
+    [row] = _YF().history("A2A.MI", "60m", START, END)
+    assert row["ts"] == "2026-11-13T08:00:00+00:00"

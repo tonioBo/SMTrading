@@ -189,6 +189,18 @@ def screen_query(f: ScreenFilter) -> dict:
     return {"query": query, "limit": f.limit}
 
 
+_SESSION_INTERVALS = frozenset({"1d", "5d", "1wk", "1mo", "3mo"})
+
+
+def _bar_ts(local: datetime, interval: str) -> datetime:
+    """Intraday candles: the exact instant in UTC. Daily and longer: Yahoo stamps them at
+    the exchange's local midnight (a Milan Friday = Thursday 23:00 UTC), so they carry the
+    local session date at 00:00 UTC instead."""
+    if interval in _SESSION_INTERVALS and local.tzinfo is not None:
+        return datetime(local.year, local.month, local.day, tzinfo=UTC)
+    return local.astimezone(UTC) if local.tzinfo is not None else local.replace(tzinfo=UTC)
+
+
 class _YF:
     """Thin synchronous adapter over yfinance. Returns plain JSON-able structures (dicts, lists,
     strings, numbers; dates as ISO strings) so no pandas object leaves this class. Tests replace
@@ -223,7 +235,7 @@ class _YF:
             return [
                 self._clean(
                     {
-                        "ts": ts.to_pydatetime().astimezone(UTC),
+                        "ts": _bar_ts(ts.to_pydatetime(), interval),
                         "open": r["Open"],
                         "high": r["High"],
                         "low": r["Low"],
