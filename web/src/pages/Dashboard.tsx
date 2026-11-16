@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useDashboard, useLiveFeed, useWeeklyGoal, FEED_EVENT_LABELS } from "@/api/hooks/dashboard";
 import type { Dashboard as DashboardData, DashboardConnector, MarginAlert, WeeklyGoalProgress } from "@/api/types";
 import { EquityChart } from "@/components/EquityChart";
+import { EquityHistoryCard } from "@/components/EquityHistoryCard";
 import { HaltBanner } from "@/components/HaltBanner";
 import { KillSwitchButton } from "@/components/KillSwitchButton";
 import { Money } from "@/components/Money";
@@ -348,6 +349,7 @@ export default function Dashboard() {
             </Kpi>
           </div>
           {goal?.on && <WeeklyGoalCard goal={goal} />}
+          <EquityHistoryCard />
           <Card>
             <CardHeader>
               <CardTitle>Equity aggregata</CardTitle>
