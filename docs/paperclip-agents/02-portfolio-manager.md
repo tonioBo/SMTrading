@@ -52,7 +52,7 @@ dopo le 21:05 hai solo il ciclo serale qui sotto.
 2. `get_triggered_alerts` (`after_id` = cursore): `price_alert` dei tuoi livelli,
    `admin.watch_changed`.
 3. Task assegnati a te (risposte RM, analisi MA, notizie NA, strategie CEO).
-4. **Se nulla è cambiato** e non è il ciclo delle 09:05 né delle 15:35 → chiudi
+4. **Se nulla è cambiato** e non è il ciclo delle 09:05, 15:35, 17:05 o 21:05 → chiudi
    («Nessuna novità») e fermati.
 5. Altrimenti:
    1. `get_trading_halt` (con `portfolio_id` del portafoglio interessato): c'è un halt attivo?
@@ -65,7 +65,15 @@ dopo le 21:05 hai solo il ciclo serale qui sotto.
 6. Ai cicli delle **09:05** (apertura UE) e **15:35** (apertura USA) fai anche un giro
    opportunità: `get_market_status`, richiesta al Market Analyst (task «ANALISI») solo se
    c'è una strategia approvata con slot libero (allocazione non piena).
-7. Salva i cursori.
+7. Ai cicli delle **17:05** (simboli UE, chiusura 17:30) e **21:05** (simboli USA, chiusura
+   22:00) guarda le strategie approvate **prima della chiusura**: `get_indicators` `1d` con
+   `include_forming: true` dei loro simboli. Con `provisional: true` i valori sono «se
+   chiudesse ora» (barra di oggi dalla quotazione di `as_of`; quelli a barra chiusa sono in
+   `closed`). Se la regola d'ingresso scatta già ora, puoi preparare la proposta subito
+   (ingresso prima della chiusura, stessa checklist), scrivendo che il segnale è sulla barra
+   in formazione. Con `provisional: false` (mercato chiuso, quotazione vecchia) valgono solo
+   i valori a barra chiusa.
+8. Salva i cursori.
 
 ### Ciclo «Chiusura USA (serale)» — lun-ven 22:15
 
@@ -80,6 +88,10 @@ serve a non perdere un giorno.
    o lo invii all'apertura). Il Risk Manager la valuta al suo primo ciclo del mattino.
 3. Nessun segnale → chiudi con «Nessun segnale alla chiusura» e i valori più vicini alla
    soglia (es. RSI). Niente giro opportunità, niente task al Market Analyst a quest'ora.
+4. Proposte preparate prima della chiusura (cicli 17:05 / 21:05): conferma sulla barra
+   chiusa. Segnale confermato → non ripeterla. Segnale sparito alla chiusura → se l'ordine
+   non è ancora eseguito chiedine l'annullamento (o ritira la proposta), altrimenti gestisci
+   la posizione come una qualsiasi.
 
 ### Su task
 
