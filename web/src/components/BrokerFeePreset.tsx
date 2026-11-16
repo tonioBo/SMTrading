@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { useApplyFeePreset, useBrokerFeePreset, useFeeRules } from "@/api/hooks/fees";
-import type { BrokerFeePreset, Portfolio } from "@/api/types";
+import type { BrokerFeePreset, FeeRule, Portfolio } from "@/api/types";
 import { AdminOnly } from "@/components/AdminOnly";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
@@ -24,18 +24,20 @@ export function PresetEntries({ preset }: { preset: BrokerFeePreset }) {
 }
 
 /**
- * The «Usa le commissioni di <broker>» checkbox of a link flow (checked by default): the
- * admin confirms the broker's preset or keeps the portfolio's current fee rule. Nothing
- * for a broker without a preset.
+ * The «Usa le commissioni di <broker>» checkbox of a link flow (see `usePresetChoice` in
+ * api/hooks/fees for its default): the admin confirms the broker's preset or keeps the portfolio's current
+ * fee rules; the rules it would deactivate are listed. Nothing for a broker without a preset.
  */
 export function FeePresetCheckbox({
   preset,
   checked,
   onChange,
+  deactivated = [],
 }: {
   preset: BrokerFeePreset | undefined;
   checked: boolean;
   onChange: (checked: boolean) => void;
+  deactivated?: FeeRule[];
 }) {
   if (!preset) return null;
   return (
@@ -49,6 +51,11 @@ export function FeePresetCheckbox({
       <span>
         Usa le commissioni di {preset.broker}
         <PresetEntries preset={preset} />
+        {deactivated.length > 0 && (
+          <span className="block text-xs text-muted">
+            Vengono disattivate: {deactivated.map((r) => `«${r.name}»`).join(", ")}
+          </span>
+        )}
         <span className="block text-xs text-muted">Se togli la spunta restano le regole attuali del portafoglio.</span>
       </span>
     </label>

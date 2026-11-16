@@ -9,19 +9,25 @@ cannot be read (batch, then one by one, then the redis cache: `stale`) keeps `la
 `value_eur`, `pnl_*`, `distance_to_stop_pct` and `risk_at_stop_eur` null: never 0.
 Amounts are converted to EUR with qs.get_fx_rate(ccy, "EUR") (null when the rate fails).
 
-Protective orders are the resting orders (FILLABLE_STATUSES: a `held` bracket child
-still waits for its entry and covers nothing) on the opposite side of the position:
+Protective orders follow the protection alarm (`positions.protection.evaluate`): the
+resting orders (FILLABLE_STATUSES: a `held` bracket child still waits for its entry and
+covers nothing) on the opposite side of the position, not being canceled at the broker (a
+modify in flight still protects):
 - stop: stop / stop_limit / trailing_stop (price: stop_price, else the trailing level
   from trail_ref_price); with several, the one nearest to the price (highest for a long);
 - target: a limit order, preferring the stop's OCO / bracket sibling, else the nearest.
-`protection`: "senza stop" without a stop, "scade oggi" when the stop or the target is
-tif day while the market is open, else "ok".
+`protection`: "senza stop" without a stop, "copre parziale" when the stops' remaining
+quantity is less than the position's, "scade oggi" when the stop or the target is tif day
+while the market is open, else "ok".
 
 `risk_at_stop_eur` is what the position loses from the current price to its stop
 (>= 0). Per portfolio `risk_at_stop_eur` sums the known ones; `daily_loss_limit_eur` is
 the effective risk profile's limit (the lowest of max_daily_loss_eur and
-max_daily_loss_pct of today's day_open equity, else of the current equity, else of the
-latest snapshot), null when unknown or the profile sets none; `risk_pct_of_limit` = risk / limit * 100.
+max_daily_loss_pct of today's day_open equity, else of the current equity (cash,
+collateral and margin loan plus the positions' values computed here: no second
+valuation), else of the latest snapshot), null when unknown or the profile sets none;
+`risk_pct_of_limit` = risk / limit * 100. Per portfolio `unprotected` and `partial_cover`
+count the "senza stop" and "copre parziale" positions.
 """
 
 import uuid
@@ -36,7 +42,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from smtrading.common.errors import SMTError
 from smtrading.common.money import quantize_money
 from smtrading.corporate.snapshots import _day_open, local_date
-from smtrading.engine.models import FILLABLE_STATUSES, Order, OrderSide, OrderType, TimeInForce
+from smtrading.engine.models import (
+    FILLABLE_STATUSES,
+    BrokerState,
+    Order,
+    OrderSide,
+    OrderType,
+    TimeInForce,
+)
 from smtrading.engine.quotesource import QuoteSource
 from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
@@ -48,10 +61,11 @@ from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.positions.models import Position
 from smtrading.risk.models import EquitySnapshot
 from smtrading.risk.profiles import effective_risk_profile
-from smtrading.valuation.service import mark_price, value_portfolio
+from smtrading.valuation.service import mark_price
 
 OK = "ok"
 NO_STOP = "senza stop"
+PARTIAL = "copre parziale"
 EXPIRES_TODAY = "scade oggi"
 STOP_TYPES = (OrderType.stop, OrderType.stop_limit, OrderType.trailing_stop)
 _PREC = 60
@@ -119,6 +133,16 @@ def _mark(quote: Quote | None) -> Decimal | None:
         return None
 
 
+def is_active_exit(o: Order) -> bool:
+    """A resting order that can fill now and is not being canceled (the alarm's rule)."""
+    return o.status in FILLABLE_STATUSES and o.broker_status != BrokerState.CANCEL_REQUESTED
+
+
+def stop_level(o: Order) -> Decimal | None:
+    """The stop price, else (trailing stop) the level from trail_ref_price."""
+    return _stop_price(o)
+
+
 def _stop_price(o: Order) -> Decimal | None:
     if o.stop_price is not None:
         return o.stop_price
@@ -163,8 +187,8 @@ def _pick_target(orders: list[Order], stop: Order | None, long: bool) -> Order |
     return (min if long else max)(limits, key=lambda o: o.limit_price)
 
 
-async def _daily_limit(session, qs, portfolio: Portfolio, now: datetime, redis
-                       ) -> Decimal | None:
+async def _daily_limit(session, portfolio: Portfolio, now: datetime,
+                       equity: Decimal | None) -> Decimal | None:
     profile = await effective_risk_profile(session, portfolio)
     if profile is None:
         return None
@@ -175,14 +199,12 @@ async def _daily_limit(session, qs, portfolio: Portfolio, now: datetime, redis
         snap = await _day_open(session, portfolio.id, local_date(portfolio, now))
         start: Decimal | None = snap.equity_eur if snap is not None else None
         if start is None:
-            try:
-                start = (await value_portfolio(session, qs, portfolio.id, redis=redis)
-                         ).equity_raw
-            except SMTError:  # a position without any quote: the latest snapshot
-                start = await session.scalar(
+            start = equity
+        if start is None:  # a position without a quote or a rate: the latest snapshot
+            start = await session.scalar(
                     select(EquitySnapshot.equity_eur)
-                    .where(EquitySnapshot.portfolio_id == portfolio.id)
-                    .order_by(EquitySnapshot.ts.desc()).limit(1))
+                .where(EquitySnapshot.portfolio_id == portfolio.id)
+                .order_by(EquitySnapshot.ts.desc()).limit(1))
         if start is not None and start > 0:
             with localcontext() as ctx:
                 ctx.prec = _PREC
@@ -200,14 +222,19 @@ async def open_positions(
         .order_by(Portfolio.name)))
     by_id = {p.id: p for p in portfolios}
     held: dict[uuid.UUID, dict[str, Decimal]] = {}
+    money: dict[uuid.UUID, list[tuple[str, Decimal]]] = {}  # cash, collateral, margin loan
     if by_id:
-        for pid, sym, qty in (await session.execute(
-            select(Account.portfolio_id, Account.asset, AccountBalance.balance)
+        for pid, kind, asset, balance in (await session.execute(
+            select(Account.portfolio_id, Account.kind, Account.asset, AccountBalance.balance)
             .join(AccountBalance, AccountBalance.account_id == Account.id)
-            .where(Account.kind == AccountKind.position, Account.portfolio_id.in_(list(by_id)),
-                   AccountBalance.balance != 0)
+            .where(Account.kind.in_([AccountKind.position, AccountKind.cash,
+                                     AccountKind.collateral, AccountKind.margin_loan]),
+                   Account.portfolio_id.in_(list(by_id)), AccountBalance.balance != 0)
         )).all():
-            held.setdefault(pid, {})[sym] = qty
+            if kind == AccountKind.position:
+                held.setdefault(pid, {})[asset] = balance
+            else:
+                money.setdefault(pid, []).append((asset, balance))
     symbols = sorted({s for h in held.values() for s in h})
     instruments = {i.symbol: i for i in await session.scalars(
         select(Instrument).where(Instrument.symbol.in_(symbols)))} if symbols else {}
@@ -220,7 +247,8 @@ async def open_positions(
                                 Order.status.in_(FILLABLE_STATUSES))
             .order_by(Order.created_at, Order.id)
         ):
-            orders.setdefault((o.portfolio_id, o.symbol), []).append(o)
+            if is_active_exit(o):
+                orders.setdefault((o.portfolio_id, o.symbol), []).append(o)
     quotes, stale = await _quotes(qs, symbols, redis)
     fx = _Fx(qs, {"EUR": Decimal(1)})
     open_markets: dict[str, bool] = {}
@@ -240,7 +268,7 @@ async def open_positions(
         risk_sum = Decimal(0)
         value_sum: Decimal | None = Decimal(0)
         pnl_sum: Decimal | None = Decimal(0)
-        unprotected = expiring = unknown_risk = 0
+        unprotected = partial = expiring = unknown_risk = 0
         count = 0
         for sym, qty in sorted(held.get(p.id, {}).items()):
             count += 1
@@ -266,9 +294,14 @@ async def open_positions(
                     risk = max((mark - stop_px) * qty, Decimal(0))
             value_eur, pnl_eur = await fx.eur(value, ccy), await fx.eur(pnl, ccy)
             risk_eur = await fx.eur(risk, ccy)
+            covered = sum((o.qty - (o.filled_qty or Decimal(0)) for o in mine
+                           if o.type in STOP_TYPES and o.qty is not None), Decimal(0))
             if stop is None:
                 protection = NO_STOP
                 unprotected += 1
+            elif covered < abs(qty):
+                protection = PARTIAL
+                partial += 1
             elif instr is not None and is_open(instr.market) and TimeInForce.day in (
                     stop.tif, target.tif if target else None):
                 protection = EXPIRES_TODAY
@@ -298,13 +331,18 @@ async def open_positions(
             })
         if not count:
             continue
-        limit = await _daily_limit(session, qs, p, now, redis)
+        equity = value_sum
+        for ccy, amount in money.get(p.id, []):
+            part = await fx.eur(amount, ccy)
+            equity = None if equity is None or part is None else equity + part
+        limit = await _daily_limit(session, p, now, equity)
         totals.append({
             "portfolio_id": p.id, "portfolio_name": p.name,
             **admin_mode_fields(p, links.get(p.broker_link_id)),
             "positions": count, "value_eur": _money(value_sum), "pnl_eur": _money(pnl_sum),
             "risk_at_stop_eur": _money(risk_sum), "risk_unknown": unknown_risk,
-            "unprotected": unprotected, "expiring_today": expiring,
+            "unprotected": unprotected, "partial_cover": partial,
+            "expiring_today": expiring,
             "daily_loss_limit_eur": _money(limit),
             "risk_pct_of_limit": _pct(risk_sum / limit * 100) if limit else None,
         })

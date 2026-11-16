@@ -143,7 +143,7 @@ export default function Strategies() {
           <Card>
             <CardContent className="pt-6">
               <p className="mb-3 text-xs text-muted">
-                Risultati lordi in euro; i costi (commissioni e cambio) sono a parte e già tolti dal totale. Le uscite chiudono le entrate più vecchie (FIFO).
+                Risultati lordi in euro; i costi (commissioni e cambio) sono a parte e già tolti dal totale. Realizzato e costi al cambio di oggi. Le uscite chiudono le entrate più vecchie (FIFO).
               </p>
               <Table aria-label="Risultati per strategia">
                 <TableHeader>

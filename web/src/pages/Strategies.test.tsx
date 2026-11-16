@@ -74,6 +74,7 @@ describe("Strategies", () => {
     renderApp("/strategie");
     expect(await screen.findByRole("heading", { name: "Strategie" })).toBeInTheDocument();
     const table = await screen.findByRole("table", { name: "Risultati per strategia" });
+    expect(screen.getByText(/Realizzato e costi al cambio di oggi/)).toBeInTheDocument();
     const rows = within(table).getAllByRole("row").slice(1);
     expect(rows).toHaveLength(2);
     const [str, none] = rows;

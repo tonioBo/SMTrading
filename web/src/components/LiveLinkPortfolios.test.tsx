@@ -55,6 +55,12 @@ let links: LiveLink[] = [];
 let puts: { id: string; body: unknown }[] = [];
 let putReply: () => Response = () => HttpResponse.json({});
 let applies: { id: string; body: unknown }[] = [];
+let feeRules: Record<string, unknown>[] = [];
+const rule = (name: string, over: Record<string, unknown> = {}) => ({
+  id: name, name, scope: "portfolio", scope_ref: "p3", asset_class: null, side: "both", currency: "EUR",
+  fixed: "0", pct: "0", min_fee: null, max_fee: null, tiers: null, fx_pct: "0", priority: 0, active: true,
+  created_at: "2026-11-01T10:00:00Z", ...over,
+});
 
 const server = setupServer(
   ...commonHandlers,
@@ -76,6 +82,7 @@ const server = setupServer(
     puts.push({ id: String(params.id), body: await request.json() });
     return putReply();
   }),
+  http.get("*/api/fee-rules", () => HttpResponse.json(feeRules)),
   http.post("*/api/portfolios/:id/fee-rule/apply-preset", async ({ request, params }) => {
     applies.push({ id: String(params.id), body: await request.json() });
     return HttpResponse.json({ rules: [], created: [], deactivated: [], preset: {} });
@@ -89,6 +96,7 @@ afterEach(() => {
   puts = [];
   putReply = () => HttpResponse.json({});
   applies = [];
+  feeRules = [];
 });
 afterAll(() => server.close());
 
@@ -167,6 +175,36 @@ describe("LiveLinkPortfolios", () => {
     await waitFor(() => expect(puts).toHaveLength(1));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(applies).toEqual([]);
+  });
+
+  it("fee preset off by default when the portfolio has its own rules; lists what it deactivates", async () => {
+    links = [liveLink()];
+    feeRules = [rule("Libero – mia regola"), rule("Libero – vecchia", { active: false }), rule("Altro", { scope_ref: "p9" })];
+    const user = userEvent.setup();
+    renderApp("/broker");
+    const box = await section();
+    await user.click(within(box).getByRole("button", { name: "Collega un portafoglio" }));
+    const dialog = await screen.findByRole("dialog", { name: "Collegare un portafoglio a T212 vero?" });
+    await waitFor(() => expect(within(dialog).getAllByRole("option")).toHaveLength(2));
+    await user.selectOptions(within(dialog).getByLabelText("Portafoglio da collegare"), "p3");
+    const check = within(dialog).getByRole("checkbox", { name: /Usa le commissioni di Trading 212/ });
+    await waitFor(() => expect(check).not.toBeChecked());
+    expect(dialog).toHaveTextContent("Vengono disattivate: «Libero – mia regola»");
+    expect(dialog).not.toHaveTextContent("vecchia");
+  });
+
+  it("fee preset on by default over the seeded zero-commission rule", async () => {
+    links = [liveLink()];
+    feeRules = [rule("Libero – zero commissioni")];
+    const user = userEvent.setup();
+    renderApp("/broker");
+    const box = await section();
+    await user.click(within(box).getByRole("button", { name: "Collega un portafoglio" }));
+    const dialog = await screen.findByRole("dialog", { name: "Collegare un portafoglio a T212 vero?" });
+    await waitFor(() => expect(within(dialog).getAllByRole("option")).toHaveLength(2));
+    await user.selectOptions(within(dialog).getByLabelText("Portafoglio da collegare"), "p3");
+    expect(await within(dialog).findByText(/Vengono disattivate: «Libero – zero commissioni»/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("checkbox", { name: /Usa le commissioni di Trading 212/ })).toBeChecked();
   });
 
   it("a refused link applies no fee preset", async () => {

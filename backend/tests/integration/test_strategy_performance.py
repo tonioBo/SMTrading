@@ -195,7 +195,9 @@ async def test_api_viewer_reads(env, redis_url):
 
     lifespan = asyncio.create_task(run_lifespan())
     await asyncio.wait_for(started.wait(), 15)
+    from smtrading.admin.routes_strategies import CACHE_KEY, CACHE_TTL_S
     redis = Redis.from_url(redis_url)
+    await redis.delete(CACHE_KEY)
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
@@ -204,6 +206,11 @@ async def test_api_viewer_reads(env, redis_url):
             r = await c.get("/api/strategies/performance")
             assert r.status_code == 200, r.text
             body = r.json()
+            # polled every minute: the answer is cached, computed once per CACHE_TTL_S
+            assert 0 < await redis.ttl(CACHE_KEY) <= CACHE_TTL_S
+            again = await c.get("/api/strategies/performance")
+            assert again.json() == body
+        await redis.delete(CACHE_KEY)
     finally:
         stop.set()
         await lifespan

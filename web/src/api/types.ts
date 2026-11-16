@@ -1334,7 +1334,7 @@ export interface ProtectiveLeg {
   tif: "day" | "gtc";
 }
 
-export type Protection = "ok" | "senza stop" | "scade oggi";
+export type Protection = "ok" | "senza stop" | "copre parziale" | "scade oggi";
 
 export interface OpenPosition {
   portfolio_id: string;
@@ -1374,6 +1374,8 @@ export interface OpenPositionsPortfolio {
   /** stops whose loss cannot be computed (no quote / FX) */
   risk_unknown: number;
   unprotected: number;
+  /** positions whose stops cover less than their quantity */
+  partial_cover: number;
   expiring_today: number;
   daily_loss_limit_eur: string | null;
   risk_pct_of_limit: string | null;

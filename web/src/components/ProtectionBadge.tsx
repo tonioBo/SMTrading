@@ -4,6 +4,7 @@ import { StatusBadge, type StatusTone } from "@/components/StatusBadge";
 const PROTECTION: Record<Protection, { text: string; tone: StatusTone; hint: string }> = {
   ok: { text: "🟢 protetta", tone: "ok", hint: "stop attivo valido" },
   "scade oggi": { text: "🟠 scade oggi", tone: "warn", hint: "lo stop o il target è giornaliero: scade alla chiusura di oggi" },
+  "copre parziale": { text: "🟠 copre parziale", tone: "warn", hint: "gli stop attivi coprono solo una parte della quantità" },
   "senza stop": { text: "🔴 senza stop", tone: "danger", hint: "nessuno stop attivo sulla posizione" },
 };
 

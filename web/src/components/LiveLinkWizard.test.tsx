@@ -61,6 +61,7 @@ const server = setupServer(
   ...commonHandlers,
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: true })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
+  http.get("*/api/fee-rules", () => HttpResponse.json([])),
   http.get("*/api/broker-links", () =>
     // the paper list also returns the real-money links: they are shown only in their section
     HttpResponse.json([

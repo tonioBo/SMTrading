@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { toast } from "sonner";
 import { apiFetch } from "@/api/client";
 import { errorMessage } from "@/lib/errors";
+import { presetRuleName } from "@/lib/feePreset";
 import type {
   BrokerFeePreset,
   FeePresetApplyResult,
@@ -91,4 +93,34 @@ export function useApplyPresetAfterLink() {
     onError: (err) => toast.error(`Portafoglio collegato, ma commissioni non applicate: ${errorMessage(err)}`),
   });
   return (portfolioId: string, preset: BrokerFeePreset) => apply.mutate({ portfolioId, preset });
+}
+
+/** The rule every new portfolio gets («<portafoglio> – zero commissioni»). */
+const SEEDED_FEE_SUFFIX = "– zero commissioni";
+
+/**
+ * The «Usa le commissioni di <broker>» choice of a link flow for the chosen portfolio:
+ * the portfolio's active portfolio-scope rules that applying the preset deactivates (its
+ * own preset rules are updated, not deactivated) and whether the box starts checked: only
+ * when there is none or the only one is the seeded «– zero commissioni» rule, so rules
+ * the admin set are never replaced by default. While the rules load (or fail) a chosen
+ * portfolio starts unchecked. Once the admin ticks or unticks the box, that choice stays.
+ */
+export function usePresetChoice(
+  preset: BrokerFeePreset | undefined,
+  portfolio: { id: string; name: string } | undefined,
+) {
+  const rules = useFeeRules();
+  const [choice, setChoice] = useState<boolean | null>(null);
+  const presetNames = new Set(portfolio && preset ? preset.entries.map((e) => presetRuleName(portfolio.name, preset, e)) : []);
+  const deactivated = portfolio
+    ? (rules.data ?? []).filter(
+        (r) => r.scope === "portfolio" && r.scope_ref === portfolio.id && r.active && !presetNames.has(r.name),
+      )
+    : [];
+  const byDefault = !portfolio
+    ? true
+    : rules.isSuccess &&
+      (deactivated.length === 0 || (deactivated.length === 1 && deactivated[0].name.trimEnd().endsWith(SEEDED_FEE_SUFFIX)));
+  return { checked: choice ?? byDefault, setChecked: setChoice, deactivated };
 }

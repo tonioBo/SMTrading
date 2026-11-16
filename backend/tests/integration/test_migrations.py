@@ -393,3 +393,29 @@ async def test_0030_fee_rule_asset_class_reversible(fresh_db):
     await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0029")
     assert "asset_class" not in await columns()
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+
+
+async def test_0030_downgrade_deactivates_asset_class_rules(fresh_db):
+    """0030 downgrade: a rule limited to one asset class would cover every class once the
+    column is gone, so it is deactivated first; the other rules are untouched."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    engine = make_engine(fresh_db)
+    ins = text(
+        "insert into fee_rules (id, name, scope, scope_ref, asset_class, side, currency,"
+        " fixed, pct, fx_pct, priority, active) values (gen_random_uuid(), :n, 'portfolio',"
+        " 'p1', :ac, 'both', 'EUR', 1, 0, 0, 0, true)")
+    async with engine.begin() as conn:
+        await conn.execute(ins, {"n": "zz-crypto", "ac": "crypto"})
+        await conn.execute(ins, {"n": "zz-all", "ac": None})
+    await engine.dispose()
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0029")
+    engine = make_engine(fresh_db)
+    async with engine.connect() as conn:
+        got = dict((await conn.execute(text(
+            "select name, active from fee_rules where name like 'zz-%'"))).all())
+    await engine.dispose()
+    assert got == {"zz-crypto": False, "zz-all": True}
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")

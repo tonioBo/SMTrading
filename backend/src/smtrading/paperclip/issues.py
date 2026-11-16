@@ -5,7 +5,9 @@ reader's client stays GET-only. Errors are short Italian texts that never contai
 
 Endpoints (verified on the real server): `GET /api/companies/{id}/agents` (id, name) and
 `POST /api/companies/{id}/issues` with {title, description, status, priority,
-assigneeAgentId} -> {identifier, ...}."""
+assigneeAgentId} -> {identifier, ...}; `GET /api/companies/{id}/issues` (a list of {id,
+identifier, title, status}) is read after a timed-out POST, which may have created the
+issue anyway."""
 
 from typing import Any, Self
 from urllib.parse import quote
@@ -18,6 +20,7 @@ from smtrading.paperclip.config import PaperclipConfig
 
 WRITE_REFUSED = "Paperclip: scrittura non consentita"
 RISK_MANAGER = "Risk Manager"
+CLOSED_STATUSES = frozenset({"done", "cancelled", "canceled"})
 
 
 class IssuesOnlyTransport(httpx.AsyncBaseTransport):
@@ -98,3 +101,15 @@ class PaperclipIssues:
         if not ident:
             raise PaperclipError("risposta inattesa")
         return str(ident)
+
+    async def open_issue_with_title(self, title: str) -> str | None:
+        """The identifier (else id) of an open issue (not done or cancelled) titled
+        exactly `title`, or None."""
+        body = await self._call("GET", f"{self._company_path}/issues")
+        for issue in unwrap_list(body, "issues"):
+            if (isinstance(issue, dict) and issue.get("title") == title
+                    and str(issue.get("status") or "").lower() not in CLOSED_STATUSES):
+                ident = issue.get("identifier") or issue.get("id")
+                if ident:
+                    return str(ident)
+        return None

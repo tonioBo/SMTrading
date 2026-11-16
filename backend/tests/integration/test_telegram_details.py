@@ -150,6 +150,32 @@ async def test_fill_with_strategy_bracket_and_risk_in_eur(maker, qs):
     assert lines[4] == "Rischio allo stop: 16,16 €"  # (200,10 - 190) × 2 / 1,25
 
 
+async def test_fill_fx_is_read_with_no_transaction_open(maker, qs):
+    """The FX rate of the risk at stop is fetched before the planner's transaction (a
+    network call never holds row locks); inside it only the cached rate is used."""
+    from sqlalchemy import text as sql
+
+    seen: list[int] = []
+    real = qs.get_fx_rate
+
+    async def spy(base, quote):
+        async with maker() as s:
+            seen.append(await s.scalar(sql(
+                "select count(*) from pg_stat_activity where datname = current_database()"
+                " and state like 'idle in transaction%'")))
+        return await real(base, quote)
+
+    pid = await _portfolio(maker)
+    await _proposal(maker, pid)
+    await _bracket(maker, qs, pid)
+    qs.get_fx_rate = spy  # the planner's calls only
+    planner = TelegramPlanner(maker, clock=Clock(NOW), tz=TZ, qs=qs)
+    await planner.tick()
+    [text] = await _texts(maker)
+    assert "Rischio allo stop: 16,16 €" in text
+    assert seen and set(seen) == {0}
+
+
 async def test_fill_risk_in_instrument_currency_without_fx(maker, qs):
     pid = await _portfolio(maker)
     await _bracket(maker, qs, pid, coid="manual-1")
@@ -215,3 +241,33 @@ async def test_without_quote_source_no_section(maker, qs):
     async with maker() as s:
         parts = await build_summary(s, "daily", NOW, tz=TZ)
     assert "Posizioni aperte" not in "\n".join(t for t, _ in parts)
+
+
+async def test_summary_stop_follows_the_protection_rules(maker, qs):
+    """«stop» in the summary: a held bracket child or a stop being canceled is no stop; a
+    trailing stop shows its level."""
+    from smtrading.engine.models import OrderStatus
+    from smtrading.telegram.details import open_positions_lines
+
+    pid = await _portfolio(maker)
+    await _market(maker, qs, pid)  # long 1 AAPL
+    async with maker() as s:
+        s.add_all([
+            Order(portfolio_id=pid, symbol="AAPL", side=OrderSide.sell, type=OrderType.stop,
+                  qty=D(1), stop_price=D(195), status=OrderStatus.held),
+            Order(portfolio_id=pid, symbol="AAPL", side=OrderSide.sell, type=OrderType.stop,
+                  qty=D(1), stop_price=D(196), status=OrderStatus.pending,
+                  broker_status="cancel_requested"),
+        ])
+        await s.commit()
+    async with maker() as s:
+        [line] = await open_positions_lines(s, qs)
+    assert "stop nessuno" in line
+    async with maker() as s:
+        s.add(Order(portfolio_id=pid, symbol="AAPL", side=OrderSide.sell,
+                    type=OrderType.trailing_stop, qty=D(1), trail_pct=D(10),
+                    trail_ref_price=D(200), status=OrderStatus.pending))
+        await s.commit()
+    async with maker() as s:
+        [line] = await open_positions_lines(s, qs)
+    assert "stop 180,00 USD" in line

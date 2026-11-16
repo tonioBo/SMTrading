@@ -10,15 +10,16 @@ import uuid
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.activity.models import Activity
 from smtrading.common.errors import SMTError
 from smtrading.common.money import decimal_to_str
-from smtrading.engine.models import OPEN_STATUSES, Order, OrderSide
+from smtrading.engine.models import FILLABLE_STATUSES, OPEN_STATUSES, Order, OrderSide
 from smtrading.instruments.models import Instrument
 from smtrading.portfolios.models import Portfolio, live_portfolio_ids
+from smtrading.positions.open_view import STOP_TYPES, is_active_exit, stop_level
 from smtrading.strategies.attribution import strategy_of_order
 from smtrading.valuation.service import value_portfolio
 
@@ -135,18 +136,21 @@ async def fill_lines(session: AsyncSession, a: Activity, *, qs=None) -> list[str
 
 
 async def _stops(session: AsyncSession, portfolio_id: uuid.UUID) -> dict[tuple[str, str], Decimal]:
-    """(symbol, side) -> the tightest open stop price (highest sell stop, lowest buy stop)."""
-    rows = (await session.execute(
-        select(Order.symbol, Order.side, Order.stop_price)
-        .where(Order.portfolio_id == portfolio_id, Order.status.in_(OPEN_STATUSES),
-               Order.stop_price.is_not(None), or_(Order.role.is_(None),
-                                                  Order.role != "take_profit"))
-    )).all()
+    """(symbol, side) -> the tightest active stop level (highest sell stop, lowest buy
+    stop), by the protection alarm's rules: a resting order not being canceled (a held
+    bracket child is not active yet), stop / stop_limit / trailing_stop (its level)."""
+    orders = await session.scalars(
+        select(Order).where(Order.portfolio_id == portfolio_id,
+                            Order.status.in_(FILLABLE_STATUSES),
+                            Order.type.in_(STOP_TYPES)))
     out: dict[tuple[str, str], Decimal] = {}
-    for symbol, side, price in rows:
-        key = (symbol, str(side))
+    for o in orders:
+        price = stop_level(o)
+        if price is None or not is_active_exit(o):
+            continue
+        key = (o.symbol, str(o.side))
         best = out.get(key)
-        if best is None or (price > best if side == OrderSide.sell else price < best):
+        if best is None or (price > best if o.side == OrderSide.sell else price < best):
             out[key] = price
     return out
 

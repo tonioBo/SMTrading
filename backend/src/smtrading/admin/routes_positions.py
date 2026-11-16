@@ -5,9 +5,10 @@ can read it).
 `GET /api/positions/open` → {as_of, positions: [{portfolio_id, portfolio_name, symbol,
 name, market, currency, side, qty, avg_price, opened_at, last, stale, value_eur, pnl_eur,
 pnl_pct, stop: {order_id, price, tif}|null, target: {...}|null, distance_to_stop_pct,
-risk_at_stop_eur, protection: "ok"|"senza stop"|"scade oggi"}], portfolios:
-[{portfolio_id, portfolio_name, mode..., positions, value_eur, pnl_eur, risk_at_stop_eur,
-risk_unknown, unprotected, expiring_today, daily_loss_limit_eur, risk_pct_of_limit}]}:
+risk_at_stop_eur, protection: "ok"|"senza stop"|"copre parziale"|"scade oggi"}],
+portfolios: [{portfolio_id, portfolio_name, mode..., positions, value_eur, pnl_eur,
+risk_at_stop_eur, risk_unknown, unprotected, partial_cover, expiring_today,
+daily_loss_limit_eur, risk_pct_of_limit}]}:
 numbers as strings; a value that cannot be computed (no quote, no FX) is null.
 """
 

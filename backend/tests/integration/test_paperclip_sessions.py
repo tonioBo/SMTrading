@@ -170,6 +170,26 @@ async def test_client_reset_session_posts_an_empty_body():
     assert call.request.headers["authorization"] == f"Bearer {KEY}"
 
 
+async def test_client_reset_session_under_a_base_path_prefix():
+    """Paperclip served under a path (`https://host/pc`): the reset is allowed there, and
+    only there."""
+    from smtrading.paperclip.config import PaperclipConfig
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.raw_path)
+        return httpx.Response(200, json={})
+
+    cfg = PaperclipConfig(base_url=f"{BASE}/pc/", company_id=CID, board_key=KEY, enabled=True)
+    async with PaperclipClient(cfg, allow_session_reset=True,
+                               transport=httpx.MockTransport(handler)) as client:
+        await client.reset_session("a1")
+        with pytest.raises(RuntimeError, match="Paperclip: solo lettura"):
+            await client._http.post(f"{BASE}/api/agents/a1/runtime-state/reset-session")
+    assert seen == [b"/pc/api/agents/a1/runtime-state/reset-session"]
+
+
 # -- fingerprint ------------------------------------------------------------------------
 
 async def test_first_run_stores_the_fingerprint_and_resets_nothing(sm):

@@ -15,8 +15,11 @@ position (`<portfolio_id>:<symbol>:<kind>`):
   session close, manual closures included; midnight for CRYPTO and FX), else the market's
   next close, else (CRYPTO, FX) 00:00 UTC.
 
-A position changed in the last GRACE is left to the next run (the agent may be placing
-its exits right now). Brackets whose entry has not filled are not positions.
+A position changed in the last GRACE, or one of whose exit-side orders changed in the last
+GRACE, is left to the next run (the agent may be placing or replacing its exits right
+now); its open problems are kept as they are, not cleared. A stop being modified
+(replace in flight) still protects; one being canceled does not. Brackets whose entry has
+not filled are not positions.
 
 Each new problem sends one Telegram warning (category `system`, never the activity feed
 the agents read) and, when the Paperclip reader is configured and enabled, one Paperclip
@@ -24,7 +27,10 @@ issue per position assigned to the «Risk Manager» agent («PROTEGGI · …»).
 problems live in `app_settings["protection_alarm"]`, so a restart sends nothing again; a
 problem no longer found is cleared, and alerts again if it comes back. A failed issue is
 tried again on the next runs (at most ISSUE_ATTEMPTS), its error kept in the state and
-shown in the Paperclip status. Every Paperclip request is made with no transaction open."""
+shown in the Paperclip status; after a timeout (the issue may exist anyway) the retry first
+looks for an open issue with the same title and adopts it. The Paperclip configuration is
+read only when an issue is pending. Every Paperclip request is made with no transaction
+open."""
 
 import asyncio
 import copy
@@ -106,7 +112,7 @@ class OrderView:
     oco_group_id: uuid.UUID | None
     role: str | None
     reduce_only: bool
-    canceling: bool = False  # a cancel or a replace is in progress at the broker
+    canceling: bool = False  # a cancel is in progress at the broker (a replace is not)
     parent_partial: bool = False  # held child of a partially filled bracket entry
 
 
@@ -235,11 +241,19 @@ def issue_description(f: Finding, zone: ZoneInfo) -> str:
         "Ordini aperti trovati sul simbolo:",
         *([_order_line(o, zone) for o in f.orders] or ["- nessuno"]),
         "",
-        ("Cosa fare: verifica la posizione (get_positions, get_orders) e ripristina stop e "
-        "target validi fino a revoca: place_oco_order di uscita (side opposto, qty della "
-        "posizione, tif gtc, reduce_only). Prima cancella o sostituisci gli ordini di uscita "
-        "che restano, per non coprire due volte la stessa qty. Rispondi qui con gli id "
-        "degli ordini."),
+        ("Cosa fare: verifica la posizione e i suoi ordini (get_positions, list_orders). "
+         "Correggi un'uscita esistente con modify_order o toglila con cancel_order; poi "
+         "ripristina stop e target validi fino a revoca con place_oco_order di uscita "
+         "(side opposto, tif gtc, qty non oltre quella della posizione rimasta scoperta: "
+         "l'OCO non è reduce_only, una qty in eccesso aprirebbe una posizione opposta). "
+         "Cancella o correggi prima le uscite che restano, per non coprire due volte la "
+         "stessa qty."),
+        *([("Ingresso bracket eseguito solo in parte: i suoi stop e target in attesa si "
+            "attivano quando l'ingresso è eseguito per intero. Cancella la parte restante "
+            "dell'ingresso (o l'intero bracket, poi proteggi la qty eseguita) oppure "
+            "attendi l'esecuzione: non aggiungere un altro OCO che coprirebbe due volte "
+            "la stessa qty.")] if any(o.parent_partial for o in f.orders) else []),
+        "Rispondi qui con gli id degli ordini.",
     ]
     return "\n".join(lines)
 
@@ -252,14 +266,20 @@ def _view(o: Order, partial_parents: set[uuid.UUID]) -> OrderView:
         id=o.id, side=o.side, type=o.type, tif=o.tif, status=o.status, remaining=remaining,
         stop_price=o.stop_price, limit_price=o.limit_price, expires_at=o.expires_at,
         oco_group_id=o.oco_group_id, role=o.role, reduce_only=bool(o.reduce_only),
-        canceling=o.broker_status in (BrokerState.CANCEL_REQUESTED,
-                                      BrokerState.REPLACE_REQUESTED),
+        canceling=o.broker_status == BrokerState.CANCEL_REQUESTED,
         parent_partial=o.parent_id in partial_parents,
     )
 
 
-async def find_problems(session: AsyncSession, now: datetime, zone: ZoneInfo) -> list[Finding]:
-    """The positions with at least one problem (positions changed within GRACE skipped)."""
+def _recent(t: datetime | None, now: datetime) -> bool:
+    return t is not None and now - GRACE < t <= now
+
+
+async def find_problems(session: AsyncSession, now: datetime,
+                        zone: ZoneInfo) -> tuple[list[Finding], set[str]]:
+    """The positions with at least one problem, and the keys (`<portfolio_id>:<symbol>`)
+    of the positions skipped because they, or one of their exit-side orders, changed
+    within GRACE."""
     rows = (await session.execute(
         select(Position, Portfolio.name, Instrument.market, Instrument.currency)
         .join(Portfolio, Portfolio.id == Position.portfolio_id)
@@ -270,10 +290,12 @@ async def find_problems(session: AsyncSession, now: datetime, zone: ZoneInfo) ->
         PositionView(p.portfolio_id, name, p.symbol, market, ccy, p.qty, p.avg_price,
                      p.opened_at)
         for p, name, market, ccy in rows
-        if p.updated_at is None or p.updated_at <= now - GRACE
     ]
+    skipped = {f"{p.portfolio_id}:{p.symbol}" for p, *_ in rows
+               if p.updated_at is not None and p.updated_at > now - GRACE}
+    positions = [p for p in positions if f"{p.portfolio_id}:{p.symbol}" not in skipped]
     if not positions:
-        return []
+        return [], skipped
     orders = list(await session.scalars(
         select(Order)
         .where(Order.portfolio_id.in_({p.portfolio_id for p in positions}),
@@ -287,15 +309,22 @@ async def find_problems(session: AsyncSession, now: datetime, zone: ZoneInfo) ->
                                Order.status == OrderStatus.partially_filled))) \
         if parent_ids else set()
     by_pos: dict[tuple[uuid.UUID, str], list[OrderView]] = defaultdict(list)
+    touched: dict[tuple[uuid.UUID, str], set[OrderSide]] = defaultdict(set)
     for o in orders:
         by_pos[(o.portfolio_id, o.symbol)].append(_view(o, partial))
+        if _recent(o.updated_at, now):
+            touched[(o.portfolio_id, o.symbol)].add(o.side)
     out = []
     for pos in positions:
+        exit_side = OrderSide.sell if pos.qty > 0 else OrderSide.buy
+        if exit_side in touched.get((pos.portfolio_id, pos.symbol), set()):
+            skipped.add(f"{pos.portfolio_id}:{pos.symbol}")
+            continue
         mine = by_pos.get((pos.portfolio_id, pos.symbol), [])
         problems = evaluate(pos, mine, now, zone)
         if problems:
             out.append(Finding(pos, mine, problems))
-    return out
+    return out, skipped
 
 
 async def load_state(session: AsyncSession, *, for_update: bool = False) -> dict[str, Any]:
@@ -353,13 +382,12 @@ class ProtectionAlarm:
     async def tick(self) -> None:
         now = self._clock()
         async with self._sm() as session:
-            findings = await find_problems(session, now, self._zone)
-            cfg = await load_config(session)
+            findings, skipped = await find_problems(session, now, self._zone)
         current = {Problem.key(f.position, p.kind): (f, p) for f in findings for p in f.problems}
         async with self._sm() as session, session.begin():
             state = await load_state(session, for_update=True)
             opened = state["open"]
-            for key in [k for k in opened if k not in current]:
+            for key in [k for k in opened if k not in current and _pos_key(k) not in skipped]:
                 del opened[key]  # resolved (or the position is closed): alerts again later
             for key, (f, p) in current.items():
                 if key in opened:
@@ -372,7 +400,7 @@ class ProtectionAlarm:
             state["last_run_at"] = now.isoformat()
             pending = self._pending(state, current)
             await save_state(session, state)
-        if pending and cfg.enabled and cfg.complete and not cfg.unreadable:
+        if pending:
             await self._create_issues(pending, current)
 
     @staticmethod
@@ -395,7 +423,13 @@ class ProtectionAlarm:
     async def _create_issues(self, pending: dict[str, list[str]], current: dict) -> None:
         async with self._sm() as session:
             cfg = await load_config(session)
+            if not (cfg.enabled and cfg.complete and not cfg.unreadable):
+                return
+            opened = (await load_state(session))["open"]
+        uncertain = {pk for pk, keys in pending.items()
+                     if any((opened.get(k) or {}).get("uncertain") for k in keys)}
         results: dict[str, str | None] = {}
+        timed_out: set[str] = set()
         error: str | None = None
         try:
             async with self._issues_factory(cfg) as client:
@@ -404,14 +438,21 @@ class ProtectionAlarm:
                     raise PaperclipError(f"agente «{RISK_MANAGER}» non trovato")
                 for pos_key, keys in pending.items():
                     finding = current[keys[0]][0]
+                    title = issue_title(finding.position)
                     try:
+                        if pos_key in uncertain and (
+                                found := await client.open_issue_with_title(title)):
+                            results[pos_key] = found
+                            continue
                         results[pos_key] = await client.create_issue(
-                            title=issue_title(finding.position),
+                            title=title,
                             description=issue_description(finding, self._zone),
                             assignee_agent_id=assignee)
                     except PaperclipError as e:
                         error = e.message
                         results[pos_key] = None
+                        if e.message == "timeout":
+                            timed_out.add(pos_key)
         except PaperclipError as e:
             error = e.message
         except Exception:
@@ -428,8 +469,11 @@ class ProtectionAlarm:
                         continue
                     if ident:
                         entry["issue"] = ident
+                        entry.pop("uncertain", None)
                     else:
                         entry["attempts"] = int(entry.get("attempts") or 0) + 1
+                        if pos_key in timed_out:
+                            entry["uncertain"] = True
             if error:
                 state.update(last_error=error, last_error_at=now.isoformat())
                 log.warning("protection issue not created in Paperclip: %s", error)

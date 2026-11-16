@@ -94,12 +94,16 @@ sostenibile rispetto al limite di perdita giornaliera e al profilo; altrimenti v
 
 **«PROTEGGI · <portafoglio> · <simbolo>» (allarme operativo, priorità critica)** — una
 posizione aperta è senza stop, con uno stop che non copre tutta la qty, o con stop/target
-`tif day` in scadenza. Nello stesso ciclo: `get_positions` e `get_orders` per verificare che
-il problema ci sia ancora; poi task «PROTEGGI» urgente all'ES per un `place_oco_order` di
-uscita (side opposto, qty della posizione, stop e target, `tif "gtc"`, `reduce_only`),
-chiedendo di cancellare o sostituire prima le uscite rimaste, così la stessa qty non è
-coperta due volte. Rispondi sul task con gli id degli ordini attivi (o con il motivo se la
-posizione è già chiusa o protetta).
+`tif day` in scadenza. Nello stesso ciclo: `get_positions` e `list_orders` per verificare che
+il problema ci sia ancora; poi task «PROTEGGI» urgente all'ES: correggere le uscite esistenti
+(`modify_order`) o toglierle (`cancel_order`), poi un `place_oco_order` di uscita (side
+opposto, stop e target, `tif "gtc"`, qty **non oltre** quella rimasta scoperta: l'OCO non è
+`reduce_only`, una qty in eccesso aprirebbe una posizione opposta), così la stessa qty non è
+coperta due volte. Se l'ingresso di un bracket è eseguito solo in parte, i suoi stop e target
+in attesa si attivano quando l'ingresso è eseguito per intero: far cancellare la parte
+restante dell'ingresso (o l'intero bracket, poi proteggere la qty eseguita) oppure attendere,
+mai un OCO in più che coprirebbe due volte. Rispondi sul task con gli id degli ordini attivi
+(o con il motivo se la posizione è già chiusa o protetta).
 
 ## Regole
 
@@ -179,8 +183,8 @@ Template «CHIUDI» / «PROTEGGI» (all'Execution Supervisor):
 Titolo: CHIUDI | PROTEGGI · <COD> · <SIMBOLO>
 Campi:
 - azione: close_position (qty "..." o tutta) | place_oco_order di uscita
-- per PROTEGGI: side opposto, qty "...", a {type "limit", limit_price "<target>"},
-  b {type "stop", stop_price "<stop>"}
+- per PROTEGGI: side opposto, qty "..." (non oltre la qty scoperta: l'OCO non è
+  reduce_only), a {type "limit", limit_price "<target>"}, b {type "stop", stop_price "<stop>"}
 - motivo (1 riga) · urgenza: alta | normale · decision_id: ...
 ```
 

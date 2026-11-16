@@ -10,7 +10,10 @@ new or changed SMTrading tool reaches it only with a new session. At every reade
 - another fingerprint, Paperclip configured and enabled: every agent of the company that
   is not running gets `POST /api/agents/{id}/runtime-state/reset-session`; a running one
   (or one whose status is not known) waits for the next pass. Once every agent is done
-  the fingerprint is stored and one Telegram info message is sent.
+  the fingerprint is stored and one Telegram info message is sent. The running check is
+  best effort: the status is read from the agents list just before the resets, so an
+  agent that starts a run in between can still be reset mid-run (Paperclip offers no
+  conditional reset); its next run starts a new session anyway.
 
 The agents already reset for the pending fingerprint are kept, so a later pass never
 resets them again; a reset that fails is retried on the next passes, at most

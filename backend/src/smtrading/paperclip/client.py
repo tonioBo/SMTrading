@@ -2,7 +2,8 @@
 Paperclip, so the rule is enforced here: `GetOnlyTransport` refuses every method but GET
 before any network I/O; a client built with `allow_session_reset=True` also lets through
 `POST /api/agents/{id}/runtime-state/reset-session` (the agents' session refresh after an
-MCP tool catalog change) and nothing else. Errors are short Italian texts that never
+MCP tool catalog change), under the base URL's path prefix when there is one, and nothing
+else. Errors are short Italian texts that never
 contain the key."""
 
 import re
@@ -17,7 +18,15 @@ from smtrading.paperclip.config import PaperclipConfig
 READ_ONLY_MESSAGE = "Paperclip: solo lettura"
 MAX_RUNS = 1000
 _ENVELOPES = ("items", "data", "results")
-SESSION_RESET_PATH = re.compile(r"^/api/agents/[^/]+/runtime-state/reset-session$")
+
+
+def session_reset_path(prefix: str = "") -> re.Pattern[str]:
+    """The reset path under `prefix` (the base URL's raw path, e.g. `/pc`)."""
+    return re.compile(rf"^{re.escape(prefix.rstrip('/'))}/api/agents/[^/]+/runtime-state"
+                      r"/reset-session$")
+
+
+SESSION_RESET_PATH = session_reset_path()
 
 
 class PaperclipError(Exception):
@@ -30,9 +39,10 @@ class PaperclipError(Exception):
 
 class GetOnlyTransport(httpx.AsyncBaseTransport):
     def __init__(self, inner: httpx.AsyncBaseTransport | None = None, *,
-                 allow_session_reset: bool = False) -> None:
+                 allow_session_reset: bool = False, prefix: str = "") -> None:
         self._inner = inner or httpx.AsyncHTTPTransport()
         self._allow_session_reset = allow_session_reset
+        self._reset_path = session_reset_path(prefix)
 
     def _allowed(self, request: httpx.Request) -> bool:
         if request.method == "GET":
@@ -40,7 +50,7 @@ class GetOnlyTransport(httpx.AsyncBaseTransport):
         # the raw (still encoded) path: an id is one segment, "%2F" included
         path = request.url.raw_path.split(b"?", 1)[0].decode("ascii", "replace")
         return (self._allow_session_reset and request.method == "POST"
-                and SESSION_RESET_PATH.match(path) is not None)
+                and self._reset_path.match(path) is not None)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if not self._allowed(request):
@@ -69,9 +79,12 @@ class PaperclipClient:
             raise PaperclipError("configurazione incompleta: URL, id azienda e chiave board")
         register_secret(cfg.board_key or "")
         self._company = quote(str(cfg.company_id), safe="")
+        base = str(cfg.base_url).rstrip("/")
+        prefix = httpx.URL(base).raw_path.decode("ascii").rstrip("/")
         self._http = httpx.AsyncClient(
-            base_url=str(cfg.base_url).rstrip("/"),
-            transport=GetOnlyTransport(transport, allow_session_reset=allow_session_reset),
+            base_url=base,
+            transport=GetOnlyTransport(transport, allow_session_reset=allow_session_reset,
+                                       prefix=prefix),
             timeout=timeout,
             headers={"Authorization": f"Bearer {cfg.board_key}", "Accept": "application/json"},
             follow_redirects=False,

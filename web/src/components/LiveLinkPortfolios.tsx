@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { ApiError } from "@/api/client";
-import { useApplyPresetAfterLink, useBrokerFeePreset } from "@/api/hooks/fees";
+import { useApplyPresetAfterLink, useBrokerFeePreset, usePresetChoice } from "@/api/hooks/fees";
 import { useSetLivePortfolio } from "@/api/hooks/live";
 import { usePortfolios } from "@/api/hooks/portfolios";
 import type { LiveLink, LiveLinkPortfolio } from "@/api/types";
@@ -43,10 +43,10 @@ function LinkDialog({ link, onClose }: { link: LiveLink; onClose: () => void }) 
   const setPf = useSetLivePortfolio();
   const [selected, setSelected] = useState("");
   const preset = useBrokerFeePreset(link.kind);
-  const [usePreset, setUsePreset] = useState(true);
   const applyPreset = useApplyPresetAfterLink();
   const available = (portfolios.data ?? []).filter((p) => !p.broker_link_id && !p.archived_at && p.status !== "archived");
   const chosen = available.find((p) => p.id === selected);
+  const { checked: usePreset, setChecked: setUsePreset, deactivated } = usePresetChoice(preset, chosen);
   return (
     <LiveTotpDialog
       title={`Collegare un portafoglio a ${link.name}?`}
@@ -88,7 +88,7 @@ function LinkDialog({ link, onClose }: { link: LiveLink; onClose: () => void }) 
           ))}
         </select>
       </FormField>
-      <FeePresetCheckbox preset={preset} checked={usePreset} onChange={setUsePreset} />
+      <FeePresetCheckbox preset={preset} checked={usePreset} onChange={setUsePreset} deactivated={deactivated} />
       <CashRefusal error={setPf.error} currency={link.currency} />
     </LiveTotpDialog>
   );

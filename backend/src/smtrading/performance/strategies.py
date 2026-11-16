@@ -1,8 +1,8 @@
 """Results per strategy (the «Strategie» page): every fill of the non-archived portfolios
 attributed to a strategy, round trips by FIFO lots, P/L and costs in EUR.
 
-- Attribution: the strategy of the order that opens a lot (`attribute(session, order)`,
-  the shared helper: `PROP-…` client_order_id → the proposal's STR ref; None → «Senza
+- Attribution: the strategy of the order that opens a lot (`order_attributor`, the shared
+  rules loaded once per call, no query per order: `PROP-…` client_order_id → the proposal's STR ref; None → «Senza
   strategia»). An exit closes the oldest lots of its portfolio+symbol (FIFO) whatever
   order it comes from (an OCO exit leg carries no proposal) and its P/L goes to the
   closed lots' strategies.
@@ -12,8 +12,9 @@ attributed to a strategy, round trips by FIFO lots, P/L and costs in EUR.
   `system_fees` lines of its FX journal); an exit fill's costs are split over the lots it
   closes (and the flip remainder) by quantity.
 - EUR: realised P/L (instrument currency) and costs are converted at the current FX rate
-  (like the valuation); unrealised P/L = (mark − lot price) × open qty with the
-  portfolio valuation's mark. Without a mark or a rate the value is None («—»), never 0.
+  (like the valuation); unrealised P/L = Σ (mark − lot price) × lot qty over
+  the trade's open lots (not its average entry) with the portfolio valuation's mark.
+  Without a mark or a rate the value is None («—»), never 0.
 - P/L are gross; `costs_eur` apart; `total_pnl_eur` = realised + unrealised − costs. A
   closed trade wins when its realised P/L minus its costs is > 0; `win_rate_pct` is over
   the closed trades (None without any).
@@ -24,7 +25,7 @@ Corporate actions (splits) change ledger quantities without fills: lots ignore t
 import logging
 import uuid
 from collections import defaultdict, deque
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, localcontext
@@ -40,14 +41,13 @@ from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountKind, Journal, JournalLine, JournalType
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.signals.service import strategy_states
-from smtrading.strategies.attribution import strategy_of_order
+from smtrading.strategies.attribution import order_attributor
 from smtrading.valuation.service import value_portfolio
 
 log = logging.getLogger(__name__)
 
 EUR = "EUR"
 _PREC = 60
-Attribute = Callable[[AsyncSession, Order], Awaitable[str | None]]
 
 
 @dataclass(frozen=True)
@@ -78,6 +78,7 @@ class Trade:
     closed_at: datetime | None = None
     qty: Decimal = Decimal(0)  # opened
     open_qty: Decimal = Decimal(0)
+    open_value: Decimal = Decimal(0)  # Σ lot price × qty of the lots still open
     entry_value: Decimal = Decimal(0)
     exit_qty: Decimal = Decimal(0)
     exit_value: Decimal = Decimal(0)
@@ -97,6 +98,13 @@ class Trade:
         with localcontext() as ctx:
             ctx.prec = _PREC
             return self.exit_value / self.exit_qty
+
+    def unrealized(self, mark: Decimal) -> Decimal:
+        """Gross P/L of the open lots at `mark` (instrument currency)."""
+        sign = 1 if self.direction == "long" else -1
+        with localcontext() as ctx:
+            ctx.prec = _PREC
+            return (mark * self.open_qty - self.open_value) * sign
 
     def add_costs(self, costs: dict[str, Decimal], part: Decimal, whole: Decimal) -> None:
         for ccy, amount in costs.items():
@@ -131,6 +139,7 @@ def fifo_trades(fills: Iterable[FillIn]) -> list[Trade]:
                 t.exit_qty += closed
                 t.exit_value += f.price * closed
                 t.open_qty -= closed
+                t.open_value -= lot.price * closed
                 t.add_costs(f.costs, closed, f.qty)
                 lot.qty -= closed * sign
                 left += closed * sign
@@ -151,6 +160,7 @@ def fifo_trades(fills: Iterable[FillIn]) -> list[Trade]:
                 trades.append(t)
             t.qty += abs(left)
             t.open_qty += abs(left)
+            t.open_value += f.price * abs(left)
             t.entry_value += f.price * abs(left)
             t.closed_at = None
             t.add_costs(f.costs, abs(left), f.qty)
@@ -275,17 +285,17 @@ async def _fills(session: AsyncSession,
 
 
 async def strategy_performance(
-    session: AsyncSession, qs: QuoteSource, attribute: Attribute = strategy_of_order, *,
-    redis=None,
+    session: AsyncSession, qs: QuoteSource, *, redis=None,
 ) -> list[StrategyPerformance]:
     """One row per (strategy, portfolio) with fills; by portfolio name, then ref («Senza
     strategia» last)."""
     fills, portfolios, orders = await _fills(session)
     trades = fifo_trades(fills)
+    attribute = await order_attributor(session, [orders[t.order_id] for t in trades])
     strategy: dict[uuid.UUID, str | None] = {}
     for t in trades:  # only the opening orders matter
         if t.order_id not in strategy:
-            strategy[t.order_id] = await attribute(session, orders[t.order_id])
+            strategy[t.order_id] = await attribute(orders[t.order_id])
         t.strategy = strategy[t.order_id]
     marks: dict[uuid.UUID, dict[str, Decimal]] = {}
     for pid in sorted({t.portfolio_id for t in trades if t.open_qty}, key=str):
@@ -301,7 +311,6 @@ async def strategy_performance(
     groups: dict[tuple, list[tuple[Trade, TradeView]]] = defaultdict(list)
     for t in trades:
         mark = marks.get(t.portfolio_id, {}).get(t.symbol)
-        sign = 1 if t.direction == "long" else -1
         with localcontext() as ctx:
             ctx.prec = _PREC
             if t.open_qty == 0:
@@ -309,8 +318,7 @@ async def strategy_performance(
             elif mark is None:
                 unreal = None
             else:
-                unreal = await rates.eur((mark - t.entry_price) * t.open_qty * sign,
-                                         t.currency)
+                unreal = await rates.eur(t.unrealized(mark), t.currency)
             real = await rates.eur(t.realized, t.currency)
             costs = _sum([await rates.eur(a, c) for c, a in sorted(t.costs.items())])
             pnl = None if None in (real, unreal, costs) else real + unreal - costs

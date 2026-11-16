@@ -89,3 +89,16 @@ def test_portfolios_and_symbols_are_separate_and_sorted_by_time():
     assert [(t.portfolio_id, t.symbol, t.direction) for t in trades] == [
         (P1, "AMZN", "long"), (P1, "SPY", "long"), (P2, "AMZN", "short")]
     assert all(t.open_qty for t in trades)
+
+
+def test_unrealized_uses_the_open_lots_not_the_trade_average():
+    order = uuid.uuid4()
+    [t] = fifo_trades([
+        fill("buy", 1, 100, order=order),
+        fill("buy", 1, 120, minutes=1, order=order),  # same order, second fill
+        fill("sell", 1, 125, minutes=2),  # closes the 100 lot (FIFO)
+    ])
+    assert t.open_qty == 1 and t.open_value == D(120) and t.realized == D(25)
+    assert t.unrealized(D(130)) == D(10)  # not (130 - 110) × 1
+    [s] = fifo_trades([fill("sell", 2, 50), fill("buy", 1, 40, minutes=1)])  # short
+    assert s.unrealized(D(45)) == D(5)
