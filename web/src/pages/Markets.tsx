@@ -332,6 +332,15 @@ function InstrumentsSection({ sources, markets }: { sources: Record<string, Trac
 
 // --- live quotes ---------------------------------------------------------------------
 
+/** Bid/ask mid as a decimal string (feeds with quotes only carry no last trade). */
+function midPrice(bid: string | null | undefined, ask: string | null | undefined): string | null {
+  const b = bid ? Number(bid) : NaN;
+  const a = ask ? Number(ask) : NaN;
+  if (!Number.isFinite(b) || !Number.isFinite(a) || b <= 0 || a <= 0) return null;
+  const decimals = Math.max((bid!.split(".")[1] ?? "").length, (ask!.split(".")[1] ?? "").length) + 1;
+  return ((a + b) / 2).toFixed(Math.min(decimals, 8)).replace(/0+$/, "").replace(/\.$/, "");
+}
+
 function QuotesSection({ tracked }: { tracked: string[] }) {
   const symbols = useMemo(() => tracked.slice(0, MAX_GRID_SYMBOLS), [tracked]);
   const key = symbols.join(",");
@@ -370,7 +379,18 @@ function QuotesSection({ tracked }: { tracked: string[] }) {
                   <span className="font-medium">{s}</span>
                   <span className="text-xs text-muted">{quotes[i]?.provider ?? ""}</span>
                 </div>
-                <div className="num mt-1 text-lg">{price(quotes[i]?.last)}</div>
+                <div className="num mt-1 text-lg">
+                  {quotes[i]?.last ? (
+                    price(quotes[i]?.last)
+                  ) : midPrice(quotes[i]?.bid, quotes[i]?.ask) ? (
+                    <>
+                      {formatQty(midPrice(quotes[i]?.bid, quotes[i]?.ask)!)}{" "}
+                      <span className="text-xs text-muted">medio</span>
+                    </>
+                  ) : (
+                    "—"
+                  )}
+                </div>
                 <div className="num text-xs text-muted">
                   Bid {price(quotes[i]?.bid)} · Ask {price(quotes[i]?.ask)}
                 </div>

@@ -108,6 +108,18 @@ describe("Markets", () => {
     expect(within(hours).getAllByText("Aperto")).toHaveLength(2);
   });
 
+  it("shows the bid/ask mid when the quote has no last trade", async () => {
+    server.use(
+      http.get("*/api/quotes", () =>
+        HttpResponse.json({ AAPL: { symbol: "AAPL", bid: "741.01", ask: "741.09", last: null, ts: null, provider: "alpaca" } }),
+      ),
+    );
+    renderApp("/mercati");
+    const quote = await screen.findByLabelText("Quota AAPL");
+    expect(await within(quote).findByText("741,05")).toBeInTheDocument();
+    expect(within(quote).getByText("medio")).toBeInTheDocument();
+  });
+
   it("follows and unfollows symbols", async () => {
     const user = userEvent.setup();
     renderApp("/mercati");
