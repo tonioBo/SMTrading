@@ -149,6 +149,31 @@ async def test_invalid_key_and_health_check(provider):
 
 
 @respx.mock
+async def test_403_plan_not_accessible_is_unsupported_not_invalid_key(provider):
+    # free plan on an EU symbol: Finnhub answers 403 with this body
+    route = respx.get(f"{API}/quote").respond(
+        403, json={"error": "You don't have access to this resource."}
+    )
+    with pytest.raises(ProviderUnsupported, match="non incluso nel piano Finnhub"):
+        await provider.get_quotes([("ENI.MI", "ENI.MI")])
+    route.respond(403, text="Premium Access Required")
+    with pytest.raises(ProviderUnsupported, match="non incluso nel piano Finnhub"):
+        await provider.get_quotes([("ENI.MI", "ENI.MI")])
+    route.respond(401, json={"error": "Invalid API key"})
+    with pytest.raises(RuntimeError, match="chiave non valida"):
+        await provider.get_quotes([("ENI.MI", "ENI.MI")])
+
+
+@respx.mock
+async def test_403_plan_on_health_check_leaves_health_untouched(provider):
+    from smtrading.marketdata.router import MarketDataRouter
+
+    respx.get(f"{API}/quote").respond(403, json={"error": "You don't have access to this resource."})
+    router = MarketDataRouter.__new__(MarketDataRouter)
+    assert await router._health("finnhub", provider) == ("finnhub", None, None)
+
+
+@respx.mock
 @pytest.mark.parametrize("status", [429, 500])
 async def test_http_errors_never_leak_key(provider, status):
     from smtrading.marketdata.router import _describe

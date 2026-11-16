@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -8,7 +9,7 @@ import httpx
 import websockets
 
 from smtrading.instruments.models import AssetClass
-from smtrading.marketdata.provider import DataProvider
+from smtrading.marketdata.provider import DataProvider, ProviderUnsupported
 from smtrading.marketdata.registry import register
 from smtrading.marketdata.types import CalendarEvent, Capability, Fundamentals, NewsItem, Quote
 
@@ -16,6 +17,10 @@ BASE_URL = "https://finnhub.io/api/v1"
 WS_URL = "wss://ws.finnhub.io"
 NEWS_LOOKBACK_DAYS = 7
 INVALID_KEY = "finnhub: chiave non valida"
+NOT_IN_PLAN = "finnhub: non incluso nel piano Finnhub"
+# 403 bodies meaning "valid key, but this market/endpoint is outside your plan" (free plan on EU
+# symbols answers {"error": "You don't have access to this resource."})
+_PLAN_403 = re.compile(r"(?i)access|premium|plan|subscription")
 MILLION = Decimal(1_000_000)
 
 
@@ -82,6 +87,9 @@ class FinnhubProvider(DataProvider):
     async def _get(self, path: str, params: dict) -> dict | list:
         try:
             resp = await self.http.get(f"{BASE_URL}{path}", params={**params, "token": self._token()})
+            if resp.status_code == 403 and _PLAN_403.search(resp.text or ""):
+                # not a key problem: skip the provider like an unsupported symbol
+                raise ProviderUnsupported(NOT_IN_PLAN)
             if resp.status_code in (401, 403):
                 raise RuntimeError(INVALID_KEY)
             resp.raise_for_status()
