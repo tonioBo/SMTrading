@@ -15,8 +15,11 @@ position (`<portfolio_id>:<symbol>:<kind>`):
   session close, manual closures included; midnight for CRYPTO and FX), else the market's
   next close, else (CRYPTO, FX) 00:00 UTC.
 
-A position changed in the last GRACE is left to the next run (the agent may be placing
-its exits right now). Brackets whose entry has not filled are not positions.
+A position changed in the last GRACE, or one of whose exit-side orders changed in the last
+GRACE, is left to the next run (the agent may be placing or replacing its exits right
+now); its open problems are kept as they are, not cleared. A stop being modified
+(replace in flight) still protects; one being canceled does not. Brackets whose entry has
+not filled are not positions.
 
 Each new problem sends one Telegram warning (category `system`, never the activity feed
 the agents read) and, when the Paperclip reader is configured and enabled, one Paperclip
@@ -106,7 +109,7 @@ class OrderView:
     oco_group_id: uuid.UUID | None
     role: str | None
     reduce_only: bool
-    canceling: bool = False  # a cancel or a replace is in progress at the broker
+    canceling: bool = False  # a cancel is in progress at the broker (a replace is not)
     parent_partial: bool = False  # held child of a partially filled bracket entry
 
 
@@ -252,14 +255,20 @@ def _view(o: Order, partial_parents: set[uuid.UUID]) -> OrderView:
         id=o.id, side=o.side, type=o.type, tif=o.tif, status=o.status, remaining=remaining,
         stop_price=o.stop_price, limit_price=o.limit_price, expires_at=o.expires_at,
         oco_group_id=o.oco_group_id, role=o.role, reduce_only=bool(o.reduce_only),
-        canceling=o.broker_status in (BrokerState.CANCEL_REQUESTED,
-                                      BrokerState.REPLACE_REQUESTED),
+        canceling=o.broker_status == BrokerState.CANCEL_REQUESTED,
         parent_partial=o.parent_id in partial_parents,
     )
 
 
-async def find_problems(session: AsyncSession, now: datetime, zone: ZoneInfo) -> list[Finding]:
-    """The positions with at least one problem (positions changed within GRACE skipped)."""
+def _recent(t: datetime | None, now: datetime) -> bool:
+    return t is not None and now - GRACE < t <= now
+
+
+async def find_problems(session: AsyncSession, now: datetime,
+                        zone: ZoneInfo) -> tuple[list[Finding], set[str]]:
+    """The positions with at least one problem, and the keys (`<portfolio_id>:<symbol>`)
+    of the positions skipped because they, or one of their exit-side orders, changed
+    within GRACE."""
     rows = (await session.execute(
         select(Position, Portfolio.name, Instrument.market, Instrument.currency)
         .join(Portfolio, Portfolio.id == Position.portfolio_id)
@@ -270,10 +279,12 @@ async def find_problems(session: AsyncSession, now: datetime, zone: ZoneInfo) ->
         PositionView(p.portfolio_id, name, p.symbol, market, ccy, p.qty, p.avg_price,
                      p.opened_at)
         for p, name, market, ccy in rows
-        if p.updated_at is None or p.updated_at <= now - GRACE
     ]
+    skipped = {f"{p.portfolio_id}:{p.symbol}" for p, *_ in rows
+               if p.updated_at is not None and p.updated_at > now - GRACE}
+    positions = [p for p in positions if f"{p.portfolio_id}:{p.symbol}" not in skipped]
     if not positions:
-        return []
+        return [], skipped
     orders = list(await session.scalars(
         select(Order)
         .where(Order.portfolio_id.in_({p.portfolio_id for p in positions}),
@@ -287,15 +298,22 @@ async def find_problems(session: AsyncSession, now: datetime, zone: ZoneInfo) ->
                                Order.status == OrderStatus.partially_filled))) \
         if parent_ids else set()
     by_pos: dict[tuple[uuid.UUID, str], list[OrderView]] = defaultdict(list)
+    touched: dict[tuple[uuid.UUID, str], set[OrderSide]] = defaultdict(set)
     for o in orders:
         by_pos[(o.portfolio_id, o.symbol)].append(_view(o, partial))
+        if _recent(o.updated_at, now):
+            touched[(o.portfolio_id, o.symbol)].add(o.side)
     out = []
     for pos in positions:
+        exit_side = OrderSide.sell if pos.qty > 0 else OrderSide.buy
+        if exit_side in touched.get((pos.portfolio_id, pos.symbol), set()):
+            skipped.add(f"{pos.portfolio_id}:{pos.symbol}")
+            continue
         mine = by_pos.get((pos.portfolio_id, pos.symbol), [])
         problems = evaluate(pos, mine, now, zone)
         if problems:
             out.append(Finding(pos, mine, problems))
-    return out
+    return out, skipped
 
 
 async def load_state(session: AsyncSession, *, for_update: bool = False) -> dict[str, Any]:
@@ -353,13 +371,13 @@ class ProtectionAlarm:
     async def tick(self) -> None:
         now = self._clock()
         async with self._sm() as session:
-            findings = await find_problems(session, now, self._zone)
+            findings, skipped = await find_problems(session, now, self._zone)
             cfg = await load_config(session)
         current = {Problem.key(f.position, p.kind): (f, p) for f in findings for p in f.problems}
         async with self._sm() as session, session.begin():
             state = await load_state(session, for_update=True)
             opened = state["open"]
-            for key in [k for k in opened if k not in current]:
+            for key in [k for k in opened if k not in current and _pos_key(k) not in skipped]:
                 del opened[key]  # resolved (or the position is closed): alerts again later
             for key, (f, p) in current.items():
                 if key in opened:

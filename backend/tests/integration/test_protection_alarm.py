@@ -301,3 +301,49 @@ async def test_new_problem_of_an_issued_position_reuses_its_issue(env):
         state = await load_state(s)
     assert sorted(e["issue"] for e in state["open"].values()) == ["SMT-1", "SMT-1"]
     assert stop
+
+
+async def test_position_in_grace_keeps_its_open_problems(env):
+    """A position changed after its alert is skipped for GRACE, not resolved: no second
+    Telegram warning, no second «PROTEGGI» issue."""
+    sm = env
+    await _paperclip(sm)
+    pid = await _portfolio(sm)
+    await _position(sm, pid)
+    clock, fake = Clock(NOW), FakeIssues()
+    alarm = _alarm(sm, clock, fake)
+    await alarm.tick()
+    assert len(await _outbox(sm)) == 1 and len(fake.created) == 1
+    clock.t = NOW + timedelta(minutes=5)
+    async with sm() as s:
+        await s.execute(update(Position).where(Position.portfolio_id == pid)
+                        .values(updated_at=clock.t - timedelta(minutes=1)))
+        await s.commit()
+    await alarm.tick()  # skipped: the entry stays
+    async with sm() as s:
+        assert len((await load_state(s))["open"]) == 1
+    clock.t += timedelta(minutes=5)
+    await alarm.tick()
+    assert len(await _outbox(sm)) == 1 and len(fake.created) == 1
+
+
+async def test_stop_being_modified_protects_and_recent_exit_order_means_grace(env):
+    sm = env
+    pid = await _portfolio(sm)
+    await _position(sm, pid)
+    stop = await _order(sm, pid)
+    await _set_order(sm, stop, broker_status="replace_requested",
+                     updated_at=NOW - timedelta(hours=1))
+    await _position(sm, pid, symbol="MSFT")
+    stop2 = await _order(sm, pid, symbol="MSFT")
+    # canceled a minute ago: the agent may be replacing it right now
+    await _set_order(sm, stop2, broker_status="cancel_requested",
+                     updated_at=NOW - timedelta(minutes=1))
+    clock = Clock(NOW)
+    alarm = _alarm(sm, clock, FakeIssues())
+    await alarm.tick()
+    assert await _outbox(sm) == []
+    clock.t += timedelta(minutes=6)
+    await alarm.tick()
+    assert await _outbox(sm) == [
+        "⚠️ Posizione senza protezione — Aggressivo · MSFT: nessuno stop di uscita attivo"]
