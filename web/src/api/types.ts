@@ -1216,7 +1216,8 @@ export interface StrategySignal {
 
 export interface SignalsResponse {
   as_of: string;
-  portfolios: { portfolio_id: string; portfolio_name: string; strategies: StrategySignal[] }[];
+  /** portfolio_id/name null: the strategies without any portfolio (listed last) */
+  portfolios: { portfolio_id: string | null; portfolio_name: string | null; strategies: StrategySignal[] }[];
 }
 
 /** GET /api/weekly-goal: the goal of the week from the Monday opening (EUR, strings). */

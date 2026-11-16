@@ -112,6 +112,37 @@ describe("Signals", () => {
     expect(screen.getByText("dati incompleti")).toBeInTheDocument();
   });
 
+  it("shows strategies without portfolio as plain text and small values with more decimals", async () => {
+    current = {
+      as_of: "2026-11-16T15:00:00Z",
+      portfolios: [
+        {
+          portfolio_id: null,
+          portfolio_name: null,
+          strategies: [
+            {
+              ref: "STR-010",
+              name: "Breakout FX",
+              type: "breakout",
+              params: { lookback: 20 },
+              timeframe: "1d",
+              status: "ok",
+              symbols: [
+                { symbol: "EURUSD", last: "1.0842", indicator: "max 20", value_closed: "1.0812", value_now: "1.0842", threshold: "1.0875", direction: "above", distance: "0.0033", triggered_closed: false, triggered_now: false, as_of: "2026-11-16T14:59:00Z" },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    renderApp("/segnali");
+    expect(await screen.findByText("Senza portafoglio")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Senza portafoglio" })).not.toBeInTheDocument();
+    const row = within(screen.getByRole("table", { name: "Segnali STR-010" })).getAllByRole("row")[1];
+    expect(within(row).getByText("0,0033")).toBeInTheDocument();
+    expect(within(row).getByText("sopra 1,0875")).toBeInTheDocument();
+  });
+
   it("shows the empty state", async () => {
     current = { as_of: "2026-11-16T15:00:00Z", portfolios: [] };
     renderApp("/segnali");

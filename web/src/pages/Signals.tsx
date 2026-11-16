@@ -18,8 +18,11 @@ const TONE_CLASS: Record<SignalTone, string> = {
 
 const STATUS_VARIANT = { ok: "secondary", "dati incompleti": "warning", "non supportata": "outline" } as const;
 
+/** 2 decimals, 4 below 10 in absolute value (FX prices, small distances). */
 function value(v: string | null): string {
-  return v == null || v === "" ? "—" : formatDecimal(v, 2);
+  if (v == null || v === "") return "—";
+  const n = Number(v);
+  return formatDecimal(v, Number.isFinite(n) && Math.abs(n) < 10 ? 4 : 2);
 }
 
 function paramsText(params: Record<string, unknown>): string {
@@ -101,12 +104,16 @@ export default function Signals() {
         ) : (
           <div className="space-y-6">
             {portfolios.map((p) => (
-              <Card key={p.portfolio_id}>
+              <Card key={p.portfolio_id ?? "none"}>
                 <CardHeader>
                   <CardTitle>
-                    <Link to={`/portafogli/${p.portfolio_id}`} className="text-accent hover:underline">
-                      {p.portfolio_name}
-                    </Link>
+                    {p.portfolio_id == null ? (
+                      "Senza portafoglio"
+                    ) : (
+                      <Link to={`/portafogli/${p.portfolio_id}`} className="text-accent hover:underline">
+                        {p.portfolio_name}
+                      </Link>
+                    )}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-6">
