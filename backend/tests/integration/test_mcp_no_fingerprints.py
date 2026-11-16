@@ -206,6 +206,62 @@ async def _admin_placed(server, order_id: str) -> None:
         await s.commit()
 
 
+ADMIN = "admin:ops@example.com"
+
+
+async def _human_actions(server, call, order: dict, pid: str) -> int:
+    """What the humans do in the portal, on resting orders of the agent: a manual cancel
+    (`by` "admin"), the kill switch with «annulla ordini aperti» (`by` "admin"), a symbol
+    removed from the agent's watchlist (`admin.watch_changed`), then an
+    admin's halt on the portfolio (its `set_by` "admin:<email>"; its cancel of the
+    openings is the system's) and the agent's attempt to clear it (FORBIDDEN). Returns how
+    many resting orders the humans canceled."""
+    from smtrading.engine.service import cancel_order, set_kill_switch_and_cancel
+    from smtrading.events import notify
+    from smtrading.risk import halts
+
+    resting = {**order, "type": "limit", "limit_price": "100"}
+    ids = []
+    for _ in range(3):
+        _, placed = await call("place_order", resting)
+        if isinstance(placed, dict) and "id" in placed:
+            ids.append(uuid.UUID(placed["id"]))
+    async with _Db(server.db_url) as s:
+        if ids:
+            await cancel_order(s, ids[0], by="admin")
+        await set_kill_switch_and_cancel(s, True, cancel_open=True, by="admin")
+        await s.commit()
+        await set_kill_switch_and_cancel(s, False, cancel_open=False, by="admin")
+        await s.commit()
+    await call("place_order", resting)  # canceled by the halt
+    async with _Db(server.db_url) as s:  # an admin removes a symbol from a watchlist
+        await notify(s, portfolio_id=None, agent_id=str(server.agent_id),
+                     kind="admin.watch_changed",
+                     payload={"action": "remove_symbol", "watchlist": "Crypto",
+                              "symbol": SYM})
+        await s.execute(update(Agent).where(Agent.id == server.agent_id).values(can_halt=True))
+        await halts.set_halt(s, scope="portfolio", portfolio_id=uuid.UUID(pid),
+                             reason="Controllo dei conti", by=ADMIN)
+        await s.commit()
+    await call("set_trading_halt", {"active": False, "scope": "portfolio",
+                                    "portfolio_id": pid})
+    return len(ids)
+
+
+def _human_markers(value, path: str = "") -> list[str]:
+    """Where a JSON value says a human (the portal's admins) did something."""
+    if isinstance(value, dict):
+        return [m for k, v in value.items() for m in _human_markers(v, f"{path}.{k}")]
+    if isinstance(value, list):
+        return [m for i, v in enumerate(value) for m in _human_markers(v, f"{path}[{i}]")]
+    if isinstance(value, str) and (value.lower() == "admin" or value.startswith("admin:")
+                                   or "admin." in value
+                                   or "amministrator" in value.lower()
+                                   or "example.com" in value):
+        return [f"{path}={value}"]
+    return []
+
+
 async def _dry_run_tick(server, monkeypatch, order_id: str) -> None:
     """etoro_live_dry_run: one BrokerSync pass, as the worker runs it, on the in-memory
     fake behind the live gate: the market buy is intercepted (LiveDryRun) and rejected
@@ -270,6 +326,7 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
     if isinstance(resting, dict) and "id" in resting:
         await call("cancel_order", {"order_id": resting["id"]})
         await _admin_placed(mcp_server, resting["id"])  # reads like an agent's order
+    canceled_by_humans = await _human_actions(mcp_server, call, order, pid)
     await call("create_watchlist", {"name": "Crypto"})
     await call("create_alert", {"symbol": SYM, "condition": "price_above", "value": "60000"})
     await call("log_decision", {"kind": "strategy", "summary": "Compro BTC",
@@ -322,7 +379,19 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
 
     # the sweep saw the facts it is about
     feed = next(p for t, p in outputs if t == "get_activity_feed")
-    assert {i["type"] for i in feed["items"]} >= {"portfolio.cash", "decision.strategy"}
+    assert {i["type"] for i in feed["items"]} >= {"portfolio.cash", "decision.strategy",
+                                                   "kill_switch", "halt.set"}
+    if canceled_by_humans:  # eToro takes market orders only: nothing rests there
+        assert {i["type"] for i in feed["items"]} & {"order.canceled",
+                                                      "order.cancel_requested"}
+    halt = next(p for t, p in outputs if t == "get_trading_halt")
+    assert halt["halted"] and halt["halts"][0]["set_by"] == "system", halt
+    alerts = next(p for t, p in outputs if t == "get_triggered_alerts")
+    assert "watch_changed" in {a["kind"] for a in alerts["alerts"]}, alerts
+    clear = next(p for t, p in outputs if t == "set_trading_halt")
+    assert clear["code"] == "FORBIDDEN", clear
+    markers = [(t, m) for t, p in outputs for m in _human_markers(p)]
+    assert not markers, markers
     if flavor == "etoro_source":  # the real provider answered, on the fake server only
         quote = next(p for t, p in outputs if t == "get_quote")
         assert "etoro" in json.dumps(quote), quote

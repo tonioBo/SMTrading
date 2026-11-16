@@ -35,8 +35,8 @@ from smtrading.telegram.render import clean_text
 
 MAX_REASON = 500
 MESSAGE_PREFIX = "Aperture sospese dal CEO: "
-ADMIN_ONLY_CLEAR = "Blocco impostato dagli amministratori: solo loro possono revocarlo"
-ADMIN_ONLY_REPLACE = "Blocco impostato dagli amministratori: solo loro possono modificarlo"
+ADMIN_ONLY_CLEAR = "Blocco impostato dal sistema: un agente non può revocarlo"
+ADMIN_ONLY_REPLACE = "Blocco impostato dal sistema: un agente non può modificarlo"
 SCOPES = tuple(s.value for s in HaltScope)
 _LOCK_KEY = "smtrading.trading_halts"
 
@@ -112,6 +112,7 @@ def _event(session: AsyncSession, type_: str, halt: TradingHalt, by: str,
     queue_event(session, type_, {
         "halt_id": halt.id, "scope": halt.scope, "portfolio_id": halt.portfolio_id,
         # the activity data reaches agents (feed): an admin is named without the email
+        # (and reads as "system" in the MCP output: mcp.dto.agent_sources)
         "agent_id": agent_id, "reason": reason,
         "by": "admin" if _is_admin(by) else by, **extra,
     })

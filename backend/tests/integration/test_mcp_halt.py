@@ -132,7 +132,7 @@ async def test_admin_author_shown_as_admin(env):
                              by="admin:boss@example.com")
         await s.commit()
     err, got = await env["call"]("get_trading_halt")
-    assert not err and got["halts"][0]["set_by"] == "admin"
+    assert not err and got["halts"][0]["set_by"] == "system"
 
 
 @pytest.mark.parametrize("args,field", [
@@ -176,7 +176,7 @@ async def test_agent_cannot_clear_an_admin_halt(env):
         await s.commit()
     err, res = await env["call"]("set_trading_halt", {"active": False})
     assert err and res["code"] == "FORBIDDEN"
-    assert res["message"] == "Blocco impostato dagli amministratori: solo loro possono revocarlo"
+    assert res["message"] == "Blocco impostato dal sistema: un agente non può revocarlo"
     assert [r.active for r in await _rows(env)] == [True]
 
     # the agent's own halt: an admin revokes it as well

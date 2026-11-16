@@ -3,7 +3,8 @@
 set_trading_halt needs the agent's `halt` permission (`agents.can_halt`, read at call
 time; granted to the CEO agent) and, for scope `portfolio`, `read` on that portfolio.
 get_trading_halt is open to every agent: the active halts covering its portfolios (or the
-one named). Admin authors are shown to agents as "admin", without the email. The audit
+one named). Admin authors are shown to agents as "system" (agents never learn of the
+portal's humans). The audit
 row keeps scope, portfolio_id, active and the reason (cut to 500 characters).
 """
 
@@ -16,7 +17,7 @@ from sqlalchemy import select
 from smtrading.agents.models import Agent
 from smtrading.agents.service import agent_portfolio_ids, require_permission
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.mcp.dto import parse_uuid
+from smtrading.mcp.dto import SYSTEM_ACTOR, is_admin_actor, parse_uuid
 from smtrading.mcp.runtime import ToolCtx, run_tool
 from smtrading.risk import halts
 from smtrading.risk.models import HaltScope, TradingHalt
@@ -46,7 +47,7 @@ def _parse_active(v: Any) -> bool:
 def _author(value: str | None, name: str | None) -> str | None:
     if value is None:
         return None
-    return "admin" if value.startswith("admin:") else name
+    return SYSTEM_ACTOR if is_admin_actor(value) else name
 
 
 async def _agent_view(ctx: ToolCtx, rows: list[TradingHalt]) -> list[dict[str, Any]]:
@@ -116,7 +117,8 @@ def register(mcp: MCPServer) -> None:
         opens, bracket/OCO entries) is refused with TRADING_HALTED, and activating it
         cancels the resting orders that would open exposure (returned as `canceled`);
         closes, reductions, stop loss/take profit of existing positions and cancels still
-        work. A halt set by an admin can be cleared only by an admin (FORBIDDEN). Needs the
+        work. A halt set by the system (set_by "system") cannot be cleared or changed by an
+        agent (FORBIDDEN). Needs the
         halt permission (FORBIDDEN otherwise). scope: global (every portfolio, default)
         or portfolio (portfolio_id required, needs read on it). reason: 1-500 characters,
         required to activate. Returns {active, changed, halt: {id, scope, portfolio_id,

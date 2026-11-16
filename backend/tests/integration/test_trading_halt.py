@@ -170,7 +170,7 @@ async def test_agent_cannot_clear_or_replace_an_admin_halt(db_session, p):
         await halts.clear_halt(db_session, scope="portfolio", portfolio_id=p.id, by="agent:x")
     assert exc.value.code == ErrorCode.FORBIDDEN
     assert exc.value.message == (
-        "Blocco impostato dagli amministratori: solo loro possono revocarlo"
+        "Blocco impostato dal sistema: un agente non può revocarlo"
     )
     with pytest.raises(SMTError) as exc:
         await halts.set_halt(db_session, scope="portfolio", portfolio_id=p.id,
