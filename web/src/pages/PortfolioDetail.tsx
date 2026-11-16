@@ -19,7 +19,6 @@ import { useLiveFlatten, useLiveLinks, useLiveResume } from "@/api/hooks/live";
 import type { LiveState, Order, Portfolio, Position, Valuation } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
-import { EquityChart } from "@/components/EquityChart";
 import { EquityHistoryCard } from "@/components/EquityHistoryCard";
 import { Money } from "@/components/Money";
 import { HaltBanner } from "@/components/HaltBanner";
@@ -27,6 +26,7 @@ import { LiveDisarmButton } from "@/components/LiveLinkWizard";
 import { LiveTotpDialog } from "@/components/LiveTotpDialog";
 import { OrderForm } from "@/components/OrderForm";
 import { PageHeader } from "@/components/PageHeader";
+import { Pct } from "@/components/Pct";
 import { Pnl } from "@/components/Pnl";
 import { PortfolioComposition } from "@/components/PortfolioComposition";
 import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
@@ -39,7 +39,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BROKER_STATUS_LABELS } from "@/lib/broker";
 import { subtractDecimal } from "@/lib/decimal";
 import { errorMessage } from "@/lib/errors";
-import { formatDateTime, formatDecimal, formatMoney, formatPct, formatQty } from "@/lib/format";
+import { formatDateTime, formatDecimal, formatMoney, formatQty } from "@/lib/format";
 import { LIVE_BADGE, LIVE_STATE_LABELS, TRAILING_NOTE, isLiveReason, reduceOnlyReasonLabel } from "@/lib/live";
 import { Movements } from "@/pages/PortfolioDetailMovements";
 import { Operations } from "@/pages/PortfolioDetailOperations";
@@ -57,10 +57,6 @@ function Kpi({ title, children }: { title: string; children: ReactNode }) {
       <CardContent className="text-xl font-semibold">{children}</CardContent>
     </Card>
   );
-}
-
-function Pct({ value }: { value: string | null }) {
-  return <span className="num">{value == null ? "—" : formatPct(value)}</span>;
 }
 
 // --- Panoramica ----------------------------------------------------------------------
@@ -82,7 +78,7 @@ function Overview({ portfolio }: { portfolio: Portfolio }) {
           <Pnl value={portfolio.day_pnl_eur} pct={portfolio.day_pnl_pct} />
         </Kpi>
         <Kpi title="Rendimento (totale)">
-          <Pct value={performance.data?.return_pct ?? null} />
+          <Pct value={performance.data?.return_pct ?? null} tone />
         </Kpi>
         <Kpi title="Max drawdown">
           <Pct value={performance.data?.max_drawdown_pct ?? null} />
@@ -100,14 +96,6 @@ function Overview({ portfolio }: { portfolio: Portfolio }) {
           <Money value={valuation.data?.cash_eur} />
         </Kpi>
       </div>
-      <Card>
-        <CardHeader>
-          <CardTitle>Equity</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <EquityChart portfolioId={portfolio.id} />
-        </CardContent>
-      </Card>
       <Card>
         <CardHeader>
           <CardTitle>Cash per valuta</CardTitle>

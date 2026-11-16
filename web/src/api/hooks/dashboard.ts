@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/api/client";
-import type { Dashboard, EquityPeriod, EquitySeries, PortfolioMode, WeeklyGoalProgress } from "@/api/types";
+import type { Dashboard, PortfolioMode, WeeklyGoalProgress } from "@/api/types";
 import { throttle } from "@/lib/throttle";
 import { useLiveMessage, useLiveSocket, type LiveEvent } from "@/lib/ws";
 
@@ -9,16 +9,6 @@ export const dashboardKey = ["dashboard"] as const;
 /** under dashboardKey: invalidating the dashboard refreshes the banner too */
 export const modesKey = ["dashboard", "modes"] as const;
 export const MODES_STALE_MS = 60_000;
-/** Period selector labels mapped to the API periods. */
-export const EQUITY_PERIODS: { label: string; value: EquityPeriod }[] = [
-  { label: "1g", value: "1d" },
-  { label: "1s", value: "1w" },
-  { label: "1m", value: "1m" },
-  { label: "3m", value: "3m" },
-  { label: "1a", value: "1y" },
-  { label: "tutto", value: "all" },
-];
-
 export const FEED_SIZE = 50;
 
 /** Live events shown in the feed: orders and fills. */
@@ -86,13 +76,6 @@ export function useModes() {
     queryFn: () => apiFetch<Record<PortfolioMode, number>>("/api/dashboard/modes"),
     staleTime: MODES_STALE_MS,
     refetchInterval: MODES_STALE_MS,
-  });
-}
-
-export function useEquity(period: EquityPeriod) {
-  return useQuery({
-    queryKey: ["dashboard", "equity", period],
-    queryFn: () => apiFetch<EquitySeries>(`/api/dashboard/equity?period=${period}`),
   });
 }
 

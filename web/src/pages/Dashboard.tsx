@@ -1,20 +1,24 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useDashboard, useLiveFeed, useWeeklyGoal, FEED_EVENT_LABELS } from "@/api/hooks/dashboard";
+import { useOpenPositions } from "@/api/hooks/positions";
+import { useSignals } from "@/api/hooks/signals";
 import type { Dashboard as DashboardData, DashboardConnector, MarginAlert, WeeklyGoalProgress } from "@/api/types";
-import { EquityChart } from "@/components/EquityChart";
 import { EquityHistoryCard } from "@/components/EquityHistoryCard";
 import { HaltBanner } from "@/components/HaltBanner";
 import { KillSwitchButton } from "@/components/KillSwitchButton";
 import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
+import { Pct } from "@/components/Pct";
 import { Pnl } from "@/components/Pnl";
+import { ProtectionBadge } from "@/components/ProtectionBadge";
+import { SignalBadge } from "@/components/SignalBadges";
 import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatDateTime, formatMoney, formatPct, formatQty } from "@/lib/format";
-import { goalProgress } from "@/lib/signals";
+import { closestSignals, goalProgress } from "@/lib/signals";
 import { MODE_INFO } from "@/lib/portfolioMode";
 import { heartbeatState } from "@/lib/heartbeat";
 import { cn } from "@/lib/utils";
@@ -141,12 +145,6 @@ function GoalBar({ pct, target, label }: { pct: string | null; target: string; l
   );
 }
 
-function GoalPct({ pct }: { pct: string | null }) {
-  if (pct == null) return <span className="num text-muted">—</span>;
-  const text = formatPct(pct);
-  return <span className={cn("num", text.startsWith("-") ? "text-loss" : /[1-9]/.test(text) ? "text-gain" : "text-muted")}>{text}</span>;
-}
-
 function money(v: string | null): string {
   return v == null ? "—" : formatMoney(v, "EUR");
 }
@@ -173,7 +171,7 @@ function WeeklyGoalCard({ goal }: { goal: WeeklyGoalProgress }) {
             <div className="space-y-1">
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <span className="num text-lg font-semibold">{`${money(total.start_eur)} → ${money(total.current_eur)}`}</span>
-                <GoalPct pct={total.pct} />
+                <Pct value={total.pct} tone />
               </div>
               <GoalBar pct={total.pct} target={goal.target_pct} label="Obiettivo settimanale totale" />
             </div>
@@ -188,7 +186,7 @@ function WeeklyGoalCard({ goal }: { goal: WeeklyGoalProgress }) {
                         </Link>
                         <span className="num ml-2 text-muted">{`${money(p.start_eur)} → ${money(p.current_eur)}`}</span>
                       </span>
-                      <GoalPct pct={p.pct} />
+                      <Pct value={p.pct} tone />
                     </div>
                     <GoalBar pct={p.pct} target={goal.target_pct} label={`Obiettivo settimanale ${p.name}`} />
                   </li>
@@ -234,6 +232,89 @@ function LiveFeed() {
                     </>
                   )}
                 </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+const COMPACT_ROWS = 5;
+
+/** «Posizioni aperte» (compact): symbol, P/L, protection; the full page is «Posizioni». */
+function OpenPositionsCard() {
+  const { data, isError } = useOpenPositions();
+  const rows = data?.positions ?? [];
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <CardTitle>Posizioni aperte</CardTitle>
+        <Link to="/posizioni" className="text-sm text-accent hover:underline">
+          Tutte le posizioni
+        </Link>
+      </CardHeader>
+      <CardContent>
+        {isError ? (
+          <p className="text-sm text-loss">Impossibile caricare le posizioni</p>
+        ) : !data ? (
+          <p className="text-sm text-muted">Caricamento…</p>
+        ) : rows.length === 0 ? (
+          <p className="text-sm text-muted">Nessuna posizione aperta</p>
+        ) : (
+          <ul className="divide-y divide-border text-sm" aria-label="Posizioni aperte">
+            {rows.slice(0, COMPACT_ROWS).map((p) => (
+              <li key={`${p.portfolio_id}:${p.symbol}`} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                <span className="min-w-0">
+                  <span className="font-medium">{p.symbol}</span>
+                  <Link to={`/portafogli/${p.portfolio_id}`} className="ml-2 text-xs text-muted hover:underline">
+                    {p.portfolio_name}
+                  </Link>
+                </span>
+                <span className="flex items-center gap-2">
+                  <Pnl value={p.pnl_eur} pct={p.pnl_pct} />
+                  <ProtectionBadge protection={p.protection} />
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {rows.length > COMPACT_ROWS && <p className="mt-2 text-xs text-muted">{`e altre ${rows.length - COMPACT_ROWS}`}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** «Segnali più vicini»: the 5 symbols closest to an entry; the full page is «Segnali». */
+function ClosestSignalsCard() {
+  const { data, isError } = useSignals();
+  const top = closestSignals(data, COMPACT_ROWS);
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <CardTitle>Segnali più vicini</CardTitle>
+        <Link to="/segnali" className="text-sm text-accent hover:underline">
+          Tutti i segnali
+        </Link>
+      </CardHeader>
+      <CardContent>
+        {isError ? (
+          <p className="text-sm text-loss">Impossibile caricare i segnali</p>
+        ) : !data ? (
+          <p className="text-sm text-muted">Caricamento…</p>
+        ) : top.length === 0 ? (
+          <p className="text-sm text-muted">Nessun segnale vicino</p>
+        ) : (
+          <ul className="divide-y divide-border text-sm" aria-label="Segnali più vicini">
+            {top.map((t) => (
+              <li key={`${t.portfolioId ?? "none"}:${t.ref}:${t.symbol.symbol}`} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                <span className="min-w-0">
+                  <span className="font-medium">{t.symbol.symbol}</span>
+                  <span className="ml-2 text-xs text-muted">{`${t.ref}${t.portfolioName ? ` · ${t.portfolioName}` : ""}`}</span>
+                  <span className="num ml-2 text-xs text-muted">{t.symbol.indicator ?? ""}</span>
+                </span>
+                <SignalBadge s={t.symbol} />
               </li>
             ))}
           </ul>
@@ -325,6 +406,12 @@ export default function Dashboard() {
         !isError && <p className="text-sm text-muted">Caricamento…</p>
       ) : (
         <div className="space-y-6">
+          {goal?.on && <WeeklyGoalCard goal={goal} />}
+          <EquityHistoryCard />
+          <div className="grid gap-4 lg:grid-cols-2">
+            <OpenPositionsCard />
+            <ClosestSignalsCard />
+          </div>
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <Kpi title="Equity totale">
               <Money value={data.total_equity_eur} />
@@ -348,16 +435,6 @@ export default function Dashboard() {
               })()}
             </Kpi>
           </div>
-          {goal?.on && <WeeklyGoalCard goal={goal} />}
-          <EquityHistoryCard />
-          <Card>
-            <CardHeader>
-              <CardTitle>Equity aggregata</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <EquityChart live={dataUpdatedAt ? { ts: dataUpdatedAt, equity_eur: data.total_equity_eur } : undefined} />
-            </CardContent>
-          </Card>
           <PortfolioTable portfolios={data.portfolios} />
           <div className="grid gap-4 lg:grid-cols-2">
             <LiveFeed />

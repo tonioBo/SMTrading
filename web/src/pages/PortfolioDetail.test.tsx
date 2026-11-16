@@ -35,11 +35,6 @@ vi.mock("@/lib/ws", async () => {
     },
   };
 });
-vi.mock("lightweight-charts", () => {
-  const series = { setData: vi.fn() };
-  const chart = { addAreaSeries: () => series, timeScale: () => ({ fitContent: vi.fn() }), remove: vi.fn() };
-  return { createChart: vi.fn(() => chart), ColorType: { Solid: "solid" } };
-});
 
 function emitQuote(quote: Record<string, unknown>) {
   act(() => ws.handlers.forEach((h) => h.type === "quote" && h.call(quote)));

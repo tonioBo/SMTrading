@@ -144,13 +144,6 @@ export interface EquityPoint {
   equity_eur: string;
 }
 
-export interface EquitySeries {
-  period: EquityPeriod;
-  bucket_s: number;
-  series: EquityPoint[];
-  portfolios: { id: string; name: string | null; series: EquityPoint[] }[];
-}
-
 export type PortfolioStatus = "active" | "reduce_only" | "locked" | "archived";
 
 export interface Portfolio {

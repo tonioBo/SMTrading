@@ -26,7 +26,6 @@ const server = setupServer(
     HttpResponse.json({ stale_quote_s: {}, default_spread_bps: {}, timezone: "Europe/Rome" }),
   ),
   http.get("*/api/dashboard", () => new HttpResponse(null, { status: 503 })),
-  http.get("*/api/dashboard/equity", () => new HttpResponse(null, { status: 503 })),
   http.post("*/api/auth/logout", () => new HttpResponse(null, { status: 204 })),
 );
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));

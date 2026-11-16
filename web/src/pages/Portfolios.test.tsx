@@ -12,10 +12,6 @@ vi.mock("@/lib/ws", async (orig) => ({
   useLiveSocket: () => ({ socket: null, status: "open" }),
 }));
 // the detail page opened after a creation draws the equity chart
-vi.mock("lightweight-charts", () => {
-  const chart = { addAreaSeries: () => ({ setData: vi.fn() }), timeScale: () => ({ fitContent: vi.fn() }), remove: vi.fn() };
-  return { createChart: vi.fn(() => chart), ColorType: { Solid: "solid" } };
-});
 
 function portfolio(id: string, name: string, extra: Partial<Portfolio> = {}): Portfolio {
   return {

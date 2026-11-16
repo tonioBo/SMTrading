@@ -37,11 +37,6 @@ vi.mock("@/lib/ws", async () => {
     },
   };
 });
-vi.mock("lightweight-charts", () => {
-  const series = { setData: vi.fn(), update: vi.fn() };
-  const chart = { addAreaSeries: () => series, timeScale: () => ({ fitContent: vi.fn() }), remove: vi.fn() };
-  return { createChart: vi.fn(() => chart), ColorType: { Solid: "solid" } };
-});
 
 function emit(event: LiveEvent) {
   act(() => live.handlers.get("event")?.forEach((h) => h(event)));
@@ -74,7 +69,6 @@ const dashboard: Dashboard = {
 
 let killSwitchOn = false;
 let posted: unknown = null;
-let equity: { ts: string; equity_eur: string }[] = [];
 let current = dashboard;
 let fetches = 0;
 const server = setupServer(
@@ -90,14 +84,12 @@ const server = setupServer(
     fetches += 1;
     return HttpResponse.json(current);
   }),
-  http.get("*/api/dashboard/equity", () => HttpResponse.json({ period: "1m", bucket_s: 300, series: equity, portfolios: [] })),
 );
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
   server.resetHandlers();
   killSwitchOn = false;
   posted = null;
-  equity = [];
   current = dashboard;
   fetches = 0;
   live.handlers.clear();
@@ -156,7 +148,6 @@ describe("Dashboard", () => {
     expect(screen.getByText("+0,40%", { exact: false })).toBeInTheDocument();
     expect(screen.getByRole("img", { name: "binance: operativo" })).toBeInTheDocument();
     expect(screen.getByText(/Avviso di margine · Alfa/)).toBeInTheDocument();
-    expect(await screen.findByText("Nessun dato")).toBeInTheDocument();
   });
 
   it("shows amber and red worker heartbeat states", async () => {
@@ -169,10 +160,55 @@ describe("Dashboard", () => {
     expect(await screen.findByText("Worker non raggiungibile")).toBeInTheDocument();
   });
 
-  it("draws the chart when the series has data", async () => {
-    equity = [{ ts: "2026-11-12T10:00:00Z", equity_eur: "100.5" }];
+  it("order: weekly goal and «Andamento» first, then open positions and closest signals; no old equity chart", async () => {
     renderApp("/");
-    expect(await screen.findByTestId("equity-chart")).toBeInTheDocument();
+    const goal = await screen.findByText("Obiettivo settimanale");
+    const trend = await screen.findByText("Andamento");
+    const positions = await screen.findByText("Posizioni aperte");
+    const signalsCard = screen.getByText("Segnali più vicini");
+    const kpi = screen.getByText("Equity totale");
+    const follows = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(goal, trend) && follows(trend, positions) && follows(positions, signalsCard) && follows(signalsCard, kpi)).toBe(true);
+    expect(screen.queryByText("Equity aggregata")).not.toBeInTheDocument();
+    expect(await screen.findByText("Nessuna posizione aperta")).toBeInTheDocument();
+    expect(await screen.findByText("Nessun segnale vicino")).toBeInTheDocument();
+  });
+
+  it("compact «Posizioni aperte» and «Segnali più vicini» with links", async () => {
+    const position = {
+      portfolio_id: "p1", portfolio_name: "Alfa", symbol: "AAPL", name: "Apple", market: "NASDAQ", currency: "USD", side: "long",
+      qty: "2", avg_price: "180", opened_at: null, last: "190", stale: false, value_eur: "350", pnl_eur: "18.4", pnl_pct: "5.5",
+      stop: null, target: null, distance_to_stop_pct: null, risk_at_stop_eur: null, protection: "senza stop",
+    };
+    const sym = (symbol: string, distance: string, over = {}) => ({
+      symbol, last: "100", indicator: "RSI 14", value_closed: "40", value_now: null, threshold: "30", direction: "below",
+      distance, triggered_closed: false, triggered_now: false, as_of: null, position: null, open_entry: false, ...over,
+    });
+    server.use(
+      http.get("*/api/positions/open", () => HttpResponse.json({ as_of: "2026-11-16T12:00:00Z", positions: [position], portfolios: [] })),
+      http.get("*/api/signals", () =>
+        HttpResponse.json({
+          as_of: "2026-11-16T12:00:00Z",
+          portfolios: [{
+            portfolio_id: "p1", portfolio_name: "Alfa",
+            strategies: [{ ref: "STR-1", name: "RSI", type: "rsi_reversion", params: {}, timeframe: "1d", status: "ok",
+              symbols: [sym("FAR", "20"), sym("NEAR", "2"), sym("HELD", "1", { position: { qty: "1", avg_price: "1" } }),
+                sym("A", "8"), sym("B", "9"), sym("C", "10"), sym("D", "11")] }],
+          }],
+        }),
+      ),
+    );
+    renderApp("/");
+    const positions = await screen.findByRole("list", { name: "Posizioni aperte" });
+    expect(within(positions).getByText("AAPL")).toBeInTheDocument();
+    expect(within(positions).getByText("+18,40 €")).toHaveClass("text-gain");
+    expect(within(positions).getByText("🔴 senza stop")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Tutte le posizioni" })).toHaveAttribute("href", "/posizioni");
+    const closest = await screen.findByRole("list", { name: "Segnali più vicini" });
+    const items = within(closest).getAllByRole("listitem");
+    expect(items.map((li) => li.querySelector(".font-medium")?.textContent)).toEqual(["NEAR", "A", "B", "C", "D"]);
+    expect(within(items[0]).getByText("🟡 vicino")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Tutti i segnali" })).toHaveAttribute("href", "/segnali");
   });
 
   it("updates the kill-switch badge from the kill_switch WS event", async () => {

@@ -47,6 +47,9 @@ export const commonHandlers = [
       range: new URL(request.url).searchParams.get("range") ?? "1m", start: null, end: "2026-11-16T12:00:00Z", goal_pct: null, portfolios: [],
     }),
   ),
+  // Dashboard «Posizioni aperte» / «Segnali più vicini»: empty unless a test overrides them
+  http.get("*/api/positions/open", () => HttpResponse.json({ as_of: "2026-11-16T12:00:00Z", positions: [], portfolios: [] })),
+  http.get("*/api/signals", () => HttpResponse.json({ as_of: "2026-11-16T12:00:00Z", portfolios: [] })),
   // «Impostazioni → Utenti» (admins): an empty list unless a test overrides it
   http.get("*/api/users", () => HttpResponse.json([])),
   // link flows and the portfolio «Commissioni»: the brokers' fee presets
