@@ -80,6 +80,31 @@ describe("Signals", () => {
     expect(screen.getByText("non supportata")).toBeInTheDocument();
   });
 
+  it("shows «in posizione» / «ordine in attesa» instead of the signal, keeping the values", async () => {
+    const base = signals.portfolios[0].strategies[0];
+    current = {
+      ...signals,
+      portfolios: [{
+        ...signals.portfolios[0],
+        strategies: [{
+          ...base,
+          symbols: [
+            { ...base.symbols[0], position: { qty: "0.51", avg_price: "258" }, open_entry: false },
+            { ...base.symbols[2], position: null, open_entry: true },
+          ],
+        }],
+      }],
+    };
+    renderApp("/segnali");
+    const table = await screen.findByRole("table", { name: "Segnali STR-001" });
+    const rows = within(table).getAllByRole("row");
+    expect(within(rows[1]).getByText("📌 in posizione")).toBeInTheDocument();
+    expect(within(rows[1]).queryByText("🟢 scatterebbe ora")).not.toBeInTheDocument();
+    expect(within(rows[1]).getByText("29,80")).toBeInTheDocument();
+    expect(within(rows[2]).getByText("⏳ ordine in attesa")).toBeInTheDocument();
+    expect(within(rows[2]).getByText("sotto 30,00")).toBeInTheDocument();
+  });
+
   it("renders «—» for a symbol whose data could not be read", async () => {
     current = {
       as_of: "2026-11-16T15:00:00Z",

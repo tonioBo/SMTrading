@@ -1202,6 +1202,10 @@ export interface SignalSymbol {
   triggered_closed: boolean | null;
   triggered_now: boolean | null;
   as_of: string | null;
+  /** the open position of the strategy's portfolio in this symbol (null: flat / no portfolio) */
+  position?: { qty: string; avg_price: string } | null;
+  /** a buy entry order of the symbol is still resting in that portfolio */
+  open_entry?: boolean;
 }
 
 export interface StrategySignal {
