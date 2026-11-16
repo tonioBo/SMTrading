@@ -1,0 +1,25 @@
+# SMTrading 13 · Composizione, posizioni aperte, sessioni agenti, allarme protezione
+
+> For agentic workers: subagent-driven, one worktree per task, TDD, small commits. Deadline: ready 07:00 Europe/Rome 17/11, deployed before 08:30 with agents idle.
+
+**Branch:** feat/plan-13-night (from main 2ead865). Ledger: .superpowers/sdd/2026-11-16-smtrading-13-night/progress.md
+**User decisions (2026-11-16 22:00):** all four items.
+
+## Global constraints
+- Italian UI, comma decimals, Europe/Rome; viewer can read every new GET; role-coverage + activity-log coverage tests stay green.
+- Agent illusion (`test_mcp_no_fingerprints`): nothing new reaches agents except the Paperclip task text of Task D (written as an operations alert, no simulation words).
+- Paperclip writes (Tasks C, D) use the stored board key via the existing paperclip client/config (paperclip/), only when the reader is configured and enabled; never log the key; failures are logged + shown in the existing Paperclip status, never crash the worker.
+- Reuse: portfolio valuation (positions, FX to EUR) already used by the portfolio detail/dashboard; order model (bracket/OCO legs, tif, status); telegram outbox; paperclip reader/client.
+
+## Task A · Composizione del portafoglio (backend + web)
+`GET /api/portfolios/{id}/composition` → `{as_of, equity_eur, cash_eur, positions: [{symbol, name, asset_class, market, currency, qty, avg_price, last, value_eur, weight_pct, pnl_eur, pnl_pct}], by_asset_class: [{key, label, value_eur, weight_pct}], by_currency: [...]}` (cash counted as its own slice «Contante»; strings for numbers like other admin routes). Web: at the top of PortfolioDetail a card «Composizione»: donut (titoli + Contante, max 8 slices then «Altri»), two horizontal bar lists (per mercato/tipo, per valuta), table of positions with value, weight, P/L colored. Use a light chart approach consistent with the codebase (check if a chart lib exists; otherwise SVG donut hand-made). Empty state «Solo contante».
+## Task B · Pagina «Posizioni aperte» (backend + web)
+`GET /api/positions/open` → all non-archived portfolios: `[{portfolio_id, portfolio_name, symbol, qty, avg_price, last, value_eur, pnl_eur, pnl_pct, stop: {order_id, price, tif}|null, target: {order_id, price, tif}|null, distance_to_stop_pct, risk_at_stop_eur, protection: "ok"|"senza stop"|"scade oggi"}]` + per-portfolio totals (risk at stop sum vs daily loss limit). Web page «Posizioni» (menu after «Segnali»): grouped by portfolio, badges (🟢 protetta, 🟠 scade oggi = stop/target with tif day while market open, 🔴 senza stop), totals «Rischio agli stop: 7,75 € su 40 € (19%)». Auto-refresh 60 s.
+## Task C · Sessioni agenti aggiornate automaticamente
+SMTrading computes a fingerprint (sha256) of its MCP tool catalog (names + input schemas + descriptions). On worker start and every reader pass: if the fingerprint differs from the last stored one (app setting) and Paperclip is configured+enabled, reset the Paperclip session (`POST /api/agents/{id}/runtime-state/reset-session`) of every agent of the configured company that is not currently running (`status != running`; running ones are retried on the next pass), then store the fingerprint once all are done; one Telegram info message «Strumenti degli agenti aggiornati: sessioni ripartite per N agenti». First run on an install with no stored fingerprint: store it, reset nothing. Tests with a fake Paperclip.
+## Task D · Allarme «posizione senza protezione»
+Worker check every 5 min (and at startup): for each open position (qty ≠ 0) in non-archived portfolios: protective orders = active sell (long) / buy (short) stop or stop_limit covering the qty. Problems: no stop at all; stop qty < position qty; stop (or its OCO target) with tif day while the position was opened on a previous session or less than 30 min to the session close. For each problem (dedup per position+problem until resolved): Telegram warning «⚠️ Posizione senza protezione — <portafoglio> · <simbolo>: <problema>» and, if Paperclip is configured+enabled, a Paperclip issue assigned to the Risk Manager agent (resolve by name «Risk Manager» in the company; config override possible later) titled «PROTEGGI · <portafoglio> · <simbolo>» with the facts (qty, avg price, orders found) asking to restore stop/target valid until revoked. Resolution clears the dedup; a resolved+reappeared problem alerts again. Agent doc 03-risk-manager.md: one short paragraph on «PROTEGGI» tasks (check, restore OCO gtc reduce-only, avoid double cover, reply with order ids).
+## Review Focus
+- A/B: FX conversion and cash in non-EUR portfolios; positions with no quote (stale/none) shown with «—», not 0.
+- C: never reset a running agent; no reset loop if Paperclip errors; fingerprint stable across restarts (sorted keys).
+- D: brackets pending entry (entry not filled) are not positions; partially filled; crypto (no session close → day tif means 24h? treat crypto day tif as expiring at 00:00 UTC); dedup survives worker restart (persist).
