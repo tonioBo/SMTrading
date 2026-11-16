@@ -312,17 +312,17 @@ async def list_fee_presets() -> list[dict]:
 async def apply_fee_preset(
     portfolio_id: UUID, body: FeePresetApplyIn, session: DbSession, redis: RedisClient
 ) -> dict:
-    """The broker's preset becomes the portfolio's fee rule «<portafoglio> – <broker>»
-    (created or updated); the portfolio's other active portfolio-scope rules are
-    deactivated. Never touches the broker link or the real-money state."""
+    """The broker's preset becomes the portfolio's fee rules, one per entry
+    («<portafoglio> – <broker>[ · <classe>]», created or updated); the portfolio's other
+    active portfolio-scope rules are deactivated. Never touches the broker link or the real-money state."""
     preset = preset_for(body.broker_kind)
     if preset is None:
         raise _invalid("broker_kind", "broker senza commissioni predefinite")
     async with _transaction(session, redis):
         applied = await apply_broker_preset(session, portfolio_id, preset)
         out = {
-            "rule": _rule_dto(applied.rule),
-            "created": applied.created,
+            "rules": [_rule_dto(r) for r in applied.rules],
+            "created": [str(r.id) for r in applied.created],
             "deactivated": [{"id": str(r.id), "name": r.name} for r in applied.deactivated],
             "preset": preset_dto(body.broker_kind, preset),
         }
