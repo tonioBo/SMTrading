@@ -215,3 +215,18 @@ async def test_issues_client_errors_have_no_key():
         with pytest.raises(PaperclipError) as e:
             await client.create_issue(title="t", description="d", assignee_agent_id="rm")
     assert e.value.message == "HTTP 500"
+
+
+def test_issue_description_names_the_real_tools_and_never_double_covers():
+    p = pos()
+    desc = issue_description(Finding(p, [], evaluate(p, [], NOW, ROME)), ROME)
+    assert "get_orders" not in desc
+    assert "list_orders" in desc and "cancel_order" in desc and "modify_order" in desc
+    assert "place_oco_order" in desc and "non è reduce_only" in desc
+    assert "ingresso" not in desc  # no partially filled bracket entry here
+    p3 = pos("3")
+    held = order(status=OrderStatus.held, parent_partial=True)
+    partial = issue_description(Finding(p3, [held], evaluate(p3, [held], NOW, ROME)), ROME)
+    assert "si attivano quando l'ingresso è eseguito" in partial
+    assert "non aggiungere un altro OCO" in partial
+    assert not FINGERPRINT.search(desc) and not FINGERPRINT.search(partial)

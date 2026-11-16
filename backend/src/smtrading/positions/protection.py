@@ -238,11 +238,19 @@ def issue_description(f: Finding, zone: ZoneInfo) -> str:
         "Ordini aperti trovati sul simbolo:",
         *([_order_line(o, zone) for o in f.orders] or ["- nessuno"]),
         "",
-        ("Cosa fare: verifica la posizione (get_positions, get_orders) e ripristina stop e "
-        "target validi fino a revoca: place_oco_order di uscita (side opposto, qty della "
-        "posizione, tif gtc, reduce_only). Prima cancella o sostituisci gli ordini di uscita "
-        "che restano, per non coprire due volte la stessa qty. Rispondi qui con gli id "
-        "degli ordini."),
+        ("Cosa fare: verifica la posizione e i suoi ordini (get_positions, list_orders). "
+         "Correggi un'uscita esistente con modify_order o toglila con cancel_order; poi "
+         "ripristina stop e target validi fino a revoca con place_oco_order di uscita "
+         "(side opposto, tif gtc, qty non oltre quella della posizione rimasta scoperta: "
+         "l'OCO non è reduce_only, una qty in eccesso aprirebbe una posizione opposta). "
+         "Cancella o correggi prima le uscite che restano, per non coprire due volte la "
+         "stessa qty."),
+        *([("Ingresso bracket eseguito solo in parte: i suoi stop e target in attesa si "
+            "attivano quando l'ingresso è eseguito per intero. Cancella la parte restante "
+            "dell'ingresso (o l'intero bracket, poi proteggi la qty eseguita) oppure "
+            "attendi l'esecuzione: non aggiungere un altro OCO che coprirebbe due volte "
+            "la stessa qty.")] if any(o.parent_partial for o in f.orders) else []),
+        "Rispondi qui con gli id degli ordini.",
     ]
     return "\n".join(lines)
 
