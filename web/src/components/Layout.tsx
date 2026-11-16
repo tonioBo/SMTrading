@@ -4,6 +4,7 @@ import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useLogout, useMe } from "@/api/hooks/auth";
 import { ChangePasswordSection } from "@/components/ChangePasswordSection";
 import { KillSwitchIndicator } from "@/components/KillSwitchIndicator";
+import { LiveMoneyIndicator } from "@/components/LiveMoneyIndicator";
 import { ModeBanner } from "@/components/ModeBanner";
 import { NewVersionBanner } from "@/components/NewVersionBanner";
 import { PaperclipBanner } from "@/components/PaperclipBanner";
@@ -177,6 +178,7 @@ export function Layout() {
             <Menu />
           </Button>
           <LiveDot />
+          <LiveMoneyIndicator />
           <KillSwitchIndicator />
           <ThemeToggle />
           {me.data.role === "viewer" && (

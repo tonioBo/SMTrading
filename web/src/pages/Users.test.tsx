@@ -314,13 +314,13 @@ describe("read-only mode", () => {
     expect(screen.queryByRole("button", { name: /Nuovo profilo/ })).not.toBeInTheDocument();
   });
 
-  it("keeps the red banner «Disattiva» link and the disarm button for a viewer", async () => {
+  it("keeps the red-dot badge link and the disarm button for a viewer", async () => {
     const user = userEvent.setup();
     viewer();
     armed = 1;
     renderApp("/broker");
-    const banner = await screen.findByRole("status", { name: "Modalità di trading" });
-    expect(within(banner).getByRole("link", { name: "Disattiva" })).toHaveAttribute("href", "/broker#denaro-reale");
+    const badge = await screen.findByRole("link", { name: /Denaro reale attivo su/ });
+    expect(badge).toHaveAttribute("href", "/broker#denaro-reale");
     const card = await screen.findByLabelText("Denaro reale Alpaca vero");
     await user.click(within(card).getByRole("button", { name: "Disattiva denaro reale" }));
     await waitFor(() => expect(posts).toEqual([{ path: "disarm/l1", body: null }]));

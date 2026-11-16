@@ -252,8 +252,9 @@ docker compose exec -T api python -m smtrading.cli names fix --yes    # applica 
 
 Un portafoglio collegato a un conto reale mostra il badge rosso con il broker (per esempio
 **🔴 Trading 212 · reale**, «· prova a secco» durante la prova, «· sospeso» quando il
-collegamento è disattivato) e, finché un collegamento è attivo, tutte le pagine hanno la
-barra rossa «Denaro reale attivo su N portafogli». Gli ordini reali sono **autonomi** (nessuna approvazione per ordine): le
+collegamento è disattivato) e, finché un collegamento è attivo, l'intestazione di ogni pagina
+mostra il pallino rosso «Reale» (il suggerimento dice «Denaro reale attivo su N portafogli» e quali;
+un clic porta a «Disattiva»). Gli ordini reali sono **autonomi** (nessuna approvazione per ordine): le
 difese sono i limiti del profilo di rischio, il tetto di liquidità, il fusibile di
 frequenza (`max_live_orders_per_hour`, default 30 ordini/ora per portafoglio, poi
 reduce-only), il kill switch e una notifica Telegram per ogni ordine reale (sempre in coda,

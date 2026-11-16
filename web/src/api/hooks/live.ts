@@ -38,7 +38,7 @@ export function useLiveLinks() {
   return useQuery({ queryKey: liveLinksKey, queryFn: () => apiFetch<LiveLink[]>("/api/live-links") });
 }
 
-/** For the red banner and the fixed Telegram warning (every page). */
+/** For the red-dot header badge and the fixed Telegram warning (every page). */
 export function useLiveStatus() {
   return useQuery({
     queryKey: liveStatusKey,

@@ -68,7 +68,7 @@ async function disarm(page: Page, name: string) {
   expect((await disarmed).ok()).toBe(true);
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(armed.getByText(/^Disattivato/)).toBeVisible();
-  await expect(page.getByRole("status", { name: "Modalità di trading" })).not.toContainText("Denaro reale attivo");
+  await expect(page.getByRole("link", { name: /Denaro reale attivo/ })).toHaveCount(0);
 }
 
 test.describe("denaro reale @live", () => {
@@ -108,14 +108,13 @@ test.describe("denaro reale @live", () => {
     await arm(page, card, name);
     await linkPortfolio(page, card, PORTFOLIO);
 
-    // red bar and «🔴 Trading 212 · reale» badge
-    const banner = page.getByRole("status", { name: "Modalità di trading" });
-    await expect(banner).toContainText("Denaro reale attivo su 1 portafoglio");
+    // red-dot header badge and «🔴 Trading 212 · reale» badge
+    await expect(page.getByRole("link", { name: /Denaro reale attivo su 1 portafoglio/ })).toBeVisible();
     await openPortfolio(page, PORTFOLIO);
     const badge = page.locator("[data-live-state]").first();
     await expect(badge).toHaveAttribute("data-live-state", "armed");
     await expect(badge).toHaveText("🔴 Trading 212 · reale");
-    await expect(page.getByRole("status", { name: "Modalità di trading" })).toContainText("Denaro reale attivo");
+    await expect(page.getByRole("link", { name: /Denaro reale attivo/ })).toBeVisible();
 
     await disarm(page, name);
 
@@ -190,7 +189,7 @@ test.describe("denaro reale @live", () => {
     await expect(linked).toContainText(ETORO_A);
     await expect(linked).toContainText(ETORO_B);
     await expect(linked.getByText(/^Non assegnato: /)).not.toContainText("non disponibile");
-    await expect(page.getByRole("status", { name: "Modalità di trading" })).toContainText("Denaro reale attivo su 2 portafogli");
+    await expect(page.getByRole("link", { name: /Denaro reale attivo su 2 portafogli/ })).toBeVisible();
 
     await openPortfolio(page, ETORO_B);
     const badge = page.locator("[data-live-state]").first();

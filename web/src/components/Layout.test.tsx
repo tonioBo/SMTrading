@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -169,7 +169,7 @@ describe("Layout", () => {
     expect(await screen.findByText("SMTrading (simulato) – denaro virtuale, prezzi di mercato reali")).toBeInTheDocument();
   });
 
-  it("banner red with count and telegram warning", async () => {
+  it("real money armed: no red strip, a red-dot badge with count, names and link; telegram warning kept", async () => {
     server.use(
       http.get("*/api/live/status", () =>
         HttpResponse.json({
@@ -184,33 +184,17 @@ describe("Layout", () => {
       ),
     );
     renderApp("/");
-    const banner = await screen.findByRole("status", { name: "Modalità di trading" });
-    await waitFor(() => expect(banner).toHaveTextContent("Denaro reale attivo su 1 portafoglio"));
-    expect(banner.className).toContain("bg-loss");
-    expect(within(banner).getByRole("link", { name: "Disattiva" })).toHaveAttribute("href", "/broker#denaro-reale");
+    const badge = await screen.findByRole("link", { name: /Denaro reale attivo su 1 portafoglio/ });
+    expect(badge).toHaveAttribute("href", "/broker#denaro-reale");
+    expect(badge).toHaveAttribute("title", "Denaro reale attivo su 1 portafoglio: Reale · clic per disattivare");
+    expect(within(badge).getByTestId("live-money-dot").className).toContain("bg-loss");
+    // the full-width red strip is gone (and the modes strip is not shown in its place)
+    expect(screen.queryByRole("status", { name: "Modalità di trading" })).not.toBeInTheDocument();
+    expect(document.querySelector(".bg-loss.px-6")).toBeNull();
     expect(screen.getByText("Telegram non funziona: gli ordini reali continuano, le notifiche restano in coda")).toBeInTheDocument();
   });
 
-  it("counts the real portfolios in the plural and hides the Telegram warning when it works", async () => {
-    server.use(
-      http.get("*/api/live/status", () =>
-        HttpResponse.json({
-          armed_count: 2,
-          dry_run_count: 0,
-          portfolios: [
-            { id: "p1", name: "A", live_state: "armed" },
-            { id: "p2", name: "B", live_state: "armed" },
-          ],
-          telegram_ok: true,
-        }),
-      ),
-    );
-    renderApp("/");
-    expect(await screen.findByText("Denaro reale attivo su 2 portafogli")).toBeInTheDocument();
-    expect(screen.queryByText(/Telegram non funziona/)).not.toBeInTheDocument();
-  });
-
-  it("banner counts two live portfolios", async () => {
+  it("the badge counts the real portfolios in the plural and no Telegram warning when it works", async () => {
     // one armed link, two portfolios on its account
     server.use(
       http.get("*/api/live/status", () =>
@@ -226,8 +210,16 @@ describe("Layout", () => {
       ),
     );
     renderApp("/");
-    const banner = await screen.findByRole("status", { name: "Modalità di trading" });
-    await waitFor(() => expect(banner).toHaveTextContent("Denaro reale attivo su 2 portafogli"));
+    const badge = await screen.findByRole("link", { name: /Denaro reale attivo su 2 portafogli/ });
+    expect(badge).toHaveAttribute("title", "Denaro reale attivo su 2 portafogli: A, B · clic per disattivare");
+    expect(screen.queryByText(/Telegram non funziona/)).not.toBeInTheDocument();
+  });
+
+  it("no red-dot badge without an armed link", async () => {
+    renderApp("/");
+    expect(await screen.findByText("SMTrading (simulato) – denaro virtuale, prezzi di mercato reali")).toBeInTheDocument();
+    expect(screen.queryByTestId("live-money-dot")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Denaro reale attivo/ })).not.toBeInTheDocument();
   });
 
   it("shows no Telegram warning without an armed link", async () => {
