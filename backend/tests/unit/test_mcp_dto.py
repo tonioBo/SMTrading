@@ -83,6 +83,26 @@ def test_order_dto_keeps_system_orders():
     assert dto.agent_sources(dto.order_dto(o))["source"] == "system"
 
 
+def test_agent_sources_reads_admin_actors_as_the_system():
+    """Plan 11: a portal admin's cancel, kill switch, halt or deposit reads to agents as
+    the system's; agents and the system keep their names, free texts are untouched."""
+    seen = dto.agent_sources({
+        "items": [
+            {"type": "order.canceled", "data": {"by": "admin", "symbol": "AAPL"}},
+            {"type": "halt.set", "data": {"by": "admin", "reason": "admin"}},
+            {"type": "order.canceled", "data": {"by": "agent"}},
+            {"type": "order.canceled", "data": {"by": "system"}},
+        ],
+        "halt": {"set_by": "admin:boss@example.com", "cleared_by": "Orion"},
+        "author_type": "admin", "author_id": "admin",
+    })
+    data = [i["data"] for i in seen["items"]]
+    assert [d["by"] for d in data] == ["system", "system", "agent", "system"]
+    assert data[1]["reason"] == "admin"  # a free text is not an actor
+    assert seen["halt"] == {"set_by": "system", "cleared_by": "Orion"}
+    assert (seen["author_type"], seen["author_id"]) == ("system", "system")
+
+
 def test_quote_and_bar_dto():
     ts = datetime(2026, 1, 1, tzinfo=UTC)
     q = Quote(symbol="X", bid=Decimal(1), ask=Decimal(2), last=None, ts=ts, provider="fake")

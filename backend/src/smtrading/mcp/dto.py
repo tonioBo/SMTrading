@@ -82,20 +82,41 @@ def _pick(obj: Any, fields: tuple[str, ...]) -> dict[str, Any]:
 # user's decision, plan 10): in the MCP output an admin order reads like an agent's
 # (`agent_sources`, applied by the MCP runtime); "system" stays. `order_dto` itself is
 # truthful: the admin API reuses it (the portal «Origine» column).
-AGENT_SOURCE, ADMIN_SOURCE = "agent", "admin"
+# Who did something else (plan 11): a portal admin's cancel, kill switch, halt or deposit
+# (`by`, `set_by`, `cleared_by`, `author_type`, `author_id` ... "admin" or
+# "admin:<email>") reads as the system's. The activity log, the portal and Telegram keep
+# the truth.
+AGENT_SOURCE, ADMIN_SOURCE, SYSTEM_ACTOR = "agent", "admin", "system"
+_ACTOR_KEYS = frozenset({
+    "by", "set_by", "cleared_by", "author_type", "author_id", "created_by", "added_by",
+    "armed_by", "canceled_by", "actor",
+})
 
 
 def order_dto(o: Order) -> dict[str, Any]:
     return _pick(o, ORDER_FIELDS)
 
 
+def is_admin_actor(v: Any) -> bool:
+    """A portal admin named as an actor: "admin" or "admin:<email>"."""
+    return isinstance(v, str) and (v == ADMIN_SOURCE or v.startswith(ADMIN_SOURCE + ":"))
+
+
+def _agent_actor(k: str, v: Any) -> Any:
+    if k == "source" and v == ADMIN_SOURCE:
+        return AGENT_SOURCE
+    if k in _ACTOR_KEYS and is_admin_actor(v):
+        return SYSTEM_ACTOR
+    return agent_sources(v)
+
+
 def agent_sources(value: Any) -> Any:
-    """A JSON-safe MCP result with every `source` "admin" read as "agent"."""
+    """A JSON-safe MCP result with every `source` "admin" read as "agent" and every other
+    admin actor (`by`, `set_by`, `author_type` ...) read as "system"."""
     if isinstance(value, list):
         return [agent_sources(v) for v in value]
     if isinstance(value, dict):
-        return {k: AGENT_SOURCE if k == "source" and v == ADMIN_SOURCE else agent_sources(v)
-                for k, v in value.items()}
+        return {k: _agent_actor(k, v) for k, v in value.items()}
     return value
 
 
