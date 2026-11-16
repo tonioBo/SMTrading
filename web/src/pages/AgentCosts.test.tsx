@@ -89,10 +89,11 @@ describe("AgentCosts", () => {
     expect(screen.getByRole("button", { name: "Mese" })).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("is listed in the sidebar under Agenti", async () => {
+  it("is listed in the sidebar in the «Agenti» group", async () => {
     renderApp("/costi-agenti");
     const nav = await screen.findByRole("navigation", { name: "Navigazione principale" });
-    const labels = within(nav).getAllByRole("link").map((a) => a.textContent);
-    expect(labels.indexOf("Costi agenti")).toBe(labels.indexOf("Agenti") + 1);
+    const agenti = within(nav).getByRole("group", { name: "Agenti" });
+    const labels = within(agenti).getAllByRole("link").map((a) => a.textContent);
+    expect(labels.slice(0, 3)).toEqual(["Agenti", "Istruzioni agenti", "Costi agenti"]);
   });
 });

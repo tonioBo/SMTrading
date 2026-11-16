@@ -90,7 +90,7 @@ function MobileDrawer({ open, onClose, returnFocus }: { open: boolean; onClose: 
         <div className="flex h-14 items-center border-b border-border px-6">
           <Brand />
         </div>
-        <Sidebar label="Navigazione principale (menu)" />
+        <Sidebar label="Navigazione principale (menu)" collapsibleGroups />
       </aside>
     </div>
   );

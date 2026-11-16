@@ -48,21 +48,24 @@ describe("Layout", () => {
       "Segnali",
       "Posizioni",
       "Strategie",
+      "Mercati",
       "Agenti",
-      "Costi agenti",
       "Istruzioni agenti",
+      "Costi agenti",
+      "Notifiche",
+      "Log MCP",
+      "Broker",
+      "Connettori",
       "Commissioni",
       "Rischio e margine",
-      "Connettori",
-      "Broker",
-      "Registro denaro reale",
-      "Notifiche",
-      "Mercati",
-      "Log MCP",
       "Registro attività",
+      "Registro denaro reale",
       "Impostazioni",
     ]);
-    expect(screen.getByText("Trading", { exact: false })).toBeInTheDocument();
+    // three groups: Trading, Agenti, Sistema
+    const groups = within(nav).getAllByRole("group");
+    expect(groups.map((g) => g.getAttribute("aria-label"))).toEqual(["Trading", "Agenti", "Sistema"]);
+    expect(within(groups[2]).getByRole("link", { name: "Broker" })).toBeInTheDocument();
     const logo = screen.getByTestId("app-logo"); // brand mark next to the name, decorative
     expect(logo).toHaveAttribute("aria-hidden", "true");
     expect(logo.parentElement).toHaveTextContent("SMTrading");
@@ -248,6 +251,22 @@ describe("Layout", () => {
     expect(await screen.findByText("Modalità dei portafogli non verificabile al momento", {}, { timeout: 4000 })).toBeInTheDocument();
   });
 
+  it("small screens: the drawer groups open and close from their heading", async () => {
+    const user = userEvent.setup();
+    renderApp("/");
+    await user.click(await screen.findByRole("button", { name: "Apri menu" }));
+    const menu = screen.getByRole("navigation", { name: "Navigazione principale (menu)" });
+    const sistema = within(menu).getByRole("button", { name: "Sistema" });
+    expect(sistema).toHaveAttribute("aria-expanded", "true");
+    expect(within(menu).getByRole("link", { name: "Broker" })).toBeVisible();
+    await user.click(sistema);
+    expect(sistema).toHaveAttribute("aria-expanded", "false");
+    expect(within(menu).queryByRole("link", { name: "Broker" })).not.toBeInTheDocument();
+    expect(within(menu).getByRole("link", { name: "Dashboard" })).toBeInTheDocument();
+    await user.click(sistema);
+    expect(within(menu).getByRole("link", { name: "Broker" })).toBeInTheDocument();
+  });
+
   it("moves focus into the drawer, keeps Tab inside and returns it to the menu button", async () => {
     const user = userEvent.setup();
     renderApp("/");
@@ -255,11 +274,12 @@ describe("Layout", () => {
     await user.click(open);
     const menu = screen.getByRole("navigation", { name: "Navigazione principale (menu)" });
     const links = within(menu).getAllByRole("link");
-    expect(links[0]).toHaveFocus();
+    const first = within(menu).getByRole("button", { name: "Trading" }); // the first group's heading
+    expect(first).toHaveFocus();
     await user.tab({ shift: true });
     expect(links[links.length - 1]).toHaveFocus(); // wraps backwards
     await user.tab();
-    expect(links[0]).toHaveFocus(); // wraps forwards
+    expect(first).toHaveFocus(); // wraps forwards
     for (let i = 0; i < links.length + 2; i++) await user.tab();
     expect(menu.contains(document.activeElement)).toBe(true);
     await user.keyboard("{Escape}");

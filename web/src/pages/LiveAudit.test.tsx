@@ -54,11 +54,11 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe("LiveAudit", () => {
-  it("is in the sidebar under Broker", async () => {
+  it("is in the sidebar in the «Sistema» group", async () => {
     renderApp("/registro-denaro-reale");
     const nav = await screen.findByRole("navigation", { name: "Navigazione principale" });
-    const labels = within(nav).getAllByRole("link").map((a) => a.textContent);
-    expect(labels[labels.indexOf("Broker") + 1]).toBe("Registro denaro reale");
+    const sistema = within(nav).getByRole("group", { name: "Sistema" });
+    expect(within(sistema).getByRole("link", { name: "Registro denaro reale" })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Registro denaro reale" })).toBeInTheDocument();
   });
 

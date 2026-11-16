@@ -122,15 +122,16 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe("ActivityLog", () => {
-  it("is in the sidebar for admins, before Impostazioni", async () => {
+  it("is in the sidebar for admins, in «Sistema» before Registro denaro reale", async () => {
     renderApp("/registro-attivita");
     const nav = await screen.findByRole("navigation", {
       name: "Navigazione principale",
     });
-    const labels = within(nav)
+    const sistema = within(nav).getByRole("group", { name: "Sistema" });
+    const labels = within(sistema)
       .getAllByRole("link")
       .map((a) => a.textContent);
-    expect(labels[labels.indexOf("Impostazioni") - 1]).toBe(
+    expect(labels[labels.indexOf("Registro denaro reale") - 1]).toBe(
       "Registro attività",
     );
     expect(
