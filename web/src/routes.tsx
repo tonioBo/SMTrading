@@ -17,6 +17,7 @@ import McpLog from "@/pages/McpLog";
 import Notifications from "@/pages/Notifications";
 import PortfolioDetail from "@/pages/PortfolioDetail";
 import Portfolios from "@/pages/Portfolios";
+import Positions from "@/pages/Positions";
 import Risk from "@/pages/Risk";
 import Settings from "@/pages/Settings";
 import Signals from "@/pages/Signals";
@@ -36,6 +37,7 @@ export const routes: RouteObject[] = [
           { path: "portafogli", element: <Portfolios /> },
           { path: "portafogli/:id", element: <PortfolioDetail /> },
           { path: "segnali", element: <Signals /> },
+          { path: "posizioni", element: <Positions /> },
           { path: "agenti", element: <Agents /> },
           { path: "agenti/:id", element: <AgentDetail /> },
           { path: "costi-agenti", element: <AgentCosts /> },
