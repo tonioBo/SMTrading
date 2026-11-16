@@ -26,7 +26,7 @@ from smtrading.signals.service import StrategySignal, strategy_signals
 log = logging.getLogger("smtrading.admin.signals")
 router = APIRouter(prefix="/api", tags=["signals"], dependencies=[Depends(require_access)])
 
-CACHE_KEY = "signals:v1"
+CACHE_KEY = "signals:v2"  # v2: `exit`
 CACHE_TTL_S = 60
 
 

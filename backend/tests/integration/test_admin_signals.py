@@ -126,8 +126,8 @@ async def test_shape_and_cache(admin):
     [x] = st["symbols"]
     assert set(x) == {"symbol", "last", "indicator", "value_closed", "value_now",
                       "threshold", "direction", "distance", "triggered_closed",
-                      "triggered_now", "as_of", "position", "open_entry"}
-    assert x["position"] is None and x["open_entry"] is False
+                      "triggered_now", "as_of", "position", "open_entry", "exit"}
+    assert x["position"] is None and x["open_entry"] is False and x["exit"] is None
     assert x["symbol"] == "BTC-USD" and x["last"] == "100" and x["direction"] == "below"
     assert D(x["value_closed"]) == 100 and x["triggered_closed"] is False
     assert D(x["value_now"]) < 10 and x["triggered_now"] is True
@@ -138,7 +138,7 @@ async def test_shape_and_cache(admin):
     admin.qs.set_quote("BTC-USD", D(199), D(201), None)
     again = (await admin.client.get("/api/signals")).json()
     assert again == body
-    assert 0 < await admin.redis.ttl("signals:v1") <= 60
+    assert 0 < await admin.redis.ttl("signals:v2") <= 60
 
 
 async def test_signals_show_the_position(admin):
@@ -158,6 +158,9 @@ async def test_signals_show_the_position(admin):
     [x] = body["portfolios"][0]["strategies"][0]["symbols"]
     assert x["position"] == {"qty": "0.5", "avg_price": "120"}
     assert x["triggered_now"] is True  # the values stay
+    # in position: the exit rule (RSI above sell_above), numbers as strings
+    assert x["exit"]["rule"] == "RSI 2 sopra 70" and x["exit"]["threshold"] == "70"
+    assert x["exit"]["triggered"] is False and D(x["exit"]["distance"]) > 0
 
 
 async def test_open_positions_route(admin):

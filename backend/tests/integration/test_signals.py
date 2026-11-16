@@ -345,3 +345,72 @@ async def test_position_and_open_entry_per_portfolio(env):
     assert pru["ZZQQQ"].position is None and pru["ZZQQQ"].open_entry is True
     # the indicator values stay
     assert agg["ZZSPY"].value_now is not None and agg["ZZSPY"].triggered_now is True
+
+
+async def test_sma_cross_with_fast_1_is_the_close(env):
+    env.qs.set_bars("ZZENEL.MI", _bars(list(range(130, 100, -1))))
+    await env.decision(portfolio=env.pru, symbols=["ZZENEL.MI"], ref="STR-C1",
+                       status="approvata", strategy="sma_cross", timeframe="1d",
+                       params={"fast": 1, "slow": 5})
+    [x] = (await env.run())[0].symbols
+    assert x.indicator == "Chiusura / SMA 5" and x.direction == "cross_up"
+
+
+async def _held(env, ref, strategy, params, closes):
+    """A strategy on the closed-market symbol (closed bar only), held in Prudente."""
+    from smtrading.positions.models import Position
+
+    env.qs.set_bars("ZZENEL.MI", _bars(closes))
+    await env.decision(portfolio=env.pru, symbols=["ZZENEL.MI"], ref=ref,
+                       status="approvata", strategy=strategy, timeframe="1d",
+                       params=params, portfolios=[str(env.agg.id)])
+    env.s.add(Position(portfolio_id=env.pru.id, symbol="ZZENEL.MI", qty=D(2),
+                       avg_price=D(10)))
+    await env.s.flush()
+    out = {s.portfolio_id: s for s in await env.run()}
+    [held] = out[env.pru.id].symbols
+    [flat] = out[env.agg.id].symbols
+    assert flat.position is None and flat.exit is None  # no position: no exit rule
+    return held
+
+
+async def test_exit_rsi_reversion_both_sides(env):
+    params = {"period": 2, "buy_below": 30, "sell_above": "70.5"}
+    up = await _held(env, "STR-X1", "rsi_reversion", params, list(range(100, 130)))
+    assert up.exit == {"rule": "RSI 2 sopra 70,5", "value": D(100), "threshold": D("70.5"),
+                       "distance": D("-29.5"), "triggered": True}
+
+
+async def test_exit_rsi_reversion_not_triggered(env):
+    params = {"period": 2, "buy_below": 30, "sell_above": 70}
+    down = await _held(env, "STR-X2", "rsi_reversion", params, list(range(130, 100, -1)))
+    assert down.exit == {"rule": "RSI 2 sopra 70", "value": D(0), "threshold": D(70),
+                         "distance": D(70), "triggered": False}
+
+
+async def test_exit_sma_cross_both_sides(env):
+    down = await _held(env, "STR-X3", "sma_cross", {"fast": 2, "slow": 5},
+                       list(range(130, 100, -1)))  # fast 101.5 < slow 103
+    assert down.exit == {"rule": "SMA 2 sotto SMA 5", "value": D("101.5"),
+                         "threshold": D(103), "distance": D("-1.5"), "triggered": True}
+
+
+async def test_exit_sma_cross_not_triggered_fast_1(env):
+    up = await _held(env, "STR-X4", "sma_cross", {"fast": 1, "slow": 5},
+                     list(range(100, 130)))  # close 129 > slow 127
+    assert up.exit == {"rule": "Chiusura sotto SMA 5", "value": D(129),
+                       "threshold": D(127), "distance": D(2), "triggered": False}
+
+
+async def test_exit_breakout_both_sides(env):
+    params = {"lookback": 3, "exit_lookback": 2}
+    down = await _held(env, "STR-X5", "breakout", params, [10, 10, 10, 10, 5])
+    assert down.exit == {"rule": "Chiusura sotto minimo 2", "value": D(5),
+                         "threshold": D(9), "distance": D(-4), "triggered": True}
+
+
+async def test_exit_breakout_not_triggered(env):
+    params = {"lookback": 3, "exit_lookback": 2}
+    flat = await _held(env, "STR-X6", "breakout", params, [10, 10, 10, 10, 10])
+    assert flat.exit == {"rule": "Chiusura sotto minimo 2", "value": D(10),
+                         "threshold": D(9), "distance": D(1), "triggered": False}

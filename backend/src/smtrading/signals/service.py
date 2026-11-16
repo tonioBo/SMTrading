@@ -36,6 +36,13 @@ Per (portfolio, symbol) `position` is the open position of the strategy's portfo
 portfolio) and `open_entry` whether a buy entry order of that symbol is still resting
 there (FILLABLE_STATUSES, not reduce-only, not an OCO leg, role entry or none): a
 strategy already in the market, or waiting for its fill, is not a new signal.
+
+With a position, `exit` is the strategy's exit rule on the same newest data ({rule,
+value, threshold, distance, triggered}; null when flat or without data), the
+backtester's sell rules: rsi_reversion RSI above sell_above; sma_cross the fast average
+below the slow one (it was above when it entered); breakout the close below the lowest
+low of the previous exit_lookback bars. `distance` is how far the value still has to go
+(> 0: not yet; <= 0: the exit fires).
 """
 
 import asyncio
@@ -91,6 +98,7 @@ class SymbolSignal:
     as_of: datetime | None = None
     position: dict | None = None  # {qty, avg_price} in the strategy's portfolio
     open_entry: bool = False  # a resting buy entry of the symbol in that portfolio
+    exit: dict | None = None  # the exit rule's state while in position
 
 
 @dataclass
@@ -256,12 +264,46 @@ async def _approved(session: AsyncSession) -> list[_Approved]:
     return out
 
 
+def _fast_name(p: dict) -> str:
+    return "Chiusura" if p["fast"] == 1 else f"SMA {p['fast']}"  # SMA 1 is the close
+
+
 def _label(kind: str, p: dict) -> tuple[str, str]:
     if kind == "rsi_reversion":
         return f"RSI {p['period']}", "below"
     if kind == "sma_cross":
-        return f"SMA {p['fast']} / SMA {p['slow']}", "cross_up"
+        return f"{_fast_name(p)} / SMA {p['slow']}", "cross_up"
     return f"Chiusura / massimo {p['lookback']}", "above"
+
+
+def _it(d: Decimal) -> str:
+    """70 → "70", 70.5 → "70,5" (a rule's label)."""
+    return format(d.normalize(), "f").replace(".", ",")
+
+
+def _exit(kind: str, p: dict, bars: list[Bar]) -> dict | None:
+    """The exit rule on the last bar (see the module docstring); None without data."""
+    closes = [b.close for b in bars]
+    if kind == "rsi_reversion":
+        rule = f"RSI {p['period']} sopra {_it(p['sell_above'])}"
+        value, threshold = indicators.rsi(closes, p["period"])[-1], p["sell_above"]
+        distance = None if value is None else threshold - value
+    else:
+        if kind == "sma_cross":
+            rule = f"{_fast_name(p)} sotto SMA {p['slow']}"
+            value = indicators.sma(closes, p["fast"])[-1]
+            threshold = indicators.sma(closes, p["slow"])[-1]
+        else:
+            n = p["exit_lookback"]
+            rule = f"Chiusura sotto minimo {n}"
+            value = bars[-1].close
+            threshold = min(b.low for b in bars[-1 - n:-1]) if len(bars) > n else None
+        distance = None if value is None or threshold is None else value - threshold
+    if distance is None:
+        return None
+    triggered = distance < 0 if kind != "rsi_reversion" else value > threshold
+    return {"rule": rule, "value": value, "threshold": threshold, "distance": distance,
+            "triggered": triggered}
 
 
 def _evaluate(kind: str, p: dict, bars: list[Bar]) -> tuple[Decimal | None, Decimal | None, bool]:
@@ -310,6 +352,7 @@ async def _symbol(router: Any, kind: str, p: dict, tf: Timeframe, sym: str,
             kind, p, [*bars, forming.bar])
         out.as_of = forming.quote_ts
     current = out.value_now if forming.bar is not None else value
+    out.exit = _exit(kind, p, [*bars, forming.bar] if forming.bar is not None else bars)
     out.distance = _distance(direction, current, out.threshold)
     return out, value is not None and out.threshold is not None
 
@@ -367,9 +410,13 @@ async def strategy_signals(
 
 
 async def _mark_holdings(session: AsyncSession, out: list[StrategySignal]) -> None:
-    """Per portfolio copies of the symbol rows with `position` and `open_entry`."""
+    """Per portfolio copies of the symbol rows with `position`, `open_entry` and `exit`
+    (kept only with a position)."""
     pids = list({s.portfolio_id for s in out if s.portfolio_id is not None})
     syms = list({r.symbol for s in out for r in s.symbols})
+    for s in out:
+        if s.portfolio_id is None or not pids or not syms:
+            s.symbols = [replace(r, exit=None) for r in s.symbols]
     if not pids or not syms:
         return
     held = {(p.portfolio_id, p.symbol): p for p in await session.scalars(
@@ -390,5 +437,6 @@ async def _mark_holdings(session: AsyncSession, out: list[StrategySignal]) -> No
             pos = held.get((s.portfolio_id, r.symbol))
             rows.append(replace(
                 r, position={"qty": pos.qty, "avg_price": pos.avg_price} if pos else None,
-                open_entry=(s.portfolio_id, r.symbol) in entries))
+                open_entry=(s.portfolio_id, r.symbol) in entries,
+                exit=r.exit if pos else None))
         s.symbols = rows
