@@ -161,6 +161,9 @@ async def env(fresh_db, redis_url, monkeypatch):
     engine = make_engine(fresh_db)
     sm = async_sessionmaker(engine, expire_on_commit=False)
     async with sm() as s:
+        # migration 0029 creates the keyless `rssnews` row on: these tests use fakes only
+        # (its health check would fetch the real feeds)
+        (await s.get(Connector, "rssnews")).enabled = False
         s.add_all(
             [
                 Connector(name="fake_a", enabled=True),
@@ -700,7 +703,7 @@ def test_router_import_registers_providers():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                          check=True)
     expected = {"yahoo", "kraken", "binance", "coingecko", "frankfurter", "alpaca", "finnhub",
-                "twelvedata", "revolutx", "etoro"}
+                "twelvedata", "revolutx", "etoro", "rssnews"}
     assert set(out.stdout.strip().split(",")) == expected
 
 

@@ -20,7 +20,8 @@ _US, _EU, _CR, _FX = (
 _C = Capability
 
 # Combinations absent from this table have no providers. `etoro` (plan 9) is last and off
-# by default: migration 0028 appends it to the existing rows too.
+# by default: migration 0028 appends it to the existing rows too. `rssnews` (plan 10, the
+# keyless CoinDesk/Cointelegraph feeds) leads crypto news and is on: migration 0029.
 DEFAULT_PRIORITIES: dict[tuple[AssetClass, Capability], list[str]] = {
     (_US, _C.quote): ["alpaca", "finnhub", "yahoo", "etoro"],
     (_EU, _C.quote): ["twelvedata", "finnhub", "yahoo"],
@@ -36,7 +37,7 @@ DEFAULT_PRIORITIES: dict[tuple[AssetClass, Capability], list[str]] = {
     (_FX, _C.stream): ["twelvedata"],
     (_US, _C.news): ["alpaca", "finnhub", "yahoo"],
     (_EU, _C.news): ["finnhub", "yahoo"],
-    (_CR, _C.news): ["yahoo"],
+    (_CR, _C.news): ["rssnews", "yahoo"],
     (_US, _C.fundamentals): ["finnhub", "yahoo"],
     (_EU, _C.fundamentals): ["finnhub", "yahoo"],
     (_CR, _C.fundamentals): ["coingecko"],
@@ -51,7 +52,7 @@ DEFAULT_PRIORITIES: dict[tuple[AssetClass, Capability], list[str]] = {
     (_EU, _C.screener): ["yahoo"],
 }
 
-DEFAULT_ENABLED = {"yahoo", "kraken", "binance", "coingecko", "frankfurter"}
+DEFAULT_ENABLED = {"yahoo", "kraken", "binance", "coingecko", "frankfurter", "rssnews"}
 
 _ALL_CONNECTORS = sorted({p for ps in DEFAULT_PRIORITIES.values() for p in ps} | {"revolutx"})
 

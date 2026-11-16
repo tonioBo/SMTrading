@@ -28,6 +28,10 @@ const FIELD_LABELS: Record<string, Record<string, string>> = {
   alpaca: { key_id: "Key ID", secret_key: "Secret Key" },
   revolutx: { api_key: "Chiave API", private_key_pem: "Chiave privata (PEM)" },
 };
+/** What a connector is, when its name alone does not say it. */
+const CONNECTOR_DESCRIPTIONS: Record<string, string> = {
+  rssnews: "Notizie crypto (CoinDesk, Cointelegraph)",
+};
 const ETORO_AUTH_URL = "https://api-portal.etoro.com/core/getting-started/authentication.md";
 
 function EtoroGuide() {
@@ -75,6 +79,7 @@ function ConnectorCard({ connector }: { connector: Connector }) {
       <CardHeader className="flex-row items-start justify-between gap-2 space-y-0">
         <div>
           <CardTitle className="text-base">{connector.name}</CardTitle>
+          {CONNECTOR_DESCRIPTIONS[connector.name] && <p className="mt-1 text-sm">{CONNECTOR_DESCRIPTIONS[connector.name]}</p>}
           <p className="mt-1 text-xs text-muted">{connector.capabilities.join(", ") || "—"}</p>
         </div>
         <div className="flex items-center gap-2">
