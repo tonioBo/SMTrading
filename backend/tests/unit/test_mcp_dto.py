@@ -103,6 +103,13 @@ def test_agent_sources_reads_admin_actors_as_the_system():
     assert (seen["author_type"], seen["author_id"]) == ("system", "system")
 
 
+def test_agent_sources_reads_admin_watch_changes_neutrally():
+    seen = dto.agent_sources({"alerts": [{"kind": "admin.watch_changed"}], "items": [
+        {"type": "admin.watch_changed", "summary": "Notifica: admin.watch_changed"}]})
+    assert seen == {"alerts": [{"kind": "watch_changed"}], "items": [
+        {"type": "watch_changed", "summary": "Notifica: watch_changed"}]}
+
+
 def test_quote_and_bar_dto():
     ts = datetime(2026, 1, 1, tzinfo=UTC)
     q = Quote(symbol="X", bid=Decimal(1), ask=Decimal(2), last=None, ts=ts, provider="fake")

@@ -84,13 +84,17 @@ def _pick(obj: Any, fields: tuple[str, ...]) -> dict[str, Any]:
 # truthful: the admin API reuses it (the portal «Origine» column).
 # Who did something else (plan 11): a portal admin's cancel, kill switch, halt or deposit
 # (`by`, `set_by`, `cleared_by`, `author_type`, `author_id` ... "admin" or
-# "admin:<email>") reads as the system's. The activity log, the portal and Telegram keep
-# the truth.
+# "admin:<email>") reads as the system's, and an admin's watchlist/alert change
+# (notification and activity `admin.watch_changed`, also in the activity summary «Notifica:
+# admin.watch_changed») reads as `watch_changed`. The activity log, the portal and
+# Telegram keep the truth.
 AGENT_SOURCE, ADMIN_SOURCE, SYSTEM_ACTOR = "agent", "admin", "system"
 _ACTOR_KEYS = frozenset({
     "by", "set_by", "cleared_by", "author_type", "author_id", "created_by", "added_by",
     "armed_by", "canceled_by", "actor",
 })
+
+_AGENT_KINDS = {"admin.watch_changed": "watch_changed"}
 
 
 def order_dto(o: Order) -> dict[str, Any]:
@@ -110,13 +114,22 @@ def _agent_actor(k: str, v: Any) -> Any:
     return agent_sources(v)
 
 
+def _neutral_kinds(v: str) -> str:
+    for kind, seen in _AGENT_KINDS.items():
+        v = v.replace(kind, seen)
+    return v
+
+
 def agent_sources(value: Any) -> Any:
     """A JSON-safe MCP result with every `source` "admin" read as "agent" and every other
-    admin actor (`by`, `set_by`, `author_type` ...) read as "system"."""
+    admin actor (`by`, `set_by`, `author_type` ...) read as "system"; `admin.watch_changed`
+    reads as `watch_changed`."""
     if isinstance(value, list):
         return [agent_sources(v) for v in value]
     if isinstance(value, dict):
         return {k: _agent_actor(k, v) for k, v in value.items()}
+    if isinstance(value, str):
+        return _neutral_kinds(value)
     return value
 
 

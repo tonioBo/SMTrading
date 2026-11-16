@@ -211,11 +211,13 @@ ADMIN = "admin:ops@example.com"
 
 async def _human_actions(server, call, order: dict, pid: str) -> int:
     """What the humans do in the portal, on resting orders of the agent: a manual cancel
-    (`by` "admin"), the kill switch with «annulla ordini aperti» (`by` "admin"), then an
+    (`by` "admin"), the kill switch with «annulla ordini aperti» (`by` "admin"), a symbol
+    removed from the agent's watchlist (`admin.watch_changed`), then an
     admin's halt on the portfolio (its `set_by` "admin:<email>"; its cancel of the
     openings is the system's) and the agent's attempt to clear it (FORBIDDEN). Returns how
     many resting orders the humans canceled."""
     from smtrading.engine.service import cancel_order, set_kill_switch_and_cancel
+    from smtrading.events import notify
     from smtrading.risk import halts
 
     resting = {**order, "type": "limit", "limit_price": "100"}
@@ -232,7 +234,11 @@ async def _human_actions(server, call, order: dict, pid: str) -> int:
         await set_kill_switch_and_cancel(s, False, cancel_open=False, by="admin")
         await s.commit()
     await call("place_order", resting)  # canceled by the halt
-    async with _Db(server.db_url) as s:
+    async with _Db(server.db_url) as s:  # an admin removes a symbol from a watchlist
+        await notify(s, portfolio_id=None, agent_id=str(server.agent_id),
+                     kind="admin.watch_changed",
+                     payload={"action": "remove_symbol", "watchlist": "Crypto",
+                              "symbol": SYM})
         await s.execute(update(Agent).where(Agent.id == server.agent_id).values(can_halt=True))
         await halts.set_halt(s, scope="portfolio", portfolio_id=uuid.UUID(pid),
                              reason="Controllo dei conti", by=ADMIN)
@@ -249,6 +255,7 @@ def _human_markers(value, path: str = "") -> list[str]:
     if isinstance(value, list):
         return [m for i, v in enumerate(value) for m in _human_markers(v, f"{path}[{i}]")]
     if isinstance(value, str) and (value.lower() == "admin" or value.startswith("admin:")
+                                   or "admin." in value
                                    or "amministrator" in value.lower()
                                    or "example.com" in value):
         return [f"{path}={value}"]
@@ -375,6 +382,8 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
                                                       "order.cancel_requested"}
     halt = next(p for t, p in outputs if t == "get_trading_halt")
     assert halt["halted"] and halt["halts"][0]["set_by"] == "system", halt
+    alerts = next(p for t, p in outputs if t == "get_triggered_alerts")
+    assert "watch_changed" in {a["kind"] for a in alerts["alerts"]}, alerts
     clear = next(p for t, p in outputs if t == "set_trading_halt")
     assert clear["code"] == "FORBIDDEN", clear
     markers = [(t, m) for t, p in outputs for m in _human_markers(p)]

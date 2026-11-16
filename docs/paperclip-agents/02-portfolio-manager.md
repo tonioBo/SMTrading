@@ -50,7 +50,7 @@ dopo le 21:05 hai solo il ciclo serale qui sotto.
    `decision.*` (in particolare `decision.veto`, `decision.approval`, `decision.strategy`,
    `decision.allocation`, `decision.risk_rule`).
 2. `get_triggered_alerts` (`after_id` = cursore): `price_alert` dei tuoi livelli,
-   `admin.watch_changed`.
+   `watch_changed`.
 3. Task assegnati a te (risposte RM, analisi MA, notizie NA, strategie CEO).
 4. **Se nulla è cambiato** e non è il ciclo delle 09:05 né delle 15:35 → chiudi
    («Nessuna novità») e fermati.
