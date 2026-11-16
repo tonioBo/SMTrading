@@ -29,6 +29,7 @@ from smtrading.admin.routes_markets import router as markets_router
 from smtrading.admin.routes_orders import router as orders_router
 from smtrading.admin.routes_paperclip import router as paperclip_router
 from smtrading.admin.routes_portfolios import router as portfolios_router
+from smtrading.admin.routes_positions import router as positions_router
 from smtrading.admin.routes_risk import emergency_router as risk_emergency_router
 from smtrading.admin.routes_risk import router as risk_router
 from smtrading.admin.routes_signals import router as signals_router
@@ -204,6 +205,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(system_router)
     app.include_router(dashboard_router)
     app.include_router(signals_router)
+    app.include_router(positions_router)
     app.include_router(watch_router)
     app.include_router(telegram_router)
     app.include_router(paperclip_router)

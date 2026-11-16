@@ -11,6 +11,17 @@ function row(over: Partial<SignalSymbol>): SignalSymbol {
 }
 
 describe("signalBadge", () => {
+  it("an open position, then a resting entry, take precedence over the signal", () => {
+    const fired = { triggered_now: true, triggered_closed: true };
+    expect(signalBadge(row({ ...fired, position: { qty: "0.51", avg_price: "258" }, open_entry: true }))).toMatchObject({
+      tone: "held", icon: "📌", label: "in posizione",
+    });
+    expect(signalBadge(row({ ...fired, position: null, open_entry: true }))).toMatchObject({
+      tone: "pending", icon: "⏳", label: "ordine in attesa",
+    });
+    expect(signalBadge(row({ ...fired, position: null, open_entry: false })).label).toBe("scatterebbe ora");
+  });
+
   it("prefers «scatterebbe ora», then the closed-bar signal", () => {
     expect(signalBadge(row({ triggered_now: true, triggered_closed: true })).label).toBe("scatterebbe ora");
     expect(signalBadge(row({ triggered_closed: true })).label).toBe("segnale sulla chiusura");

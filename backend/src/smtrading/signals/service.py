@@ -30,11 +30,17 @@ the threshold (for cross_up without a fresh cross: already above, entered earlie
 symbol whose data could not be read has null values and makes the strategy "dati
 incompleti". `last` is the quote's price (else the last close); `as_of` the quote's time
 with a forming bar, else the last closed bar's.
+
+Per (portfolio, symbol) `position` is the open position of the strategy's portfolio
+({qty, avg_price} from the `positions` projection, null when flat or without a
+portfolio) and `open_entry` whether a buy entry order of that symbol is still resting
+there (FILLABLE_STATUSES, not reduce-only, not an OCO leg, role entry or none): a
+strategy already in the market, or waiting for its fill, is not a new signal.
 """
 
 import asyncio
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -46,6 +52,7 @@ from smtrading.activity.models import Decision, DecisionKind
 from smtrading.backtest.models import Backtest
 from smtrading.backtest.strategies import min_bars, signals, validate_params
 from smtrading.common.errors import SMTError
+from smtrading.engine.models import FILLABLE_STATUSES, Order, OrderSide
 from smtrading.instruments.models import Instrument
 from smtrading.instruments.service import canonical_symbol
 from smtrading.marketdata import indicators
@@ -53,6 +60,7 @@ from smtrading.marketdata.forming import forming_bar
 from smtrading.marketdata.indicators_service import fetch_bars
 from smtrading.marketdata.types import Bar, Timeframe
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
+from smtrading.positions.models import Position
 from smtrading.risk.settings import get_stale_threshold
 
 OK = "ok"
@@ -81,6 +89,8 @@ class SymbolSignal:
     triggered_closed: bool | None = None
     triggered_now: bool | None = None
     as_of: datetime | None = None
+    position: dict | None = None  # {qty, avg_price} in the strategy's portfolio
+    open_entry: bool = False  # a resting buy entry of the symbol in that portfolio
 
 
 @dataclass
@@ -325,5 +335,34 @@ async def strategy_signals(
                 ref=a.ref, name=a.name, type=a.type, params=params,
                 timeframe=a.timeframe, status=status, symbols=rows,
             ))
+    await _mark_holdings(session, out)
     out.sort(key=lambda s: (s.portfolio_name is None, s.portfolio_name or "", s.ref))
     return out
+
+
+async def _mark_holdings(session: AsyncSession, out: list[StrategySignal]) -> None:
+    """Per portfolio copies of the symbol rows with `position` and `open_entry`."""
+    pids = list({s.portfolio_id for s in out if s.portfolio_id is not None})
+    syms = list({r.symbol for s in out for r in s.symbols})
+    if not pids or not syms:
+        return
+    held = {(p.portfolio_id, p.symbol): p for p in await session.scalars(
+        select(Position).where(Position.portfolio_id.in_(pids), Position.symbol.in_(syms),
+                               Position.qty != 0))}
+    entries = set((await session.execute(
+        select(Order.portfolio_id, Order.symbol).where(
+            Order.portfolio_id.in_(pids), Order.symbol.in_(syms),
+            Order.side == OrderSide.buy, Order.status.in_(FILLABLE_STATUSES),
+            Order.reduce_only.is_(False), Order.oco_group_id.is_(None),
+            Order.role.is_(None) | (Order.role == "entry"),
+        ))).all())
+    for s in out:
+        if s.portfolio_id is None:
+            continue
+        rows = []
+        for r in s.symbols:
+            pos = held.get((s.portfolio_id, r.symbol))
+            rows.append(replace(
+                r, position={"qty": pos.qty, "avg_price": pos.avg_price} if pos else None,
+                open_entry=(s.portfolio_id, r.symbol) in entries))
+        s.symbols = rows

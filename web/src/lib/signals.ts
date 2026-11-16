@@ -1,12 +1,14 @@
 import type { SignalDirection, SignalSymbol } from "@/api/types";
 
-export type SignalTone = "now" | "closed" | "near" | "far";
+export type SignalTone = "held" | "pending" | "now" | "closed" | "near" | "far";
 
 /** «vicino»: |distance| within 20% of |threshold| (2% of the price for a crossing). */
 export const NEAR_THRESHOLD_SHARE = 0.2;
 export const NEAR_CROSS_PRICE_SHARE = 0.02;
 
 const BADGES: Record<SignalTone, { icon: string; label: string }> = {
+  held: { icon: "📌", label: "in posizione" },
+  pending: { icon: "⏳", label: "ordine in attesa" },
   now: { icon: "🟢", label: "scatterebbe ora" },
   closed: { icon: "🟢", label: "segnale sulla chiusura" },
   near: { icon: "🟡", label: "vicino" },
@@ -25,9 +27,12 @@ function num(value: string | null | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** The status badge of a symbol (comparison only: displayed values stay strings). */
+/** The status badge of a symbol (comparison only: displayed values stay strings). An open
+ * position, then a resting entry order, take precedence over the indicator's signal. */
 export function signalBadge(s: SignalSymbol): { tone: SignalTone; icon: string; label: string } {
   const tone = ((): SignalTone => {
+    if (s.position) return "held";
+    if (s.open_entry) return "pending";
     if (s.triggered_now) return "now";
     if (s.triggered_closed) return "closed";
     const distance = num(s.distance);

@@ -10,6 +10,8 @@ import { DIRECTION_LABELS, signalBadge, type SignalTone } from "@/lib/signals";
 import { cn } from "@/lib/utils";
 
 const TONE_CLASS: Record<SignalTone, string> = {
+  held: "border-accent text-accent",
+  pending: "border-accent text-accent",
   now: "border-gain text-gain",
   closed: "border-gain text-gain",
   near: "border-warn text-warn",
@@ -42,7 +44,11 @@ function SymbolRow({ s }: { s: SignalSymbol }) {
       <TableCell className="num">{s.direction == null ? value(s.threshold) : `${DIRECTION_LABELS[s.direction] ?? s.direction} ${value(s.threshold)}`}</TableCell>
       <TableCell className="num text-right">{value(s.distance)}</TableCell>
       <TableCell>
-        <Badge variant="outline" className={cn("whitespace-nowrap", TONE_CLASS[badge.tone])}>{`${badge.icon} ${badge.label}`}</Badge>
+        <Badge
+          variant="outline"
+          className={cn("whitespace-nowrap", TONE_CLASS[badge.tone])}
+          title={s.position ? `${formatQty(s.position.qty)} @ ${formatQty(s.position.avg_price)}` : undefined}
+        >{`${badge.icon} ${badge.label}`}</Badge>
       </TableCell>
       <TableCell className="whitespace-nowrap text-muted">{s.as_of ? formatDateTime(s.as_of) : "—"}</TableCell>
     </TableRow>

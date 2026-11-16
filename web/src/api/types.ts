@@ -1202,6 +1202,10 @@ export interface SignalSymbol {
   triggered_closed: boolean | null;
   triggered_now: boolean | null;
   as_of: string | null;
+  /** the open position of the strategy's portfolio in this symbol (null: flat / no portfolio) */
+  position?: { qty: string; avg_price: string } | null;
+  /** a buy entry order of the symbol is still resting in that portfolio */
+  open_entry?: boolean;
 }
 
 export interface StrategySignal {
@@ -1267,4 +1271,63 @@ export interface Composition {
   by_asset_class: CompositionGroup[];
   by_currency: CompositionGroup[];
   unpriced_symbols: string[];
+}
+
+// --- «Posizioni» (GET /api/positions/open) ----------------------------------------------
+
+export interface ProtectiveLeg {
+  order_id: string;
+  price: string | null;
+  tif: "day" | "gtc";
+}
+
+export type Protection = "ok" | "senza stop" | "scade oggi";
+
+export interface OpenPosition {
+  portfolio_id: string;
+  portfolio_name: string;
+  symbol: string;
+  name: string | null;
+  market: string | null;
+  currency: string;
+  side: "long" | "short";
+  qty: string;
+  avg_price: string | null;
+  opened_at: string | null;
+  /** null (like value/pnl/distance/risk) when the quote cannot be read */
+  last: string | null;
+  /** marked with the last cached quote */
+  stale: boolean;
+  value_eur: string | null;
+  pnl_eur: string | null;
+  pnl_pct: string | null;
+  stop: ProtectiveLeg | null;
+  target: ProtectiveLeg | null;
+  distance_to_stop_pct: string | null;
+  risk_at_stop_eur: string | null;
+  protection: Protection;
+}
+
+export interface OpenPositionsPortfolio {
+  portfolio_id: string;
+  portfolio_name: string;
+  mode: PortfolioMode;
+  live_state: LiveState | null;
+  mode_label?: string | null;
+  positions: number;
+  value_eur: string | null;
+  pnl_eur: string | null;
+  risk_at_stop_eur: string;
+  /** stops whose loss cannot be computed (no quote / FX) */
+  risk_unknown: number;
+  unprotected: number;
+  expiring_today: number;
+  daily_loss_limit_eur: string | null;
+  risk_pct_of_limit: string | null;
+}
+
+export interface OpenPositionsResponse {
+  as_of: string;
+  positions: OpenPosition[];
+  portfolios: OpenPositionsPortfolio[];
 }

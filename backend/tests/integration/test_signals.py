@@ -2,6 +2,7 @@
 «se chiudesse ora». Source of truth: the CEO's `strategy` decisions (latest per ref wins),
 completed from the backtest of `backtest_id` and the Quant's `other` decision of the ref."""
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -286,3 +287,43 @@ async def test_one_strategy_in_two_portfolios(env):
                        timeframe="1d", strategy="rsi_reversion", params={"period": 2})
     out = await env.run()
     assert sorted(s.portfolio_name for s in out) == ["Aggressivo S", "Prudente S"]
+
+
+async def test_position_and_open_entry_per_portfolio(env):
+    from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType
+    from smtrading.positions.models import Position
+
+    env.qs.set_bars("ZZSPY", _bars(list(range(100, 130))))
+    env.qs.set_quote("ZZSPY", None, None, D(100), NOW - timedelta(seconds=10))
+    env.qs.set_bars("ZZQQQ", _bars(list(range(100, 130))))
+    env.qs.set_quote("ZZQQQ", None, None, D(100), NOW - timedelta(seconds=10))
+    await env.decision(portfolio=env.pru, symbols=["ZZSPY", "ZZQQQ"], ref="STR-001",
+                       status="approvata", strategy="rsi_reversion", timeframe="1d",
+                       params={"period": 2, "buy_below": 10, "sell_above": 70},
+                       portfolios=[str(env.agg.id)])
+    env.s.add(Position(portfolio_id=env.agg.id, symbol="ZZSPY", qty=D("0.51"),
+                       avg_price=D(258)))
+    env.s.add(Position(portfolio_id=env.pru.id, symbol="ZZQQQ", qty=D(0), avg_price=D(0)))
+    pending = {"side": OrderSide.buy, "type": OrderType.limit, "qty": D(1),
+               "limit_price": D(90), "status": OrderStatus.pending}
+    env.s.add_all([
+        Order(portfolio_id=env.pru.id, symbol="ZZQQQ", **pending),  # a resting entry
+        # not entries: filled, reduce-only, OCO leg, sell side, other portfolio's symbol
+        Order(portfolio_id=env.agg.id, symbol="ZZQQQ", **{**pending, "status":
+                                                          OrderStatus.filled}),
+        Order(portfolio_id=env.agg.id, symbol="ZZQQQ", reduce_only=True, **pending),
+        Order(portfolio_id=env.agg.id, symbol="ZZQQQ", oco_group_id=uuid.uuid4(), **pending),
+        Order(portfolio_id=env.agg.id, symbol="ZZQQQ", **{**pending, "side": OrderSide.sell}),
+        Order(portfolio_id=env.pru.id, symbol="ZZSPY", role="stop_loss", **pending),
+    ])
+    await env.s.flush()
+    out = {s.portfolio_id: s for s in await env.run()}
+    agg = {r.symbol: r for r in out[env.agg.id].symbols}
+    pru = {r.symbol: r for r in out[env.pru.id].symbols}
+    assert agg["ZZSPY"].position == {"qty": D("0.51"), "avg_price": D(258)}
+    assert agg["ZZSPY"].open_entry is False and agg["ZZQQQ"].open_entry is False
+    assert agg["ZZQQQ"].position is None
+    assert pru["ZZSPY"].position is None and pru["ZZSPY"].open_entry is False
+    assert pru["ZZQQQ"].position is None and pru["ZZQQQ"].open_entry is True
+    # the indicator values stay
+    assert agg["ZZSPY"].value_now is not None and agg["ZZSPY"].triggered_now is True

@@ -1,4 +1,4 @@
-"""Admin API «Segnali» (GET /api/signals): the signal engine grouped by portfolio and
+"""Admin API «Segnali» (GET /api/signals) and «Posizioni» (GET /api/positions/open): the signal engine grouped by portfolio and
 strategy, numbers as strings, cached 60 s in redis (one computation per minute however
 many tabs are open); a viewer can read it."""
 
@@ -126,7 +126,8 @@ async def test_shape_and_cache(admin):
     [x] = st["symbols"]
     assert set(x) == {"symbol", "last", "indicator", "value_closed", "value_now",
                       "threshold", "direction", "distance", "triggered_closed",
-                      "triggered_now", "as_of"}
+                      "triggered_now", "as_of", "position", "open_entry"}
+    assert x["position"] is None and x["open_entry"] is False
     assert x["symbol"] == "BTC-USD" and x["last"] == "100" and x["direction"] == "below"
     assert D(x["value_closed"]) == 100 and x["triggered_closed"] is False
     assert D(x["value_now"]) < 10 and x["triggered_now"] is True
@@ -138,3 +139,55 @@ async def test_shape_and_cache(admin):
     again = (await admin.client.get("/api/signals")).json()
     assert again == body
     assert 0 < await admin.redis.ttl("signals:v1") <= 60
+
+
+async def test_signals_show_the_position(admin):
+    from smtrading.marketdata.types import Bar
+    from smtrading.positions.models import Position
+
+    p = await _strategy(admin, ["BTC-USD"])
+    day = timedelta(days=1)
+    today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    admin.qs.set_bars("BTC-USD", [Bar(today - day * (40 - i), D(c), D(c + 1), D(c - 1),
+                                      D(c), D(1)) for i, c in enumerate(range(100, 140))])
+    admin.qs.set_quote("BTC-USD", D(99), D(101), None)
+    async with admin.sm() as s:
+        s.add(Position(portfolio_id=p.id, symbol="BTC-USD", qty=D("0.5"), avg_price=D(120)))
+        await s.commit()
+    body = (await admin.client.get("/api/signals")).json()
+    [x] = body["portfolios"][0]["strategies"][0]["symbols"]
+    assert x["position"] == {"qty": "0.5", "avg_price": "120"}
+    assert x["triggered_now"] is True  # the values stay
+
+
+async def test_open_positions_route(admin):
+    from smtrading.engine.execution import execute_fill
+    from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType
+    from smtrading.portfolios.service import create_portfolio
+
+    admin.qs.set_quote("BTC-USD", D(100), D(100), D(100))
+    admin.qs.set_fx("EUR", "USD", D(1))
+    async with admin.sm() as s:
+        p = await create_portfolio(s, name="Portafoglio Crypto", initial_cash=D(1000))
+        o = Order(portfolio_id=p.id, symbol="BTC-USD", side=OrderSide.buy,
+                  type=OrderType.market, qty=D(1), status=OrderStatus.new)
+        s.add(o)
+        await s.flush()
+        quote = (await admin.qs.get_quotes(["BTC-USD"]))["BTC-USD"]
+        assert await execute_fill(s, admin.qs, o.id, quote=quote) is not None
+        s.add(Order(portfolio_id=p.id, symbol="BTC-USD", side=OrderSide.sell,
+                    type=OrderType.stop, qty=D(1), stop_price=D(90),
+                    status=OrderStatus.pending))
+        await s.commit()
+    r = await admin.client.get("/api/positions/open")  # the viewer reads it
+    assert r.status_code == 200, r.text
+    body = r.json()
+    [row] = [x for x in body["positions"] if x["portfolio_id"] == str(p.id)]
+    assert row["symbol"] == "BTC-USD" and row["qty"] == "1" and row["last"] == "100"
+    assert row["stop"]["price"] == "90" and row["stop"]["tif"] == "day"
+    assert row["protection"] == "scade oggi"  # crypto is always open
+    assert D(row["risk_at_stop_eur"]) == 10 and row["target"] is None
+    [t] = [x for x in body["portfolios"] if x["portfolio_id"] == str(p.id)]
+    limit = D(t["daily_loss_limit_eur"])  # Default 10% of the equity (1000 minus the fees)
+    assert D(t["risk_at_stop_eur"]) == 10 and 99 < limit <= 100
+    assert D(t["risk_pct_of_limit"]) == (10 / limit * 100).quantize(D("0.01"))
