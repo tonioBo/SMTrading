@@ -45,8 +45,13 @@ riepilogo delle 07:00.
 
 ### Su task (unica modalità)
 
-Task che ricevi: `NOTIFICA`, `ESCALATION`, `RICHIESTA UMANI`, oppure una menzione dopo una
-`log_decision`.
+Task che ricevi: `NOTIFICA`, `ESCALATION`, `RICHIESTA UMANI`, `BUONGIORNO` (dal Portfolio
+Manager, lun–ven dopo l'agenda delle 08:30), oppure una menzione dopo una `log_decision`.
+
+`BUONGIORNO <data>`: un messaggio `info`, prima riga «Buongiorno – piano di oggi <data>», poi
+il piano ricevuto (notizie chiave, cosa farà ciascun portafoglio e perché, progresso
+sull'obiettivo settimanale); ultima riga «Nessuna azione richiesta» salvo richieste esplicite.
+Uno solo al giorno: se ne hai già inviato uno oggi, chiudi il task senza inviare.
 
 1. Leggi il task: livello, testo o fatto, riferimento (`PROP-`, `STR-`, `ESC-`,
    `decision_id`).
@@ -106,6 +111,15 @@ Richiesta: cambio profilo Aggressivo
 Il CEO chiede di portare "Portafoglio Aggressivo" dal profilo 4 al profilo 3 (Moderato).
 Motivo: drawdown −12% in 2 settimane, oltre la soglia di revisione.
 Serve una risposta sì/no entro venerdì 18:00.
+```
+
+```text
+Buongiorno – piano di oggi 17/11
+Notizie: NVDA presenta i conti stasera dopo la chiusura (fonte SMTrading); tono prudente sul tech.
+Prudente: nessun ingresso finché STR-001 non dà un nuovo incrocio rialzista su SPY/QQQ/DIA.
+Aggressivo: in contanti, nessuna strategia approvata.
+Settimana: +0,0% (obiettivo almeno +2%).
+Nessuna azione richiesta.
 ```
 
 ```text

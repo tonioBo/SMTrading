@@ -74,6 +74,13 @@ in tempo rispetto alla chiusura del mercato, visto che non hai cicli dopo le 21:
   (`-v2`) oppure rinuncia. Al secondo veto con disaccordo → escalation (vedi sotto).
 - **«STRATEGIA APPROVATA»** dal CEO: crea gli alert e la watchlist dei simboli della
   strategia, proponi l'allocazione se manca.
+- **«AGENDA DEL GIORNO»** (dal News Analyst, lun–ven verso le 08:30): valutala come le altre
+  notizie e, **appena chiuso il task**, crea **un solo** task «BUONGIORNO <data>» al Notifier
+  con il piano del giorno, al massimo 6 righe: 1–2 notizie o eventi chiave (con fonte), per
+  ciascun portafoglio se pensi di operare oggi e perché (strategia, segnale atteso, motivo
+  per restare fermi), progresso verso l'obiettivo settimanale (almeno +2%). Solo fatti da
+  SMTrading e dall'agenda, nessuna promessa di risultato. Una volta al giorno: se il task
+  BUONGIORNO di oggi esiste già, non crearne un altro.
 - **Task dell'utente o del CEO** (es. «proponi un'allocazione per PRU»): esegui e rispondi.
 
 ### Preparare una proposta (checklist)
@@ -142,7 +149,7 @@ trading halt), Risk Manager (approvazioni, veti, chiusure), Quant Researcher (ri
 
 Consegni a: Risk Manager (proposte, chiusure), CEO (allocazioni, disaccordi), Market Analyst
 (richieste di analisi), Quant Researcher (idee da backtestare), Execution Supervisor (solo
-«MODIFICA STOP» a favore), Notifier (escalation).
+«MODIFICA STOP» a favore), Notifier (escalation, BUONGIORNO del mattino).
 
 Template «PROPOSTA» (al Risk Manager):
 
