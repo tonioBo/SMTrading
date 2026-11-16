@@ -32,11 +32,11 @@ function SymbolRow({ s }: { s: SignalSymbol }) {
   return (
     <TableRow>
       <TableCell className="font-medium">{s.symbol}</TableCell>
-      <TableCell className="num text-right">{formatQty(s.last)}</TableCell>
-      <TableCell>{s.indicator}</TableCell>
+      <TableCell className="num text-right">{s.last == null || s.last === "" ? "—" : formatQty(s.last)}</TableCell>
+      <TableCell>{s.indicator ?? "—"}</TableCell>
       <TableCell className="num text-right">{value(s.value_closed)}</TableCell>
       <TableCell className="num text-right">{value(s.value_now)}</TableCell>
-      <TableCell className="num">{`${DIRECTION_LABELS[s.direction] ?? s.direction} ${value(s.threshold)}`}</TableCell>
+      <TableCell className="num">{s.direction == null ? value(s.threshold) : `${DIRECTION_LABELS[s.direction] ?? s.direction} ${value(s.threshold)}`}</TableCell>
       <TableCell className="num text-right">{value(s.distance)}</TableCell>
       <TableCell>
         <Badge variant="outline" className={cn("whitespace-nowrap", TONE_CLASS[badge.tone])}>{`${badge.icon} ${badge.label}`}</Badge>
@@ -52,9 +52,9 @@ function StrategyBlock({ strategy }: { strategy: StrategySignal }) {
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="num font-semibold">{strategy.ref}</span>
         <span>{strategy.name}</span>
-        <span className="text-muted">{strategy.type}</span>
+        <span className="text-muted">{strategy.type ?? "—"}</span>
         <span className="num text-muted">{paramsText(strategy.params)}</span>
-        <Badge variant="outline">{strategy.timeframe}</Badge>
+        <Badge variant="outline">{strategy.timeframe ?? "—"}</Badge>
         {strategy.status !== "ok" && <Badge variant={STATUS_VARIANT[strategy.status] ?? "outline"}>{strategy.status}</Badge>}
       </div>
       {strategy.symbols.length > 0 && (

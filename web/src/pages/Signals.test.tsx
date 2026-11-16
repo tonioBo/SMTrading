@@ -80,6 +80,38 @@ describe("Signals", () => {
     expect(screen.getByText("non supportata")).toBeInTheDocument();
   });
 
+  it("renders «—» for a symbol whose data could not be read", async () => {
+    current = {
+      as_of: "2026-11-16T15:00:00Z",
+      portfolios: [
+        {
+          portfolio_id: "p1",
+          portfolio_name: "Crescita",
+          strategies: [
+            {
+              ref: "STR-009",
+              name: "RSI rotto",
+              type: "rsi_reversion",
+              params: { period: 14, entry: 30 },
+              timeframe: "1d",
+              status: "dati incompleti",
+              symbols: [
+                { symbol: "ZZZ", last: null, indicator: null, value_closed: null, value_now: null, threshold: null, direction: null, distance: null, triggered_closed: null, triggered_now: null, as_of: null },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    renderApp("/segnali");
+    const table = await screen.findByRole("table", { name: "Segnali STR-009" });
+    const row = within(table).getAllByRole("row")[1];
+    expect(within(row).getByText("ZZZ")).toBeInTheDocument();
+    expect(within(row).getAllByText("—").length).toBeGreaterThanOrEqual(7);
+    expect(within(row).getByText("⚪ lontano")).toBeInTheDocument();
+    expect(screen.getByText("dati incompleti")).toBeInTheDocument();
+  });
+
   it("shows the empty state", async () => {
     current = { as_of: "2026-11-16T15:00:00Z", portfolios: [] };
     renderApp("/segnali");

@@ -1189,26 +1189,27 @@ export type StrategySignalStatus = "ok" | "dati incompleti" | "non supportata";
 
 export interface SignalSymbol {
   symbol: string;
-  last: string;
-  indicator: string;
+  /** null (like the other fields below) when the symbol's data could not be read */
+  last: string | null;
+  indicator: string | null;
   /** on the last closed bar */
-  value_closed: string;
+  value_closed: string | null;
   /** «se chiudesse ora» (provisional bar); null when the market is closed or the quote stale */
   value_now: string | null;
-  threshold: string;
-  direction: SignalDirection;
-  distance: string;
-  triggered_closed: boolean;
-  triggered_now: boolean;
-  as_of: string;
+  threshold: string | null;
+  direction: SignalDirection | null;
+  distance: string | null;
+  triggered_closed: boolean | null;
+  triggered_now: boolean | null;
+  as_of: string | null;
 }
 
 export interface StrategySignal {
   ref: string;
   name: string;
-  type: string;
+  type: string | null;
   params: Record<string, unknown>;
-  timeframe: string;
+  timeframe: string | null;
   status: StrategySignalStatus;
   symbols: SignalSymbol[];
 }
