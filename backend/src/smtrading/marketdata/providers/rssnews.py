@@ -2,8 +2,9 @@
 
 The feeds are parsed with the stdlib: a document over MAX_FEED_BYTES or declaring XML
 entities is refused before parsing (no entity expansion). Items are matched to symbols by
-word over headline and summary: the ticker and the coin's name (BTC → bitcoin|btc,
-ETH → ethereum|ether|eth, others → ticker and CoinGecko-style name when known).
+word over headline and summary: the ticker and the coin's name (BTC → bitcoin|BTC,
+ETH → ethereum|ether|ETH, others → ticker and CoinGecko-style name when known). Names
+match in any case; tickers of up to 4 letters only in UPPERCASE.
 """
 
 import asyncio
@@ -82,14 +83,26 @@ def _pub_ts(raw: str | None) -> datetime | None:
     return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts.astimezone(UTC)
 
 
+# tickers this short are matched only as written in UPPERCASE («sol», «ada» are words)
+SHORT_TICKER_LEN = 4
+
+
 def _terms(base: str) -> re.Pattern[str]:
-    words = {base.lower()}
+    names = set(_EXTRA_NAMES.get(base, ()))
     if (coin_id := DEFAULT_IDS.get(base)) is not None:
-        words.add(coin_id.replace("-", " "))
-    words.update(_EXTRA_NAMES.get(base, ()))
-    alt = "|".join(re.escape(w) for w in sorted(words, key=len, reverse=True))
+        names.add(coin_id.replace("-", " "))
+    ticker = re.escape(base)
+    if len(base) > SHORT_TICKER_LEN:
+        names.add(base.lower())
+        ticker = ""
+    alts = []
+    if names:
+        alt = "|".join(re.escape(w) for w in sorted(names, key=len, reverse=True))
+        alts.append(f"(?i:{alt})s?")
+    if ticker:
+        alts.append(f"{ticker}s?")
     # whole words only («MegaETH» is not ETH); a plural or possessive still matches
-    return re.compile(rf"(?<!\w)(?:{alt})s?(?!\w)", re.IGNORECASE)
+    return re.compile(rf"(?<!\w)(?:{'|'.join(alts)})(?!\w)")
 
 
 @register

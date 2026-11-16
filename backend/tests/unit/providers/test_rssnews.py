@@ -203,3 +203,23 @@ async def test_health_check_fails_on_bad_feed(provider):
     respx.get(COINDESK_URL).respond(200, text="<html/>")
     with pytest.raises(RuntimeError, match="rssnews"):
         await provider.health_check()
+
+
+@respx.mock
+async def test_short_tickers_match_only_uppercase_names_any_case(provider):
+    respx.get(COINDESK_URL).respond(200, text=_feed(
+        _item("Il sol dell'avvenire", "https://e.com/1", "Mon, 16 Nov 2026 10:00:00 +0000"),
+        _item("Ada Lovelace day", "https://e.com/2", "Mon, 16 Nov 2026 10:01:00 +0000", "ada"),
+        _item("SOL jumps 5%", "https://e.com/3", "Mon, 16 Nov 2026 10:02:00 +0000"),
+        _item("SOLANA and cardano rally", "https://e.com/4", "Mon, 16 Nov 2026 10:03:00 +0000"),
+        _item("Funds buy ADA", "https://e.com/5", "Mon, 16 Nov 2026 10:04:00 +0000"),
+        _item("btc lowercase", "https://e.com/6", "Mon, 16 Nov 2026 10:05:00 +0000"),
+        _item("BTCs and ETH", "https://e.com/7", "Mon, 16 Nov 2026 10:06:00 +0000"),
+    ))
+    respx.get(COINTELEGRAPH_URL).respond(200, text=_feed())
+    sol = await provider.get_news([("SOL-USD", "SOL")], 20)
+    assert [n.headline for n in sol] == ["SOLANA and cardano rally", "SOL jumps 5%"]
+    ada = await provider.get_news([("ADA-USD", "ADA")], 20)
+    assert [n.headline for n in ada] == ["Funds buy ADA", "SOLANA and cardano rally"]
+    btc = await provider.get_news([("BTC-USD", "BTC")], 20)
+    assert [n.headline for n in btc] == ["BTCs and ETH"]
