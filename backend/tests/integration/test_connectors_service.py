@@ -123,3 +123,17 @@ async def test_etoro_seeded_off_and_last_in_its_priorities(db_session):
     for ac, cap in pairs:
         providers = await get_priorities(db_session, ac, cap)
         assert providers[-1] == "etoro" and providers.count("etoro") == 1
+
+
+async def test_rssnews_seeded_on_and_first_for_crypto_news(db_session):
+    """Plan 10 Task B: the keyless CoinDesk/Cointelegraph news source is born on and leads
+    crypto news only."""
+    await seed_connectors(db_session)
+    conns = {c.name: c for c in await list_connectors(db_session)}
+    assert conns["rssnews"].enabled is True
+    assert "rssnews" in DEFAULT_ENABLED
+    for (ac, cap), providers in DEFAULT_PRIORITIES.items():
+        assert ("rssnews" in providers) == ((ac, cap) == (AssetClass.crypto, Capability.news))
+    assert await get_priorities(db_session, AssetClass.crypto, Capability.news) == [
+        "rssnews", "yahoo",
+    ]

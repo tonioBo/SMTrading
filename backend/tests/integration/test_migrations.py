@@ -248,7 +248,7 @@ async def test_0028_etoro_connector_keeps_admin_order(fresh_db):
 
     from smtrading.common.db import make_engine
 
-    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "-1")
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0027")
     engine = make_engine(fresh_db)
     rows = {
         ("us_equity", "quote"): ["yahoo", "alpaca"],  # reordered by the admin
@@ -285,7 +285,7 @@ async def test_0028_etoro_connector_keeps_admin_order(fresh_db):
     }
     assert etoro == [(False, "unknown", None)]
 
-    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "-1")
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0027")
     got, etoro = await priorities()
     assert got == {
         ("us_equity", "quote"): ["yahoo", "alpaca"],
@@ -294,4 +294,65 @@ async def test_0028_etoro_connector_keeps_admin_order(fresh_db):
         ("us_equity", "news"): ["yahoo"],
     }
     assert etoro == []
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+
+
+async def test_0029_rssnews_connector_first_in_crypto_news(fresh_db):
+    """0029 (data only): the `rssnews` connector row, on, and `rssnews` put first in the
+    existing crypto news priority row (other rows untouched); the downgrade removes both."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0028")
+    engine = make_engine(fresh_db)
+    rows = {
+        ("crypto", "news"): ["yahoo"],
+        ("crypto", "quote"): ["kraken", "yahoo"],
+        ("us_equity", "news"): ["finnhub", "yahoo"],
+    }
+    async with engine.begin() as conn:
+        await conn.execute(text("delete from provider_priorities"))
+        assert await conn.scalar(text("select count(*) from connectors where name = 'rssnews'")) == 0
+        for (ac, cap), providers in rows.items():
+            await conn.execute(text(
+                "insert into provider_priorities (asset_class, capability, providers)"
+                " values (:a, :c, cast(:p as jsonb))"), {"a": ac, "c": cap, "p": json.dumps(providers)})
+    await engine.dispose()
+
+    async def state() -> tuple[dict, list]:
+        engine = make_engine(fresh_db)
+        async with engine.connect() as conn:
+            got = {(r[0], r[1]): r[2] for r in await conn.execute(
+                text("select asset_class, capability, providers from provider_priorities"))}
+            row = (await conn.execute(text(
+                "select enabled, health_status, config_encrypted from connectors"
+                " where name = 'rssnews'"))).all()
+        await engine.dispose()
+        return got, row
+
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    got, row = await state()
+    assert got == {**rows, ("crypto", "news"): ["rssnews", "yahoo"]}
+    assert row == [(True, "unknown", None)]
+
+    # idempotent on a row that already lists it (e.g. re-run after a manual fix)
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0028")
+    engine = make_engine(fresh_db)
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "update provider_priorities set providers = cast(:p as jsonb)"
+            " where asset_class = 'crypto' and capability = 'news'"),
+            {"p": json.dumps(["yahoo", "rssnews"])})
+    await engine.dispose()
+    got, row = await state()
+    assert got[("crypto", "news")] == ["yahoo", "rssnews"] and row == []
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    got, _ = await state()
+    assert got[("crypto", "news")] == ["yahoo", "rssnews"]
+
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0028")
+    got, row = await state()
+    assert got == {**rows, ("crypto", "news"): ["yahoo"]}
+    assert row == []
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")

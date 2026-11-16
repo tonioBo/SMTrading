@@ -7,6 +7,7 @@ from smtrading.marketdata.providers import (  # noqa: F401  (registration)
     frankfurter,
     kraken,
     revolutx,
+    rssnews,
     twelvedata,
     yahoo,
 )

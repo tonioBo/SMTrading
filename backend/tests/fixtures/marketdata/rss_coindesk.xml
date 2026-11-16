@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:wfw="http://wellformedweb.org/CommentAPI/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:sy="http://purl.org/rss/1.0/modules/syndication/" xmlns:slash="http://purl.org/rss/1.0/modules/slash/" xmlns:media="http://search.yahoo.com/mrss/" version="2.0">
+  <channel>
+    <title>CoinDesk: Bitcoin, Ethereum, Crypto News and Price Data</title>
+    <link>https://www.coindesk.com/</link>
+    <atom:link rel="self" type="application/rss+xml" href="https://www.coindesk.com/arc/outboundfeeds/rss"/>
+    <atom:link rel="hub" href="true"/>
+    <description>Leader in cryptocurrency, Bitcoin, Ethereum, XRP, blockchain, DeFi, digital finance and Web 3.0 news with analysis, video and live price updates.</description>
+    <lastBuildDate>Mon, 16 Nov 2026 12:57:58 +0000</lastBuildDate>
+    <language>en-US</language>
+    <copyright>© 2026 CoinDesk, Inc.</copyright>
+    <generator>CoinDesk</generator>
+    <ttl>5</ttl>
+    <sy:updatePeriod>hourly</sy:updatePeriod>
+    <sy:updateFrequency>1</sy:updateFrequency>
+    <image>
+      <url>https://downloads.coindesk.com/arc/failsafe/feeds/coindesk-feed-logo.png</url>
+      <title>CoinDesk: Bitcoin, Ethereum, Crypto News and Price Data</title>
+      <link>https://www.coindesk.com/</link>
+    </image>
+    <item>
+      <title><![CDATA[Old crypto feud reignites: Why OKX's Star Xu blames Binance for two years of October crashes]]></title>
+      <link>https://www.coindesk.com/markets/2026/11/16/bitcoin-s-slide-reopens-an-old-feud-between-crypto-s-most-powerful-founders</link>
+      <media:content url="https://cdn.sanity.io/images/s3y3vcno/production/29d719a0d2a37836704e6c27126b7c3a61442f02-3000x1688.jpg?fm=jpg&amp;w=800&amp;h=450&amp;crop=focalpoint&amp;fit=clip" type="image/*" medium="image"/>
+      <guid isPermaLink="false">1c1bc29c-9dc5-4a48-8442-13ae3bcdfdf0</guid>
+      <pubDate>Mon, 16 Nov 2026 12:55:46 +0000</pubDate>
+      <description><![CDATA[CZ says Binance isn’t selling crypto and he has been buying. OKX founder Star Xu accuses him of misleading customers about the exchange’s role in successive October crashes.]]></description>
+      <dc:creator>Shaurya Malwa</dc:creator>
+      <content:encoded/>
+      <dc:description/>
+      <category domain="https://www.coindesk.com/markets"><![CDATA[Markets]]></category>
+      <category domain="tag"><![CDATA[Binance]]></category>
+      <category domain="tag"><![CDATA[OKX]]></category>
+      <category domain="tag"><![CDATA[CZ]]></category>
+      <category domain="https://www.coindesk.com/">News</category>
+    </item>
+    <item>
+      <title><![CDATA[Bitcoin was supposed to gain as AI faltered, but it crashed. Here's why.]]></title>
+      <link>https://www.coindesk.com/daybook-us/2026/11/16/bitcoin-was-supposed-to-gain-as-ai-faltered-but-it-crashed-here-s-why</link>
+      <guid isPermaLink="false">c2afbcec-60b8-456d-bc96-c25c287cf663</guid>
+      <pubDate>Mon, 16 Nov 2026 12:09:00 +0000</pubDate>
+      <description><![CDATA[The price action runs counter to a crypto-market view that a cooling AI trade would trigger a rotation into digital assets and spark a rally. ]]></description>
+      <dc:creator>Omkar Godbole</dc:creator>
+      <content:encoded/>
+      <dc:description/>
+      <category domain="https://www.coindesk.com/daybook-us"><![CDATA[Crypto Daybook Americas]]></category>
+      <category domain="tag"><![CDATA[Crypto Daybook Americas]]></category>
+      <category domain="https://www.coindesk.com/">News</category>
+    </item>
+    <item>
+      <title><![CDATA[Bitcoin slips after rebounding from July 14 low that triggered $2 billion of liquidations]]></title>
+      <link>https://www.coindesk.com/markets/2026/11/16/bitcoin-slips-to-usd64-000-after-usd2-billion-weekend-flush</link>
+      <media:content url="https://cdn.sanity.io/images/s3y3vcno/production/99275e65a09f45a355f488dc07959ff17f416731-1920x1080.png?fm=jpg&amp;w=800&amp;h=450&amp;crop=focalpoint&amp;fit=clip" type="image/*" medium="image"/>
+      <guid isPermaLink="false">31631acb-d925-4b57-afec-49d91060208c</guid>
+      <pubDate>Mon, 16 Nov 2026 11:03:14 +0000</pubDate>
+      <description><![CDATA[Bitcoin (BTC) is down 1.6% since midnight UTC at around $64,300, after falling to $62,100 on Sunday, its lowest since July 14, as traders await Nvidia earnings.]]></description>
+      <dc:creator>Oliver Knight</dc:creator>
+      <dc:creator>Omkar Godbole</dc:creator>
+      <content:encoded/>
+      <dc:description/>
+      <category domain="https://www.coindesk.com/markets"><![CDATA[Markets]]></category>
+      <category domain="tag"><![CDATA[Crypto Markets Today]]></category>
+      <category domain="https://www.coindesk.com/">News</category>
+    </item>
+    <item>
+      <title><![CDATA[Vitalik Buterin flips to ‘total bull’ on a faster route to quantum-safe Ethereum]]></title>
+      <link>https://www.coindesk.com/tech/2026/11/16/vitalik-buterin-flips-to-total-bull-on-a-faster-route-to-quantum-safe-ethereum</link>
+      <media:content url="https://cdn.sanity.io/images/s3y3vcno/production/fc25947f1bdd54e21669cfeb4f95b3a58f436d2c-1500x919.png?fm=jpg&amp;w=800&amp;h=450&amp;crop=focalpoint&amp;fit=clip" type="image/*" medium="image"/>
+      <guid isPermaLink="false">1d1edde5-3fb0-4c9f-a843-8db4a6be5fc8</guid>
+      <pubDate>Mon, 16 Nov 2026 08:18:03 +0000</pubDate>
+      <description><![CDATA[A proposed system would combine bulky digital signatures into a shared proof, helping protect wallets without making every payment much more expensive.]]></description>
+      <dc:creator>Shaurya Malwa</dc:creator>
+      <content:encoded/>
+      <dc:description/>
+      <category domain="https://www.coindesk.com/tech"><![CDATA[Tech]]></category>
+      <category domain="https://www.coindesk.com/">News</category>
+    </item>
+    <item>
+      <title><![CDATA[Cardano holders vote down $5 million bid to buy warehouse copper]]></title>
+      <link>https://www.coindesk.com/markets/2026/11/16/cardano-holders-vote-down-usd5-million-bid-to-buy-warehouse-copper</link>
+      <media:content url="https://cdn.sanity.io/images/s3y3vcno/production/a7ecc9b1c3dbe306ed510a4dfecc0218e9d5fdcb-1440x1080.jpg?fm=jpg&amp;w=800&amp;h=450&amp;crop=focalpoint&amp;fit=clip" type="image/*" medium="image"/>
+      <guid isPermaLink="false">bb6550f3-71ea-4fe5-8e49-96baebfc72d1</guid>
+      <pubDate>Mon, 16 Nov 2026 06:27:42 +0000</pubDate>
+      <description><![CDATA[Toto Finance’s 22 million ADA treasury request expired Sunday with about 20 million ADA in favor, and none of Cardano’s seven constitutional committee members voted yes.]]></description>
+      <dc:creator>Shaurya Malwa</dc:creator>
+      <content:encoded/>
+      <dc:description/>
+      <category domain="https://www.coindesk.com/markets"><![CDATA[Markets]]></category>
+      <category domain="https://www.coindesk.com/">News</category>
+    </item>
+    <item>
+      <title><![CDATA[XRP crashes to its lowest since November 2024 as money leaves crypto]]></title>
+      <link>https://www.coindesk.com/markets/2026/11/15/xrp-crashes-to-its-lowest-since-november-2024-as-money-leaves-crypto</link>
+      <media:content url="https://cdn.sanity.io/images/s3y3vcno/production/f5ebb4afb940e3439b9bd9944fc26aaedb49540b-2213x1011.png?fm=jpg&amp;w=800&amp;h=450&amp;crop=focalpoint&amp;fit=clip" type="image/*" medium="image"/>
+      <guid isPermaLink="false">8dd3e265-033e-4c68-84a6-9f4605bdb788</guid>
+      <pubDate>Sun, 15 Nov 2026 02:50:57 +0000</pubDate>
+      <description><![CDATA[XRP tanked to its lowest level since November 2024 as ETF outflows and shrinking stablecoin supply add to pressure on crypto markets.]]></description>
+      <dc:creator>Omkar Godbole</dc:creator>
+      <content:encoded/>
+      <dc:description/>
+      <category domain="https://www.coindesk.com/markets"><![CDATA[Markets]]></category>
+      <category domain="tag"><![CDATA[XRP News]]></category>
+      <category domain="https://www.coindesk.com/">News</category>
+    </item>
+    <item>
+      <title><![CDATA[A behind the scenes force may amplify bitcoin and ether price volatility]]></title>
+      <link>https://www.coindesk.com/markets/2026/11/14/a-behind-the-scenes-force-may-amplify-bitcoin-and-ether-price-volatility</link>
+      <media:content url="https://cdn.sanity.io/images/s3y3vcno/production/edd6986aac22b09dea34bd96bcf1c26daad85c18-1600x740.jpg?fm=jpg&amp;w=800&amp;h=450&amp;crop=focalpoint&amp;fit=clip" type="image/*" medium="image"/>
+      <guid isPermaLink="false">8f519e1b-02d4-4ea7-a715-e55ba58bbe3f</guid>
+      <pubDate>Sat, 14 Nov 2026 12:57:00 +0000</pubDate>
+      <description><![CDATA[Both bitcoin and ether are trading in price ranges where market makers and dealers may add to market volatility.]]></description>
+      <dc:creator>Omkar Godbole</dc:creator>
+      <content:encoded/>
+      <dc:description/>
+      <category domain="https://www.coindesk.com/markets"><![CDATA[Markets]]></category>
+      <category domain="tag"><![CDATA[Bitcoin News]]></category>
+      <category domain="tag"><![CDATA[Ethereum News]]></category>
+      <category domain="https://www.coindesk.com/">News</category>
+    </item>
+  </channel>
+</rss>

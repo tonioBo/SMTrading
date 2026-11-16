@@ -80,7 +80,9 @@ Dagli altri dispositivi della rete l'app è servita **solo in https**:
 
 ### Connettori dati (pagina *Connettori*)
 
-Di base sono attivi i provider gratuiti (Yahoo, Kraken, Binance, CoinGecko, Frankfurter).
+Di base sono attivi i provider gratuiti (Yahoo, Kraken, Binance, CoinGecko, Frankfurter e
+`rssnews`, le notizie crypto dai feed RSS pubblici di CoinDesk e Cointelegraph, prime nella
+priorità delle news crypto; nessuna chiave).
 Per dati migliori si possono attivare i connettori a chiave:
 
 | Connettore | Dati |
