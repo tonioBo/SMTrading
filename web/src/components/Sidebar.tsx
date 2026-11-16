@@ -10,6 +10,7 @@ import {
   Landmark,
   LayoutDashboard,
   Percent,
+  Radar,
   ScrollText,
   Settings,
   ShieldAlert,
@@ -31,6 +32,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/portafogli", label: "Portafogli", icon: Wallet },
+  { to: "/segnali", label: "Segnali", icon: Radar },
   { to: "/agenti", label: "Agenti", icon: Bot },
   { to: "/costi-agenti", label: "Costi agenti", icon: CircleDollarSign },
   { to: "/istruzioni-agenti", label: "Istruzioni agenti", icon: BookOpen },

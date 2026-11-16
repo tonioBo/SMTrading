@@ -1182,3 +1182,47 @@ export interface AgentCosts {
   agents: AgentCostRow[];
   unmatched: { paperclip_agent_id: string; name: string | null; api_usd: string; subscription_usd: string; other_usd: string }[];
 }
+
+/** GET /api/signals: how close each approved strategy is to an entry (decimals as strings). */
+export type SignalDirection = "below" | "above" | "cross_up";
+export type StrategySignalStatus = "ok" | "dati incompleti" | "non supportata";
+
+export interface SignalSymbol {
+  symbol: string;
+  last: string;
+  indicator: string;
+  /** on the last closed bar */
+  value_closed: string;
+  /** «se chiudesse ora» (provisional bar); null when the market is closed or the quote stale */
+  value_now: string | null;
+  threshold: string;
+  direction: SignalDirection;
+  distance: string;
+  triggered_closed: boolean;
+  triggered_now: boolean;
+  as_of: string;
+}
+
+export interface StrategySignal {
+  ref: string;
+  name: string;
+  type: string;
+  params: Record<string, unknown>;
+  timeframe: string;
+  status: StrategySignalStatus;
+  symbols: SignalSymbol[];
+}
+
+export interface SignalsResponse {
+  as_of: string;
+  portfolios: { portfolio_id: string; portfolio_name: string; strategies: StrategySignal[] }[];
+}
+
+/** GET /api/weekly-goal: the goal of the week from the Monday opening (EUR, strings). */
+export interface WeeklyGoalProgress {
+  week_start: string;
+  on: boolean;
+  target_pct: string;
+  total: { start_eur: string | null; current_eur: string | null; target_eur: string | null; pct: string | null };
+  portfolios: { portfolio_id: string; name: string; start_eur: string; current_eur: string; target_eur?: string; pct: string | null }[];
+}
