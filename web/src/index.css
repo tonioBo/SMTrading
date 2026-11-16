@@ -10,10 +10,10 @@
     --muted: 113 113 122;
     --card: 244 244 245;
     --border: 228 228 231;
-    --accent: 16 185 129; /* emerald-500 */
-    --gain: 16 185 129; /* emerald-500 */
-    --loss: 244 63 94; /* rose-500 */
-    --warn: 245 158 11; /* amber-500 */
+    --accent: 5 150 105; /* emerald-600: readable text on white */
+    --gain: 5 150 105; /* emerald-600 */
+    --loss: 225 29 72; /* rose-600 */
+    --warn: 217 119 6; /* amber-600 */
     color-scheme: light;
   }
 
@@ -24,6 +24,10 @@
     --muted: 161 161 170;
     --card: 24 24 27;
     --border: 39 39 42;
+    --accent: 16 185 129; /* emerald-500 */
+    --gain: 16 185 129; /* emerald-500 */
+    --loss: 244 63 94; /* rose-500 */
+    --warn: 245 158 11; /* amber-500 */
     color-scheme: dark;
   }
 

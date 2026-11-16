@@ -1,13 +1,17 @@
-import { Moon, Sun } from "lucide-react";
+import { Monitor, Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useTheme } from "@/theme";
+import { nextTheme, THEME_LABELS, useTheme } from "@/theme";
 
+const ICON = { dark: Moon, light: Sun, auto: Monitor } as const;
+
+/** One button: scuro → chiaro → automatico (follows the system) → scuro. */
 export function ThemeToggle() {
-  const { theme, toggle } = useTheme();
-  const label = theme === "dark" ? "Passa al tema chiaro" : "Passa al tema scuro";
+  const { theme, cycle } = useTheme();
+  const Icon = ICON[theme];
+  const label = `Tema ${THEME_LABELS[theme]}: passa a ${THEME_LABELS[nextTheme(theme)]}`;
   return (
-    <Button variant="ghost" size="icon" onClick={toggle} aria-label={label} title={label}>
-      {theme === "dark" ? <Sun /> : <Moon />}
+    <Button variant="ghost" size="icon" onClick={cycle} aria-label={label} title={label}>
+      <Icon />
     </Button>
   );
 }

@@ -79,10 +79,12 @@ describe("Layout", () => {
   it("toggles the theme on <html> and persists it", async () => {
     const user = userEvent.setup();
     renderApp("/");
-    await user.click(await screen.findByRole("button", { name: "Passa al tema chiaro" }));
+    await user.click(await screen.findByRole("button", { name: "Tema scuro: passa a chiaro" }));
     expect(document.documentElement.classList.contains("dark")).toBe(false);
     expect(localStorage.getItem(THEME_KEY)).toBe("light");
-    await user.click(screen.getByRole("button", { name: "Passa al tema scuro" }));
+    await user.click(screen.getByRole("button", { name: "Tema chiaro: passa a automatico" }));
+    expect(localStorage.getItem(THEME_KEY)).toBe("auto");
+    await user.click(screen.getByRole("button", { name: "Tema automatico: passa a scuro" }));
     expect(document.documentElement.classList.contains("dark")).toBe(true);
     expect(localStorage.getItem(THEME_KEY)).toBe("dark");
   });
