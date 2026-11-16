@@ -1,25 +1,15 @@
 import { Link } from "react-router-dom";
 import { useOpenPositions } from "@/api/hooks/positions";
-import type { OpenPosition, OpenPositionsPortfolio, Protection, ProtectiveLeg } from "@/api/types";
+import type { OpenPosition, OpenPositionsPortfolio, ProtectiveLeg } from "@/api/types";
 import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
 import { Pnl } from "@/components/Pnl";
 import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
-import { Badge } from "@/components/ui/badge";
+import { ProtectionBadge } from "@/components/ProtectionBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatDateTime, formatDecimal, formatMoney, formatQty } from "@/lib/format";
 import { cn } from "@/lib/utils";
-
-const PROTECTION_BADGE: Record<Protection, { text: string; className: string; hint: string }> = {
-  ok: { text: "🟢 protetta", className: "border-gain text-gain", hint: "stop attivo valido" },
-  "scade oggi": {
-    text: "🟠 scade oggi",
-    className: "border-warn text-warn",
-    hint: "lo stop o il target è giornaliero: scade alla chiusura di oggi",
-  },
-  "senza stop": { text: "🔴 senza stop", className: "border-loss text-loss", hint: "nessuno stop attivo sulla posizione" },
-};
 
 const TIF_LABEL: Record<ProtectiveLeg["tif"], string> = { day: "giornaliero", gtc: "fino a revoca" };
 
@@ -46,7 +36,6 @@ function riskLine(t: OpenPositionsPortfolio): string {
 }
 
 function PositionRow({ p }: { p: OpenPosition }) {
-  const badge = PROTECTION_BADGE[p.protection];
   return (
     <TableRow>
       <TableCell>
@@ -76,9 +65,7 @@ function PositionRow({ p }: { p: OpenPosition }) {
         <Money value={p.risk_at_stop_eur} />
       </TableCell>
       <TableCell>
-        <Badge variant="outline" title={badge.hint} className={cn("whitespace-nowrap", badge.className)}>
-          {badge.text}
-        </Badge>
+        <ProtectionBadge protection={p.protection} />
       </TableCell>
     </TableRow>
   );

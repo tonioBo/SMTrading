@@ -484,7 +484,7 @@ function Risk({ portfolio }: { portfolio: Portfolio }) {
                 <Money value={v.maint_req_eur} />
               </Row>
               <Row label="Distanza dal mantenimento">
-                <Pnl value={distance} />
+                <Pnl value={distance} signed={false} />
               </Row>
             </dl>
           )}

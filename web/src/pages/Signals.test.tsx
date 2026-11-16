@@ -42,13 +42,13 @@ const signals: SignalsResponse = {
 let current: SignalsResponse = signals;
 let fetches = 0;
 const server = setupServer(
-  ...commonHandlers,
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "v@example.com", role: "viewer", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
   http.get("*/api/signals", () => {
     fetches += 1;
     return HttpResponse.json(current);
   }),
+  ...commonHandlers, // last: the handlers above (this page's data) take precedence
 );
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
@@ -103,6 +103,54 @@ describe("Signals", () => {
     expect(within(rows[1]).getByText("29,80")).toBeInTheDocument();
     expect(within(rows[2]).getByText("⏳ ordine in attesa")).toBeInTheDocument();
     expect(within(rows[2]).getByText("sotto 30,00")).toBeInTheDocument();
+  });
+
+  it("in position: the exit rule line with its badge, both sides", async () => {
+    const base = signals.portfolios[0].strategies[0];
+    const held = { position: { qty: "1", avg_price: "100" }, open_entry: false };
+    current = {
+      ...signals,
+      portfolios: [{
+        ...signals.portfolios[0],
+        strategies: [{
+          ...base,
+          symbols: [
+            { ...base.symbols[0], ...held, exit: { rule: "RSI 14 sopra 70", value: "8.04", threshold: "70", distance: "61.96", triggered: false } },
+            { ...base.symbols[1], ...held, exit: { rule: "RSI 14 sopra 70", value: "75.5", threshold: "70", distance: "-5.5", triggered: true } },
+            { ...base.symbols[2], ...held, exit: { rule: "RSI 14 sopra 70", value: "60", threshold: "70", distance: "10", triggered: false } },
+            { ...base.symbols[3], position: null, exit: null },
+          ],
+        }],
+      }],
+    };
+    renderApp("/segnali");
+    const table = await screen.findByRole("table", { name: "Segnali STR-001" });
+    const rows = within(table).getAllByRole("row");
+    expect(within(rows[1]).getByText("uscita: RSI 14 sopra 70 · attuale 8,0")).toBeInTheDocument();
+    expect(within(rows[1]).queryByText(/uscita (scatterebbe|vicina)/)).not.toBeInTheDocument();
+    expect(within(rows[2]).getByText("🔻 uscita scatterebbe")).toBeInTheDocument();
+    expect(within(rows[3]).getByText("🟡 uscita vicina")).toBeInTheDocument();
+    expect(within(rows[4]).queryByText(/uscita/)).not.toBeInTheDocument();
+  });
+
+  it("cross_up already above: «già sopra · attende un nuovo incrocio», not «vicino»", async () => {
+    current = {
+      ...signals,
+      portfolios: [{
+        ...signals.portfolios[0],
+        strategies: [{
+          ref: "STR-106", name: "Incrocio", type: "sma_cross", params: { fast: 1, slow: 50 }, timeframe: "1d", status: "ok",
+          symbols: [
+            { symbol: "DIA", last: "440", indicator: "Chiusura / SMA 50", value_closed: "440", value_now: "441", threshold: "435", direction: "cross_up", distance: "-6", triggered_closed: false, triggered_now: false, as_of: "2026-11-16T14:58:00Z" },
+          ],
+        }],
+      }],
+    };
+    renderApp("/segnali");
+    const table = await screen.findByRole("table", { name: "Segnali STR-106" });
+    expect(within(table).getByText("⚪ già sopra · attende un nuovo incrocio")).toBeInTheDocument();
+    expect(within(table).getByText("Chiusura / SMA 50")).toBeInTheDocument();
+    expect(within(table).queryByText("🟡 vicino")).not.toBeInTheDocument();
   });
 
   it("renders «—» for a symbol whose data could not be read", async () => {

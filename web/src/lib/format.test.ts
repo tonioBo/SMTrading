@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDateTime, formatMoney, formatPct, formatQty } from "./format";
+import { formatDateTime, formatMoney, formatPct, formatQty, formatSignedMoney, signTone } from "./format";
 
 describe("formatMoney", () => {
   it("formats EUR in it-IT with grouping and 2 decimals", () => {
@@ -67,5 +67,29 @@ describe("formatDateTime", () => {
 
   it("returns invalid input unchanged", () => {
     expect(formatDateTime("not a date")).toBe("not a date");
+  });
+});
+
+describe("formatSignedMoney", () => {
+  it("adds + to gains, keeps - on losses, no sign on zero", () => {
+    expect(formatSignedMoney("12.5", "EUR")).toBe("+12,50 €");
+    expect(formatSignedMoney("-1234.567", "EUR")).toBe("-1.234,57 €");
+    expect(formatSignedMoney("0", "EUR")).toBe("0,00 €");
+    expect(formatSignedMoney("-0.001", "EUR")).toBe("0,00 €");
+    expect(formatSignedMoney("3", "USD")).toBe("+3,00 $");
+    expect(formatSignedMoney("n/d", "EUR")).toBe("n/d");
+  });
+});
+
+describe("signTone", () => {
+  it("gain at or above zero, loss below, by the rounded value; null when unknown", () => {
+    expect(signTone("1.2")).toBe("gain");
+    expect(signTone("0")).toBe("gain");
+    expect(signTone("-0.001")).toBe("gain"); // shown as 0,00
+    expect(signTone("-0.01")).toBe("loss");
+    expect(signTone("-5", 0)).toBe("loss");
+    expect(signTone("-0.4", 0)).toBe("gain");
+    expect(signTone(null)).toBeNull();
+    expect(signTone("abc")).toBeNull();
   });
 });

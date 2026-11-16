@@ -5,7 +5,7 @@ import type { StrategyPerformance, StrategyTrade } from "@/api/types";
 import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
 import { Pnl } from "@/components/Pnl";
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge, type StatusTone } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -13,12 +13,12 @@ import { formatDateTime, formatDecimal, formatMoney, formatQty } from "@/lib/for
 
 export const NO_STRATEGY = "Senza strategia";
 
-const STATUS_VARIANT: Record<string, "secondary" | "warning" | "outline"> = {
-  approvata: "secondary",
-  modificata: "secondary",
-  sospesa: "warning",
-  revocata: "outline",
-  respinta: "outline",
+const STATUS_TONE: Record<string, StatusTone> = {
+  approvata: "ok",
+  modificata: "ok",
+  sospesa: "warn",
+  revocata: "neutral",
+  respinta: "neutral",
 };
 
 function rowKey(s: StrategyPerformance): string {
@@ -55,7 +55,7 @@ function TradesTable({ s }: { s: StrategyPerformance }) {
             <TableCell className="font-medium">{t.symbol}</TableCell>
             <TableCell>{t.direction === "long" ? "Rialzo" : "Ribasso"}</TableCell>
             <TableCell className="whitespace-nowrap">{formatDateTime(t.opened_at)}</TableCell>
-            <TableCell className="whitespace-nowrap">{t.closed_at ? formatDateTime(t.closed_at) : <Badge variant="outline">aperta</Badge>}</TableCell>
+            <TableCell className="whitespace-nowrap">{t.closed_at ? formatDateTime(t.closed_at) : <StatusBadge tone="info">aperta</StatusBadge>}</TableCell>
             <TableCell className="num text-right">
               {formatQty(t.qty)}
               {t.open_qty !== "0" && t.open_qty !== t.qty && <span className="ml-1 text-xs text-muted">{`(aperte ${formatQty(t.open_qty)})`}</span>}
@@ -88,7 +88,7 @@ function StrategyRow({ s, open, onToggle }: { s: StrategyPerformance; open: bool
             {s.portfolio_name}
           </Link>
         </TableCell>
-        <TableCell>{s.status ? <Badge variant={STATUS_VARIANT[s.status] ?? "outline"}>{s.status}</Badge> : <span className="text-muted">—</span>}</TableCell>
+        <TableCell>{s.status ? <StatusBadge tone={STATUS_TONE[s.status] ?? "neutral"}>{s.status}</StatusBadge> : <span className="text-muted">—</span>}</TableCell>
         <TableCell className="num text-right">{s.trades}</TableCell>
         <TableCell className="num text-right">{s.open_positions}</TableCell>
         <TableCell className="num text-right">{s.win_rate_pct == null ? "—" : `${formatDecimal(s.win_rate_pct, 1)}%`}</TableCell>

@@ -1,5 +1,5 @@
 import type { PortfolioStatus } from "@/api/types";
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge, type StatusTone } from "@/components/StatusBadge";
 
 const PORTFOLIO_STATUS_LABELS: Record<PortfolioStatus, string> = {
   active: "Attivo",
@@ -8,8 +8,8 @@ const PORTFOLIO_STATUS_LABELS: Record<PortfolioStatus, string> = {
   archived: "Archiviato",
 };
 
-const VARIANT = { active: "default", reduce_only: "warning", locked: "destructive", archived: "secondary" } as const;
+const TONE: Record<PortfolioStatus, StatusTone> = { active: "ok", reduce_only: "warn", locked: "danger", archived: "neutral" };
 
 export function PortfolioStatusBadge({ status }: { status: PortfolioStatus }) {
-  return <Badge variant={VARIANT[status] ?? "secondary"}>{PORTFOLIO_STATUS_LABELS[status] ?? status}</Badge>;
+  return <StatusBadge tone={TONE[status] ?? "neutral"}>{PORTFOLIO_STATUS_LABELS[status] ?? status}</StatusBadge>;
 }

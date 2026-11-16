@@ -1254,6 +1254,18 @@ export interface SignalSymbol {
   position?: { qty: string; avg_price: string } | null;
   /** a buy entry order of the symbol is still resting in that portfolio */
   open_entry?: boolean;
+  /** in position: the strategy's exit rule on the newest data (null when flat) */
+  exit?: SignalExit | null;
+}
+
+/** `distance` > 0: still to go; <= 0 (with `triggered`): the exit fires. */
+export interface SignalExit {
+  /** "RSI 14 sopra 70", "SMA 20 sotto SMA 50", "Chiusura sotto minimo 10" */
+  rule: string;
+  value: string;
+  threshold: string;
+  distance: string;
+  triggered: boolean;
 }
 
 export interface StrategySignal {

@@ -82,7 +82,7 @@ describe("Strategies", () => {
     expect(within(str).getByRole("link", { name: "Portafoglio Aggressivo" })).toHaveAttribute("href", "/portafogli/p-agg");
     expect(within(str).getByText("approvata")).toBeInTheDocument();
     expect(within(str).getByText("100,0%")).toBeInTheDocument();
-    expect(within(str).getByText("12,50 €")).toBeInTheDocument();
+    expect(within(str).getByText("+12,50 €")).toBeInTheDocument();
     expect(within(str).getByText("0,36 €")).toBeInTheDocument();
     expect(within(str).getAllByText("—")).toHaveLength(2); // unrealised and total unknown
     expect(within(none).getByText("Senza strategia")).toBeInTheDocument();
@@ -102,7 +102,7 @@ describe("Strategies", () => {
     expect(within(open).getByText("258,00 $")).toBeInTheDocument();
     expect(within(open).getByText("PROP-AGG-20261116-2130-1")).toBeInTheDocument();
     expect(within(closed).getByText("515,50 $")).toBeInTheDocument();
-    expect(within(closed).getByText("12,32 €")).toBeInTheDocument();
+    expect(within(closed).getByText("+12,32 €")).toBeInTheDocument();
     expect(within(closed).getByText("14/11/2026 16:00:00")).toBeInTheDocument();
   });
 

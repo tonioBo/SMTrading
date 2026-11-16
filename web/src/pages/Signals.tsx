@@ -2,23 +2,14 @@ import { Link } from "react-router-dom";
 import { useSignals } from "@/api/hooks/signals";
 import type { SignalSymbol, StrategySignal } from "@/api/types";
 import { PageHeader } from "@/components/PageHeader";
-import { Badge } from "@/components/ui/badge";
+import { ExitBadge, SignalBadge } from "@/components/SignalBadges";
+import { StatusBadge, type StatusTone } from "@/components/StatusBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatDateTime, formatDecimal, formatQty } from "@/lib/format";
-import { DIRECTION_LABELS, signalBadge, type SignalTone } from "@/lib/signals";
-import { cn } from "@/lib/utils";
+import { DIRECTION_LABELS } from "@/lib/signals";
 
-const TONE_CLASS: Record<SignalTone, string> = {
-  held: "border-accent text-accent",
-  pending: "border-accent text-accent",
-  now: "border-gain text-gain",
-  closed: "border-gain text-gain",
-  near: "border-warn text-warn",
-  far: "border-border text-muted",
-};
-
-const STATUS_VARIANT = { ok: "secondary", "dati incompleti": "warning", "non supportata": "outline" } as const;
+const STATUS_TONE = { ok: "ok", "dati incompleti": "warn", "non supportata": "neutral" } as const satisfies Record<string, StatusTone>;
 
 /** 2 decimals, 4 below 10 in absolute value (FX prices, small distances). */
 function value(v: string | null): string {
@@ -32,8 +23,16 @@ function paramsText(params: Record<string, unknown>): string {
   return entries.length === 0 ? "—" : entries.map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : String(v)}`).join(", ");
 }
 
-function SymbolRow({ s }: { s: SignalSymbol }) {
-  const badge = signalBadge(s);
+/** «uscita: RSI 2 sopra 70 · attuale 8,0» (RSI with one decimal, prices like the table). */
+function exitText(type: string | null, s: SignalSymbol): string | null {
+  if (!s.position || !s.exit) return null;
+  const current = type === "rsi_reversion" ? formatDecimal(s.exit.value, 1) : value(s.exit.value);
+  const threshold = type === "rsi_reversion" ? "" : ` (${value(s.exit.threshold)})`;
+  return `uscita: ${s.exit.rule}${threshold} · attuale ${current}`;
+}
+
+function SymbolRow({ s, type }: { s: SignalSymbol; type: string | null }) {
+  const exit = exitText(type, s);
   return (
     <TableRow>
       <TableCell className="font-medium">{s.symbol}</TableCell>
@@ -44,11 +43,15 @@ function SymbolRow({ s }: { s: SignalSymbol }) {
       <TableCell className="num">{s.direction == null ? value(s.threshold) : `${DIRECTION_LABELS[s.direction] ?? s.direction} ${value(s.threshold)}`}</TableCell>
       <TableCell className="num text-right">{value(s.distance)}</TableCell>
       <TableCell>
-        <Badge
-          variant="outline"
-          className={cn("whitespace-nowrap", TONE_CLASS[badge.tone])}
-          title={s.position ? `${formatQty(s.position.qty)} @ ${formatQty(s.position.avg_price)}` : undefined}
-        >{`${badge.icon} ${badge.label}`}</Badge>
+        <div className="flex flex-col items-start gap-1">
+          <SignalBadge s={s} />
+          {exit && (
+            <div className="flex flex-wrap items-center gap-1">
+              <span className="num whitespace-nowrap text-xs text-muted">{exit}</span>
+              <ExitBadge type={type} s={s} />
+            </div>
+          )}
+        </div>
       </TableCell>
       <TableCell className="whitespace-nowrap text-muted">{s.as_of ? formatDateTime(s.as_of) : "—"}</TableCell>
     </TableRow>
@@ -63,8 +66,8 @@ function StrategyBlock({ strategy }: { strategy: StrategySignal }) {
         <span>{strategy.name}</span>
         <span className="text-muted">{strategy.type ?? "—"}</span>
         <span className="num text-muted">{paramsText(strategy.params)}</span>
-        <Badge variant="outline">{strategy.timeframe ?? "—"}</Badge>
-        {strategy.status !== "ok" && <Badge variant={STATUS_VARIANT[strategy.status] ?? "outline"}>{strategy.status}</Badge>}
+        <StatusBadge tone="neutral">{strategy.timeframe ?? "—"}</StatusBadge>
+        {strategy.status !== "ok" && <StatusBadge tone={STATUS_TONE[strategy.status] ?? "neutral"}>{strategy.status}</StatusBadge>}
       </div>
       {strategy.symbols.length > 0 && (
         <Table aria-label={`Segnali ${strategy.ref}`}>
@@ -83,7 +86,7 @@ function StrategyBlock({ strategy }: { strategy: StrategySignal }) {
           </TableHeader>
           <TableBody>
             {strategy.symbols.map((s) => (
-              <SymbolRow key={s.symbol} s={s} />
+              <SymbolRow key={s.symbol} s={s} type={strategy.type} />
             ))}
           </TableBody>
         </Table>

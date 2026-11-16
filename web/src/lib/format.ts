@@ -58,6 +58,20 @@ export function formatMoney(value: string, currency: string): string {
   return `${render(roundHalfUp(d, places))} ${SYMBOLS[currency] ?? currency}`;
 }
 
+/** P&L: formatMoney with "+" on gains ("+12,50 €", "-3,00 €", "0,00 €"). */
+export function formatSignedMoney(value: string, currency: string): string {
+  const text = formatMoney(value, currency);
+  return parseDecimal(value) && !text.startsWith("-") && /[1-9]/.test(text) ? `+${text}` : text;
+}
+
+/** The colour of a signed figure by its displayed (rounded) value: "gain" at or above
+ * zero, "loss" below, null when it is not a number. */
+export function signTone(value: string | null | undefined, places = 2): "gain" | "loss" | null {
+  const d = value == null ? null : parseDecimal(value);
+  if (!d) return null;
+  return roundHalfUp(d, places).negative ? "loss" : "gain";
+}
+
 /** Quantities: up to 8 decimals (HALF_UP), trailing zeros removed. */
 export function formatQty(value: string): string {
   const d = parseDecimal(value);

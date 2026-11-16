@@ -47,13 +47,13 @@ const body: OpenPositionsResponse = {
 let current: OpenPositionsResponse = body;
 let fetches = 0;
 const server = setupServer(
-  ...commonHandlers,
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "v@example.com", role: "viewer", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
   http.get("*/api/positions/open", () => {
     fetches += 1;
     return HttpResponse.json(current);
   }),
+  ...commonHandlers, // last: the handlers above (this page's data) take precedence
 );
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
