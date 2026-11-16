@@ -27,6 +27,7 @@ import { LiveTotpDialog } from "@/components/LiveTotpDialog";
 import { OrderForm } from "@/components/OrderForm";
 import { PageHeader } from "@/components/PageHeader";
 import { Pnl } from "@/components/Pnl";
+import { PortfolioComposition } from "@/components/PortfolioComposition";
 import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
 import { PortfolioStatusBadge } from "@/components/PortfolioStatusBadge";
 import { selectClass } from "@/components/FormField";
@@ -69,6 +70,7 @@ function Overview({ portfolio }: { portfolio: Portfolio }) {
 
   return (
     <div className="space-y-6">
+      <PortfolioComposition portfolioId={portfolio.id} />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Kpi title="Equity">
           <Money value={portfolio.equity_eur} />

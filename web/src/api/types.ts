@@ -1228,3 +1228,43 @@ export interface WeeklyGoalProgress {
   total: { start_eur: string | null; current_eur: string | null; target_eur: string | null; pct: string | null };
   portfolios: { portfolio_id: string; name: string; start_eur: string; current_eur: string; target_eur?: string; pct: string | null }[];
 }
+
+// --- «Composizione» (GET /api/portfolios/{id}/composition) ----------------------------
+
+/** One open position; last/value/weight/P&L are null when it has no quote at all. */
+export interface CompositionPosition {
+  symbol: string;
+  name: string;
+  asset_class: AssetClass;
+  market: string;
+  currency: string;
+  qty: string;
+  avg_price: string;
+  last: string | null;
+  value_eur: string | null;
+  weight_pct: string | null;
+  pnl_eur: string | null;
+  pnl_pct: string | null;
+  /** marked with the last cached quote */
+  stale: boolean;
+}
+
+/** A group (asset class, «Contante» = key "cash", or a currency). */
+export interface CompositionGroup {
+  key: string;
+  label: string;
+  value_eur: string;
+  weight_pct: string | null;
+}
+
+export interface Composition {
+  as_of: string;
+  /** null when a position has no quote (the total is unknown) */
+  equity_eur: string | null;
+  /** net cash (cash + collateral + margin loan) */
+  cash_eur: string;
+  positions: CompositionPosition[];
+  by_asset_class: CompositionGroup[];
+  by_currency: CompositionGroup[];
+  unpriced_symbols: string[];
+}

@@ -30,6 +30,13 @@ export function subtractDecimal(a: string, b: string): string | null {
   return (negative ? "-" : "") + int + (frac ? "." + frac : "");
 }
 
+/** a + b as a plain decimal string (trailing zeros stripped); null on invalid input. */
+export function addDecimal(a: string, b: string): string | null {
+  const y = b.trim();
+  const negated = y.startsWith("-") ? y.slice(1) : y.startsWith("+") ? "-" + y.slice(1) : "-" + y;
+  return subtractDecimal(a, negated);
+}
+
 /** a × b as a plain decimal string (trailing zeros stripped); null on invalid input. */
 export function multiplyDecimal(a: string, b: string): string | null {
   const x0 = a.trim();

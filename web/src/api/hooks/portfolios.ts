@@ -4,6 +4,7 @@ import { apiFetch } from "@/api/client";
 import { dashboardKey } from "@/api/hooks/dashboard";
 import type {
   CashMove,
+  Composition,
   EquityPeriod,
   JournalType,
   Order,
@@ -71,6 +72,17 @@ export function usePositions(id: string) {
     queryKey: [...portfolioKey(id), "positions"],
     queryFn: () => apiFetch<Position[]>(`/api/portfolios/${id}/positions`),
     refetchInterval: POSITIONS_REFRESH_MS,
+  });
+}
+
+export const COMPOSITION_REFRESH_MS = 60_000;
+
+/** «Composizione»: positions with EUR value and weight, by asset class and by currency. */
+export function useComposition(id: string) {
+  return useQuery({
+    queryKey: [...portfolioKey(id), "composition"],
+    queryFn: () => apiFetch<Composition>(`/api/portfolios/${id}/composition`),
+    refetchInterval: COMPOSITION_REFRESH_MS,
   });
 }
 
