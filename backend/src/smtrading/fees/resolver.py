@@ -14,13 +14,21 @@ from smtrading.instruments.models import AssetClass
 _SPECIFICITY = {FeeScope.portfolio: 2, FeeScope.asset_class: 1, FeeScope.global_: 0}
 
 
+def _specificity(rule: FeeRuleData) -> int:
+    """portfolio + asset class (3) > portfolio (2) > asset class (1) > global (0)."""
+    if rule.scope == FeeScope.portfolio and rule.asset_class is not None:
+        return 3
+    return _SPECIFICITY[rule.scope]
+
+
 def _matches(
     rule: FeeRuleData, portfolio_id: UUID, asset_class: AssetClass, side: str
 ) -> bool:
     if not rule.active or rule.side not in (side, "both"):
         return False
     if rule.scope == FeeScope.portfolio:
-        return rule.scope_ref == str(portfolio_id)
+        return rule.scope_ref == str(portfolio_id) and rule.asset_class in (
+            None, asset_class.value)
     if rule.scope == FeeScope.asset_class:
         return rule.scope_ref == asset_class.value
     return True
@@ -33,7 +41,8 @@ def resolve_rule(
     asset_class: AssetClass,
     side: str,
 ) -> FeeRuleData:
-    """Most specific active rule wins; ties by priority, then newest created_at."""
+    """Most specific active rule wins (portfolio + asset class > portfolio > asset class >
+    global); ties by priority, then newest created_at."""
     side = str(side)
     candidates = [r for r in rules if _matches(r, portfolio_id, asset_class, side)]
     if not candidates:
@@ -46,7 +55,7 @@ def resolve_rule(
                 "side": side,
             },
         )
-    return max(candidates, key=lambda r: (_SPECIFICITY[r.scope], r.priority, r.created_at))
+    return max(candidates, key=lambda r: (_specificity(r), r.priority, r.created_at))
 
 
 def _to_data(row: FeeRule) -> FeeRuleData:
@@ -74,6 +83,7 @@ def _to_data(row: FeeRule) -> FeeRuleData:
         priority=row.priority,
         active=row.active,
         created_at=row.created_at,
+        asset_class=row.asset_class,
     )
 
 

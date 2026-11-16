@@ -5,7 +5,7 @@ import { setupServer } from "msw/node";
 import { toast } from "sonner";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { QueryClient } from "@tanstack/react-query";
-import type { Composition, LiveLink, Order, Portfolio, Position, Transaction, Valuation } from "@/api/types";
+import type { Composition, FeeRule, LiveLink, Order, Portfolio, Position, Transaction, Valuation } from "@/api/types";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
 import { haltFixture } from "@/test/halts";
@@ -182,6 +182,12 @@ const liveLinkFixture: LiveLink = {
   unassigned: "0.00",
 };
 let liveLinks: LiveLink[] = [liveLinkFixture];
+const feeRuleFixture: FeeRule = {
+  id: "fr", name: "", scope: "portfolio", scope_ref: null, asset_class: null, side: "both", currency: "EUR", fixed: "0", pct: "0",
+  min_fee: null, max_fee: null, tiers: null, fx_pct: "0", priority: 0, active: true, created_at: "2026-11-01T10:00:00Z",
+};
+let feeRules: FeeRule[] = [];
+let presetApplies: { id: string; body: unknown }[] = [];
 
 const compositionFixture: Composition = {
   as_of: "2026-11-16T21:00:00Z",
@@ -218,6 +224,19 @@ const server = setupServer(
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
   http.get("*/api/portfolios/p1", () => HttpResponse.json(current)),
   http.get("*/api/live-links", () => HttpResponse.json(liveLinks)),
+  http.get("*/api/fee-rules", () => HttpResponse.json(feeRules)),
+  http.post("*/api/portfolios/:id/fee-rule/apply-preset", async ({ request, params }) => {
+    presetApplies.push({ id: String(params.id), body: await request.json() });
+    const base = { ...feeRuleFixture, scope_ref: String(params.id), fx_pct: "0.75" };
+    const rules: FeeRule[] = [
+      { ...base, id: "fr2", name: "Alfa – eToro" },
+      { ...base, id: "fr3", name: "Alfa – eToro · Crypto", asset_class: "crypto", pct: "1" },
+    ];
+    const mine = (r: FeeRule) => r.scope === "portfolio" && r.scope_ref === params.id;
+    const deactivated = feeRules.filter((r) => mine(r) && r.active).map((r) => ({ id: r.id, name: r.name }));
+    feeRules = [...feeRules.map((r) => (mine(r) ? { ...r, active: false } : r)), ...rules];
+    return HttpResponse.json({ rules, created: ["fr2", "fr3"], deactivated, preset: {} });
+  }),
   http.patch("*/api/portfolios/p1", async ({ request }) => {
     patches.push(await request.json());
     current = { ...current, status: "active", reduce_only_reason: null };
@@ -319,6 +338,8 @@ afterEach(() => {
   orderStatuses = [];
   unarchived = 0;
   liveLinks = [liveLinkFixture];
+  feeRules = [];
+  presetApplies = [];
   ws.subscribed.length = 0;
 });
 afterAll(() => server.close());
@@ -889,6 +910,46 @@ describe("PortfolioDetail", () => {
     await waitFor(() =>
       expect(patches).toEqual([{ name: "Beta", leverage: "2.5", slippage_bps: 10, risk_profile_id: null, timezone: "Asia/Tokyo" }]),
     );
+  });
+
+  it("shows the portfolio's fee rules and applies the linked broker's fees after confirmation", async () => {
+    current = { ...portfolio, broker_kind: "etoro_demo", broker_link_id: "b1", mode: "paper", mode_label: "eToro · prova" };
+    feeRules = [
+      { ...feeRuleFixture, id: "fr0", name: "Globale", scope: "global", scope_ref: null },
+      { ...feeRuleFixture, id: "fr1", name: "Alfa – zero commissioni", scope: "portfolio", scope_ref: "p1" },
+      { ...feeRuleFixture, id: "fr9", name: "Altro", scope: "portfolio", scope_ref: "p9" },
+    ];
+    const user = await openTab("Impostazioni");
+    const list = await screen.findByRole("list", { name: "Regole del portafoglio" });
+    expect(within(list).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Alfa – zero commissioni · tutte le classi · commissione 0% · cambio valuta 0%",
+    ]);
+    expect(presetApplies).toEqual([]);
+    const card = screen.getByRole("list", { name: "Commissioni di eToro" });
+    expect(within(card).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Azioni ed ETF (e altre classi): commissione 0% · cambio valuta 0,75% (guida giugno 2026; fonti discordanti 0,5–1%, da verificare)",
+      "Crypto: commissione 1% · cambio valuta 0,75% (guida giugno 2026; fonti discordanti 0,5–1%, da verificare)",
+    ]);
+    await user.click(screen.getByRole("button", { name: "Usa le commissioni di eToro" }));
+    const dialog = await screen.findByRole("dialog", { name: "Usare le commissioni di eToro?" });
+    expect(dialog).toHaveTextContent("«Alfa – eToro», «Alfa – eToro · Crypto» diventano le regole del portafoglio");
+    expect(within(dialog).getByRole("list", { name: "Commissioni di eToro" })).toHaveTextContent("Crypto: commissione 1%");
+    expect(presetApplies).toEqual([]); // nothing before the confirmation
+    await user.click(within(dialog).getByRole("button", { name: "Applica" }));
+    await waitFor(() => expect(presetApplies).toEqual([{ id: "p1", body: { broker_kind: "etoro_demo" } }]));
+    await waitFor(() =>
+      expect(within(screen.getByRole("list", { name: "Regole del portafoglio" })).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+        "Alfa – eToro · tutte le classi · commissione 0% · cambio valuta 0,75%",
+        "Alfa – eToro · Crypto · classe Crypto · commissione 1% · cambio valuta 0,75%",
+      ]),
+    );
+  });
+
+  it("offers no broker fees to a portfolio without a broker", async () => {
+    const user = await openTab("Impostazioni");
+    expect(await screen.findByText(/Nessuna regola del portafoglio/)).toBeInTheDocument();
+    await user.click(screen.getByLabelText("Nome")); // the tab is rendered
+    expect(screen.queryByRole("button", { name: /Usa le commissioni di/ })).not.toBeInTheDocument();
   });
 
   it("shows a server refusal next to its field", async () => {

@@ -84,3 +84,35 @@ def test_none_found():
     with pytest.raises(SMTError) as ei:
         resolve([rule(active=False)])
     assert ei.value.code == ErrorCode.FEE_RULE_NOT_FOUND
+
+
+def test_portfolio_asset_class_rule_beats_portfolio_rule_for_its_class_only():
+    g = rule()
+    a = rule(scope=FeeScope.asset_class, scope_ref="crypto")
+    p = rule(scope=FeeScope.portfolio, scope_ref=str(PID))
+    pc = rule(scope=FeeScope.portfolio, scope_ref=str(PID), asset_class="crypto")
+    crypto, stocks = AssetClass.crypto, AssetClass.us_equity
+    assert resolve([g, a, p, pc], asset_class=crypto) is pc
+    assert resolve([g, a, p, pc], asset_class=stocks) is p
+    # without the plain portfolio rule: the class-filtered one never covers other classes
+    assert resolve([g, a, pc], asset_class=stocks) is g
+    assert resolve([g, a, pc], asset_class=crypto) is pc
+    assert resolve([g, a, p], asset_class=crypto) is p
+    assert resolve([g, a], asset_class=crypto) is a
+
+
+def test_portfolio_asset_class_rule_of_another_portfolio_or_inactive_is_ignored():
+    g = rule()
+    other = rule(scope=FeeScope.portfolio, scope_ref=str(uuid.uuid4()), asset_class="crypto")
+    off = rule(scope=FeeScope.portfolio, scope_ref=str(PID), asset_class="crypto", active=False)
+    assert resolve([g, other, off], asset_class=AssetClass.crypto) is g
+
+
+def test_priority_and_recency_ties_within_portfolio_asset_class():
+    lo = rule(scope=FeeScope.portfolio, scope_ref=str(PID), asset_class="crypto", priority=1)
+    hi = rule(scope=FeeScope.portfolio, scope_ref=str(PID), asset_class="crypto", priority=5)
+    assert resolve([lo, hi], asset_class=AssetClass.crypto) is hi
+    old = rule(scope=FeeScope.portfolio, scope_ref=str(PID), asset_class="crypto",
+               created_at=NOW - timedelta(days=1))
+    new = rule(scope=FeeScope.portfolio, scope_ref=str(PID), asset_class="crypto")
+    assert resolve([old, new], asset_class=AssetClass.crypto) is new

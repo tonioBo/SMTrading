@@ -222,6 +222,30 @@ async def test_per_symbol_fee_rules_and_short_span_warning(maker):
         assert "fee_currency_unconverted:EUR->USD" in bt.warnings  # no EUR/USD in the fake
 
 
+async def test_backtest_fee_rule_per_portfolio_asset_class(maker):
+    """The backtest resolves fees per symbol with the same resolver: the portfolio rule of
+    the symbol's asset class wins over the portfolio's plain rule."""
+    agent = await _agent(maker)
+    async with maker() as s:
+        pf = (await s.execute(select(Portfolio))).scalars().first()
+        plain = FeeRule(name="tutte", scope=FeeScope.portfolio, scope_ref=str(pf.id),
+                        side=FeeSide.both, currency="EUR", pct=D("0.1"))
+        crypto = FeeRule(name="crypto", scope=FeeScope.portfolio, scope_ref=str(pf.id),
+                         asset_class="crypto", side=FeeSide.both, currency="EUR", pct=D("1"))
+        s.add_all([plain, crypto])
+        await s.commit()
+        pid, plain_id, crypto_id = pf.id, str(plain.id), str(crypto.id)
+    md = FakeMarketData()
+    md.set_bars(SYM, _bars())
+    md.set_bars("BTC-USD", _bars())
+    bid = await _enqueue(maker, agent, symbols=[SYM, "BTC-USD"], portfolio_id=pid)
+    await BacktestRunner(maker, md).run_once()
+    async with maker() as s:
+        bt = await s.get(Backtest, bid)
+        assert bt.status == BacktestStatus.completed, bt.error
+        assert bt.result["fee_rule_ids"] == {SYM: plain_id, "BTC-USD": crypto_id}
+
+
 async def test_fee_currency_conversion(maker):
     md = FakeMarketData()
     md.set_fx("EUR", "USD", D("1.25"))

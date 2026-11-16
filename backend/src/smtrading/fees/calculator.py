@@ -33,6 +33,8 @@ class FeeRuleData:
     priority: int
     active: bool
     created_at: datetime
+    # portfolio scope only: the rule covers just this asset class (None: every class)
+    asset_class: str | None = None
 
 
 def _tier_pct(tiers: tuple[Tier, ...], notional: Decimal) -> Decimal:

@@ -12,9 +12,11 @@ import {
   useSetPortfolioBroker,
   useTestBrokerLink,
 } from "@/api/hooks/brokers";
+import { useApplyPresetAfterLink, useBrokerFeePreset } from "@/api/hooks/fees";
 import { useLiveLinks } from "@/api/hooks/live";
 import { useIdempotencyKey, usePortfolios } from "@/api/hooks/portfolios";
 import type { BrokerKind, BrokerLink, BrokerLinkPatch, Reconciliation } from "@/api/types";
+import { FeePresetCheckbox } from "@/components/BrokerFeePreset";
 import { DataTable, type Column } from "@/components/DataTable";
 import { FormField, selectClass } from "@/components/FormField";
 import { LiveLinkWizard, NewLiveLinkForm } from "@/components/LiveLinkWizard";
@@ -212,6 +214,9 @@ function PortfolioLinks({ link }: { link: BrokerLink }) {
   const portfolios = usePortfolios();
   const setLink = useSetPortfolioBroker();
   const [selected, setSelected] = useState("");
+  const preset = useBrokerFeePreset(link.kind);
+  const [usePreset, setUsePreset] = useState(true);
+  const applyPreset = useApplyPresetAfterLink();
   const available = (portfolios.data ?? []).filter((p) => !p.broker_link_id);
 
   function assign(portfolioId: string, linkId: string | null, done: string) {
@@ -221,6 +226,7 @@ function PortfolioLinks({ link }: { link: BrokerLink }) {
         onSuccess: () => {
           setSelected("");
           toast.success(done);
+          if (linkId && preset && usePreset) applyPreset(portfolioId, preset);
         },
       },
     );
@@ -272,6 +278,7 @@ function PortfolioLinks({ link }: { link: BrokerLink }) {
           Collega
         </Button>
       </div>
+      <FeePresetCheckbox preset={preset} checked={usePreset} onChange={setUsePreset} />
       <p className="text-xs text-muted">
         Si collegano solo portafogli senza posizioni aperte né ordini aperti: il broker non conosce le posizioni simulate.
       </p>

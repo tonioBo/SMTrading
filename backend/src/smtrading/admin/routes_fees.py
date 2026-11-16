@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from smtrading.admin.auth import DbSession, RedisClient, require_access
 from smtrading.admin.common import Quotes, _invalid, _transaction
 from smtrading.admin.schemas import (
+    FeePresetApplyIn,
     FeeRuleCreateIn,
     FeeRulePatchIn,
     FeeRuleSimulateIn,
@@ -22,6 +23,7 @@ from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import OrderSide, OrderType
 from smtrading.engine.service import PlaceOrderRequest, preview_order
+from smtrading.fees.broker_presets import apply_broker_preset, preset_dto, preset_for, presets_dto
 from smtrading.fees.calculator import compute_fx_fee, compute_trade_fee
 from smtrading.fees.models import FeeRule, FeeScope, FeeSide
 from smtrading.fees.resolver import load_rules, resolve_rule
@@ -35,7 +37,7 @@ MAX_NAME_LEN = 128
 MAX_PRIORITY = 1_000_000
 _CURRENCY = re.compile(r"^[A-Z0-9]{2,16}$")
 RULE_FIELDS = (
-    "id", "name", "scope", "scope_ref", "side", "currency", "fixed", "pct", "min_fee",
+    "id", "name", "scope", "scope_ref", "asset_class", "side", "currency", "fixed", "pct", "min_fee",
     "max_fee", "tiers", "fx_pct", "priority", "active", "created_at",
 )
 _VALUE_FIELDS = ("fixed", "pct", "min_fee", "max_fee", "fx_pct")
@@ -112,6 +114,11 @@ async def _validated(session: AsyncSession, raw: dict[str, Any], exclude: UUID |
             exists = False
         if not exists:
             raise _invalid("scope_ref", "portafoglio non trovato")
+    asset_class = raw.get("asset_class") or None
+    if asset_class is not None:
+        if scope != FeeScope.portfolio:
+            raise _invalid("asset_class", "la classe si indica solo per una regola di portafoglio")
+        asset_class = parse_enum(AssetClass, asset_class, "asset_class").value
     currency = (raw["currency"] or "").strip().upper()
     if not _CURRENCY.match(currency):
         raise _invalid("currency", "valuta non valida")
@@ -133,7 +140,8 @@ async def _validated(session: AsyncSession, raw: dict[str, Any], exclude: UUID |
     if await session.scalar(taken.limit(1)) is not None:
         raise _duplicate_name(name)
     return {
-        "name": name, "scope": scope, "scope_ref": scope_ref, "side": side,
+        "name": name, "scope": scope, "scope_ref": scope_ref, "asset_class": asset_class,
+        "side": side,
         "currency": currency, **values, "tiers": _tiers(raw["tiers"]), "priority": priority,
         "active": bool(raw["active"]),
     }
@@ -289,3 +297,33 @@ async def simulate_rule(body: FeeRuleSimulateIn, session: DbSession, qs: Quotes)
         "fx_fee": decimal_to_str(fx_fee),
         "fx_currency": base,
     }
+
+
+# --- broker fee presets ------------------------------------------------------------------
+
+
+@router.get("/brokers/fee-presets")
+async def list_fee_presets() -> list[dict]:
+    """The fee preset of every broker kind (fees.broker_presets), with its source note."""
+    return presets_dto()
+
+
+@router.post("/portfolios/{portfolio_id}/fee-rule/apply-preset")
+async def apply_fee_preset(
+    portfolio_id: UUID, body: FeePresetApplyIn, session: DbSession, redis: RedisClient
+) -> dict:
+    """The broker's preset becomes the portfolio's fee rules, one per entry
+    («<portafoglio> – <broker>[ · <classe>]», created or updated); the portfolio's other
+    active portfolio-scope rules are deactivated. Never touches the broker link or the real-money state."""
+    preset = preset_for(body.broker_kind)
+    if preset is None:
+        raise _invalid("broker_kind", "broker senza commissioni predefinite")
+    async with _transaction(session, redis):
+        applied = await apply_broker_preset(session, portfolio_id, preset)
+        out = {
+            "rules": [_rule_dto(r) for r in applied.rules],
+            "created": [str(r.id) for r in applied.created],
+            "deactivated": [{"id": str(r.id), "name": r.name} for r in applied.deactivated],
+            "preset": preset_dto(body.broker_kind, preset),
+        }
+    return out

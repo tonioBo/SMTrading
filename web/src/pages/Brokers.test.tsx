@@ -44,6 +44,7 @@ let patches: unknown[] = [];
 let creates: { body: unknown; key: string | null }[] = [];
 let puts: { id: string; body: unknown }[] = [];
 let reconciles = 0;
+let applies: { id: string; body: unknown }[] = [];
 const server = setupServer(
   ...commonHandlers,
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
@@ -83,6 +84,10 @@ const server = setupServer(
     }
     return HttpResponse.json({ id: params.id, broker_link_id: body.broker_link_id });
   }),
+  http.post("*/api/portfolios/:id/fee-rule/apply-preset", async ({ request, params }) => {
+    applies.push({ id: String(params.id), body: await request.json() });
+    return HttpResponse.json({ rules: [], created: [], deactivated: [], preset: {} });
+  }),
   http.get("*/api/broker-links/:id/reconciliations", () => HttpResponse.json(reconciliations)),
   http.post("*/api/broker-links/:id/reconcile", () => {
     reconciles += 1;
@@ -96,6 +101,7 @@ afterEach(() => {
   creates = [];
   puts = [];
   reconciles = 0;
+  applies = [];
 });
 afterAll(() => server.close());
 
@@ -179,9 +185,31 @@ describe("Brokers", () => {
     await user.selectOptions(select, "p2");
     await user.click(within(card).getByRole("button", { name: "Collega" }));
     await waitFor(() => expect(puts).toEqual([{ id: "p2", body: { broker_link_id: "b1" } }]));
+    // the broker's fee preset, checked by default, applied after the link (a separate request)
+    await waitFor(() => expect(applies).toEqual([{ id: "p2", body: { broker_kind: "alpaca_paper" } }]));
 
     await user.click(within(card).getByRole("button", { name: "Scollega Alfa" }));
     expect(await within(card).findByRole("alert")).toHaveTextContent("ordini in corso presso il broker");
+  });
+
+  it("offers the broker's fees on link and keeps the current rule when unchecked", async () => {
+    const user = userEvent.setup();
+    renderApp("/broker");
+    const card = await screen.findByLabelText("Broker Alpaca prova");
+    const box = await within(card).findByRole("checkbox", { name: /Usa le commissioni di Alpaca/ });
+    expect(box).toBeChecked();
+    const entries = within(card).getByRole("list", { name: "Commissioni di Alpaca" });
+    expect(within(entries).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Azioni ed ETF (e altre classi): commissione 0% · cambio valuta 0% (listino pubblico, da verificare)",
+      "Crypto: commissione 0,25% · cambio valuta 0% (fonte non ufficiale, da verificare)",
+    ]);
+    await user.click(box);
+    const select = within(card).getByLabelText("Collega un portafoglio");
+    await waitFor(() => expect(within(select).getAllByRole("option")).toHaveLength(2));
+    await user.selectOptions(select, "p2");
+    await user.click(within(card).getByRole("button", { name: "Collega" }));
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(applies).toEqual([]);
   });
 
   it("highlights the reconciliation differences and reconciles on demand", async () => {

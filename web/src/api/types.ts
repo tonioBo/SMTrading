@@ -508,6 +508,8 @@ export interface FeeRule {
   name: string;
   scope: FeeScope;
   scope_ref: string | null;
+  /** portfolio scope only: the rule covers just this asset class (null: every class) */
+  asset_class: AssetClass | null;
   side: FeeSide;
   currency: string;
   fixed: string;
@@ -522,6 +524,36 @@ export interface FeeRule {
 }
 
 export type FeeRuleInput = Omit<FeeRule, "id" | "created_at">;
+
+/** One rule of a broker's fee preset (asset_class null: stocks/ETF and every class without its own entry). */
+export interface BrokerFeePresetEntry {
+  asset_class: AssetClass | null;
+  pct: string;
+  fixed: string;
+  fx_pct: string;
+  note: string;
+  /** how sure the figures are («listino pubblico, da verificare»…) */
+  source_note: string;
+}
+
+/** GET /api/brokers/fee-presets: the fee preset (a set of rules) of a broker kind. */
+export interface BrokerFeePreset {
+  broker_kind: string;
+  /** «Alpaca», «Trading 212», «eToro»: the rules are named «<portafoglio> – <broker>[ · <classe>]» */
+  broker: string;
+  entries: BrokerFeePresetEntry[];
+}
+
+/** POST /api/portfolios/{id}/fee-rule/apply-preset */
+export interface FeePresetApplyResult {
+  /** one rule per preset entry */
+  rules: FeeRule[];
+  /** ids of the rules created now (the others were updated) */
+  created: string[];
+  /** the portfolio's previous portfolio-scope rules, now deactivated */
+  deactivated: { id: string; name: string }[];
+  preset: BrokerFeePreset;
+}
 
 export interface FeeSimulateRequest {
   portfolio_id: string;

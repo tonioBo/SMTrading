@@ -54,6 +54,7 @@ let me = { email: "admin@example.com", totp_enabled: true, role: "admin", must_c
 let links: LiveLink[] = [];
 let puts: { id: string; body: unknown }[] = [];
 let putReply: () => Response = () => HttpResponse.json({});
+let applies: { id: string; body: unknown }[] = [];
 
 const server = setupServer(
   ...commonHandlers,
@@ -75,6 +76,10 @@ const server = setupServer(
     puts.push({ id: String(params.id), body: await request.json() });
     return putReply();
   }),
+  http.post("*/api/portfolios/:id/fee-rule/apply-preset", async ({ request, params }) => {
+    applies.push({ id: String(params.id), body: await request.json() });
+    return HttpResponse.json({ rules: [], created: [], deactivated: [], preset: {} });
+  }),
 );
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
@@ -83,6 +88,7 @@ afterEach(() => {
   links = [];
   puts = [];
   putReply = () => HttpResponse.json({});
+  applies = [];
 });
 afterAll(() => server.close());
 
@@ -139,6 +145,44 @@ describe("LiveLinkPortfolios", () => {
     await user.click(confirm);
     await waitFor(() => expect(puts).toEqual([{ id: "p3", body: { link_id: "l1", totp: "123456" } }]));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    // the broker's fee preset (checked by default): a separate request after the link
+    await waitFor(() => expect(applies).toEqual([{ id: "p3", body: { broker_kind: "t212_live" } }]));
+  });
+
+  it("link keeps the current fee rule when the preset is unchecked", async () => {
+    links = [liveLink()];
+    const user = userEvent.setup();
+    renderApp("/broker");
+    const box = await section();
+    await user.click(within(box).getByRole("button", { name: "Collega un portafoglio" }));
+    const dialog = await screen.findByRole("dialog", { name: "Collegare un portafoglio a T212 vero?" });
+    const check = await within(dialog).findByRole("checkbox", { name: /Usa le commissioni di Trading 212/ });
+    expect(check).toBeChecked();
+    expect(dialog).toHaveTextContent("Tutte le classi: commissione 0% · cambio valuta 0,15% (più fonti concordi)");
+    await user.click(check);
+    await waitFor(() => expect(within(dialog).getAllByRole("option")).toHaveLength(2));
+    await user.selectOptions(within(dialog).getByLabelText("Portafoglio da collegare"), "p3");
+    await user.type(within(dialog).getByLabelText("Codice TOTP"), "123456");
+    await user.click(within(dialog).getByRole("button", { name: "Collega" }));
+    await waitFor(() => expect(puts).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(applies).toEqual([]);
+  });
+
+  it("a refused link applies no fee preset", async () => {
+    links = [liveLink()];
+    putReply = () => HttpResponse.json({ code: "FORBIDDEN", message: "codice TOTP non valido", details: { field: "totp" } }, { status: 403 });
+    const user = userEvent.setup();
+    renderApp("/broker");
+    const box = await section();
+    await user.click(within(box).getByRole("button", { name: "Collega un portafoglio" }));
+    const dialog = await screen.findByRole("dialog", { name: "Collegare un portafoglio a T212 vero?" });
+    await waitFor(() => expect(within(dialog).getAllByRole("option")).toHaveLength(2));
+    await user.selectOptions(within(dialog).getByLabelText("Portafoglio da collegare"), "p3");
+    await user.type(within(dialog).getByLabelText("Codice TOTP"), "123456");
+    await user.click(within(dialog).getByRole("button", { name: "Collega" }));
+    expect(await within(dialog).findByText("codice TOTP non valido")).toBeInTheDocument();
+    expect(applies).toEqual([]);
   });
 
   it("quota error shown in dialog", async () => {

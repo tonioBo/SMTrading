@@ -70,6 +70,7 @@ LABELS: dict[str, str] = {
     "fees.rule_deactivate": "Disattivazione regola commissioni",
     "fees.rule_simulate": "Simulazione regola commissioni",
     "fees.simulate": "Simulazione commissioni",
+    "fees.preset_apply": "Commissioni del broker applicate al portafoglio",
     # risk
     "risk.profile_create": "Creazione profilo di rischio",
     "risk.profile_update": "Modifica profilo di rischio",
@@ -166,6 +167,7 @@ ROUTE_ACTIONS: dict[tuple[str, str], str] = {
     ("DELETE", "/api/fee-rules/{rule_id}"): "fees.rule_deactivate",
     ("POST", "/api/fee-rules/simulate"): "fees.rule_simulate",
     ("POST", "/api/fees/simulate"): "fees.simulate",
+    ("POST", "/api/portfolios/{portfolio_id}/fee-rule/apply-preset"): "fees.preset_apply",
     ("POST", "/api/risk-profiles"): "risk.profile_create",
     ("PATCH", "/api/risk-profiles/{profile_id}"): "risk.profile_update",
     ("PUT", "/api/interest-rates"): "risk.interest_rates",

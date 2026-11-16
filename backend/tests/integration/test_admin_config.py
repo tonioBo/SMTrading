@@ -324,11 +324,54 @@ async def test_fee_rule_field_validation(admin):
         ({"currency": "euro!"}, "currency"),
         ({"name": " "}, "name"),
         ({"pct": "abc"}, "pct"),
+        ({"asset_class": "crypto"}, "asset_class"),  # a global rule: no class filter
+        ({"scope": "asset_class", "scope_ref": "crypto", "asset_class": "crypto"}, "asset_class"),
     ]
     for extra, field in cases:
         r = await c.post("/api/fee-rules", json={**base, **extra})
         assert r.status_code == 400, extra
         assert r.json()["details"]["field"] == field, (extra, r.json())
+
+
+async def test_portfolio_fee_rule_per_asset_class(admin):
+    """`asset_class` on a portfolio rule: stored, editable, validated, and preferred by the
+    previews (/api/fees/simulate and the order preview) for its class only."""
+    c = admin.client
+    pid = (await _portfolio(c))["id"]
+    plain = (await c.post("/api/fee-rules", json={
+        "name": "Tutte", "scope": "portfolio", "scope_ref": pid, "fixed": "3", "pct": "0",
+    })).json()
+    r = await c.post("/api/fee-rules", json={
+        "name": "Crypto", "scope": "portfolio", "scope_ref": pid, "asset_class": "crypto",
+        "fixed": "0", "pct": "1",
+    })
+    assert r.status_code == 200, r.text
+    crypto = r.json()
+    assert crypto["asset_class"] == "crypto" and plain["asset_class"] is None
+    bad = await c.post("/api/fee-rules", json={
+        "name": "Bond", "scope": "portfolio", "scope_ref": pid, "asset_class": "bonds"})
+    assert bad.status_code == 400 and bad.json()["details"]["field"] == "asset_class"
+
+    sim = {"portfolio_id": pid, "side": "buy", "notional": "1000", "currency": "EUR"}
+    by_class = {ac: (await c.post("/api/fees/simulate", json={**sim, "asset_class": ac})).json()
+                for ac in ("crypto", "us_equity")}
+    assert (by_class["crypto"]["rule_name"], by_class["crypto"]["fee"]) == ("Crypto", "10")
+    assert (by_class["us_equity"]["rule_name"], by_class["us_equity"]["fee"]) == ("Tutte", "3")
+    order = {"portfolio_id": pid, "side": "buy", "qty": "1"}
+    btc = (await c.post("/api/fee-rules/simulate",
+                       json={**order, "symbol": "BTC-USD", "qty": "0.01"})).json()
+    aapl = (await c.post("/api/fee-rules/simulate", json={**order, "symbol": "AAPL"})).json()
+    assert btc.get("rule_id") == crypto["id"], btc
+    assert aapl.get("rule_id") == plain["id"], aapl
+
+    # PATCH: the filter is removed (null) or changed; a non-portfolio scope refuses it
+    r = await c.patch(f"/api/fee-rules/{crypto['id']}", json={"asset_class": "forex"})
+    assert r.status_code == 200 and r.json()["asset_class"] == "forex"
+    r = await c.patch(f"/api/fee-rules/{crypto['id']}", json={"asset_class": None})
+    assert r.status_code == 200 and r.json()["asset_class"] is None
+    r = await c.patch(f"/api/fee-rules/{crypto['id']}", json={
+        "asset_class": "crypto", "scope": "global", "scope_ref": None})
+    assert r.status_code == 400 and r.json()["details"]["field"] == "asset_class"
 
 
 async def test_fee_simulator_uses_portfolio_rule(admin):
@@ -412,6 +455,99 @@ async def test_fees_simulate_by_class_priority_and_portfolio_override(admin):
         assert (await c.post("/api/fees/simulate", json=bad)).status_code == 400, bad
     r = await c.post("/api/fees/simulate", json={**sim, "portfolio_id": str(uuid.uuid4())})
     assert r.status_code == 404
+
+
+# --- broker fee presets ------------------------------------------------------------------
+
+
+async def test_broker_fee_presets_list(admin):
+    r = await admin.client.get("/api/brokers/fee-presets")
+    assert r.status_code == 200, r.text
+    rows = {p["broker_kind"]: p for p in r.json()}
+    assert set(rows) == {"alpaca_paper", "alpaca_live", "t212_demo", "t212_live",
+                         "etoro_demo", "etoro_live"}
+
+    def entries(kind):
+        return [(e["asset_class"], e["pct"], e["fx_pct"]) for e in rows[kind]["entries"]]
+
+    assert entries("alpaca_live") == [(None, "0", "0"), ("crypto", "0.25", "0")]
+    assert entries("t212_demo") == [(None, "0", "0.15")]
+    assert entries("etoro_live") == [(None, "0", "0.75"), ("crypto", "1", "0.75")]
+    assert all(e["source_note"] for p in rows.values() for e in p["entries"])
+
+
+async def test_apply_broker_fee_preset(admin):
+    """One rule per preset entry («<portafoglio> – <broker>[ · <classe>]») is created (then
+    updated, never duplicated); the portfolio's other active portfolio-scope rules are
+    deactivated, never deleted."""
+    c = admin.client
+    pf = await _portfolio(c)
+    pid, name = pf["id"], pf["name"]
+    old = (await c.post("/api/fee-rules", json={
+        "name": f"{name} – zero commissioni", "scope": "portfolio", "scope_ref": pid,
+    })).json()
+    other_pf = await _portfolio(c)
+    untouched = (await c.post("/api/fee-rules", json={
+        "name": "Altro portafoglio", "scope": "portfolio", "scope_ref": other_pf["id"],
+    })).json()
+    url = f"/api/portfolios/{pid}/fee-rule/apply-preset"
+
+    r = await c.post(url, json={"broker_kind": "etoro_demo"})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    rules = out["rules"]
+    assert [(x["name"], x["asset_class"], x["pct"], x["fixed"], x["fx_pct"]) for x in rules] == [
+        (f"{name} – eToro", None, "0", "0", "0.75"),
+        (f"{name} – eToro · Crypto", "crypto", "1", "0", "0.75"),
+    ]
+    assert all((x["scope"], x["scope_ref"], x["side"], x["active"]) == (
+        "portfolio", pid, "both", True) for x in rules)
+    assert all(x["currency"] == pf["base_currency"] for x in rules)
+    assert out["created"] == [x["id"] for x in rules]
+    assert out["deactivated"] == [{"id": old["id"], "name": old["name"]}]
+    assert out["preset"]["broker"] == "eToro"
+
+    listed = {x["id"]: x for x in (await c.get("/api/fee-rules")).json()}
+    assert listed[old["id"]]["active"] is False
+    assert listed[untouched["id"]]["active"] is True
+    sim = {"portfolio_id": pid, "side": "sell", "notional": "1000", "currency": "USD"}
+    stocks = (await c.post("/api/fees/simulate", json={**sim, "asset_class": "us_equity"})).json()
+    assert stocks["rule_name"] == rules[0]["name"] and stocks["fee"] == "0"
+    assert D(stocks["fx_fee"]) == D("6")  # 0.75% of 800 EUR
+    crypto = (await c.post("/api/fees/simulate", json={**sim, "asset_class": "crypto"})).json()
+    assert crypto["rule_name"] == rules[1]["name"] and crypto["fee"] == "8"  # 1% of 800 EUR
+
+    # applied again: the same rules, updated (a manual edit is overwritten)
+    await c.patch(f"/api/fee-rules/{rules[1]['id']}", json={"pct": "3", "active": False})
+    again = (await c.post(url, json={"broker_kind": "etoro_live"})).json()
+    assert [x["id"] for x in again["rules"]] == [x["id"] for x in rules]
+    assert (again["rules"][1]["pct"], again["rules"][1]["active"]) == ("1", True)
+    assert again["created"] == [] and again["deactivated"] == []
+
+    # another broker with a single rule: the two eToro rules deactivated
+    t212 = (await c.post(url, json={"broker_kind": "t212_live"})).json()
+    assert [(x["name"], x["asset_class"], x["fx_pct"]) for x in t212["rules"]] == [
+        (f"{name} – Trading 212", None, "0.15")]
+    assert sorted(t212["deactivated"], key=lambda x: x["name"]) == [
+        {"id": x["id"], "name": x["name"]} for x in rules]
+    names = [x["name"] for x in (await c.get("/api/fee-rules")).json()
+             if x["scope_ref"] == pid]
+    assert sorted(names) == sorted([old["name"], *(x["name"] for x in rules),
+                                    t212["rules"][0]["name"]])
+
+
+async def test_apply_broker_fee_preset_refusals(admin):
+    c = admin.client
+    pid = (await _portfolio(c))["id"]
+    url = f"/api/portfolios/{pid}/fee-rule/apply-preset"
+    r = await c.post(url, json={"broker_kind": "ibkr_live"})
+    assert r.status_code == 400 and r.json()["details"]["field"] == "broker_kind"
+    assert (await c.post(url, json={})).status_code in (400, 422)
+    r = await c.post(f"/api/portfolios/{uuid.uuid4()}/fee-rule/apply-preset",
+                     json={"broker_kind": "alpaca_paper"})
+    assert r.status_code == 404
+    before = len((await c.get("/api/fee-rules")).json())
+    assert before == 1  # nothing created by the refusals (only the seeded global rule)
 
 
 async def test_risk_profiles_count_active_portfolios(admin):
