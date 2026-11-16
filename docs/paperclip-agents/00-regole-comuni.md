@@ -103,6 +103,12 @@ Regole del flusso:
 3. Le chiusure di protezione (stop, riduzione per rischio, halt, kill switch, perdita
    giornaliera) possono essere chieste dal RM direttamente all'ES senza proposta del PM.
 4. Ogni apertura è un **bracket** (`place_bracket_order` con `stop_loss` e `take_profit`).
+   **Il `tif` del bracket vale anche per stop e take profit**: con `day` le due uscite
+   scadono alla chiusura del mercato e la posizione resta senza protezione. Per ogni
+   posizione tenuta più di un giorno (swing) usa sempre **`tif: "gtc"`** (valido fino a
+   revoca). Se vuoi che l'ingresso non resti aperto troppo a lungo, non usare `day`:
+   annulla tu l'ordine d'ingresso non eseguito al ciclo successivo. `day` solo per le
+   posizioni intraday da chiudere in giornata.
 
 ### Regole vincolanti e autonomia
 
