@@ -16,7 +16,7 @@ from smtrading.instruments.market_hours import set_closures
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.marketdata.types import Bar
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
-from smtrading.signals.service import strategy_signals
+from smtrading.signals.service import strategy_signals, strategy_states
 
 D = Decimal
 NOW = datetime(2026, 11, 17, 18, 0, tzinfo=UTC)  # Tuesday: NYSE open, MTA closed
@@ -210,6 +210,24 @@ async def test_only_status_decisions_replace_and_modificata_overrides(env):
     assert [x.symbol for x in m.symbols] == ["ZZSPY"]
     assert m.symbols[0].indicator == "RSI 4"
     assert out["STR-M2"].params["period"] == 5
+
+
+async def test_strategy_states_latest_status_and_name(env):
+    """The «Strategie» page: every ref with a status decision, its latest status and name
+    (a modificata keeps the approval's name unless it has a subject)."""
+    await env.decision(ref="STR-1", status="approvata", summary="Approvata STR-1")
+    await env.decision(ref="STR-1", status="informativa", summary="nota")
+    await env.decision(ref="STR-1", status="sospesa", summary="Sospesa STR-1")
+    await env.decision(strategy_id="STR-2", outcome="respinta", summary="Respinta STR-2")
+    await env.decision(ref="STR-3", status="approvata", summary="Approvata STR-3")
+    await env.decision(ref="STR-3", status="modificata", summary="Modificata STR-3")
+    d = await env.decision(ref="STR-4", status="approvata", summary="Approvata STR-4")
+    d.subject = "Tendenza"
+    await env.decision(kind="other", agent=env.quant, ref="STR-9", status="approvata")
+    out = await strategy_states(env.s)
+    assert {r: (x.status, x.name) for r, x in out.items()} == {
+        "STR-1": ("sospesa", "Sospesa STR-1"), "STR-2": ("respinta", "Respinta STR-2"),
+        "STR-3": ("modificata", "Approvata STR-3"), "STR-4": ("approvata", "Tendenza")}
 
 
 async def test_quant_registration_matched_on_strategy_id(env):

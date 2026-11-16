@@ -48,6 +48,7 @@ describe("Layout", () => {
       "Portafogli",
       "Segnali",
       "Posizioni",
+      "Strategie",
       "Agenti",
       "Costi agenti",
       "Istruzioni agenti",

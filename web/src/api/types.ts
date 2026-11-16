@@ -1347,3 +1347,49 @@ export interface OpenPositionsResponse {
   positions: OpenPosition[];
   portfolios: OpenPositionsPortfolio[];
 }
+
+/** GET /api/strategies/performance: one row of the «Strategie» page (EUR amounts as
+ * strings; null = unknown, e.g. no quote or FX rate, shown «—»). */
+export interface StrategyTrade {
+  symbol: string;
+  direction: "long" | "short";
+  order_id: string;
+  client_order_id: string | null;
+  opened_at: string;
+  closed_at: string | null;
+  qty: string;
+  open_qty: string;
+  currency: string;
+  entry_price: string;
+  exit_price: string | null;
+  mark: string | null;
+  realized_pnl_eur: string | null;
+  unrealized_pnl_eur: string | null;
+  costs_eur: string | null;
+  pnl_eur: string | null;
+}
+
+export interface StrategyPerformance {
+  /** null: «Senza strategia» */
+  ref: string | null;
+  name: string | null;
+  status: string | null;
+  portfolio_id: string;
+  portfolio_name: string;
+  trades: number;
+  closed_trades: number;
+  open_positions: number;
+  win_rate_pct: string | null;
+  realized_pnl_eur: string | null;
+  unrealized_pnl_eur: string | null;
+  costs_eur: string | null;
+  total_pnl_eur: string | null;
+  first_trade_at: string;
+  last_trade_at: string;
+  trade_list: StrategyTrade[];
+}
+
+export interface StrategiesPerformanceResponse {
+  as_of: string;
+  strategies: StrategyPerformance[];
+}
