@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { Dashboard } from "@/api/types";
+import type { Dashboard, WeeklyGoalProgress } from "@/api/types";
 import type { LiveEvent } from "@/lib/ws";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
@@ -107,6 +107,45 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe("Dashboard", () => {
+  it("shows the weekly goal: total, per portfolio and progress", async () => {
+    const goal: WeeklyGoalProgress = {
+      week_start: "2026-11-16",
+      on: true,
+      target_pct: "2.0",
+      total: { start_eur: "1000", current_eur: "1010", target_eur: "1020", pct: "1.00" },
+      portfolios: [
+        { portfolio_id: "p1", name: "Alfa", start_eur: "600", current_eur: "603", target_eur: "612", pct: "0.50" },
+        { portfolio_id: "p2", name: "Beta", start_eur: "400", current_eur: "407", target_eur: "408", pct: "1.75" },
+      ],
+    };
+    server.use(http.get("*/api/weekly-goal", () => HttpResponse.json(goal)));
+    renderApp("/");
+    const card = (await screen.findByText("Obiettivo settimanale")).closest("div.rounded-lg") as HTMLElement;
+    expect(await within(card).findByText("1.000,00 € → 1.010,00 €")).toBeInTheDocument();
+    expect(within(card).getByText(/obiettivo \+2,00% · 1\.020,00 €/)).toBeInTheDocument();
+    expect(within(card).getByText("+1,00%")).toBeInTheDocument();
+    const total = within(card).getByRole("progressbar", { name: "Obiettivo settimanale totale" });
+    expect(total).toHaveAttribute("aria-valuenow", "50");
+    expect(within(card).getByRole("progressbar", { name: "Obiettivo settimanale Alfa" })).toHaveAttribute("aria-valuenow", "25");
+    expect(within(card).getByText("600,00 € → 603,00 €")).toBeInTheDocument();
+    expect(within(card).getByText("+1,75%")).toBeInTheDocument();
+  });
+
+  it("weekly goal without data or turned off", async () => {
+    const empty: WeeklyGoalProgress = {
+      week_start: "2026-11-16", on: true, target_pct: "2.0",
+      total: { start_eur: null, current_eur: null, target_eur: null, pct: null }, portfolios: [],
+    };
+    server.use(http.get("*/api/weekly-goal", () => HttpResponse.json(empty)));
+    const { unmount } = renderApp("/");
+    expect(await screen.findByText("Dati della settimana non ancora disponibili")).toBeInTheDocument();
+    unmount();
+    server.use(http.get("*/api/weekly-goal", () => HttpResponse.json({ ...empty, on: false })));
+    renderApp("/");
+    expect(await screen.findByText("12.345,60 €")).toBeInTheDocument();
+    expect(screen.queryByText("Obiettivo settimanale")).not.toBeInTheDocument();
+  });
+
   it("renders KPIs, a loss-styled negative P&L and portfolio links", async () => {
     renderApp("/");
     expect(await screen.findByText("12.345,60 €")).toBeInTheDocument();

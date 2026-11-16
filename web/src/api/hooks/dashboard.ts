@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/api/client";
-import type { Dashboard, EquityPeriod, EquitySeries, PortfolioMode } from "@/api/types";
+import type { Dashboard, EquityPeriod, EquitySeries, PortfolioMode, WeeklyGoalProgress } from "@/api/types";
 import { throttle } from "@/lib/throttle";
 import { useLiveMessage, useLiveSocket, type LiveEvent } from "@/lib/ws";
 
@@ -103,4 +103,17 @@ export function useLiveFeed(): LiveEvent[] {
     if (event.type in FEED_EVENT_LABELS) setEvents((prev) => [event, ...prev].slice(0, FEED_SIZE));
   });
   return events;
+}
+
+export const weeklyGoalKey = ["weekly-goal"] as const;
+/** snapshots are taken every 5 minutes: once a minute is plenty */
+export const WEEKLY_GOAL_REFRESH_MS = 60_000;
+
+export function useWeeklyGoal() {
+  return useQuery({
+    queryKey: weeklyGoalKey,
+    queryFn: () => apiFetch<WeeklyGoalProgress>("/api/weekly-goal"),
+    refetchInterval: WEEKLY_GOAL_REFRESH_MS,
+    staleTime: WEEKLY_GOAL_REFRESH_MS,
+  });
 }
