@@ -103,16 +103,21 @@ NEW_HOST_NEEDS_KEY = "indirizzo cambiato: reinserisci la chiave board per il nuo
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
-def _origin(url: str | None) -> tuple[str, int | None] | None:
-    """(host, port) the board key is sent to; None without a usable URL."""
+def _origin(url: str | None) -> tuple[str, str, int] | None:
+    """(scheme, host, effective port) the board key is sent to; None without a usable
+    URL (no http/https scheme, no host, a port that cannot be parsed). `https://h` and
+    `https://h:443` are the same origin; `http://h` is another one (the key in clear)."""
     if not url:
         return None
     try:
         parts = urlsplit(url)
-        port = parts.port or _DEFAULT_PORTS.get(parts.scheme)
+        scheme = parts.scheme.lower()
+        port = parts.port or _DEFAULT_PORTS.get(scheme)
     except ValueError:
         return None
-    return (parts.hostname, port) if parts.hostname else None
+    if scheme not in _DEFAULT_PORTS or not parts.hostname or port is None:
+        return None
+    return (scheme, parts.hostname, port)
 
 
 async def load_config(session: AsyncSession) -> PaperclipConfig:
@@ -141,9 +146,9 @@ async def load_config(session: AsyncSession) -> PaperclipConfig:
 async def save_config(session: AsyncSession, *, base_url: str | None, company_id: str | None,
                       board_key: str | None, enabled: bool, agent_map: dict[str, str], by: str
                       ) -> PaperclipConfig:
-    """`board_key=None` keeps the stored key, but only for the same host: a `base_url`
-    on another host or port with a stored key and no new one is refused (field
-    `board_key`), so the key never reaches a host it was not entered for. Writes the
+    """`board_key=None` keeps the stored key, but only for the same origin: a `base_url`
+    with another scheme, host or port (or one whose origin cannot be parsed) with a
+    stored key and no new one is refused (field `board_key`), so the key never reaches a host it was not entered for. Writes the
     admin audit (never the key).
 
     In the same transaction: a change of company or URL of an existing configuration
@@ -152,6 +157,11 @@ async def save_config(session: AsyncSession, *, base_url: str | None, company_id
     raw = await _raw(session, SETTINGS_KEY)
     raw = raw if isinstance(raw, dict) else {}
     new_origin = _origin(base_url)
+    # fail closed: a URL whose origin cannot be worked out never keeps the stored key
+    if base_url and new_origin is None:
+        if board_key is None and raw.get("board_key_enc"):
+            raise _invalid("board_key", NEW_HOST_NEEDS_KEY)
+        raise _invalid("base_url", "URL non valido")
     if (board_key is None and raw.get("board_key_enc") and new_origin is not None
             and new_origin != _origin(_str_or_none(raw.get("base_url")))):
         raise _invalid("board_key", NEW_HOST_NEEDS_KEY)

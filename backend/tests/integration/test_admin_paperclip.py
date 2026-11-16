@@ -147,6 +147,40 @@ async def test_new_host_needs_the_board_key_again(admin):
     assert r.status_code == 400 and r.json()["details"] == {"field": "board_key"}
 
 
+async def test_new_origin_never_fails_open(admin):
+    """The origin is (scheme, host, effective port): a scheme change needs the key again,
+    a port that cannot be parsed is refused, the explicit default port is the same origin
+    (plan 10, review I1)."""
+    await _configure(admin)
+    # an unparsable port: refused as a URL (httpx would connect to evil.com:443)
+    for url in ("https://evil.com:+443", "https://paperclip.example.test:99999",
+                "https://evil.com:abc", "https://:443"):
+        r = await _put(admin, base_url=url)
+        assert r.status_code == 400, (url, r.text)
+        assert r.json()["details"] == {"field": "base_url"}, url
+        assert KEY not in r.text
+    # https -> http on the same host: the key would travel in clear
+    r = await _put(admin, base_url="http://paperclip.example.test")
+    assert r.status_code == 400 and r.json()["details"] == {"field": "board_key"}
+    # the explicit default port is the same origin: the key is kept
+    r = await _put(admin, base_url="https://paperclip.example.test:443/")
+    assert r.status_code == 200, r.text
+    assert r.json()["board_key_masked"] == "••••0001"
+    async with admin.sm() as s:
+        cfg = await load_config(s)
+    assert cfg.board_key == KEY
+
+
+def test_origin_is_scheme_host_port():
+    from smtrading.paperclip.config import _origin
+    assert _origin("https://h") == _origin("https://H:443/x") == ("https", "h", 443)
+    assert _origin("http://h") == ("http", "h", 80)
+    assert _origin("http://h") != _origin("https://h")
+    for bad in ("https://evil.com:+443", "https://h:99999", "https://:443", "", None,
+                "ftp://h"):
+        assert _origin(bad) is None, bad
+
+
 async def test_verify_reports_agents_and_matches(admin):
     trader = await _agent(admin.sm, "Trader")
     mapped = await _agent(admin.sm, "Analyst")

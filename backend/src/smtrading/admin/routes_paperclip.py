@@ -75,6 +75,10 @@ def _base_url(value: str | None) -> str | None:
     parts = urlsplit(value)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise _invalid("base_url", "l'URL deve iniziare con https:// (o http://)")
+    try:
+        parts.port  # noqa: B018  (raises on `:+443`, `:99999`, `:abc`)
+    except ValueError:
+        raise _invalid("base_url", "porta dell'URL non valida") from None
     return value.rstrip("/")
 
 
