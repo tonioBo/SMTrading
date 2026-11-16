@@ -1,7 +1,9 @@
 """Attribution of an order to a strategy (STR-xxx) through the agents' decisions, with the
 shapes found in production: the PM proposal (`details.ref` = the order's client_order_id,
 `details.strategy_id`), the RM approval (`details.strategy_decision_id`), bracket legs
-(`parent_id`) and OCO legs placed later by a decision that names their id."""
+(`parent_id`) and OCO legs placed later by a decision that names their id. Every case is
+checked on both paths: one order (SQL, the Telegram detail) and the batch attributor of
+the «Strategie» page (decisions loaded once, then no query per order)."""
 
 import uuid
 from decimal import Decimal
@@ -12,7 +14,8 @@ from smtrading.activity.models import Decision
 from smtrading.agents.service import create_agent
 from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType
 from smtrading.instruments.models import AssetClass, Instrument
-from smtrading.strategies.attribution import strategy_of_order
+from smtrading.strategies.attribution import order_attributor
+from smtrading.strategies.attribution import strategy_of_order as _one
 
 D = Decimal
 COID = "PROP-AGG-20261116-2130-1"
@@ -40,6 +43,25 @@ def _order(portfolio, **kw) -> Order:
 def _decision(agent, portfolio, kind, details, subject=None) -> Decision:
     return Decision(agent_id=agent.id, portfolio_id=portfolio.id, kind=kind,
                     summary=subject or kind, details=details, subject=subject)
+
+
+async def strategy_of_order(session, order):
+    single = await _one(session, order)
+    attribute = await order_attributor(session, [order])
+
+    async def no_query(*_a, **_k):
+        raise AssertionError("query per order")
+
+    saved = {n: getattr(session, n) for n in ("execute", "scalars", "scalar", "get")}
+    for n in saved:
+        setattr(session, n, no_query)
+    try:
+        batch = await attribute(order)
+    finally:
+        for n, f in saved.items():
+            setattr(session, n, f)
+    assert batch == single
+    return single
 
 
 async def _add(session, *rows):

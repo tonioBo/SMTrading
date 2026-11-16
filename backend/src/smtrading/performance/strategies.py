@@ -1,8 +1,8 @@
 """Results per strategy (the «Strategie» page): every fill of the non-archived portfolios
 attributed to a strategy, round trips by FIFO lots, P/L and costs in EUR.
 
-- Attribution: the strategy of the order that opens a lot (`attribute(session, order)`,
-  the shared helper: `PROP-…` client_order_id → the proposal's STR ref; None → «Senza
+- Attribution: the strategy of the order that opens a lot (`order_attributor`, the shared
+  rules loaded once per call, no query per order: `PROP-…` client_order_id → the proposal's STR ref; None → «Senza
   strategia»). An exit closes the oldest lots of its portfolio+symbol (FIFO) whatever
   order it comes from (an OCO exit leg carries no proposal) and its P/L goes to the
   closed lots' strategies.
@@ -24,7 +24,7 @@ Corporate actions (splits) change ledger quantities without fills: lots ignore t
 import logging
 import uuid
 from collections import defaultdict, deque
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, localcontext
@@ -40,14 +40,13 @@ from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountKind, Journal, JournalLine, JournalType
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.signals.service import strategy_states
-from smtrading.strategies.attribution import strategy_of_order
+from smtrading.strategies.attribution import order_attributor
 from smtrading.valuation.service import value_portfolio
 
 log = logging.getLogger(__name__)
 
 EUR = "EUR"
 _PREC = 60
-Attribute = Callable[[AsyncSession, Order], Awaitable[str | None]]
 
 
 @dataclass(frozen=True)
@@ -275,17 +274,17 @@ async def _fills(session: AsyncSession,
 
 
 async def strategy_performance(
-    session: AsyncSession, qs: QuoteSource, attribute: Attribute = strategy_of_order, *,
-    redis=None,
+    session: AsyncSession, qs: QuoteSource, *, redis=None,
 ) -> list[StrategyPerformance]:
     """One row per (strategy, portfolio) with fills; by portfolio name, then ref («Senza
     strategia» last)."""
     fills, portfolios, orders = await _fills(session)
     trades = fifo_trades(fills)
+    attribute = await order_attributor(session, [orders[t.order_id] for t in trades])
     strategy: dict[uuid.UUID, str | None] = {}
     for t in trades:  # only the opening orders matter
         if t.order_id not in strategy:
-            strategy[t.order_id] = await attribute(session, orders[t.order_id])
+            strategy[t.order_id] = await attribute(orders[t.order_id])
         t.strategy = strategy[t.order_id]
     marks: dict[uuid.UUID, dict[str, Decimal]] = {}
     for pid in sorted({t.portfolio_id for t in trades if t.open_qty}, key=str):
