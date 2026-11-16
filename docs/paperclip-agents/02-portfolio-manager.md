@@ -52,8 +52,9 @@ dopo le 21:05 hai solo il ciclo serale qui sotto.
 2. `get_triggered_alerts` (`after_id` = cursore): `price_alert` dei tuoi livelli,
    `watch_changed`.
 3. Task assegnati a te (risposte RM, analisi MA, notizie NA, strategie CEO).
-4. **Se nulla è cambiato** e non è il ciclo delle 09:05, 15:35, 17:05 o 21:05 → chiudi
-   («Nessuna novità») e fermati.
+4. **Se nulla è cambiato**, non è il ciclo delle 09:05 o 15:35 e non sei in una finestra
+   pre-chiusura (17:05–17:30 o 21:05–22:00, vedi punto 7) → chiudi («Nessuna novità») e
+   fermati.
 5. Altrimenti:
    1. `get_trading_halt` (con `portfolio_id` del portafoglio interessato): c'è un halt attivo?
    2. Per ogni portafoglio toccato dalle novità: `get_risk_limits`, `get_positions`.
@@ -65,14 +66,17 @@ dopo le 21:05 hai solo il ciclo serale qui sotto.
 6. Ai cicli delle **09:05** (apertura UE) e **15:35** (apertura USA) fai anche un giro
    opportunità: `get_market_status`, richiesta al Market Analyst (task «ANALISI») solo se
    c'è una strategia approvata con slot libero (allocazione non piena).
-7. Ai cicli delle **17:05** (simboli UE, chiusura 17:30) e **21:05** (simboli USA, chiusura
-   22:00) guarda le strategie approvate **prima della chiusura**: `get_indicators` `1d` con
+7. In **qualsiasi ciclo** nelle finestre pre-chiusura **17:05–17:30** (simboli UE, chiusura
+   17:30) e **21:05–22:00** (simboli USA, chiusura 22:00) — anche cicli straordinari o su
+   task — guarda le strategie approvate **prima della chiusura**: `get_indicators` `1d` con
    `include_forming: true` dei loro simboli. Con `provisional: true` i valori sono «se
    chiudesse ora» (barra di oggi dalla quotazione di `as_of`; quelli a barra chiusa sono in
    `closed`). Se la regola d'ingresso scatta già ora, puoi preparare la proposta subito
    (ingresso prima della chiusura, stessa checklist), scrivendo che il segnale è sulla barra
    in formazione. Con `provisional: false` (mercato chiuso, quotazione vecchia) valgono solo
-   i valori a barra chiusa.
+   i valori a barra chiusa. Se `get_indicators` non accetta `include_forming` (strumento non
+   disponibile), non saltare il controllo in silenzio: usa le barre chiuse e apri un task
+   «SEGNALAZIONE STRUMENTO» al CEO con l'errore ricevuto.
 8. Salva i cursori.
 
 ### Ciclo «Chiusura USA (serale)» — lun-ven 22:15
