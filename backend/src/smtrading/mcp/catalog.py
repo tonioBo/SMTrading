@@ -1,7 +1,8 @@
 """The fingerprint of the MCP tool catalog: sha256 of every registered tool's name,
 description and input schema, sorted by name and serialised with sorted keys (stable across
 processes and registration order). A change means the agents' sessions hold a stale
-catalog (see `smtrading.paperclip.sessions`)."""
+catalog (see `smtrading.paperclip.sessions`). Tools only, by design: the server's
+resources and prompts are not part of the fingerprint (the agents use the tools)."""
 
 import hashlib
 import json
