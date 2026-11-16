@@ -72,6 +72,7 @@ function Overview({ portfolio }: { portfolio: Portfolio }) {
   return (
     <div className="space-y-6">
       <PortfolioComposition portfolioId={portfolio.id} />
+      <EquityHistoryCard portfolioId={portfolio.id} />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Kpi title="Equity">
           <Money value={portfolio.equity_eur} />
@@ -98,7 +99,6 @@ function Overview({ portfolio }: { portfolio: Portfolio }) {
           <Money value={valuation.data?.cash_eur} />
         </Kpi>
       </div>
-      <EquityHistoryCard portfolioId={portfolio.id} />
       <Card>
         <CardHeader>
           <CardTitle>Equity</CardTitle>
