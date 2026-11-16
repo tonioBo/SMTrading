@@ -648,3 +648,118 @@ async def test_admin_portfolio_dto_has_mode_label(admin):
     got = (await c.get(f"/api/portfolios/{real['id']}")).json()
     assert tuple(got[f] for f in fields) == expected_real
     assert sim["mode_label"] == "SMTrading (simulato)" and sim["broker_kind"] is None
+
+
+# --- composition (plan 13 Task A) ----------------------------------------------------
+
+
+async def test_composition_cash_only(admin):
+    c = admin.client
+    pid = (await _create(c, initial_cash="500"))["id"]
+    r = await c.get(f"/api/portfolios/{pid}/composition")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["equity_eur"] == "500" and body["cash_eur"] == "500"
+    assert body["positions"] == []
+    assert body["by_asset_class"] == [
+        {"key": "cash", "label": "Contante", "value_eur": "500", "weight_pct": "100"},
+    ]
+    assert body["by_currency"] == [
+        {"key": "EUR", "label": "EUR", "value_eur": "500", "weight_pct": "100"},
+    ]
+    assert body["as_of"]
+
+
+async def test_composition_usd_position_in_eur_portfolio(admin, monkeypatch):
+    """A USD stock and a USD-quoted crypto in an EUR portfolio: values converted to EUR,
+    the cash its own «Contante» slice, the pieces adding up to the valuation equity."""
+    from smtrading.engine import service as engine_service
+    from smtrading.instruments.market_hours import MarketStatus
+
+    monkeypatch.setattr(engine_service, "market_status",
+                        lambda market, at: MarketStatus(market, True, None, None))
+    c = admin.client
+    pid = uuid.UUID((await _create(c, initial_cash="10000"))["id"])
+    await _fill(admin.sm, admin.qs, pid, "AAPL", "buy", "10")
+    await _fill(admin.sm, admin.qs, pid, "BTC-USD", "buy", "0.01")
+    val = (await c.get(f"/api/portfolios/{pid}/valuation")).json()
+    body = (await c.get(f"/api/portfolios/{pid}/composition")).json()
+
+    assert body["equity_eur"] == val["equity_eur"]
+    by_symbol = {p["symbol"]: p for p in body["positions"]}
+    aapl = by_symbol["AAPL"]
+    assert aapl["name"] and aapl["asset_class"] == "us_equity" and aapl["currency"] == "USD"
+    assert aapl["market"] and aapl["qty"] == "10"
+    assert aapl["last"] == "200.05"
+    # 10 x 200.05 USD at 0.8 EUR per USD
+    assert aapl["value_eur"] == "1600.4"
+    expected_pnl = (D("200.05") - D(aapl["avg_price"])) * 10 * D("0.8")
+    assert D(aapl["pnl_eur"]) == expected_pnl.quantize(D("0.01"))
+    assert D(aapl["pnl_pct"]) < 0  # bought at the ask, marked at the mid
+    assert D(aapl["weight_pct"]) == (D("1600.4") / D(val["equity_eur"]) * 100).quantize(
+        D("0.01"))
+    # biggest first
+    assert [p["symbol"] for p in body["positions"]] == ["AAPL", "BTC-USD"]
+
+    pieces = D(body["cash_eur"]) + sum(D(p["value_eur"]) for p in body["positions"])
+    assert abs(pieces - D(body["equity_eur"])) <= D("0.02")
+    classes = {g["key"]: g for g in body["by_asset_class"]}
+    assert set(classes) == {"us_equity", "crypto", "cash"}
+    assert classes["cash"]["label"] == "Contante"
+    assert classes["us_equity"]["label"] == "Azioni USA"
+    assert classes["cash"]["value_eur"] == body["cash_eur"]
+    total_weight = sum(D(g["weight_pct"]) for g in body["by_asset_class"])
+    assert abs(total_weight - 100) <= D("0.05")
+    currencies = {g["key"]: g for g in body["by_currency"]}
+    assert set(currencies) >= {"USD", "EUR"}
+    assert D(currencies["USD"]["value_eur"]) >= D("1600.4")
+
+
+async def test_composition_position_without_quote(admin):
+    """No quote and no cached one: value, last, weight and P/L are null («—»), never 0,
+    and the equity is unknown; the cash slice still shows."""
+    c = admin.client
+    pid = uuid.UUID((await _create(c, initial_cash="100000"))["id"])
+    await _fill(admin.sm, admin.qs, pid, "BTC-USD", "buy", "0.1")
+    saved = admin.qs._quotes.pop("BTC-USD")
+    try:
+        r = await c.get(f"/api/portfolios/{pid}/composition")
+    finally:
+        admin.qs._quotes["BTC-USD"] = saved
+    assert r.status_code == 200, r.text
+    body = r.json()
+    (pos,) = body["positions"]
+    assert pos["symbol"] == "BTC-USD" and pos["qty"] == "0.1"
+    for key in ("last", "value_eur", "weight_pct", "pnl_eur", "pnl_pct"):
+        assert pos[key] is None, key
+    assert body["equity_eur"] is None
+    assert body["unpriced_symbols"] == ["BTC-USD"]
+    assert [g["key"] for g in body["by_asset_class"]] == ["cash"]
+    assert body["by_asset_class"][0]["weight_pct"] == "100"
+
+
+async def test_composition_unknown_portfolio(admin):
+    r = await admin.client.get(f"/api/portfolios/{uuid.uuid4()}/composition")
+    assert r.status_code == 404
+
+
+async def test_composition_short_and_leveraged(admin, monkeypatch):
+    """A short (collateral) and a leveraged long (margin loan): the short has a negative
+    value and weight, the net cash slice makes the pieces add up to the equity."""
+    from smtrading.engine import service as engine_service
+    from smtrading.instruments.market_hours import MarketStatus
+
+    monkeypatch.setattr(engine_service, "market_status",
+                        lambda market, at: MarketStatus(market, True, None, None))
+    c = admin.client
+    pid = uuid.UUID((await _create(c, initial_cash="100000", leverage="2"))["id"])
+    await _fill(admin.sm, admin.qs, pid, "AAPL", "sell", "5")
+    await _fill(admin.sm, admin.qs, pid, "BTC-USD", "buy", "2.5")
+    val = (await c.get(f"/api/portfolios/{pid}/valuation")).json()
+    body = (await c.get(f"/api/portfolios/{pid}/composition")).json()
+    assert body["equity_eur"] == val["equity_eur"]
+    by_symbol = {p["symbol"]: p for p in body["positions"]}
+    assert D(by_symbol["AAPL"]["value_eur"]) < 0 and D(by_symbol["AAPL"]["weight_pct"]) < 0
+    assert by_symbol["AAPL"]["qty"] == "-5"
+    pieces = D(body["cash_eur"]) + sum(D(p["value_eur"]) for p in body["positions"])
+    assert abs(pieces - D(body["equity_eur"])) <= D("0.02")
