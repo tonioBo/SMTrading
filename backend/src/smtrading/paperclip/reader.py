@@ -8,6 +8,8 @@
 3. Errors: one critical message at the third consecutive failed read, none after it until
    a read succeeds.
 4. Board key expiry: one notice 7 days before `expiresAt` (none when there is no expiry).
+5. Agent sessions: after an MCP tool catalog change the idle agents' sessions are reset
+   (`smtrading.paperclip.sessions`, the only write to Paperclip).
 
 Every request is made before the transaction is opened (R9). Nothing goes to the agents'
 activity feed."""
@@ -17,7 +19,7 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -26,10 +28,12 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.common.config import get_settings
+from smtrading.mcp.catalog import tool_catalog_fingerprint
 from smtrading.paperclip.client import MAX_RUNS, PaperclipClient, PaperclipError
 from smtrading.paperclip.config import PaperclipConfig, load_config, load_state, save_state
 from smtrading.paperclip.costs import daily_costs
 from smtrading.paperclip.models import AgentCostDay
+from smtrading.paperclip.sessions import SessionClientFactory, SessionRefresher
 from smtrading.telegram.outbox import enqueue
 
 log = logging.getLogger(__name__)
@@ -159,11 +163,16 @@ def key_expiring(state: dict, now: datetime) -> bool:
 class PaperclipReader:
     def __init__(self, sessionmaker: async_sessionmaker, *,
                  client_factory: ClientFactory | None = None,
-                 clock: Callable[[], datetime] | None = None, interval_s: float = 300) -> None:
+                 clock: Callable[[], datetime] | None = None, interval_s: float = 300,
+                 fingerprint: Callable[[], Awaitable[str]] | None = None,
+                 session_client_factory: SessionClientFactory | None = None) -> None:
         self._sm = sessionmaker
         self._client_factory = client_factory or (lambda cfg: PaperclipClient(cfg))
         self._clock = clock or (lambda: datetime.now(UTC))
         self._interval_s = interval_s
+        self._fingerprint = fingerprint or tool_catalog_fingerprint
+        self._sessions = SessionRefresher(sessionmaker, client_factory=session_client_factory,
+                                          clock=self._clock)
 
     async def run(self) -> None:
         while True:
@@ -177,6 +186,19 @@ class PaperclipReader:
     async def tick(self) -> None:
         async with self._sm() as session:
             cfg = await load_config(session)
+        try:
+            await self._read(cfg)
+        finally:
+            await self._refresh_sessions(cfg)
+
+    async def _refresh_sessions(self, cfg: PaperclipConfig) -> None:
+        """Best-effort: a failure is logged, never stops the reader."""
+        try:
+            await self._sessions.refresh(cfg, await self._fingerprint())
+        except Exception:
+            log.warning("paperclip session refresh failed", exc_info=True)
+
+    async def _read(self, cfg: PaperclipConfig) -> None:
         if not cfg.enabled:
             async with self._sm() as session, session.begin():
                 state = await load_state(session, for_update=True)

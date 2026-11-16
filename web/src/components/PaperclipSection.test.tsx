@@ -203,6 +203,18 @@ describe("PaperclipSection", () => {
     expect(within(region).getByText(/La chiave board scade il/)).toBeInTheDocument();
   });
 
+  it("shows the pending agent session refresh and its error", async () => {
+    config = baseConfig();
+    status = {
+      ...baseStatus(),
+      sessions: { pending: true, refreshed: 1, waiting: ["Analyst"], given_up: [], last_error: "sessione non azzerata per Trader: HTTP 500", updated_at: null },
+    };
+    renderApp("/impostazioni");
+    const region = await section();
+    expect(await within(region).findByText("Strumenti degli agenti cambiati: sessioni da far ripartire (in attesa: Analyst)")).toBeInTheDocument();
+    expect(within(region).getByText("Sessioni agenti: sessione non azzerata per Trader: HTTP 500")).toBeInTheDocument();
+  });
+
   it("shows the rebaseline note after a configuration change", async () => {
     config = baseConfig();
     status = { ...baseStatus(), isolation: "unknown", baseline_at: null, baseline_count: 0, rebaseline_reason: "config" };

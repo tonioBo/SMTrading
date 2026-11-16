@@ -1157,6 +1157,20 @@ export interface PaperclipStatus {
   key_expires_at: string | null;
   /** the board key expires within 7 days (or has expired) */
   key_expiring: boolean;
+  /** the agents' session refresh after an MCP tool catalog change */
+  sessions?: PaperclipSessionsStatus;
+}
+
+export interface PaperclipSessionsStatus {
+  /** a catalog change whose refresh is not finished */
+  pending: boolean;
+  refreshed: number;
+  /** agents left for the next pass (running, or the reset failed) */
+  waiting: string[];
+  /** agents whose reset failed 3 times */
+  given_up: string[];
+  last_error: string | null;
+  updated_at: string | null;
 }
 
 export type AgentCostPeriod = "day" | "week" | "month";

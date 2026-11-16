@@ -42,6 +42,13 @@ function StatusLine({ status, isError }: { status: PaperclipStatus | undefined; 
         <p className="text-muted">Configurazione cambiata: nuova fotografia delle regole al prossimo controllo</p>
       )}
       {status.key_expiring && <p className="text-warn">{expiryText(status.key_expires_at, "La chiave board")}</p>}
+      {status.sessions?.pending && (
+        <p className="text-warn">
+          Strumenti degli agenti cambiati: sessioni da far ripartire
+          {status.sessions.waiting.length > 0 ? ` (in attesa: ${status.sessions.waiting.join(", ")})` : ""}
+        </p>
+      )}
+      {status.sessions?.last_error && <p className="text-loss">Sessioni agenti: {status.sessions.last_error}</p>}
     </div>
   );
 }
