@@ -27,6 +27,8 @@ from smtrading.marketdata.types import (
     Timeframe,
 )
 
+_TF_STEP = {Timeframe.h1: timedelta(hours=1), Timeframe.d1: timedelta(days=1)}
+
 
 class _Fake(DataProvider):
     capabilities = frozenset(Capability)
@@ -68,6 +70,19 @@ class _Fake(DataProvider):
                 Bar(ts, Decimal(1), Decimal(2), Decimal("0.5"), Decimal("1.5"), Decimal(10))
                 for ts in (closed, closed + timedelta(hours=1))
             ]
+        if type(self).mode == "empty":
+            return []
+        if isinstance(type(self).mode, timedelta):  # Kraken-like: only the last `mode` of data
+            step = _TF_STEP[timeframe]
+            ts, out = end - type(self).mode, []
+            while ts < end:
+                out.append(Bar(ts, Decimal(1), Decimal(2), Decimal("0.5"), Decimal("1.5"),
+                               Decimal(10)))
+                ts += step
+            return out
+        if isinstance(type(self).mode, datetime):  # data starts at `mode`
+            return [Bar(type(self).mode, Decimal(1), Decimal(2), Decimal("0.5"), Decimal("1.5"),
+                        Decimal(10))]
         return [Bar(start, Decimal(1), Decimal(2), Decimal("0.5"), Decimal("1.5"), Decimal(10))]
 
     async def search(self, query, limit):
@@ -505,7 +520,7 @@ async def test_forming_bar_dropped_and_cache_stores_filtered(env):
     router, _ = env
     FakeA.mode = "forming"
     end = datetime.now(UTC)
-    start = end - timedelta(hours=5)
+    start = end - timedelta(hours=2)
     bars = await router.get_bars("BTC-USD", Timeframe.h1, start, end)
     closed = end.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
     assert [b.ts for b in bars] == [closed]
@@ -747,3 +762,94 @@ async def test_etoro_first_then_next_source_when_quota_exhausted(env):
         q = await router.get_quotes(["BTC-USD"])
         assert q["BTC-USD"].provider == "fake_a"
         assert len(fake.calls) == calls  # eToro was skipped without a request
+
+
+# ---------------------------------------------------------------- bars range coverage
+
+
+def _bar_calls(cls):
+    return [c for c in cls.calls if c[0] == "bars"]
+
+
+async def test_bars_partial_coverage_falls_back_to_widest_provider(env):
+    """Kraken-like source (only the last 720 candles) vs a full one: the full one wins and
+    is what gets cached."""
+    router, _ = env
+    FakeA.mode = timedelta(days=720)
+    start = datetime(2020, 1, 1, tzinfo=UTC)
+    end = datetime(2026, 1, 1, tzinfo=UTC)
+    bars = await router.get_bars("BTC-USD", Timeframe.d1, start, end)
+    assert bars[0].ts == start
+    assert len(_bar_calls(FakeA)) == 1 and len(_bar_calls(FakeB)) == 1
+    assert await router.get_bars("BTC-USD", Timeframe.d1, start, end) == bars
+    assert len(_bar_calls(FakeA)) == 1 and len(_bar_calls(FakeB)) == 1
+
+
+async def test_bars_covered_range_never_calls_next_provider(env):
+    router, _ = env
+    FakeA.mode = timedelta(days=720)
+    end = datetime(2026, 1, 1, tzinfo=UTC)
+    bars = await router.get_bars("BTC-USD", Timeframe.d1, end - timedelta(days=300), end)
+    assert len(bars) == 720  # the fake ignores start: covers it
+    assert len(_bar_calls(FakeA)) == 1 and _bar_calls(FakeB) == []
+
+
+async def test_bars_partial_kept_when_next_is_narrower_or_fails(env):
+    router, _ = env
+    end = datetime(2026, 1, 1, tzinfo=UTC)
+    start = datetime(2020, 1, 1, tzinfo=UTC)
+    FakeA.mode = timedelta(days=720)
+    FakeB.mode = timedelta(days=100)
+    bars = await router.get_bars("BTC-USD", Timeframe.d1, start, end)
+    assert bars[0].ts == end - timedelta(days=720)
+    FakeB.mode = "error"
+    bars = await router.get_bars("BTC-USD", Timeframe.d1, start, end - timedelta(days=1))
+    assert bars[0].ts == end - timedelta(days=721)
+
+
+async def test_bars_same_coverage_tie_keeps_earlier_provider(env):
+    router, _ = env
+    end = datetime(2026, 1, 1, tzinfo=UTC)
+    FakeA.mode = FakeB.mode = timedelta(days=720)
+    await router.get_bars("BTC-USD", Timeframe.d1, datetime(2020, 1, 1, tzinfo=UTC), end)
+    assert len(_bar_calls(FakeB)) == 1
+    FakeA.calls.clear()
+    FakeB.calls.clear()
+    # empty from the first provider over a long range: the next one is tried and wins
+    FakeA.mode = "empty"
+    FakeB.mode = "ok"
+    bars = await router.get_bars("BTC-USD", Timeframe.h1, end - timedelta(days=30), end)
+    assert bars and len(_bar_calls(FakeB)) == 1
+
+
+async def test_bars_crypto_tolerance_is_two_intervals(env):
+    router, _ = env
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = start + timedelta(days=5)
+    FakeA.mode = start + timedelta(hours=2)  # 2 h1 intervals late: still covered
+    await router.get_bars("BTC-USD", Timeframe.h1, start, end)
+    assert _bar_calls(FakeB) == []
+    FakeA.mode = start + timedelta(hours=3)  # 3 intervals late: next provider tried
+    await router.get_bars("BTC-USD", Timeframe.h1, start, end + timedelta(hours=1))
+    assert len(_bar_calls(FakeB)) == 1
+
+
+async def test_bars_equity_weekend_gap_is_covered(env):
+    router, sm = env
+    async with sm() as s:
+        s.add(ProviderPriority(asset_class=AssetClass.us_equity, capability=Capability.bars,
+                               providers=["fake_a", "fake_b"]))
+        await s.commit()
+    saturday = datetime(2026, 1, 3, tzinfo=UTC)
+    # first bar Monday 14:30 UTC (Friday was not a holiday, but the window must also absorb one)
+    FakeA.mode = datetime(2026, 1, 5, 14, 30, tzinfo=UTC)
+    await router.get_bars("AAPL", Timeframe.h1, saturday, saturday + timedelta(days=10))
+    assert _bar_calls(FakeB) == []
+    # an empty weekend-only range is a plausible answer: no fallback either
+    FakeA.mode = "empty"
+    assert await router.get_bars("AAPL", Timeframe.h1, saturday, saturday + timedelta(days=2)) == []
+    assert _bar_calls(FakeB) == []
+    # but a month that starts weeks late is not
+    FakeA.mode = datetime(2026, 1, 25, 14, 30, tzinfo=UTC)
+    await router.get_bars("AAPL", Timeframe.h1, saturday, saturday + timedelta(days=30))
+    assert len(_bar_calls(FakeB)) == 1

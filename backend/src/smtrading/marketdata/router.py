@@ -64,6 +64,10 @@ log = logging.getLogger(__name__)
 PROVIDER_TIMEOUT_S = 10
 QUOTE_TIMEOUT_PER_ITEM_S = 2  # batch quote calls: timeout grows with the batch size
 BARS_FLOOR_MAX = timedelta(hours=1)
+# How late a provider's first bar may start, past the requested start, and still count as
+# covering the range: 2 bar intervals, plus weekends/holidays for markets that close.
+BARS_COVERAGE_INTERVALS = 2
+BARS_CLOSED_MARKET_SLACK = timedelta(days=4)
 INSTANCE_MAX_AGE_S = 60
 RATE_LIMITED = "rate_limited"
 
@@ -245,6 +249,25 @@ async def _closed_bars(provider: DataProvider, args: tuple, tf: Timeframe) -> li
     bars = await provider.get_bars(*args)
     now = datetime.now(UTC)
     return [b for b in bars if b.ts + _TF_DURATION[tf] <= now]
+
+
+def _bars_coverage(
+    asset_class: AssetClass, tf: Timeframe, start: datetime, end: datetime
+) -> Callable[[list[Bar]], tuple[bool, datetime]]:
+    """(covers the range, rank) for a bars answer; a lower rank (earlier first bar) is wider.
+
+    An empty answer starts "at end": it covers only a range shorter than the tolerance (a
+    weekend for equities), so ranges with nothing in them do not trigger extra calls.
+    """
+    tolerance = BARS_COVERAGE_INTERVALS * _TF_DURATION[tf]
+    if asset_class != AssetClass.crypto:
+        tolerance += BARS_CLOSED_MARKET_SLACK
+
+    def coverage(bars: list[Bar]) -> tuple[bool, datetime]:
+        first = min((b.ts for b in bars), default=end)
+        return first <= start + tolerance, first
+
+    return coverage
 
 
 class MarketDataRouter:
@@ -431,11 +454,16 @@ class MarketDataRouter:
         loads: Callable[[str], Any],
         outcome: _Outcome,
         memo: dict[str, Any] | None = None,
+        coverage: Callable[[Any], tuple[bool, Any]] | None = None,
     ) -> Any:
         """Cache → providers in priority order → cache. Returns the result or _MISS.
 
         Identical concurrent fetches (same cache key) share one in-flight task; each caller
         merges the shared outcome into its own.
+
+        `coverage`, when given, maps a result to (complete, rank): an incomplete result does
+        not stop the walk; if no provider is complete, the lowest rank wins (ties: the earlier
+        provider) and is what gets cached.
         """
         key = _cache_key(capability, {"asset_class": asset_class, **key_args})
 
@@ -447,12 +475,23 @@ class MarketDataRouter:
                     return loads(hit), local
                 except Exception:
                     log.warning("cache entry %s undecodable", key, exc_info=True)
+            best: Any = _MISS
+            best_rank: Any = None
             for slot in await self._plan(asset_class, capability):
                 result = await self._attempt(slot, local, call, memo)
-                if result is not _MISS:
-                    await self._cache_write(key, dumps(result), ttl)
-                    return result, local
-            return _MISS, local
+                if result is _MISS:
+                    continue
+                if coverage is not None:
+                    complete, rank = coverage(result)
+                    if not complete:
+                        if best is _MISS or rank < best_rank:
+                            best, best_rank = result, rank
+                        continue
+                await self._cache_write(key, dumps(result), ttl)
+                return result, local
+            if best is not _MISS:
+                await self._cache_write(key, dumps(best), ttl)
+            return best, local
 
         result, shared = await self._single_flight(key, run)
         outcome.merge(shared)
@@ -461,10 +500,12 @@ class MarketDataRouter:
     async def _fetch_one(
         self, capability: Capability, asset_class: AssetClass, key_args: dict, ttl: int,
         call, dumps, loads, details: dict,
+        coverage: Callable[[Any], tuple[bool, Any]] | None = None,
     ) -> Any:
         outcome = _Outcome()
         result = await self._fetch(
-            capability, asset_class, key_args, ttl, call, dumps, loads, outcome
+            capability, asset_class, key_args, ttl, call, dumps, loads, outcome,
+            coverage=coverage,
         )
         if result is _MISS:
             raise outcome.error(capability, details)
@@ -607,6 +648,7 @@ class MarketDataRouter:
             Capability.bars, instr.asset_class,
             {"symbol": instr.symbol, "timeframe": tf, "start": start, "end": end},
             bars_ttl(tf), call, _dumps_list, _loads_list(Bar), {"symbol": instr.symbol},
+            coverage=_bars_coverage(instr.asset_class, tf, start, end),
         )
 
     @_guard
