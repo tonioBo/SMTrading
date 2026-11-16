@@ -1,0 +1,190 @@
+"""`GET /api/portfolios/equity-history?range=`: the «Andamento» chart of the dashboard and
+of the portfolio detail, from the `equity_snapshots`. Readable by the viewer."""
+
+# ruff: noqa: F811  (the `env` fixture of test_admin_users, imported then requested)
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from zoneinfo import ZoneInfo
+
+from sqlalchemy import update
+from test_admin_users import env  # noqa: F401
+
+from smtrading.events import discard_post_commit
+from smtrading.portfolios.models import Portfolio, PortfolioStatus
+from smtrading.portfolios.service import create_portfolio
+from smtrading.risk.models import AppSetting, EquitySnapshot, SnapshotKind
+
+D = Decimal
+ROME = ZoneInfo("Europe/Rome")
+MON, WED, FRI = 8, 10, 12  # March 2027
+URL = "/api/portfolios/equity-history"
+
+
+def rome(day: int, h: int, m: int = 0) -> datetime:
+    return datetime(2027, 3, day, h, m, tzinfo=ROME).astimezone(UTC)
+
+
+NOW = rome(FRI, 18)
+
+
+async def _portfolio(sm, name: str):
+    async with sm() as s:
+        p = await create_portfolio(s, name=name, initial_cash=D(0))
+        discard_post_commit(s)
+        await s.commit()
+        return p.id
+
+
+async def _snap(sm, pid, ts, equity: str, kind=SnapshotKind.periodic) -> None:
+    async with sm() as s:
+        s.add(EquitySnapshot(
+            portfolio_id=pid, ts=ts, kind=kind, equity_eur=D(equity), cash_eur=D(equity),
+            exposure_eur=D(0), margin_used_eur=D(0),
+            local_date=ts.astimezone(ROME).date() if kind == SnapshotKind.day_open else None))
+        await s.commit()
+
+
+def _clock(monkeypatch, at: datetime = NOW) -> None:
+    import smtrading.admin.routes_equity_history as routes
+
+    monkeypatch.setattr(routes, "_now", lambda: at)
+
+
+async def _archive(sm, pid) -> None:
+    async with sm() as s:
+        await s.execute(update(Portfolio).where(Portfolio.id == pid)
+                        .values(status=PortfolioStatus.archived))
+        await s.commit()
+
+
+async def _get(env, role="viewer", **params):
+    email, _ = await env.add_user(role)
+    c = await env.client(email)
+    r = await c.get(URL, params=params)
+    return r
+
+
+def _points(item) -> list[tuple[str, Decimal]]:
+    return [(p["ts"], D(p["equity_eur"])) for p in item["series"]]
+
+
+async def test_1d_intraday_points_of_live_portfolios(env, monkeypatch):
+    _clock(monkeypatch)
+    a = await _portfolio(env.sm, "Storia A")
+    b = await _portfolio(env.sm, "Storia B")
+    gone = await _portfolio(env.sm, "Storia archiviata")
+    await _snap(env.sm, a, rome(WED, 12), "90")  # older than a day: out of 1d
+    await _snap(env.sm, a, rome(FRI, 0, 1), "100", SnapshotKind.day_open)
+    await _snap(env.sm, a, rome(FRI, 9), "101")
+    await _snap(env.sm, a, rome(FRI, 17, 55), "102.5")
+    await _snap(env.sm, b, rome(FRI, 10), "400")
+    await _snap(env.sm, gone, rome(FRI, 10), "999")
+    await _archive(env.sm, gone)
+
+    r = await _get(env, range="1d")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["range"] == "1d"
+    assert body["goal_pct"] is None
+    by_name = {p["name"]: p for p in body["portfolios"]}
+    assert set(by_name) == {"Storia A", "Storia B"}
+    pa = by_name["Storia A"]
+    assert pa["id"] == str(a)
+    assert [v for _, v in _points(pa)] == [D(100), D(101), D("102.50")]
+    assert datetime.fromisoformat(pa["series"][0]["ts"]) == rome(FRI, 0, 1)
+    assert (D(pa["first_eur"]), D(pa["last_eur"]), D(pa["change_eur"]), D(pa["change_pct"])) \
+        == (D(100), D("102.5"), D("2.5"), D("2.50"))
+    assert pa["goal"] is None
+    assert [v for _, v in _points(by_name["Storia B"])] == [D(400)]
+
+
+async def test_1w_intraday_with_the_weekly_goal(env, monkeypatch):
+    _clock(monkeypatch)
+    a = await _portfolio(env.sm, "Goal A")
+    b = await _portfolio(env.sm, "Goal B")  # created on Wednesday: no Monday day_open
+    await _snap(env.sm, a, rome(4, 12), "550")  # 8 days ago: out of 1w
+    await _snap(env.sm, a, rome(MON, 0, 1), "600", SnapshotKind.day_open)
+    await _snap(env.sm, a, rome(MON, 12), "610")
+    await _snap(env.sm, a, rome(FRI, 17), "603")
+    await _snap(env.sm, b, rome(WED, 11), "400")
+
+    body = (await _get(env, range="1w")).json()
+    assert D(body["goal_pct"]) == D(2)
+    by_name = {p["name"]: p for p in body["portfolios"]}
+    pa, pb = by_name["Goal A"], by_name["Goal B"]
+    assert [v for _, v in _points(pa)] == [D(600), D(610), D(603)]
+    goal = pa["goal"]
+    assert datetime.fromisoformat(goal["week_start"]) == rome(MON, 0)
+    assert (D(goal["base_eur"]), D(goal["target_eur"])) == (D(600), D(612))
+    assert (D(pb["goal"]["base_eur"]), D(pb["goal"]["target_eur"])) == (D(400), D(408))
+
+
+async def test_1w_without_the_goal_when_it_is_off(env, monkeypatch):
+    _clock(monkeypatch)
+    a = await _portfolio(env.sm, "Goal off")
+    await _snap(env.sm, a, rome(MON, 0, 1), "600", SnapshotKind.day_open)
+    async with env.sm() as s:
+        s.add(AppSetting(key="weekly_goal", value={"on": False, "pct": "1.5"}))
+        await s.commit()
+    body = (await _get(env, range="1w")).json()
+    assert body["goal_pct"] is None
+    assert body["portfolios"][0]["goal"] is None
+
+
+async def test_daily_ranges_use_day_opens_and_end_on_the_latest_value(env, monkeypatch):
+    _clock(monkeypatch)
+    a = await _portfolio(env.sm, "Giornaliero")
+    old = NOW - timedelta(days=45)
+    await _snap(env.sm, a, old, "80", SnapshotKind.day_open)  # out of 1m, in 3m
+    await _snap(env.sm, a, old + timedelta(hours=3), "81")
+    await _snap(env.sm, a, rome(WED, 0, 1), "100", SnapshotKind.day_open)
+    await _snap(env.sm, a, rome(WED, 12), "130")  # intraday: not a daily point
+    await _snap(env.sm, a, rome(FRI, 0, 1), "104", SnapshotKind.day_open)
+    await _snap(env.sm, a, rome(FRI, 17, 55), "106")  # the latest value closes the curve
+
+    month = (await _get(env, range="1m")).json()["portfolios"][0]
+    assert [v for _, v in _points(month)] == [D(100), D(104), D(106)]
+    assert D(month["change_pct"]) == D("6.00")
+    quarter = (await _get(env, range="3m")).json()["portfolios"][0]
+    assert [v for _, v in _points(quarter)] == [D(80), D(100), D(104), D(106)]
+    everything = (await _get(env, range="all")).json()["portfolios"][0]
+    assert _points(everything) == _points(quarter)
+
+
+async def test_daily_range_without_day_opens_falls_back_to_every_snapshot(env, monkeypatch):
+    _clock(monkeypatch)
+    a = await _portfolio(env.sm, "Nuovo")
+    await _snap(env.sm, a, rome(FRI, 10), "50")
+    await _snap(env.sm, a, rome(FRI, 11), "51")
+    item = (await _get(env, range="1m")).json()["portfolios"][0]
+    assert [v for _, v in _points(item)] == [D(50), D(51)]
+
+
+async def test_one_portfolio_even_archived_and_empty_series(env, monkeypatch):
+    _clock(monkeypatch)
+    a = await _portfolio(env.sm, "Uno")
+    other = await _portfolio(env.sm, "Altro")
+    await _snap(env.sm, a, rome(FRI, 10), "50")
+    await _snap(env.sm, other, rome(FRI, 10), "70")
+    await _archive(env.sm, a)
+    body = (await _get(env, range="1d", portfolio_id=str(a))).json()
+    assert [p["name"] for p in body["portfolios"]] == ["Uno"]
+    assert [v for _, v in _points(body["portfolios"][0])] == [D(50)]
+
+    empty = await _portfolio(env.sm, "Vuoto")
+    item = (await _get(env, range="1d", portfolio_id=str(empty))).json()["portfolios"][0]
+    assert item["series"] == []
+    assert item["first_eur"] is None and item["change_pct"] is None
+
+
+async def test_invalid_range_and_unknown_portfolio(env, monkeypatch):
+    _clock(monkeypatch)
+    r = await _get(env, range="2d")
+    assert r.status_code == 400, r.text
+    assert r.json()["details"]["field"] == "range"
+    r = await _get(env, range="1d", portfolio_id="00000000-0000-0000-0000-000000000000")
+    assert r.status_code == 404, r.text
+    # default range
+    r = await _get(env)
+    assert r.status_code == 200 and r.json()["range"] == "1m"
