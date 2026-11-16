@@ -27,7 +27,10 @@ issue per position assigned to the «Risk Manager» agent («PROTEGGI · …»).
 problems live in `app_settings["protection_alarm"]`, so a restart sends nothing again; a
 problem no longer found is cleared, and alerts again if it comes back. A failed issue is
 tried again on the next runs (at most ISSUE_ATTEMPTS), its error kept in the state and
-shown in the Paperclip status. Every Paperclip request is made with no transaction open."""
+shown in the Paperclip status; after a timeout (the issue may exist anyway) the retry first
+looks for an open issue with the same title and adopts it. The Paperclip configuration is
+read only when an issue is pending. Every Paperclip request is made with no transaction
+open."""
 
 import asyncio
 import copy
@@ -380,7 +383,6 @@ class ProtectionAlarm:
         now = self._clock()
         async with self._sm() as session:
             findings, skipped = await find_problems(session, now, self._zone)
-            cfg = await load_config(session)
         current = {Problem.key(f.position, p.kind): (f, p) for f in findings for p in f.problems}
         async with self._sm() as session, session.begin():
             state = await load_state(session, for_update=True)
@@ -398,7 +400,7 @@ class ProtectionAlarm:
             state["last_run_at"] = now.isoformat()
             pending = self._pending(state, current)
             await save_state(session, state)
-        if pending and cfg.enabled and cfg.complete and not cfg.unreadable:
+        if pending:
             await self._create_issues(pending, current)
 
     @staticmethod
@@ -421,7 +423,13 @@ class ProtectionAlarm:
     async def _create_issues(self, pending: dict[str, list[str]], current: dict) -> None:
         async with self._sm() as session:
             cfg = await load_config(session)
+            if not (cfg.enabled and cfg.complete and not cfg.unreadable):
+                return
+            opened = (await load_state(session))["open"]
+        uncertain = {pk for pk, keys in pending.items()
+                     if any((opened.get(k) or {}).get("uncertain") for k in keys)}
         results: dict[str, str | None] = {}
+        timed_out: set[str] = set()
         error: str | None = None
         try:
             async with self._issues_factory(cfg) as client:
@@ -430,14 +438,21 @@ class ProtectionAlarm:
                     raise PaperclipError(f"agente «{RISK_MANAGER}» non trovato")
                 for pos_key, keys in pending.items():
                     finding = current[keys[0]][0]
+                    title = issue_title(finding.position)
                     try:
+                        if pos_key in uncertain and (
+                                found := await client.open_issue_with_title(title)):
+                            results[pos_key] = found
+                            continue
                         results[pos_key] = await client.create_issue(
-                            title=issue_title(finding.position),
+                            title=title,
                             description=issue_description(finding, self._zone),
                             assignee_agent_id=assignee)
                     except PaperclipError as e:
                         error = e.message
                         results[pos_key] = None
+                        if e.message == "timeout":
+                            timed_out.add(pos_key)
         except PaperclipError as e:
             error = e.message
         except Exception:
@@ -454,8 +469,11 @@ class ProtectionAlarm:
                         continue
                     if ident:
                         entry["issue"] = ident
+                        entry.pop("uncertain", None)
                     else:
                         entry["attempts"] = int(entry.get("attempts") or 0) + 1
+                        if pos_key in timed_out:
+                            entry["uncertain"] = True
             if error:
                 state.update(last_error=error, last_error_at=now.isoformat())
                 log.warning("protection issue not created in Paperclip: %s", error)

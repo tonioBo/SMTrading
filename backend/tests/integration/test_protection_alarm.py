@@ -45,6 +45,8 @@ class FakeIssues:
         self.fail: str | None = None
         self.agents_list = [{"id": "ceo", "name": "CEO"}, {"id": "rm-1", "name": "Risk Manager"}]
         self.configs = []
+        self.existing: list[dict] = []  # issues already in Paperclip
+        self.lookups: list[str] = []
 
     def __call__(self, cfg):
         self.configs.append(cfg)
@@ -58,6 +60,12 @@ class FakeIssues:
 
     async def agents(self):
         return self.agents_list
+
+    async def open_issue_with_title(self, title):
+        self.lookups.append(title)
+        if self.fail:
+            raise PaperclipError(self.fail)
+        return next((i["identifier"] for i in self.existing if i["title"] == title), None)
 
     async def create_issue(self, *, title, description, assignee_agent_id, priority="critical"):
         if self.fail:
@@ -347,3 +355,48 @@ async def test_stop_being_modified_protects_and_recent_exit_order_means_grace(en
     await alarm.tick()
     assert await _outbox(sm) == [
         "⚠️ Posizione senza protezione — Aggressivo · MSFT: nessuno stop di uscita attivo"]
+
+
+async def test_timeout_checks_paperclip_before_creating_again(env):
+    """A timed-out POST may have created the issue: the retry looks for an open issue with
+    the same title first and adopts it."""
+    sm = env
+    await _paperclip(sm)
+    pid = await _portfolio(sm)
+    await _position(sm, pid)
+    clock, fake = Clock(NOW), FakeIssues()
+    fake.fail = "timeout"
+    alarm = _alarm(sm, clock, fake)
+    await alarm.tick()
+    assert fake.lookups == []  # a first attempt does not look
+    fake.fail = None
+    fake.existing = [{"title": "PROTEGGI · Aggressivo · AAPL", "identifier": "SMT-9"}]
+    clock.t += timedelta(minutes=5)
+    await alarm.tick()
+    assert fake.created == [] and fake.lookups == ["PROTEGGI · Aggressivo · AAPL"]
+    async with sm() as s:
+        state = await load_state(s)
+    assert [e["issue"] for e in state["open"].values()] == ["SMT-9"]
+
+
+async def test_config_is_read_only_when_an_issue_is_pending(env, monkeypatch):
+    from smtrading.positions import protection
+
+    calls = []
+    real = protection.load_config
+
+    async def counting(session):
+        calls.append(1)
+        return await real(session)
+
+    monkeypatch.setattr(protection, "load_config", counting)
+    sm = env
+    await _paperclip(sm)
+    clock, fake = Clock(NOW), FakeIssues()
+    alarm = _alarm(sm, clock, fake)
+    await alarm.tick()  # nothing to protect
+    assert calls == []
+    pid = await _portfolio(sm)
+    await _position(sm, pid)
+    await alarm.tick()
+    assert calls and len(fake.created) == 1

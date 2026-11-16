@@ -230,3 +230,18 @@ def test_issue_description_names_the_real_tools_and_never_double_covers():
     assert "si attivano quando l'ingresso è eseguito" in partial
     assert "non aggiungere un altro OCO" in partial
     assert not FINGERPRINT.search(desc) and not FINGERPRINT.search(partial)
+
+
+async def test_issues_client_finds_an_open_issue_by_title():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.raw_path.decode().startswith("/base/api/companies/c%201/issues")
+        return httpx.Response(200, json=[
+            {"identifier": "SMT-1", "title": "PROTEGGI · A · X", "status": "done"},
+            {"identifier": "SMT-2", "title": "PROTEGGI · A · Y", "status": "todo"},
+            {"id": "u3", "title": "PROTEGGI · A · X", "status": "in_progress"},
+        ])
+
+    async with PaperclipIssues(CFG, transport=httpx.MockTransport(handler)) as client:
+        assert await client.open_issue_with_title("PROTEGGI · A · X") == "u3"
+        assert await client.open_issue_with_title("PROTEGGI · A · Z") is None
