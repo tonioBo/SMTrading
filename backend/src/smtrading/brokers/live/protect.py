@@ -135,11 +135,13 @@ def _who(a: Activity, names: Names) -> str | None:
     return None
 
 
-def render_live_activity(a: Activity, names: Names, tz: str) -> str:
+def render_live_activity(a: Activity, names: Names, tz: str,
+                         extra: list[str] | None = None) -> str:
     """The Telegram text of a `live.*` activity. Orders (`live.order.<phase>`): the phase
     line, the portfolio, `buy 0,5 AAPL · mercato`, agent and time; fills add price, value
     and fees; rejections and cancellations the broker's message. Alerts (`live.<kind>`):
-    `🔴 REALE · <title>`, the portfolio, the summary and the time."""
+    `🔴 REALE · <title>`, the portfolio, the summary and the time. `extra` lines (the
+    fill details: strategy, stop/target, risk) go before the agent and time."""
     data = a.data if isinstance(a.data, dict) else {}
     portfolio = names.portfolios.get(a.portfolio_id) if a.portfolio_id else None
     when = a.ts.astimezone(ZoneInfo(tz)).strftime("%H:%M") if a.ts is not None else None
@@ -175,6 +177,7 @@ def render_live_activity(a: Activity, names: Names, tz: str) -> str:
             lines.append(portfolio)
         if a.summary:
             lines.append(clean_text(a.summary))
+    lines += extra or []
     tail = [t for t in (_who(a, names), when) if t]
     if tail:
         lines.append(" · ".join(tail))

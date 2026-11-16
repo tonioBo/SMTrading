@@ -91,3 +91,9 @@ def test_render_alert():
         "Portafoglio in reduce-only: conto cambiato\n15:05")
     a.type = "live.something_new"
     assert render_live_activity(a, NAMES, TZ).startswith("🔴 REALE · something_new")
+
+
+def test_render_fill_details_before_agent_and_time():
+    extra = ["Strategia: STR-103", "Stop 190,00 USD · obiettivo 210,00 USD"]
+    lines = render_live_activity(_order("filled", price="200"), NAMES, TZ, extra).split("\n")
+    assert lines[-3:] == [*extra, "Agente: Trader · 15:05"]

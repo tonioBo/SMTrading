@@ -54,9 +54,11 @@ def title_for(type_: str) -> str:
     return type_
 
 
-def render_activity(a: Activity, names: Names, tz: str) -> str:
-    """`{prefix}{title} — {portfolio}\\n{summary}\\nAgente: {name} · {HH:MM}`; lines (or
-    parts) without data are left out."""
+def render_activity(a: Activity, names: Names, tz: str,
+                    extra: list[str] | None = None) -> str:
+    """`{prefix}{title} — {portfolio}\\n{summary}\\n{extra…}\\nAgente: {name} · {HH:MM}`;
+    lines (or parts) without data are left out. `extra`: the fill details (strategy,
+    stop/target, risk at stop) of `telegram.details.fill_lines`."""
     head = f"{PREFIX.get(a.level, '')}{title_for(a.type)}"
     portfolio = names.portfolios.get(a.portfolio_id) if a.portfolio_id else None
     if portfolio:
@@ -64,6 +66,7 @@ def render_activity(a: Activity, names: Names, tz: str) -> str:
     lines = [head]
     if a.summary:
         lines.append(a.summary)
+    lines += extra or []
     tail = []
     agent = names.agents.get(a.agent_id) if a.agent_id else None
     if agent:
