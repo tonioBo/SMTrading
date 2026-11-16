@@ -215,6 +215,7 @@ async def test_baseline_reconfirm_audited(admin):
     st = (await admin.client.get("/api/paperclip/status")).json()
     assert st["isolation"] == "changed" and st["changes"]["changed"] == ["p1"]
     assert st["enabled"] is True and st["consecutive_errors"] == 0
+    assert st["protection_error"] is None
     with _respx() as router:
         _mock(router, policies=[{**POLICY, "enabled": False}])
         r = await admin.client.post("/api/paperclip/baseline", json={})

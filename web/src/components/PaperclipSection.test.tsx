@@ -203,6 +203,14 @@ describe("PaperclipSection", () => {
     expect(within(region).getByText(/La chiave board scade il/)).toBeInTheDocument();
   });
 
+  it("shows the last «PROTEGGI» issue error", async () => {
+    config = baseConfig();
+    status = { ...baseStatus(), protection_error: "HTTP 503" };
+    renderApp("/impostazioni");
+    const region = await section();
+    expect(await within(region).findByText("Task «PROTEGGI» non creato: HTTP 503")).toBeInTheDocument();
+  });
+
   it("shows the rebaseline note after a configuration change", async () => {
     config = baseConfig();
     status = { ...baseStatus(), isolation: "unknown", baseline_at: null, baseline_count: 0, rebaseline_reason: "config" };

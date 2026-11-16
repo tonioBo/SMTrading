@@ -1157,6 +1157,8 @@ export interface PaperclipStatus {
   key_expires_at: string | null;
   /** the board key expires within 7 days (or has expired) */
   key_expiring: boolean;
+  /** the last «PROTEGGI» issue the protection alarm could not create in Paperclip */
+  protection_error?: string | null;
 }
 
 export type AgentCostPeriod = "day" | "week" | "month";

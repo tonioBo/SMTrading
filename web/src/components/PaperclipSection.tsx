@@ -32,6 +32,7 @@ function StatusLine({ status, isError }: { status: PaperclipStatus | undefined; 
         Ultima lettura: {status.last_ok_at ? formatDateTime(status.last_ok_at) : "mai"}
       </p>
       {status.last_error && <p className="text-loss">Errore di lettura: {status.last_error}</p>}
+      {status.protection_error && <p className="text-loss">Task «PROTEGGI» non creato: {status.protection_error}</p>}
       {status.isolation === "ok" && (
         <p className="text-muted">
           Regole di isolamento: {status.baseline_count} attese{status.baseline_at ? ` (dal ${formatDateTime(status.baseline_at)})` : ""}
