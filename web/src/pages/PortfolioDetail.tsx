@@ -20,6 +20,7 @@ import type { LiveState, Order, Portfolio, Position, Valuation } from "@/api/typ
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EquityChart } from "@/components/EquityChart";
+import { EquityHistoryCard } from "@/components/EquityHistoryCard";
 import { Money } from "@/components/Money";
 import { HaltBanner } from "@/components/HaltBanner";
 import { LiveDisarmButton } from "@/components/LiveLinkWizard";
@@ -97,6 +98,7 @@ function Overview({ portfolio }: { portfolio: Portfolio }) {
           <Money value={valuation.data?.cash_eur} />
         </Kpi>
       </div>
+      <EquityHistoryCard portfolioId={portfolio.id} />
       <Card>
         <CardHeader>
           <CardTitle>Equity</CardTitle>
