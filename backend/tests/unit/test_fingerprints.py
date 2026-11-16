@@ -20,7 +20,8 @@ def test_name_warning_none_for_neutral(name):
 
 @pytest.mark.parametrize("text", [
     "testo", "Testi", "testa", "simultaneo", "simultaneamente", "demolire", "democrazia",
-    "attestato", "contestato", "testimone", "demografia",
+    "attestato", "contestato", "testimone", "demografia", "testata", "testate",
+    "testamento", "testuale", "democratico", "Simultaneamente",
 ])
 def test_has_fingerprint_ignores_innocent_italian_words(text):
     assert not has_fingerprint(f"Un {text} qualsiasi")
@@ -34,3 +35,13 @@ def test_has_fingerprint_ignores_innocent_italian_words(text):
 ])
 def test_has_fingerprint_catches_simulation_words(text):
     assert has_fingerprint(text)
+
+
+@pytest.mark.parametrize("text", [
+    "democraticSandbox", "testamentoDemo", "simultaneousSimulation", "democraziaPaper",
+    "testoFake", "demolireMock", "testato", "testati",  # «tested» gives it away
+])
+def test_innocent_prefix_never_hides_a_glued_fingerprint(text):
+    """An innocent word swallows nothing glued to it (plan 10, review I3)."""
+    assert has_fingerprint(text), text
+    assert has_fingerprint(f"Un {text} qualsiasi"), text

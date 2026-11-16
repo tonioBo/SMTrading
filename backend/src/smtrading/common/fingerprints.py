@@ -15,10 +15,12 @@ FINGERPRINT: re.Pattern[str] = re.compile(
     re.IGNORECASE,
 )
 
-# whole words (case-insensitive) that contain a FINGERPRINT match but give nothing away;
-# any other word holding a match counts («testing», «DemoAccount», «simulazione»)
+# whole words (case-insensitive) that start with a FINGERPRINT match but give nothing
+# away; any other word holding a match counts («testing», «DemoAccount», «simulazione»,
+# «testato»). The `\w*` tails never hide a second match glued on («democraticSandbox»):
+# see `_innocent`
 INNOCENT_WORDS: re.Pattern[str] = re.compile(
-    r"test[oaie]|testual\w*|testimon\w*|testament\w*|testat[aeio]"
+    r"test[oaie]|testual\w*|testimon\w*|testament\w*|testat[ae]"
     r"|simultane\w*"
     r"|democra\w*|demograf\w*|demoli\w*|demoniac\w*|demoni\w*|demoralizz\w*"
     r"|demoscop\w*",
@@ -37,10 +39,19 @@ def _word_at(text: str, start: int, end: int) -> str:
     return text[start:end]
 
 
+def _innocent(word: str) -> bool:
+    """One of the INNOCENT_WORDS holding a single FINGERPRINT match, at its start."""
+    if not INNOCENT_WORDS.fullmatch(word):
+        return False
+    matches = list(FINGERPRINT.finditer(word))
+    return len(matches) == 1 and matches[0].start() == 0
+
+
 def has_fingerprint(text: str) -> bool:
-    """Does `text` hold a simulation word? A FINGERPRINT match inside one of the
-    INNOCENT_WORDS does not count; every other match does."""
-    return any(not INNOCENT_WORDS.fullmatch(_word_at(text, m.start(), m.end()))
+    """Does `text` hold a simulation word? A FINGERPRINT match that is the start of one
+    of the INNOCENT_WORDS (and the word's only match) does not count; every other
+    match does."""
+    return any(not _innocent(_word_at(text, m.start(), m.end()))
                for m in FINGERPRINT.finditer(text))
 
 
