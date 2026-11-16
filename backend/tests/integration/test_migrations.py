@@ -356,3 +356,40 @@ async def test_0029_rssnews_connector_first_in_crypto_news(fresh_db):
     assert got == {**rows, ("crypto", "news"): ["yahoo"]}
     assert row == []
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+
+
+async def test_0030_fee_rule_asset_class_reversible(fresh_db):
+    """0030: the nullable fee_rules.asset_class; existing rules keep null (every class);
+    the downgrade drops it."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    async def columns() -> set[str]:
+        engine = make_engine(fresh_db)
+        async with engine.connect() as conn:
+            got = {r[0] for r in await conn.execute(text(
+                "select column_name from information_schema.columns"
+                " where table_name = 'fee_rules'"))}
+        await engine.dispose()
+        return got
+
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0029")
+    assert "asset_class" not in await columns()
+    engine = make_engine(fresh_db)
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "insert into fee_rules (id, name, scope, side, currency, fixed, pct, fx_pct,"
+            " priority, active) values (gen_random_uuid(), 'Vecchia', 'global', 'both', 'EUR',"
+            " 0, 0, 0, 0, true)"))
+    await engine.dispose()
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    assert "asset_class" in await columns()
+    engine = make_engine(fresh_db)
+    async with engine.connect() as conn:
+        assert await conn.scalar(text(
+            "select asset_class from fee_rules where name = 'Vecchia'")) is None
+    await engine.dispose()
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0029")
+    assert "asset_class" not in await columns()
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")

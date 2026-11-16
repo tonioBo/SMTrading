@@ -30,6 +30,8 @@ class FeeRule(Base):
     name: Mapped[str] = mapped_column(String(128))
     scope: Mapped[FeeScope] = mapped_column(str_enum(FeeScope))
     scope_ref: Mapped[str | None] = mapped_column(String(64))
+    # portfolio scope only: the rule covers just this asset class (null: every class)
+    asset_class: Mapped[str | None] = mapped_column(String(16))
     side: Mapped[FeeSide] = mapped_column(str_enum(FeeSide), default=FeeSide.both)
     currency: Mapped[str] = mapped_column(String(16), default="EUR")
     fixed: Mapped[Decimal] = mapped_column(NUM, default=Decimal(0))
