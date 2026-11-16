@@ -181,6 +181,47 @@ async def test_latest_decision_wins_and_suspended_disappear(env):
     assert out["STR-E"].symbols[0].indicator == "RSI 3"
 
 
+async def test_only_status_decisions_replace_and_modificata_overrides(env):
+    env.qs.set_bars("ZZSPY", _bars(list(range(100, 130))))
+    env.qs.set_quote("ZZSPY", None, None, D(129), NOW)
+    common = {"strategy": "rsi_reversion", "timeframe": "1d", "symbols": ["ZZSPY"],
+              "portfolio": env.pru}
+    # an informative note (or one without any status) does not remove the approval
+    await env.decision(ref="STR-I", status="approvata", params={"period": 2}, **common)
+    await env.decision(ref="STR-I", status="informativa", params={"period": 9}, **common)
+    await env.decision(ref="STR-N", status="approvata", params={"period": 2}, **common)
+    await env.decision(ref="STR-N", params={"period": 9}, **common)
+    await env.decision(ref="STR-O", outcome="approvata", params={"period": 2}, **common)
+    await env.decision(ref="STR-O", outcome="informativa", **common)
+    # «modificata» is an approval: its params override, the rest is kept
+    await env.decision(ref="STR-M", status="approvata", params={"period": 2}, **common)
+    await env.decision(ref="STR-M", status="modificata", params={"period": 4})
+    # «modificata» alone is an approval too
+    await env.decision(ref="STR-M2", status="modificata", params={"period": 5}, **common)
+    # a later rejection still removes it
+    await env.decision(ref="STR-R", status="modificata", params={"period": 2}, **common)
+    await env.decision(ref="STR-R", status="respinta", **common)
+    out = _by_ref(await env.run())
+    assert set(out) == {"STR-I", "STR-N", "STR-O", "STR-M", "STR-M2"}
+    assert out["STR-I"].params["period"] == 2 and out["STR-N"].params["period"] == 2
+    m = out["STR-M"]
+    assert m.status == "ok" and m.params["period"] == 4 and m.portfolio_id == env.pru.id
+    assert [x.symbol for x in m.symbols] == ["ZZSPY"]
+    assert m.symbols[0].indicator == "RSI 4"
+    assert out["STR-M2"].params["period"] == 5
+
+
+async def test_quant_registration_matched_on_strategy_id(env):
+    env.qs.set_bars("ZZQQQ", _bars(list(range(100, 130))))
+    env.qs.set_quote("ZZQQQ", None, None, D(129), NOW)
+    await env.decision(kind="other", agent=env.quant, strategy_id="STR-105",
+                       strategy="sma_cross", params={"fast": 2, "slow": 5}, timeframe="1d")
+    await env.decision(ref="STR-105", status="approvata", portfolio=env.pru,
+                       symbols=["ZZQQQ"])
+    s = _by_ref(await env.run())["STR-105"]
+    assert (s.status, s.type, s.timeframe) == ("ok", "sma_cross", "1d")
+
+
 async def test_fields_from_backtest_and_quant(env):
     env.qs.set_bars("ZZSPY", _bars(list(range(100, 130))))
     env.qs.set_bars("ZZQQQ", _bars(list(range(100, 130))))

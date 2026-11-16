@@ -3,10 +3,14 @@ closed bar and «se chiudesse ora» (the forming bar of `marketdata.forming`), t
 threshold, the distance to it and whether the backtester's entry rule fires.
 
 Source of truth: the `strategy` decisions (the CEO's), grouped by `details.ref` (or
-`details.strategy_id`); the latest per ref wins (by id), and only `details.status`
-(else the `outcome` column) = "approvata" counts: a later sospesa / revocata / respinta
-removes the strategy. Missing fields come from the backtest of `details.backtest_id`,
-then from the latest Quant registration (`other` decision) of the same ref:
+`details.strategy_id`). Only a decision whose `details.status` (else the `outcome`
+column) is approvata / modificata / respinta / sospesa / revocata replaces the previous
+one of its ref (by id); others (informativa, no status) are ignored. The strategy counts
+when the latest of those is approvata or modificata: a modificata keeps what the
+previous approval said and overrides it with its own fields (params...); a later
+sospesa / revocata / respinta removes it. Missing fields come from the backtest of
+`details.backtest_id`, then from the latest Quant registration (`other` decision) of the
+same ref (`details.ref` or `details.strategy_id`):
 - type: `details.strategy` | backtest.strategy | quant.strategy
 - params: `details.params` | backtest.params | quant.params
 - timeframe: `details.timeframe` | backtest.timeframe | quant.timeframe
@@ -55,6 +59,10 @@ OK = "ok"
 INCOMPLETE = "dati incompleti"
 UNSUPPORTED = "non supportata"
 APPROVED = "approvata"
+MODIFIED = "modificata"
+APPROVALS = frozenset({APPROVED, MODIFIED})
+# the statuses that replace the previous decision of a ref (informativa etc. do not)
+STATUS_DECISIONS = APPROVALS | {"respinta", "sospesa", "revocata"}
 SIGNAL_TYPES = ("rsi_reversion", "sma_cross", "breakout")
 MIN_FETCH_BARS = 250  # RSI is Wilder-smoothed: a long warm-up keeps it near the backtest's
 MAX_CONCURRENCY = 4
@@ -86,6 +94,16 @@ class StrategySignal:
     timeframe: str | None
     status: str
     symbols: list[SymbolSignal] = field(default_factory=list)
+
+
+@dataclass
+class _Chosen:
+    """The effective CEO decision of a ref (a modificata merged over its approval)."""
+    details: dict
+    symbols: list
+    portfolio_id: uuid.UUID | None
+    subject: str | None
+    summary: str
 
 
 @dataclass
@@ -125,25 +143,45 @@ def _first(*values: Any) -> Any:
 
 
 async def _approved(session: AsyncSession) -> list[_Approved]:
-    latest: dict[str, Decision] = {}
+    chosen: dict[str, _Chosen] = {}
     for d in await session.scalars(
         select(Decision).where(Decision.kind == DecisionKind.strategy).order_by(Decision.id)
     ):
-        ref = _ref(d)
-        if ref is not None:
-            latest[ref] = d
-    chosen = {ref: d for ref, d in latest.items() if _status(d) == APPROVED}
+        ref, status = _ref(d), _status(d)
+        if ref is None or status not in STATUS_DECISIONS:
+            continue
+        if status not in APPROVALS:
+            chosen.pop(ref, None)
+            continue
+        prev = chosen.get(ref) if status == MODIFIED else None
+        details = d.details or {}
+        symbols = [s for s in (d.symbols or []) if isinstance(s, str)]
+        if prev is None:
+            chosen[ref] = _Chosen(dict(details), symbols, d.portfolio_id, d.subject, d.summary)
+        else:
+            chosen[ref] = _Chosen(
+                {**prev.details, **{k: v for k, v in details.items()
+                                    if v not in (None, "", [], {})}},
+                symbols or prev.symbols, d.portfolio_id or prev.portfolio_id,
+                _text(d.subject) or prev.subject, prev.summary,  # the name stays
+            )
     if not chosen:
         return []
     quant: dict[str, dict] = {}
+    refs = list(chosen)
     for d in await session.scalars(
         select(Decision).where(
             Decision.kind == DecisionKind.other,
-            Decision.details["ref"].astext.in_(list(chosen)),
+            Decision.details["ref"].astext.in_(refs)
+            | Decision.details["strategy_id"].astext.in_(refs),
         ).order_by(Decision.id)
     ):
-        if _text((d.details or {}).get("strategy")):
-            quant[_ref(d)] = d.details  # type: ignore[index]
+        det = d.details or {}
+        if not _text(det.get("strategy")):
+            continue
+        for key in (_text(det.get("ref")), _text(det.get("strategy_id"))):
+            if key in chosen:
+                quant[key] = det
     out = []
     for ref, d in chosen.items():
         det = d.details or {}
@@ -154,8 +192,7 @@ async def _approved(session: AsyncSession) -> list[_Approved]:
         if params is None and any(isinstance(x, dict) for x in (
                 det.get("params"), bt.params if bt else None, q.get("params"))):
             params = {}  # explicitly empty (e.g. buy_and_hold)
-        symbols = _first([s for s in (d.symbols or []) if isinstance(s, str)],
-                         bt.symbols if bt else None) or []
+        symbols = _first(d.symbols, bt.symbols if bt else None) or []
         ids = [d.portfolio_id] if d.portfolio_id else []
         listed = det.get("portfolios")
         if isinstance(listed, list):
