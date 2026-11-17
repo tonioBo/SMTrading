@@ -133,6 +133,34 @@ describe("Dashboard", () => {
     expect(screen.queryByText("Obiettivo settimanale")).not.toBeInTheDocument();
   });
 
+  it("«Obiettivi»: risk and index goals with their statuses, loss and comparison", async () => {
+    const base = {
+      period_start: "2026-11-01", period_end: "2026-11-30", start_eur: "1000", current_eur: "960", target_eur: "950",
+      gap_eur: "10", elapsed_pct: "55", as_of: "2026-11-17T09:00:00Z", scope: "total" as const, portfolio_id: null, portfolio_name: null,
+    };
+    const goals: GoalProgress[] = [
+      { ...base, goal_id: "g4", name: "rischio", horizon: "month", kind: "max_loss", pct: "-4", target_pct: "5", loss_pct: "4", status: "vicino al limite" },
+      { ...base, goal_id: "g5", name: "rischio2", horizon: "month", kind: "max_loss", pct: "-6", target_pct: "5", loss_pct: "6", status: "superato" },
+      {
+        ...base, goal_id: "g6", name: "indice", horizon: "quarter", kind: "beat_index", pct: "1", target_pct: "0", target_eur: null, gap_eur: null,
+        benchmark: "SPY", benchmark_pct: "2.5", diff_pp: "-1.5", status: "indietro",
+      },
+    ];
+    server.use(http.get("*/api/goals/progress", () => HttpResponse.json(goals)));
+    renderApp("/");
+    const list = await screen.findByRole("list", { name: "Obiettivi attivi" });
+    const rows = within(list).getAllByRole("listitem");
+    expect(within(rows[0]).getByText("perdita max 5%")).toBeInTheDocument();
+    expect(within(rows[0]).getByText("vicino al limite")).toHaveClass("text-warn");
+    expect(within(rows[0]).getByText("perdita 4,00% su un limite di 5%")).toBeInTheDocument();
+    expect(within(rows[0]).getByRole("progressbar", { name: "Perdita rischio" })).toHaveAttribute("aria-valuenow", "80");
+    expect(within(rows[1]).getByText("superato")).toHaveClass("text-loss");
+    expect(within(rows[2]).getByText("meglio di SPY")).toBeInTheDocument();
+    expect(within(rows[2]).getByText("indietro")).toHaveClass("text-warn");
+    expect(within(rows[2]).getByText("SPY +2,50% · differenza -1,50 pt")).toBeInTheDocument();
+    expect(within(rows[2]).queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
   it("«Obiettivi» is hidden without active goals", async () => {
     renderApp("/");
     expect(await screen.findByText("12.345,60 €")).toBeInTheDocument();
