@@ -753,6 +753,28 @@ class MarketDataRouter:
             {"base": base, "quote": quote},
         )
 
+    @_guard
+    async def get_fx_rate_on(self, base: str, quote: str, day: date) -> Decimal:
+        """The reference rate of `day` (providers with dated rates: Frankfurter, the ECB
+        rate, the previous business day's on a weekend or holiday); cached a day once the
+        day is over (a rate of today may still change)."""
+        if not isinstance(base, str) or not isinstance(quote, str):
+            raise _invalid("currencies must be strings")
+        if not isinstance(day, date) or isinstance(day, datetime):
+            raise _invalid("day must be a date")
+        base, quote = base.strip().upper(), quote.strip().upper()
+        if not base or not quote:
+            raise _invalid("currencies must not be empty")
+        if base == quote:
+            return Decimal(1)
+        ttl = CACHE_TTL["fx"] if day >= _now().date() else 86400
+        return await self._fetch_one(
+            Capability.fx, AssetClass.forex,
+            {"base": base, "quote": quote, "day": day.isoformat()}, ttl,
+            lambda p: p.get_fx_rate_on(base, quote, day), str, Decimal,
+            {"base": base, "quote": quote, "day": day.isoformat()},
+        )
+
     # ---------------------------------------------------------------- all classes
 
     async def _across_classes(

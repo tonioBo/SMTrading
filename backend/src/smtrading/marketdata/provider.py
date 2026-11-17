@@ -70,6 +70,10 @@ class DataProvider:
     async def get_fx_rate(self, base: str, quote: str) -> Decimal:
         raise self._unsupported("fx")
 
+    async def get_fx_rate_on(self, base: str, quote: str, day: date) -> Decimal:
+        """The reference rate of `day` (a closed day: the last one published up to it)."""
+        raise self._unsupported("dated fx")
+
     async def search(self, query: str, limit: int) -> list[InstrumentHit]:
         raise self._unsupported("search")
 

@@ -1,6 +1,6 @@
 import json
 import re
-from datetime import UTC, datetime, time
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -28,9 +28,10 @@ class FrankfurterProvider(DataProvider):
             raise self._unsupported(f"symbol {symbol}")
         return f"{symbol[:3]}/{symbol[3:]}"
 
-    async def _latest(self, base: str, quote: str) -> tuple[Decimal, datetime]:
+    async def _latest(self, base: str, quote: str,
+                      path: str = "latest") -> tuple[Decimal, datetime]:
         resp = await self.http.get(
-            f"{BASE_URL}/latest", params={"base": base, "symbols": quote}
+            f"{BASE_URL}/{path}", params={"base": base, "symbols": quote}
         )
         resp.raise_for_status()
         data = json.loads(resp.text, parse_float=Decimal)
@@ -44,6 +45,11 @@ class FrankfurterProvider(DataProvider):
 
     async def get_fx_rate(self, base: str, quote: str) -> Decimal:
         rate, _ = await self._latest(base, quote)
+        return rate
+
+    async def get_fx_rate_on(self, base: str, quote: str, day: date) -> Decimal:
+        """The ECB rate of `day`; a weekend or holiday gives the previous business day's."""
+        rate, _ = await self._latest(base, quote, day.isoformat())
         return rate
 
     async def get_quotes(self, items: list[tuple[str, str]]) -> dict[str, Quote]:

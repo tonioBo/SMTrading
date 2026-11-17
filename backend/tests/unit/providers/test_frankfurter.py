@@ -77,3 +77,26 @@ async def test_http_429_raises(provider):
     respx.get(URL).respond(429)
     with pytest.raises(httpx.HTTPStatusError):
         await provider.get_fx_rate("EUR", "USD")
+
+
+@respx.mock
+async def test_dated_fx_rate_uses_the_day_endpoint(provider):
+    from datetime import date
+
+    route = respx.get("https://api.frankfurter.dev/v1/2027-03-06",
+                      params={"base": "USD", "symbols": "EUR"}).respond(
+        200, json={"amount": 1.0, "base": "USD", "date": "2027-03-05",
+                   "rates": {"EUR": 0.9123}})  # a Saturday: the Friday's rate
+    rate = await provider.get_fx_rate_on("USD", "EUR", date(2027, 3, 6))
+    assert route.called
+    assert rate == Decimal("0.9123")
+
+
+@respx.mock
+async def test_dated_fx_rate_missing_unsupported(provider):
+    from datetime import date
+
+    respx.get("https://api.frankfurter.dev/v1/2027-03-06").respond(
+        200, json={"date": "2027-03-05", "rates": {}})
+    with pytest.raises(ProviderUnsupported):
+        await provider.get_fx_rate_on("USD", "EUR", date(2027, 3, 6))

@@ -115,6 +115,12 @@ class _Fake(DataProvider):
         type(self).calls.append(("fx", base, quote))
         return Decimal("1.0850")
 
+    async def get_fx_rate_on(self, base, quote, day):
+        type(self).calls.append(("fx_on", base, quote, day))
+        if type(self).mode == "unsupported":
+            raise ProviderUnsupported("nope")
+        return Decimal("0.9") if day.day % 2 else Decimal("0.8")
+
     async def screen(self, f):
         type(self).calls.append(("screen", f.limit))
         return [
@@ -519,6 +525,16 @@ async def test_fx_cached(env):
     assert await router.get_fx_rate("eur", "usd") == Decimal("1.0850")
     assert await router.get_fx_rate("EUR", "USD") == Decimal("1.0850")
     assert FakeA.calls == [("fx", "EUR", "USD")]
+
+
+async def test_dated_fx_cached_per_day(env):
+    router, _ = env
+    assert await router.get_fx_rate_on("usd", "eur", date(2027, 3, 5)) == Decimal("0.9")
+    assert await router.get_fx_rate_on("USD", "EUR", date(2027, 3, 5)) == Decimal("0.9")
+    assert await router.get_fx_rate_on("USD", "EUR", date(2027, 3, 4)) == Decimal("0.8")
+    assert await router.get_fx_rate_on("EUR", "EUR", date(2027, 3, 4)) == Decimal(1)
+    assert FakeA.calls == [("fx_on", "USD", "EUR", date(2027, 3, 5)),
+                           ("fx_on", "USD", "EUR", date(2027, 3, 4))]
 
 
 async def test_forming_bar_dropped_and_cache_stores_filtered(env):
