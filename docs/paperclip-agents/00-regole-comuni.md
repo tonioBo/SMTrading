@@ -16,8 +16,10 @@ del CEO non può mai superare un limite del profilo di rischio.
   fissate), ambito (il totale dei portafogli o un solo portafoglio), percentuale, periodo in
   corso, valore di partenza, attuale e da raggiungere in €, quanto manca (`gap_eur`), quanto
   del periodo è trascorso e lo stato (`raggiunto`, `in linea`, `in ritardo`, `oltre il tetto`,
-  `non iniziato`, `concluso`). Non usare percentuali scritte a mano: vale sempre quello che
-  risponde `get_goals`. Un obiettivo `kind: "min"` è un **minimo da superare**, non un tetto:
+  `non iniziato`, `concluso`). Negli obiettivi sul totale gli importi in € ci sono solo se
+  vedi tutti i portafogli (altrimenti sono null: usa `pct` e `status`). Non usare
+  percentuali scritte a mano: vale sempre quello che risponde
+  `get_goals`. Un obiettivo `kind: "min"` è un **minimo da superare**, non un tetto:
   se le strategie approvate lo consentono, si può fare di più; un obiettivo `kind: "cap"` è
   invece un **tetto** da non superare (oltre, si riduce il rischio, non se ne aggiunge).
   **Il rischio viene sempre prima**: per inseguire un obiettivo non si superano i limiti del

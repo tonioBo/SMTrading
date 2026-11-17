@@ -2,8 +2,12 @@
 
 Open to every agent with at least one portfolio (`read` or `trade`; FORBIDDEN without
 any): the active total goals plus the active goals of the agent's own live portfolios,
-never another agent's. Each item is the Progress of `goals.progress` without the internal
-goal id (`portfolio_id` is kept: the agent knows its portfolios).
+never another agent's, and not the goals that do not recur once their period is over.
+Each item is the Progress of `goals.progress` without the internal goal id
+(`portfolio_id` is kept: the agent knows its portfolios). A total goal sums every live
+portfolio: unless the agent holds all of them, its EUR figures (`TOTAL_EUR_FIELDS`) are
+null, so they never reveal the equity of portfolios it cannot read (the percentages,
+status and elapsed share stay).
 """
 
 from datetime import UTC, datetime
@@ -18,6 +22,9 @@ from smtrading.common.config import get_settings
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.goals.progress import active_progress
 from smtrading.mcp.runtime import ToolCtx, run_tool
+from smtrading.portfolios.models import live_portfolio_ids
+
+TOTAL_EUR_FIELDS = ("start_eur", "current_eur", "target_eur", "gap_eur")
 
 
 def _now() -> datetime:
@@ -29,9 +36,18 @@ async def _get_goals(ctx: ToolCtx) -> dict[str, Any]:
     if not pids:
         raise SMTError(ErrorCode.FORBIDDEN, "agent has no read permission on any portfolio",
                        {"needed": "read"})
-    items = await active_progress(ctx.session, _now(), ZoneInfo(get_settings().tz),
-                                  portfolio_ids=set(pids))
-    return {"goals": [{k: v for k, v in p.items() if k != "goal_id"} for p in items]}
+    now, zone = _now(), ZoneInfo(get_settings().tz)
+    today = now.astimezone(zone).date()
+    sees_all = set(await ctx.session.scalars(live_portfolio_ids())) <= set(pids)
+    out = []
+    for p in await active_progress(ctx.session, now, zone, portfolio_ids=set(pids)):
+        if p["period_end"] < today:  # a goal that does not recur, over
+            continue
+        item = {k: v for k, v in p.items() if k != "goal_id"}
+        if item["scope"] == "total" and not sees_all:
+            item.update(dict.fromkeys(TOTAL_EUR_FIELDS))
+        out.append(item)
+    return {"goals": out}
 
 
 def register(mcp: MCPServer) -> None:
@@ -45,7 +61,8 @@ def register(mcp: MCPServer) -> None:
         gap_eur (target_eur - current_eur), elapsed_pct (business days of the period gone,
         0-100), status (raggiunto | in linea | in ritardo | oltre il tetto | non iniziato |
         concluso), as_of}]}. Amounts in EUR, percentages and amounts as strings, null
-        without data yet. Total goals plus the goals of the agent's own portfolios; week,
+        without data yet; the EUR figures of a total goal are null unless the agent holds
+        every portfolio. Total goals plus the goals of the agent's own portfolios; week,
         month, quarter and year are calendar periods (Europe/Rome). Risk limits always
         come first: a goal never justifies breaking a rule."""
         return await run_tool("get_goals", {}, _get_goals)

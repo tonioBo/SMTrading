@@ -104,10 +104,50 @@ async def test_get_goals_total_and_own_portfolios_only(env):
     assert (demo_goal["start_eur"], demo_goal["current_eur"], demo_goal["target_eur"],
             demo_goal["pct"], demo_goal["gap_eur"], demo_goal["target_pct"],
             demo_goal["status"]) == ("1000", "1010", "1010", "1", "0", "1", "raggiunto")
-    # the totals include the live portfolios with data in the period (as the portal does)
-    assert items[0]["start_eur"] == "6000"
+    # the agent does not see «Altro»: no EUR figure of the totals (they would reveal its
+    # equity), only the percentages and the status
+    total = items[0]
+    assert (total["start_eur"], total["current_eur"], total["target_eur"],
+            total["gap_eur"]) == (None, None, None, None)
+    assert (total["pct"], total["target_pct"], total["status"]) == ("0.17", "2",
+                                                                     "in ritardo")
+    assert total["elapsed_pct"] is not None
+    assert items[1]["start_eur"] == "1000"  # its own portfolio's goal keeps the EUR
     text = str(res)
-    assert "segreto" not in text and str(other) not in text
+    assert "segreto" not in text and str(other) not in text and "6000" not in text
+
+
+async def test_get_goals_total_eur_when_the_agent_sees_every_portfolio(env):
+    demo = env["server"].demo_id
+    other = await _portfolio(env, "Altro")
+    async with env["db"]() as s:
+        await agents.assign_portfolio(s, env["server"].agent_id, other, "read")
+        await s.commit()
+    archived = await _portfolio(env, "Archiviato")  # not live: does not count
+    async with env["db"]() as s:
+        await s.execute(update(Portfolio).where(Portfolio.id == archived)
+                        .values(status=PortfolioStatus.archived))
+        await s.commit()
+    await _snap(env, demo, 8, 0, "1000", SnapshotKind.day_open)
+    await _snap(env, demo, 10, 9, "1010")
+    await _snap(env, other, 8, 0, "5000", SnapshotKind.day_open)
+
+    err, res = await env["call"]("get_goals")
+    assert not err, res
+    [total] = res["goals"]
+    # the totals include the live portfolios with data in the period (as the portal does)
+    assert (total["start_eur"], total["current_eur"], total["target_eur"],
+            total["gap_eur"]) == ("6000", "6010", "6120", "110")
+
+
+async def test_get_goals_leaves_out_goals_over(env):
+    """A goal that does not recur and whose period is over is not for the agent."""
+    await _goal(env, name="febbraio", horizon="custom", target_pct="1",
+                start_date="2027-02-01", end_date="2027-02-28")
+    await _goal(env, name="marzo", horizon="month", target_pct="5")
+    err, res = await env["call"]("get_goals")
+    assert not err, res
+    assert [g["name"] for g in res["goals"]] == ["settimanale", "marzo"]
 
 
 async def test_get_goals_never_shows_another_agents_portfolio(env):
