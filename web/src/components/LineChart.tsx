@@ -8,8 +8,10 @@ export interface ChartLine {
   points: ChartPoint[];
   /** reference lines (the goals): dashed, left out of the tooltip */
   reference?: boolean;
-  /** a short label drawn at the right end of a reference line */
+  /** a short label drawn at the right end of the line */
   tag?: string;
+  /** a thinner solid stroke (the indices compared by the goals) */
+  thin?: boolean;
 }
 
 interface Props {
@@ -105,7 +107,7 @@ export function LineChart({ lines, formatValue, formatTick, axisTime, ariaLabel 
                 d={l.points.map((p, i) => `${i ? "L" : "M"}${geo.x(p.t).toFixed(2)},${geo.y(p.v).toFixed(2)}`).join("")}
                 fill="none"
                 stroke={l.color}
-                strokeWidth={l.reference ? 1.25 : 2}
+                strokeWidth={l.thin ? 1 : l.reference ? 1.25 : 2}
                 strokeDasharray={l.reference ? "6 4" : undefined}
                 strokeLinejoin="round"
                 vectorEffect="non-scaling-stroke"
@@ -124,7 +126,7 @@ export function LineChart({ lines, formatValue, formatTick, axisTime, ariaLabel 
             <Dot key={l.key} color={l.color} left={pct(geo.x(l.points[0].t), W)} top={pct(geo.y(l.points[0].v), H)} />
           ))}
         {lines
-          .filter((l) => l.reference && l.tag && l.points.length > 0)
+          .filter((l) => l.tag && l.points.length > 0)
           .map((l) => {
             const last = l.points[l.points.length - 1];
             return (
