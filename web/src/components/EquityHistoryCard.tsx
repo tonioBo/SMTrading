@@ -36,9 +36,10 @@ export function EquityHistoryCard({ portfolioId }: { portfolioId?: string }) {
   const [unit, setUnit] = useState<Unit>(single ? "eur" : "pct");
   const { data, isLoading, isError } = useEquityHistory(range, portfolioId);
   const lines = data ? historyLines(data, unit, single) : [];
-  const colors = new Map(lines.filter((l) => !l.reference).map((l) => [l.key, l.color]));
+  const colors = new Map(lines.filter((l) => !l.reference && !l.thin).map((l) => [l.key, l.color]));
   const shown = data?.portfolios.filter((p) => colors.has(p.id)) ?? [];
   const goals = lines.filter((l) => l.reference);
+  const indices = lines.filter((l) => l.thin);
 
   return (
     <Card>
@@ -97,6 +98,12 @@ export function EquityHistoryCard({ portfolioId }: { portfolioId?: string }) {
                 <li key={g.key} className="flex items-center gap-1.5 text-muted">
                   <span className="inline-block w-4 border-t-2 border-dashed" style={{ borderColor: g.color }} />
                   {g.label}
+                </li>
+              ))}
+              {indices.map((b) => (
+                <li key={b.key} className="flex items-center gap-1.5 text-muted" title="in euro, sullo stesso periodo dell'obiettivo">
+                  <span className="inline-block w-4 border-t" style={{ borderColor: b.color }} />
+                  {b.label}
                 </li>
               ))}
               <li className="text-xs text-muted">{CHANGE_HINT}</li>

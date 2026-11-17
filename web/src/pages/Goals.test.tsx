@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { Goal, GoalProgress } from "@/api/types";
+import type { Goal, GoalProgress, GoalTemplate } from "@/api/types";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
 
@@ -35,6 +35,32 @@ const xmas = goal("g2", "Natale", {
   portfolio_id: "p1", portfolio_name: "Alfa", target_pct: "5", kind: "cap",
 });
 const old = goal("g3", "vecchio", { active: false, horizon: "month" });
+const risk = goal("g4", "rischio", {
+  horizon: "month", scope: "portfolio", portfolio_id: "p1", portfolio_name: "Alfa", target_pct: "5", kind: "max_loss",
+});
+const index = goal("g5", "indice", { horizon: "quarter", target_pct: "0", kind: "beat_index", benchmark: "VWCE.DE" });
+
+const templates: GoalTemplate[] = [
+  {
+    key: "weekly", label: "Settimanale +2% totale",
+    body: { name: "Settimanale +2%", horizon: "week", recurring: true, scope: "total", portfolio_id: null, target_pct: "2", kind: "min" },
+  },
+  {
+    key: "risk-p2", label: "Rischio mensile −5% · Beta",
+    body: {
+      name: "Rischio mensile Beta", horizon: "month", recurring: true, scope: "portfolio", portfolio_id: "p2",
+      target_pct: "5", kind: "max_loss", benchmark: null,
+    },
+  },
+  {
+    key: "vwce", label: "Battere VWCE nel trimestre (totale)",
+    body: {
+      name: "Battere VWCE", horizon: "quarter", recurring: true, scope: "total", portfolio_id: null,
+      target_pct: "0", kind: "beat_index", benchmark: "VWCE.DE",
+    },
+  },
+];
+let templateCalls = 0;
 
 let role: "admin" | "viewer" = "admin";
 let goals: Goal[] = [];
@@ -50,8 +76,20 @@ const server = setupServer(
         period_start: "2026-11-01", period_end: "2026-12-24", start_eur: "600", current_eur: "636", target_eur: "630",
         pct: "6", gap_eur: "-6", elapsed_pct: "30", status: "oltre il tetto", portfolio_name: "Alfa",
       }),
+      progress(risk, {
+        period_start: "2026-11-01", period_end: "2026-11-30", start_eur: "600", current_eur: "576", target_eur: "570",
+        pct: "-4", gap_eur: "6", elapsed_pct: "55", status: "vicino al limite", loss_pct: "4", portfolio_name: "Alfa",
+      }),
+      progress(index, {
+        period_start: "2026-10-01", period_end: "2026-12-31", target_eur: null, pct: "3", gap_eur: null, elapsed_pct: "52",
+        status: "avanti", benchmark: "VWCE.DE", benchmark_pct: "2", diff_pp: "1",
+      }),
     ]),
   ),
+  http.get("*/api/goals/templates", () => {
+    templateCalls += 1;
+    return HttpResponse.json(templates);
+  }),
   ...commonHandlers,
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "a@example.com", role, totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
@@ -88,11 +126,12 @@ afterEach(() => {
   role = "admin";
   calls = [];
   postError = null;
+  templateCalls = 0;
 });
 afterAll(() => server.close());
 
 function reset() {
-  goals = [weekly, xmas, old];
+  goals = [weekly, xmas, old, risk, index];
 }
 
 describe("Obiettivi", () => {
@@ -154,10 +193,108 @@ describe("Obiettivi", () => {
         method: "POST", path: "/api/goals",
         body: {
           name: "Natale", horizon: "custom", start_date: "2026-11-20", end_date: "2026-12-24", recurring: false,
-          scope: "portfolio", portfolio_id: "p2", target_pct: "3.5", kind: "cap",
+          scope: "portfolio", portfolio_id: "p2", target_pct: "3.5", kind: "cap", benchmark: null,
         },
       },
     ]);
+  });
+
+  it("shows the risk and index goals with their statuses and figures", async () => {
+    reset();
+    renderApp("/obiettivi");
+    const r = await screen.findByRole("article", { name: "Obiettivo rischio" });
+    expect(await within(r).findByText("vicino al limite")).toBeInTheDocument();
+    expect(within(r).getByText("vicino al limite")).toHaveClass("text-warn");
+    expect(within(r).getByText("perdita max 5%")).toBeInTheDocument();
+    expect(within(r).getByText(/perdita 4,00% su un limite di 5%/)).toBeInTheDocument();
+    expect(within(r).getByText(/limite di perdita 570,00 €/)).toBeInTheDocument();
+    expect(within(r).getByRole("progressbar", { name: "Perdita rischio" })).toHaveAttribute("aria-valuenow", "80");
+
+    const i = screen.getByRole("article", { name: "Obiettivo indice" });
+    expect(within(i).getByText("avanti")).toHaveClass("text-gain");
+    expect(within(i).getByText("meglio di VWCE")).toBeInTheDocument();
+    expect(within(i).getByText("+3,00%")).toBeInTheDocument();
+    expect(within(i).getByText("VWCE +2,00% · differenza +1,00 pt")).toBeInTheDocument();
+    expect(within(i).queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
+  it("creates a risk goal: the target is the loss limit", async () => {
+    reset();
+    const user = userEvent.setup();
+    renderApp("/obiettivi");
+    await user.click(await screen.findByRole("button", { name: "Nuovo obiettivo" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Nome"), "rischio");
+    await user.selectOptions(within(dialog).getByLabelText("Orizzonte"), "month");
+    await user.selectOptions(within(dialog).getByLabelText("Tipo"), "max_loss");
+    expect(within(dialog).queryByLabelText("Obiettivo (%)")).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("Indice")).not.toBeInTheDocument();
+    await user.clear(within(dialog).getByLabelText("Limite di perdita (%)"));
+    await user.type(within(dialog).getByLabelText("Limite di perdita (%)"), "5");
+    await user.click(within(dialog).getByRole("button", { name: "Crea" }));
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0].body).toMatchObject({ kind: "max_loss", target_pct: "5", benchmark: null, horizon: "month" });
+  });
+
+  it("creates an index goal: benchmark select, margin in points defaulting to 0", async () => {
+    reset();
+    const user = userEvent.setup();
+    renderApp("/obiettivi");
+    await user.click(await screen.findByRole("button", { name: "Nuovo obiettivo" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Nome"), "indice");
+    await user.selectOptions(within(dialog).getByLabelText("Tipo"), "beat_index");
+    const bench = within(dialog).getByLabelText("Indice");
+    expect(within(bench).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "SPY (S&P 500)", "QQQ (Nasdaq 100)", "VWCE (ETF mondiale)",
+    ]);
+    expect(bench).toHaveValue("VWCE.DE");
+    expect(within(dialog).getByLabelText("Margine (punti %)")).toHaveValue("0");
+    await user.click(within(dialog).getByRole("button", { name: "Crea" }));
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0].body).toMatchObject({ kind: "beat_index", target_pct: "0", benchmark: "VWCE.DE" });
+
+    // another index and a margin
+    await user.click(screen.getByRole("button", { name: "Nuovo obiettivo" }));
+    const again = await screen.findByRole("dialog");
+    await user.type(within(again).getByLabelText("Nome"), "spy");
+    await user.selectOptions(within(again).getByLabelText("Tipo"), "beat_index");
+    await user.selectOptions(within(again).getByLabelText("Indice"), "SPY");
+    await user.clear(within(again).getByLabelText("Margine (punti %)"));
+    await user.type(within(again).getByLabelText("Margine (punti %)"), "1,5");
+    await user.click(within(again).getByRole("button", { name: "Crea" }));
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].body).toMatchObject({ kind: "beat_index", target_pct: "1.5", benchmark: "SPY" });
+  });
+
+  it("«Modelli»: lists the templates, one prefills the dialog, the admin confirms", async () => {
+    reset();
+    const user = userEvent.setup();
+    renderApp("/obiettivi");
+    await user.click(await screen.findByRole("button", { name: "Modelli" }));
+    const list = await screen.findByRole("dialog");
+    expect(await within(list).findByRole("button", { name: "Settimanale +2% totale" })).toBeInTheDocument();
+    expect(within(list).getByRole("button", { name: "Battere VWCE nel trimestre (totale)" })).toBeInTheDocument();
+    await user.click(within(list).getByRole("button", { name: "Rischio mensile −5% · Beta" }));
+    const dialog = await screen.findByRole("dialog", { name: "Nuovo obiettivo" });
+    expect(within(dialog).getByLabelText("Nome")).toHaveValue("Rischio mensile Beta");
+    expect(within(dialog).getByLabelText("Orizzonte")).toHaveValue("month");
+    expect(within(dialog).getByLabelText("Tipo")).toHaveValue("max_loss");
+    expect(within(dialog).getByLabelText("Portafoglio")).toHaveValue("p2");
+    expect(within(dialog).getByLabelText("Limite di perdita (%)")).toHaveValue("5");
+    expect(calls).toEqual([]);
+    await user.click(within(dialog).getByRole("button", { name: "Crea" }));
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0].body).toMatchObject({
+      name: "Rischio mensile Beta", horizon: "month", recurring: true, scope: "portfolio", portfolio_id: "p2",
+      target_pct: "5", kind: "max_loss", benchmark: null,
+    });
+
+    await user.click(screen.getByRole("button", { name: "Modelli" }));
+    await user.click(await screen.findByRole("button", { name: "Battere VWCE nel trimestre (totale)" }));
+    const idx = await screen.findByRole("dialog", { name: "Nuovo obiettivo" });
+    expect(within(idx).getByLabelText("Indice")).toHaveValue("VWCE.DE");
+    expect(within(idx).getByLabelText("Margine (punti %)")).toHaveValue("0");
   });
 
   it("checks the form locally and shows the server error on its field", async () => {
@@ -201,7 +338,7 @@ describe("Obiettivi", () => {
       method: "PATCH", path: "/api/goals/g1",
       body: {
         name: "settimanale", horizon: "week", start_date: "2026-01-05", end_date: null, recurring: true,
-        scope: "total", portfolio_id: null, target_pct: "2.5", kind: "min",
+        scope: "total", portfolio_id: null, target_pct: "2.5", kind: "min", benchmark: null,
       },
     });
   });
@@ -227,6 +364,8 @@ describe("Obiettivi", () => {
     expect(await screen.findByRole("article", { name: "Obiettivo settimanale" })).toBeInTheDocument();
     expect(await screen.findByText("vecchio")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Nuovo obiettivo" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Modelli" })).not.toBeInTheDocument();
+    expect(templateCalls).toBe(0);
     expect(screen.queryByRole("button", { name: /^Modifica / })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Disattiva / })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Riattiva / })).not.toBeInTheDocument();

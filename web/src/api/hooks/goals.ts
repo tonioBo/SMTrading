@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
-import type { Goal, GoalCreate, GoalPatch, GoalProgress } from "@/api/types";
+import type { Goal, GoalCreate, GoalPatch, GoalProgress, GoalTemplate } from "@/api/types";
 
 export const goalsKey = ["goals"] as const;
 export const goalsProgressKey = ["goals", "progress"] as const;
@@ -18,6 +18,16 @@ export function useGoalsProgress() {
     queryFn: () => apiFetch<GoalProgress[]>("/api/goals/progress"),
     refetchInterval: GOALS_REFRESH_MS,
     refetchIntervalInBackground: false,
+  });
+}
+
+/** `GET /api/goals/templates` (admin): ready goals, one per active portfolio when per
+ * portfolio; fetched only when `enabled` (the «Modelli» list is open). */
+export function useGoalTemplates(enabled: boolean) {
+  return useQuery({
+    queryKey: [...goalsKey, "templates"],
+    queryFn: () => apiFetch<GoalTemplate[]>("/api/goals/templates"),
+    enabled,
   });
 }
 

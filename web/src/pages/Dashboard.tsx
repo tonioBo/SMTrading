@@ -21,7 +21,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatDateTime, formatMoney, formatQty } from "@/lib/format";
-import { formatDay, goalScopeLabel, goalTargetLabel, STATUS_TONE } from "@/lib/goals";
+import { comparisonText, formatDay, goalScopeLabel, goalTargetLabel, lossText, STATUS_TONE } from "@/lib/goals";
 import { closestSignals } from "@/lib/signals";
 import { MODE_INFO } from "@/lib/portfolioMode";
 import { heartbeatState } from "@/lib/heartbeat";
@@ -137,6 +137,23 @@ function shortDay(day: string): string {
   return formatDay(day).slice(0, 5);
 }
 
+/** Under a goal: the bar (minimum/cap), the loss against the limit (risk) or the index's
+ * % and the difference (index); nothing before the period has data. */
+function GoalsCardFigures({ g }: { g: GoalProgress }) {
+  if (g.pct == null) return null;
+  if (g.kind === "beat_index") return <p className="text-xs text-muted">{comparisonText(g)}</p>;
+  if (g.kind === "max_loss") {
+    const loss = lossText(g);
+    return (
+      <>
+        <GoalBar pct={g.loss_pct ?? null} target={g.target_pct} kind="max_loss" elapsed={g.elapsed_pct} label={`Perdita ${g.name}`} />
+        {loss && <p className="text-xs text-muted">{loss}</p>}
+      </>
+    );
+  }
+  return <GoalBar pct={g.pct} target={g.target_pct} kind={g.kind} elapsed={g.elapsed_pct} label={`Avanzamento ${g.name}`} />;
+}
+
 /** «Obiettivi»: every active goal's current period, compact (the page has the details);
  * hidden without active goals. */
 function GoalsCard({ goals }: { goals: GoalProgress[] }) {
@@ -155,7 +172,7 @@ function GoalsCard({ goals }: { goals: GoalProgress[] }) {
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <span className="flex flex-wrap items-baseline gap-2">
                   <span className="font-medium">{g.name}</span>
-                  <span className="num text-muted">{goalTargetLabel(g.kind, g.target_pct)}</span>
+                  <span className="num text-muted">{goalTargetLabel(g.kind, g.target_pct, g.benchmark)}</span>
                   <span className="text-xs text-muted">{`${goalScopeLabel(g)} · ${shortDay(g.period_start)} – ${shortDay(g.period_end)}`}</span>
                 </span>
                 <span className="flex items-center gap-2">
@@ -163,9 +180,7 @@ function GoalsCard({ goals }: { goals: GoalProgress[] }) {
                   <StatusBadge tone={STATUS_TONE[g.status] ?? "neutral"}>{g.status}</StatusBadge>
                 </span>
               </div>
-              {g.pct != null && (
-                <GoalBar pct={g.pct} target={g.target_pct} kind={g.kind} elapsed={g.elapsed_pct} label={`Avanzamento ${g.name}`} />
-              )}
+              <GoalsCardFigures g={g} />
             </li>
           ))}
         </ul>

@@ -1,7 +1,7 @@
 /** The «Andamento» chart lines of an `equity-history` response (EquityHistoryCard). */
 import type { EquityHistory, EquityHistoryGoalLine } from "@/api/hooks/equityHistory";
 import type { ChartLine } from "@/components/LineChart";
-import { goalTargetLabel } from "@/lib/goals";
+import { benchmarkLabel, goalTargetLabel } from "@/lib/goals";
 import { toPctPoints, type ChartPoint } from "@/lib/lineChart";
 
 export type Unit = "eur" | "pct";
@@ -10,6 +10,7 @@ export type Unit = "eur" | "pct";
 export const SERIES_COLORS = ["#10b981", "#3b82f6", "#a855f7", "#f59e0b", "#ec4899", "#06b6d4", "#84cc16", "#f97316"];
 export const ACCENT = "rgb(var(--accent))";
 export const GOAL_COLOR = "rgb(var(--warn))";
+export const BENCHMARK_COLOR = "rgb(var(--muted))";
 
 /** A flat dashed line at `v` from `from` to `to` (none when the span is empty). */
 function flat(key: string, label: string, tag: string, color: string, v: number, from: number, to: number): ChartLine | null {
@@ -27,6 +28,8 @@ function flat(key: string, label: string, tag: string, color: string, v: number,
  *   portfolio's colour.
  * - Portfolio detail: the portfolio's weekly `goal` («1s», as before: the list leaves the
  *   total goals out there) and its own goals from the list.
+ * - An index goal (beat_index) has no flat line: its index is drawn instead, in % only,
+ *   as a thin solid line tagged with the symbol (the `benchmarks` series).
  */
 export function historyLines(data: EquityHistory, unit: Unit, single: boolean): ChartLine[] {
   const end = Date.parse(data.end);
@@ -57,13 +60,21 @@ export function historyLines(data: EquityHistory, unit: Unit, single: boolean): 
     const line = goalLine(g);
     if (line) lines.push(line);
   }
+  if (unit === "pct") {
+    for (const [symbol, series] of Object.entries(data.benchmarks ?? {})) {
+      const points = series.map((p) => ({ t: Date.parse(p.ts), v: Number(p.pct) })).filter((p) => Number.isFinite(p.v));
+      if (points.length === 0) continue;
+      const short = benchmarkLabel(symbol);
+      lines.push({ key: `bench-${symbol}`, label: `Indice ${short}`, tag: short, color: BENCHMARK_COLOR, points, thin: true });
+    }
+  }
   return lines;
 
   function goalLine(g: EquityHistoryGoalLine): ChartLine | null {
-    if (g.target_eur == null) return null;
+    if (g.target_eur == null || g.kind === "beat_index") return null;
     const target = Number(g.target_eur);
     const to = Math.min(Date.parse(g.period_end), end);
-    const tag = goalTargetLabel(g.kind, g.target_pct);
+    const tag = goalTargetLabel(g.kind, g.target_pct, g.benchmark);
     if (g.scope === "total") {
       if (single || unit !== "pct" || firsts.size === 0) return null;
       const all = [...firsts.values()];

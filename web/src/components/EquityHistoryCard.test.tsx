@@ -151,7 +151,59 @@ describe("historyLines with the goals list", () => {
   });
 });
 
+/** The dashboard with an index goal on the total and its benchmark series. */
+function withBenchmark(): EquityHistory {
+  const h = withGoals();
+  const index = goalLine({
+    goal_id: "g5", name: "indice", horizon: "quarter", kind: "beat_index", benchmark: "VWCE.DE", target_pct: "0",
+    period_start: "2026-09-30T22:00:00Z", period_end: "2026-12-31T23:00:00Z", base_eur: "1250.00", target_eur: null,
+  });
+  return {
+    ...h,
+    goals: [...(h.goals ?? []), index],
+    benchmarks: {
+      "VWCE.DE": [
+        { ts: "2026-11-10T08:00:00Z", pct: "0.5" },
+        { ts: "2026-11-16T11:55:00Z", pct: "1.25" },
+      ],
+    },
+  };
+}
+
+describe("historyLines with the benchmarks", () => {
+  it("% mode: a thin, solid, labelled line per index; the index goal itself draws no flat line", () => {
+    const lines = historyLines(withBenchmark(), "pct", false);
+    expect(lines.map((l) => l.key)).toEqual(["p1", "p2", "goal-g1", "goal-g2", "bench-VWCE.DE"]);
+    const b = lines.at(-1)!;
+    expect(b).toMatchObject({ label: "Indice VWCE", tag: "VWCE", thin: true });
+    expect(b.reference).toBeFalsy();
+    expect(b.points).toEqual([
+      { t: Date.parse("2026-11-10T08:00:00Z"), v: 0.5 },
+      { t: Date.parse("2026-11-16T11:55:00Z"), v: 1.25 },
+    ]);
+  });
+
+  it("€ mode and responses without benchmarks: no index line", () => {
+    expect(historyLines(withBenchmark(), "eur", false).some((l) => l.key.startsWith("bench-"))).toBe(false);
+    expect(historyLines(withGoals(), "pct", false).some((l) => l.key.startsWith("bench-"))).toBe(false);
+  });
+});
+
 describe("EquityHistoryCard", () => {
+  it("dashboard with an index goal: the index line is thin, tagged and in the legend", async () => {
+    server.use(http.get("*/api/portfolios/equity-history", () => HttpResponse.json(withBenchmark())));
+    renderCard();
+    const legend = await screen.findByRole("list", { name: "Legenda" });
+    expect(within(legend).getByText("Indice VWCE")).toBeInTheDocument();
+    const path = screen.getByTestId("line-bench-VWCE.DE");
+    expect(path).toHaveAttribute("stroke-width", "1");
+    expect(path).not.toHaveAttribute("stroke-dasharray");
+    expect(screen.getByTestId("tag-bench-VWCE.DE")).toHaveTextContent("VWCE");
+    await userEvent.click(screen.getByRole("button", { name: "€" }));
+    expect(screen.queryByTestId("line-bench-VWCE.DE")).toBeNull();
+    expect(screen.queryByText("Indice VWCE")).toBeNull();
+  });
+
   it("dashboard with the goals list: dashed lines labelled in the chart and the legend", async () => {
     server.use(http.get("*/api/portfolios/equity-history", () => HttpResponse.json(withGoals())));
     renderCard();
