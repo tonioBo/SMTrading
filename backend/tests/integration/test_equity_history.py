@@ -11,7 +11,7 @@ from sqlalchemy import update
 from test_admin_users import env  # noqa: F401
 
 from smtrading.events import discard_post_commit
-from smtrading.goals.models import Goal
+from smtrading.goals.models import BenchmarkSnapshot, Goal
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
 from smtrading.risk.models import EquitySnapshot, SnapshotKind
@@ -218,8 +218,9 @@ async def test_goal_lines_of_the_shown_scope(env, monkeypatch):
     assert set(lines) == {"settimanale", "mese B"}
     week = lines["settimanale"]
     assert set(week) == {"goal_id", "name", "horizon", "scope", "portfolio_id", "kind",
-                         "target_pct", "period_start", "period_end", "base_eur",
-                         "target_eur"}
+                         "benchmark", "target_pct", "period_start", "period_end",
+                         "base_eur", "target_eur"}
+    assert body["benchmarks"] == {}
     assert datetime.fromisoformat(week["period_start"]) == rome(MON, 0)
     assert datetime.fromisoformat(week["period_end"]) == rome(15, 0)
     assert (D(week["base_eur"]), D(week["target_eur"])) == (D(1000), D(1020))
@@ -234,3 +235,35 @@ async def test_goal_lines_of_the_shown_scope(env, monkeypatch):
     assert one["goals"] == []
     one = (await c.get(URL, params={"range": "1m", "portfolio_id": str(b)})).json()
     assert [g["name"] for g in one["goals"]] == ["mese B"]
+
+
+async def test_benchmark_series_of_beat_index_goals(env, monkeypatch):
+    """A beat_index goal carries kind and benchmark, its target from the benchmark's
+    change; `benchmarks` holds the benchmark's EUR change from the period start over the
+    range. A max_loss goal's target is the floor."""
+    from datetime import date
+
+    _clock(monkeypatch)
+    a = await _portfolio(env.sm, "Indice A")
+    await _snap(env.sm, a, rome(MON, 0, 1), "1000", SnapshotKind.day_open)
+    async with env.sm() as s:
+        s.add(Goal(name="indice", horizon="week", start_date=date(2027, 3, 8),
+                   recurring=False, scope="portfolio", portfolio_id=a, target_pct=D("1"),
+                   kind="beat_index", benchmark="SPY", active=True))
+        s.add(Goal(name="rischio", horizon="month", start_date=date(2027, 3, 1),
+                   recurring=False, scope="portfolio", portfolio_id=a, target_pct=D("5"),
+                   kind="max_loss", active=True))
+        for ts, eur in ((rome(5, 22, 30), "90"), (rome(WED, 15), "93.6"),
+                        (rome(FRI, 17), "99"), (rome(FRI, 19), "120")):
+            s.add(BenchmarkSnapshot(symbol="SPY", ts=ts, price=D(eur), currency="USD",
+                                    fx_eur=D(1), price_eur=D(eur)))
+        await s.commit()
+    body = (await _get(env, range="1w")).json()
+    lines = {g["name"]: g for g in body["goals"]}
+    assert (lines["indice"]["kind"], lines["indice"]["benchmark"]) == ("beat_index", "SPY")
+    assert D(lines["indice"]["target_eur"]) == D(1110)  # +10% of the index, +1 point
+    assert (lines["rischio"]["benchmark"], D(lines["rischio"]["target_eur"])) == (None, D(950))
+    assert [(datetime.fromisoformat(p["ts"]), D(p["pct"])) for p in body["benchmarks"]["SPY"]
+            ] == [(rome(MON, 0), D(0)), (rome(WED, 15), D(4)), (rome(FRI, 17), D(10))]
+    one = (await _get(env, range="1d", portfolio_id=str(a))).json()
+    assert [D(p["pct"]) for p in one["benchmarks"]["SPY"]] == [D(10)]  # within the range

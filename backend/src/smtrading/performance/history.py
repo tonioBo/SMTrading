@@ -18,9 +18,14 @@ Monday 00:00, base = its Monday open (or its first snapshot of the week, see
 `goals` (every range): one item per active goal whose current period overlaps the range,
 for the shown scope (all portfolios: the total goals and the goals of the listed
 portfolios; one portfolio: its goals only): `goal_id, name, horizon, scope, portfolio_id,
-kind, target_pct, period_start, period_end` (UTC instants of the local midnights opening
-and closing the period), `base_eur` (the goal's start equity, `goals.progress`) and
-`target_eur` (null without data). Admin-only data: never reaches the agents."""
+kind, benchmark, target_pct, period_start, period_end` (UTC instants of the local
+midnights opening and closing the period), `base_eur` (the goal's start equity,
+`goals.progress`) and `target_eur` (`goals.progress.kind_target`: for max_loss the floor,
+for beat_index the benchmark's change plus the margin; null without data).
+`benchmarks` ({symbol: [{ts, pct}]}): for each benchmark of a listed beat_index goal (the
+first one per symbol), its change in EUR from the goal's period start over the range
+(`goals.benchmark.benchmark_series`, downsampled), empty without such a goal.
+Admin-only data: never reaches the agents."""
 
 from datetime import UTC, datetime, time, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
@@ -34,8 +39,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import quantize_money
+from smtrading.goals.benchmark import benchmark_change, benchmark_series
 from smtrading.goals.progress import (
     current_period,
+    kind_target,
     local_midnight,
     portfolio_periods,
     visible_goals,
@@ -141,10 +148,11 @@ async def _goals(session: AsyncSession, now: datetime,
 
 async def _goal_lines(session: AsyncSession, portfolios: list[Portfolio], single: bool,
                       start: datetime | None, now: datetime,
-                      zone: ZoneInfo) -> list[dict[str, Any]]:
+                      zone: ZoneInfo) -> tuple[list[dict[str, Any]], dict[str, list]]:
     today = now.astimezone(zone).date()
     ids = {p.id for p in portfolios}
     out = []
+    benchmarks: dict[str, list] = {}
     for goal, _ in await visible_goals(session):
         if (goal.scope == "total" and single) or (
                 goal.scope == "portfolio" and goal.portfolio_id not in ids):
@@ -157,14 +165,24 @@ async def _goal_lines(session: AsyncSession, portfolios: list[Portfolio], single
         parts = await portfolio_periods(
             session, period, now, zone, None if goal.scope == "total" else [goal.portfolio_id])
         base = sum((w.start for w in parts), Decimal(0)) if parts else None
+        bench = None
+        if goal.kind == "beat_index" and goal.benchmark:
+            bench = await benchmark_change(session, goal.benchmark, period, now, zone)
+            if goal.benchmark not in benchmarks:
+                series = await benchmark_series(session, goal.benchmark, period, start, now,
+                                                zone)
+                benchmarks[goal.benchmark] = [
+                    {"ts": ts, "pct": pct.quantize(_Q2, rounding=ROUND_HALF_EVEN)}
+                    for ts, pct in downsample(series)]
+        target = None if base is None else kind_target(goal.kind, goal.target_pct, base, bench)
         out.append({
             "goal_id": goal.id, "name": goal.name, "horizon": goal.horizon,
             "scope": goal.scope, "portfolio_id": goal.portfolio_id, "kind": goal.kind,
-            "target_pct": goal.target_pct, "period_start": opens, "period_end": closes,
-            "base_eur": _eur(base),
-            "target_eur": None if base is None else _eur(goal_target(goal.target_pct, base)),
+            "benchmark": goal.benchmark, "target_pct": goal.target_pct,
+            "period_start": opens, "period_end": closes, "base_eur": _eur(base),
+            "target_eur": _eur(target),
         })
-    return out
+    return out, benchmarks
 
 
 def _item(p: Portfolio, points: list[Point], goal: dict[str, Any] | None) -> dict[str, Any]:
@@ -196,9 +214,10 @@ async def equity_history(session: AsyncSession, range_: str, *, now: datetime,
     ids = [p.id for p in portfolios]
     series = await _series(session, ids, range_, start, now) if ids else {}
     goal_pct, goals = (await _goals(session, now, zone)) if range_ == "1w" else (None, {})
+    lines, benchmarks = await _goal_lines(session, portfolios, portfolio_id is not None,
+                                          start, now, zone)
     return {
         "range": range_, "start": start, "end": now, "goal_pct": goal_pct,
         "portfolios": [_item(p, series.get(p.id, []), goals.get(p.id)) for p in portfolios],
-        "goals": await _goal_lines(session, portfolios, portfolio_id is not None, start, now,
-                                   zone),
+        "goals": lines, "benchmarks": benchmarks,
     }
