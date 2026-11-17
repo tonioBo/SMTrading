@@ -218,6 +218,45 @@ async def list_goals(session: AsyncSession) -> list[dict[str, Any]]:
     return [goal_dto(g, names.get(g.portfolio_id)) for g in goals]
 
 
+# -- templates («Modelli») -------------------------------------------------------------
+
+
+def _body(name: str, horizon: str, target: str, *, kind: str = "min",
+          portfolio_id: UUID | None = None, benchmark: str | None = None,
+          today: date) -> dict[str, Any]:
+    return {"name": name, "horizon": horizon, "start_date": today.isoformat(),
+            "end_date": None, "recurring": True,
+            "scope": "portfolio" if portfolio_id else "total",
+            "portfolio_id": str(portfolio_id) if portfolio_id else None,
+            "target_pct": target, "kind": kind, "benchmark": benchmark, "active": True}
+
+
+async def goal_templates(session: AsyncSession, *, today: date) -> list[dict[str, Any]]:
+    """The «Modelli» of the Obiettivi page: [{key, label, body}], `body` a create body to
+    prefill the dialog (the admin confirms); the per-portfolio ones once per live
+    portfolio, by name."""
+    portfolios = list(await session.execute(
+        select(Portfolio.id, Portfolio.name)
+        .where(Portfolio.status != PortfolioStatus.archived).order_by(Portfolio.name)))
+    out = [
+        {"key": "weekly_total", "label": "Settimanale +2% totale",
+         "body": _body("settimanale", "week", "2", today=today)},
+        {"key": "monthly_total", "label": "Mensile +5% totale",
+         "body": _body("mensile", "month", "5", today=today)},
+    ]
+    out += [{"key": f"quarterly_portfolio:{pid}", "label": f"Trimestrale +10% · {name}",
+             "body": _body("trimestrale", "quarter", "10", portfolio_id=pid, today=today)}
+            for pid, name in portfolios]
+    out += [{"key": f"risk_monthly:{pid}", "label": f"Rischio mensile −5% · {name}",
+             "body": _body("rischio mensile", "month", "5", kind="max_loss",
+                           portfolio_id=pid, today=today)}
+            for pid, name in portfolios]
+    out.append({"key": "beat_vwce_quarter", "label": "Battere VWCE nel trimestre (totale)",
+                "body": _body("battere VWCE", "quarter", "0", kind="beat_index",
+                              benchmark="VWCE.DE", today=today)})
+    return out
+
+
 # -- «the weekly goal» -----------------------------------------------------------------
 
 

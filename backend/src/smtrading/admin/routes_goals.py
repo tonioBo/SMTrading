@@ -11,6 +11,8 @@ level). Every figure is a string (null without data).
   allowed), active (default true);
 - `PATCH /api/goals/{goal_id}`: only the fields sent change, validated as a whole;
 - `DELETE /api/goals/{goal_id}`: never deleted, active=false;
+- `GET /api/goals/templates`: the «Modelli» ([{key, label, body}], `body` a POST body
+  that prefills the dialog; per portfolio: one per live portfolio);
 - `GET /api/goals/progress`: the progress of the active goals in their current period
   (goals of archived portfolios left out)."""
 
@@ -73,6 +75,11 @@ async def list_goals(session: DbSession) -> list[dict[str, Any]]:
 @router.get("/goals/progress")
 async def goals_progress(session: DbSession) -> list[dict[str, Any]]:
     return to_jsonable(await active_progress(session, _now(), _zone()))
+
+
+@router.get("/goals/templates")
+async def goal_templates(session: DbSession) -> list[dict[str, Any]]:
+    return to_jsonable(await service.goal_templates(session, today=_today()))
 
 
 @router.post("/goals")

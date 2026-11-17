@@ -761,3 +761,38 @@ async def test_period_end_weekday_month_end_announced_next_day(maker):
         assert [ln for ln in thursday.splitlines() if "mensile" in ln
                 and ln.startswith("🏁")] == [
             "🏁 Obiettivo mensile: raggiunto (+4,00% su +3%)"]
+
+
+async def test_goal_lines_of_risk_and_index_goals(maker):
+    """max_loss and beat_index goals have their own «🎯» and «🏁» lines (the index's
+    change from the benchmark snapshots)."""
+    from datetime import date
+
+    from smtrading.goals.models import BenchmarkSnapshot
+
+    a = await _portfolio(maker, "Test 260 A")
+    await _day_open(maker, a, MON, "1000")
+    await _snaps(maker, a, [(rome(FRI, 17), "958")])
+    async with maker() as s:
+        await s.execute(update(Goal).values(active=False))
+        s.add(Goal(name="rischio", horizon="week", start_date=date(2027, 3, 8),
+                   recurring=True, scope="portfolio", portfolio_id=a, target_pct=D("5"),
+                   kind="max_loss", active=True, created_at=rome(1, 9)))
+        s.add(Goal(name="indice", horizon="week", start_date=date(2027, 3, 8),
+                   recurring=True, scope="total", target_pct=D("0"), kind="beat_index",
+                   benchmark="VWCE.DE", active=True, created_at=rome(1, 9)))
+        for ts, eur in ((rome(5, 22, 30), "100"), (rome(FRI, 17), "94")):
+            s.add(BenchmarkSnapshot(symbol="VWCE.DE", ts=ts, price=D(eur), currency="EUR",
+                                    fx_eur=D(1), price_eur=D(eur)))
+        await s.commit()
+        [(friday, _)] = await build_summary(s, "daily", rome(FRI, 18), tz=TZ)
+        assert _goal(friday) == [
+            "🎯 Obiettivo indice meglio di VWCE.DE: -4,20% contro -6,00% (+1,80 punti) · avanti",
+            ("🎯 Obiettivo rischio perdita max 5% · Test 260 A: da 1.000,00 € — attuale "
+             "958,00 € (-4,20%) · vicino al limite")]
+        [(monday, _)] = await build_summary(s, "daily", rome(15, 18), tz=TZ,
+                                            period_ends=True)
+        await s.commit()
+    assert [ln for ln in monday.splitlines() if ln.startswith("🏁")] == [
+        "🏁 Obiettivo indice: VWCE.DE battuto (-4,20% contro -6,00%)",
+        "🏁 Obiettivo rischio · Test 260 A: limite rispettato (-4,20%, limite -5%)"]

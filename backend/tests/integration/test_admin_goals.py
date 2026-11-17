@@ -324,3 +324,31 @@ async def test_max_loss_and_beat_index_goals(env, monkeypatch):
     assert (r.json()["kind"], r.json()["benchmark"]) == ("min", None)
     r = await c.patch(f"/api/goals/{risk['id']}", json={"kind": "beat_index"})
     assert r.status_code == 400 and r.json()["details"]["field"] == "benchmark"
+
+
+async def test_templates_prefill_valid_goals(env, monkeypatch):
+    """`GET /api/goals/templates`: the «Modelli», per-portfolio ones for each live
+    portfolio; each body is accepted as it is by POST."""
+    _clock(monkeypatch, rome(WED, 10))
+    c = await _admin(env)
+    a = await _portfolio(env.sm, "Modelli A")
+    z = await _portfolio(env.sm, "Modelli Z")
+    await _archive(env.sm, z)
+    email, _ = await env.add_user("viewer")
+    viewer = await env.client(email)
+    rows = (await viewer.get("/api/goals/templates")).json()
+    by = {t["key"]: t for t in rows}
+    assert {"weekly_total", "monthly_total", f"quarterly_portfolio:{a}", f"risk_monthly:{a}",
+            "beat_vwce_quarter"} <= set(by)
+    assert f"risk_monthly:{z}" not in by
+    assert by[f"risk_monthly:{a}"]["label"] == "Rischio mensile −5% · Modelli A"
+    assert by[f"risk_monthly:{a}"]["body"] == {
+        "name": "rischio mensile", "horizon": "month", "start_date": "2027-03-10",
+        "end_date": None, "recurring": True, "scope": "portfolio", "portfolio_id": str(a),
+        "target_pct": "5", "kind": "max_loss", "benchmark": None, "active": True}
+    beat = by["beat_vwce_quarter"]["body"]
+    assert (beat["kind"], beat["benchmark"], beat["target_pct"], beat["scope"]) == (
+        "beat_index", "VWCE.DE", "0", "total")
+    for t in rows:
+        r = await c.post("/api/goals", json=t["body"])
+        assert r.status_code == 200, (t["key"], r.text)
