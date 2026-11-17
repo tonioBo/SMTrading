@@ -34,13 +34,6 @@ export const commonHandlers = [
   http.get("*/api/paperclip/config", () =>
     HttpResponse.json({ base_url: null, company_id: null, enabled: false, board_key_masked: null, agent_map: {}, error: null }),
   ),
-  // Dashboard «Obiettivo settimanale»: no data this week unless a test overrides it
-  http.get("*/api/weekly-goal", () =>
-    HttpResponse.json({
-      week_start: "2026-11-16", on: true, target_pct: "2.0",
-      total: { start_eur: null, current_eur: null, target_eur: null, pct: null }, portfolios: [],
-    }),
-  ),
   // Dashboard «Obiettivi»: no active goal unless a test overrides it
   http.get("*/api/goals/progress", () => HttpResponse.json([])),
   // «Andamento» (Dashboard, portfolio detail): no snapshot unless a test overrides it

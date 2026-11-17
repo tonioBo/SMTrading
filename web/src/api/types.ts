@@ -1277,15 +1277,6 @@ export interface SignalsResponse {
   portfolios: { portfolio_id: string | null; portfolio_name: string | null; strategies: StrategySignal[] }[];
 }
 
-/** GET /api/weekly-goal: the goal of the week from the Monday opening (EUR, strings). */
-export interface WeeklyGoalProgress {
-  week_start: string;
-  on: boolean;
-  target_pct: string;
-  total: { start_eur: string | null; current_eur: string | null; target_eur: string | null; pct: string | null };
-  portfolios: { portfolio_id: string; name: string; start_eur: string; current_eur: string; target_eur?: string; pct: string | null }[];
-}
-
 // --- «Composizione» (GET /api/portfolios/{id}/composition) ----------------------------
 
 /** One open position; last/value/weight/P&L are null when it has no quote at all. */
