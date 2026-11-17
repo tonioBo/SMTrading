@@ -101,6 +101,11 @@ async def _setup(server, flavor: str) -> str:
             await agents.assign_portfolio(s, server.agent_id, other.id, "trade")
             pid = other.id
         await deposit(s, pid, D(1000), "EUR", author_id="admin")
+        from smtrading.goals.service import create_goal
+
+        await create_goal(s, {"name": "mensile", "horizon": "month", "target_pct": "5",
+                              "recurring": True, "scope": "portfolio",
+                              "portfolio_id": str(pid)}, today=date.today())
         await s.commit()
     return str(pid)
 
@@ -347,6 +352,7 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
         ("get_activity_feed", {"after_id": 0}),
         ("get_triggered_alerts", {}),
         ("get_trading_halt", {}),
+        ("get_goals", {}),
         ("list_watchlists", {}),
         ("list_alerts", {}),
         ("get_quote", {"symbols": [SYM]}),
@@ -388,6 +394,8 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
     assert halt["halted"] and halt["halts"][0]["set_by"] == "system", halt
     alerts = next(p for t, p in outputs if t == "get_triggered_alerts")
     assert "watch_changed" in {a["kind"] for a in alerts["alerts"]}, alerts
+    goals = next(p for t, p in outputs if t == "get_goals")
+    assert {g["name"] for g in goals["goals"]} >= {"settimanale", "mensile"}, goals
     clear = next(p for t, p in outputs if t == "set_trading_halt")
     assert clear["code"] == "FORBIDDEN", clear
     markers = [(t, m) for t, p in outputs for m in _human_markers(p)]

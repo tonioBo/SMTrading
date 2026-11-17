@@ -39,6 +39,8 @@ ALL_TOOLS = {
     "log_decision", "get_decisions", "get_activity_feed", "send_telegram",
     # trading halt
     "set_trading_halt", "get_trading_halt",
+    # goals
+    "get_goals",
 }
 
 
