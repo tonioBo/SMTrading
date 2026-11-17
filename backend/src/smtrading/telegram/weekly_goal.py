@@ -1,7 +1,8 @@
 """The weekly goal of the old surfaces, now a thin wrapper over the goals
-(`smtrading.goals`): «the weekly goal» is the earliest recurring weekly minimum goal on
-the total (`goals.service.weekly_goal`, migrated from the former setting
-`app_settings["weekly_goal"]`). It backs `GET /api/weekly-goal` (`weekly_goal_view`), the
+(`smtrading.goals`): «the weekly goal» is the earliest active recurring weekly minimum
+goal on the total, else the earliest one (`goals.service.weekly_goal`, migrated from the
+former setting `app_settings["weekly_goal"]`); its percent has the goals' limit (MAX_PCT),
+so any such goal reads and saves back. It backs `GET /api/weekly-goal` (`weekly_goal_view`), the
 `weekly_goal` field of the app settings and the 1w goal of the «Andamento» chart; the
 Telegram summaries list every goal (`goals.progress.summary_lines`).
 
@@ -27,11 +28,10 @@ from smtrading.goals.progress import (
     portfolio_periods,
     round_cents,
 )
-from smtrading.goals.service import parse_pct, set_weekly_goal, weekly_goal
+from smtrading.goals.service import MAX_PCT, parse_pct, set_weekly_goal, weekly_goal
 from smtrading.portfolios.models import Portfolio
 
 DEFAULT_PCT = Decimal("2.0")
-MAX_PCT = Decimal(100)
 
 PortfolioWeek = PortfolioPeriod
 

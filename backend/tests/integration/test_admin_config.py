@@ -715,7 +715,7 @@ async def test_app_settings_weekly_goal_and_preopen(admin):
     assert (pre.on, pre.at.isoformat()) == (False, "09:05:00")
 
     for bad in ({"weekly_goal": {"pct": "0"}}, {"weekly_goal": {"pct": "x"}},
-                {"weekly_goal": {"pct": "150"}}, {"preopen_check": {"at": "24:00"}},
+                {"weekly_goal": {"pct": "1500"}}, {"preopen_check": {"at": "24:00"}},
                 {"preopen_check": {"at": "nove"}}, {"weekly_goal": {"pct": "1.234"}}):
         assert (await c.put("/api/settings/app", json=bad)).status_code == 400, bad
     assert (await c.get("/api/settings/app")).json() == body

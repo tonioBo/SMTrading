@@ -120,7 +120,9 @@ def test_clean_weekly_goal():
                                                                            "pct": "2.5"}
     assert clean_weekly_goal({"on": False}, {"on": True, "pct": "2.0"}) == {"on": False,
                                                                           "pct": "2.0"}
-    for bad in ({"pct": "0"}, {"pct": "-1"}, {"pct": "101"}, {"pct": "1.234"},
+    # the goals' limit (1000%), so that any goal reads and saves back
+    assert clean_weekly_goal({"pct": "1000"}, {"on": True, "pct": "2.0"})["pct"] == "1000.0"
+    for bad in ({"pct": "0"}, {"pct": "-1"}, {"pct": "1001"}, {"pct": "1.234"},
                 {"pct": "abc"}, {"on": 1}):
         with pytest.raises(SMTError):
             clean_weekly_goal(bad, {"on": True, "pct": "2.0"})

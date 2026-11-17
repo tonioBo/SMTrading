@@ -211,11 +211,12 @@ async def list_goals(session: AsyncSession) -> list[dict[str, Any]]:
 
 
 async def weekly_goal(session: AsyncSession) -> Goal | None:
-    """The earliest recurring weekly minimum goal on the total (active or not)."""
+    """The earliest active recurring weekly minimum goal on the total, else the earliest
+    such goal (none active)."""
     return await session.scalar(
         select(Goal).where(Goal.horizon == "week", Goal.recurring.is_(True),
                            Goal.scope == "total", Goal.kind == "min")
-        .order_by(Goal.created_at, Goal.id).limit(1))
+        .order_by(Goal.active.desc(), Goal.created_at, Goal.id).limit(1))
 
 
 async def set_weekly_goal(session: AsyncSession, *, on: bool, pct: Decimal,

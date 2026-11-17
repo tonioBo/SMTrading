@@ -216,3 +216,45 @@ async def test_weekly_goal_compat_follows_the_goal(env, monkeypatch):
     goals = (await c.get("/api/goals")).json()
     assert [(g["name"], g["active"], g["target_pct"]) for g in goals] == [
         ("settimanale", True, "3")]
+
+
+async def test_weekly_setting_follows_the_earliest_active_weekly_goal(env):
+    """With several recurring weekly minimum goals on the total, the setting's toggle and
+    percent are the earliest active one (the earliest of all when none is active)."""
+    c = await _admin(env)
+    [first] = (await c.get("/api/goals")).json()
+    r = await c.post("/api/goals", json={"name": "seconda", "horizon": "week",
+                                         "recurring": True, "target_pct": "4"})
+    assert r.status_code == 200, r.text
+    second = r.json()
+    assert (await c.patch(f"/api/goals/{first['id']}",
+                          json={"active": False})).status_code == 200
+    assert (await c.get("/api/settings/app")).json()["weekly_goal"] == {"on": True,
+                                                                         "pct": "4.0"}
+    r = await c.put("/api/settings/app", json={"weekly_goal": {"pct": "5"}})
+    assert r.status_code == 200, r.text
+    by = {g["id"]: g for g in (await c.get("/api/goals")).json()}
+    assert (by[second["id"]]["target_pct"], by[second["id"]]["active"]) == ("5", True)
+    assert (by[first["id"]]["target_pct"], by[first["id"]]["active"]) == ("2", False)
+    # none active: the earliest one
+    assert (await c.patch(f"/api/goals/{second['id']}",
+                          json={"active": False})).status_code == 200
+    assert (await c.get("/api/settings/app")).json()["weekly_goal"] == {"on": False,
+                                                                         "pct": "2.0"}
+
+
+async def test_weekly_setting_round_trips_the_goals_limit(env):
+    """A weekly goal above 100% (the goals allow up to 1000%) reads and saves back."""
+    c = await _admin(env)
+    [goal] = (await c.get("/api/goals")).json()
+    assert (await c.patch(f"/api/goals/{goal['id']}",
+                          json={"target_pct": "250"})).status_code == 200
+    current = (await c.get("/api/settings/app")).json()["weekly_goal"]
+    assert current == {"on": True, "pct": "250.0"}
+    r = await c.put("/api/settings/app", json={"weekly_goal": current})
+    assert r.status_code == 200, r.text
+    r = await c.put("/api/settings/app", json={"weekly_goal": {"pct": "1000"}})
+    assert r.status_code == 200, r.text
+    assert r.json()["weekly_goal"]["pct"] == "1000.0"
+    r = await c.put("/api/settings/app", json={"weekly_goal": {"pct": "1000.01"}})
+    assert r.status_code == 400, r.text
