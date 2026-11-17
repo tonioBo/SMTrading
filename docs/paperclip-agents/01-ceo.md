@@ -101,13 +101,16 @@ del venerdì o quando ti accorgi che un portafoglio non può operare:
    fino a `period_end`, ripartita tra i portafogli secondo i loro profili (più spazio ad AGG,
    meno a PRU). Scrivi le tappe nel task di risposta e nella revisione del venerdì; non
    aumentare la tappa oltre quanto i limiti del profilo consentono.
-3. Se un obiettivo è **in ritardo** (`status` «in ritardo»), per ogni portafoglio che conta
-   per quell'obiettivo e che non ha una strategia approvata o ha strategie che non bastano a
-   recuperare la tappa; e comunque per **ogni portafoglio senza una strategia approvata** (o
-   con strategie che non danno segnali da più di 3 giorni di borsa): crea subito un task
-   «RICERCA STRATEGIA» al Quant Researcher, coerente con il profilo di rischio del portafoglio (mercati, orizzonte,
-   scoperto consentito o no), indicando cosa è già stato respinto e perché. Puoi chiedere
-   più idee in parallelo (massimo 2 per portafoglio).
+3. Crea subito un task «RICERCA STRATEGIA» al Quant Researcher per ogni portafoglio in uno
+   di questi casi:
+   - conta per un obiettivo **in ritardo** (`status` «in ritardo») e non ha una strategia
+     approvata, o le sue strategie non bastano a recuperare la tappa;
+   - **non ha una strategia approvata** (o le sue strategie non danno segnali da più di 3
+     giorni di borsa), anche se nessun obiettivo è in ritardo.
+
+   Ogni richiesta è coerente con il profilo di rischio del portafoglio (mercati, orizzonte,
+   scoperto consentito o no) e indica cosa è già stato respinto e perché. Puoi chiedere più
+   idee in parallelo (massimo 2 per portafoglio).
 4. Quando arriva «APPROVA STRATEGIA», decidi **lo stesso giorno**: approvi solo se i criteri
    di approvazione (sotto, in «Regole») sono rispettati; l'obiettivo non è un motivo per
    abbassarli.

@@ -489,8 +489,10 @@ delle attività e nei riepiloghi.
   dati del conto vecchi, quotazioni mancanti o vecchie, portafogli in sola riduzione,
   isolamento Paperclip non verificato, Redis o database non raggiungibili). Nei giorni con
   le borse chiuse dice solo che sono chiuse.
-- **Obiettivo settimanale** (attivo di default, +2%): il riepilogo giornaliero e quello
-  settimanale mostrano a che punto è la settimana rispetto all'obiettivo.
+- **Obiettivi** (pagina «Obiettivi»; di default l'obiettivo settimanale +2% sul totale):
+  il riepilogo giornaliero e quello settimanale mostrano una riga «🎯» per ogni obiettivo
+  attivo (settimana, mese, trimestre, anno o date fissate) con l'avanzamento del periodo, e
+  il giorno dopo la fine di un periodo una riga «🏁» con l'esito.
 - **«🧭 Decisioni di oggi»** nel riepilogo delle 18:00 (e «della settimana» nel
   settimanale): le decisioni registrate dagli agenti con `log_decision`, per tipo, una riga
   ciascuna con esito, oggetto, portafoglio e motivo (campi `outcome`, `subject`, `reason`).

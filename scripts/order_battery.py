@@ -1092,7 +1092,7 @@ async def t_decision(s: State) -> str:
     return "decisione salvata: approvata, oggetto e motivo presenti"
 
 
-@test("riepilogo giornaliero", "«Decisioni di oggi» con la decisione e l'obiettivo settimanale")
+@test("riepilogo giornaliero", "«Decisioni di oggi» con la decisione e gli obiettivi")
 async def t_summary(s: State) -> str:
     from smtrading.common.db import get_sessionmaker
     from smtrading.telegram import summaries
@@ -1103,8 +1103,8 @@ async def t_summary(s: State) -> str:
     if "Decisioni di oggi" not in text or s.decision_subject not in text:
         raise Fail("manca la sezione o la decisione: " + short(text, 120))
     if "biettivo" not in text:
-        raise Fail("manca l'obiettivo settimanale")
-    return "sezione «Decisioni di oggi» con la decisione, obiettivo settimanale presente"
+        raise Fail("mancano gli obiettivi (riga «Obiettivo …»)")
+    return "sezione «Decisioni di oggi» con la decisione, obiettivi presenti"
 
 
 @test("registro attività", "azioni admin registrate (ordini, kill switch, blocchi, chiusure)")
