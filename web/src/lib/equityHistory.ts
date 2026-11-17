@@ -29,7 +29,8 @@ function flat(key: string, label: string, tag: string, color: string, v: number,
  * - Portfolio detail: the portfolio's weekly `goal` («1s», as before: the list leaves the
  *   total goals out there) and its own goals from the list.
  * - An index goal (beat_index) has no flat line: its index is drawn instead, in % only,
- *   as a thin solid line tagged with the symbol (the `benchmarks` series).
+ *   as a thin solid line tagged with the symbol (the `benchmarks` series, rebased to its
+ *   first point in the range like the portfolios: v' = ((1 + v) / (1 + v0) − 1)).
  */
 export function historyLines(data: EquityHistory, unit: Unit, single: boolean): ChartLine[] {
   const end = Date.parse(data.end);
@@ -62,8 +63,11 @@ export function historyLines(data: EquityHistory, unit: Unit, single: boolean): 
   }
   if (unit === "pct") {
     for (const [symbol, series] of Object.entries(data.benchmarks ?? {})) {
-      const points = series.map((p) => ({ t: Date.parse(p.ts), v: Number(p.pct) })).filter((p) => Number.isFinite(p.v));
-      if (points.length === 0) continue;
+      const raw = series.map((p) => ({ t: Date.parse(p.ts), v: Number(p.pct) })).filter((p) => Number.isFinite(p.v));
+      if (raw.length === 0) continue;
+      // rebased to its first point in the range, so index and portfolios share the start
+      const b0 = 1 + raw[0].v / 100;
+      const points = b0 > 0 && raw[0].v !== 0 ? raw.map((p) => ({ t: p.t, v: ((1 + p.v / 100) / b0 - 1) * 100 })) : raw;
       const short = benchmarkLabel(symbol);
       lines.push({ key: `bench-${symbol}`, label: `Indice ${short}`, tag: short, color: BENCHMARK_COLOR, points, thin: true });
     }

@@ -177,10 +177,17 @@ describe("historyLines with the benchmarks", () => {
     const b = lines.at(-1)!;
     expect(b).toMatchObject({ label: "Indice VWCE", tag: "VWCE", thin: true });
     expect(b.reference).toBeFalsy();
-    expect(b.points).toEqual([
-      { t: Date.parse("2026-11-10T08:00:00Z"), v: 0.5 },
-      { t: Date.parse("2026-11-16T11:55:00Z"), v: 1.25 },
-    ]);
+    // rebased to its first point in the range, like the portfolios: ((1.0125 / 1.005) - 1) × 100
+    expect(b.points.map((p) => p.t)).toEqual([Date.parse("2026-11-10T08:00:00Z"), Date.parse("2026-11-16T11:55:00Z")]);
+    expect(b.points[0].v).toBe(0);
+    expect(b.points[1].v).toBeCloseTo(0.7463, 4);
+  });
+
+  it("a series already starting at 0 (the period start in the range) stays as it is", () => {
+    const h = withBenchmark();
+    h.benchmarks = { SPY: [{ ts: "2026-11-10T08:00:00Z", pct: "0" }, { ts: "2026-11-16T11:55:00Z", pct: "-2.5" }] };
+    const b = historyLines(h, "pct", false).at(-1)!;
+    expect(b.points.map((p) => p.v)).toEqual([0, -2.5]);
   });
 
   it("€ mode and responses without benchmarks: no index line", () => {
