@@ -1,10 +1,10 @@
-import { Pencil, Plus, Power, RotateCcw } from "lucide-react";
+import { LayoutTemplate, Pencil, Plus, Power, RotateCcw } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
-import { useDeactivateGoal, useCreateGoal, useGoals, useGoalsProgress, usePatchGoal } from "@/api/hooks/goals";
+import { useDeactivateGoal, useCreateGoal, useGoals, useGoalsProgress, useGoalTemplates, usePatchGoal } from "@/api/hooks/goals";
 import { useIsAdmin } from "@/api/hooks/auth";
 import { usePortfolios } from "@/api/hooks/portfolios";
-import type { Goal, GoalCreate, GoalHorizon, GoalKind, GoalProgress, GoalScope } from "@/api/types";
+import type { Goal, GoalBenchmark, GoalCreate, GoalHorizon, GoalKind, GoalProgress, GoalScope, GoalTemplate } from "@/api/types";
 import { AdminOnly } from "@/components/AdminOnly";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FormField, selectClass } from "@/components/FormField";
@@ -22,12 +22,15 @@ import { normalizeAmount, toInputDecimal } from "@/lib/decimal";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatDateTime, formatMoney } from "@/lib/format";
 import {
+  BENCHMARK_OPTIONS,
+  comparisonText,
   gapText,
   goalScopeLabel,
   goalTargetLabel,
   HORIZON_OPTIONS,
   horizonLabel,
   KIND_OPTIONS,
+  lossText,
   periodLabel,
   STATUS_TONE,
 } from "@/lib/goals";
@@ -47,27 +50,39 @@ interface FormState {
   portfolio_id: string;
   target_pct: string;
   kind: GoalKind;
+  benchmark: GoalBenchmark;
 }
 
-function initialForm(goal: Goal | null): FormState {
+const DEFAULT_BENCHMARK: GoalBenchmark = "VWCE.DE";
+
+/** The form of an existing goal, or of a new one (empty, or prefilled by a template). */
+function initialForm(goal: Goal | GoalCreate | null): FormState {
   if (!goal) {
     return {
       name: "", horizon: "week", start_date: today(), end_date: "", recurring: true, scope: "total",
-      portfolio_id: "", target_pct: "2", kind: "min",
+      portfolio_id: "", target_pct: "2", kind: "min", benchmark: DEFAULT_BENCHMARK,
     };
   }
   return {
-    name: goal.name, horizon: goal.horizon, start_date: goal.start_date, end_date: goal.end_date ?? "",
-    recurring: goal.recurring, scope: goal.scope, portfolio_id: goal.portfolio_id ?? "",
-    target_pct: toInputDecimal(goal.target_pct), kind: goal.kind,
+    name: goal.name, horizon: goal.horizon, start_date: goal.start_date ?? today(), end_date: goal.end_date ?? "",
+    recurring: goal.recurring ?? goal.horizon !== "custom", scope: goal.scope ?? "total", portfolio_id: goal.portfolio_id ?? "",
+    target_pct: toInputDecimal(goal.target_pct), kind: goal.kind ?? "min", benchmark: goal.benchmark ?? DEFAULT_BENCHMARK,
   };
 }
 
-const FORM_FIELDS = ["name", "horizon", "start_date", "end_date", "recurring", "scope", "portfolio_id", "target_pct", "kind"];
+/** The label of the percentage field: its meaning changes with the kind. */
+const TARGET_LABEL: Record<GoalKind, { label: string; hint: string }> = {
+  min: { label: "Obiettivo (%)", hint: "es. 2 oppure 2,5" },
+  cap: { label: "Obiettivo (%)", hint: "es. 2 oppure 2,5" },
+  max_loss: { label: "Limite di perdita (%)", hint: "la perdita massima nel periodo, es. 5" },
+  beat_index: { label: "Margine (punti %)", hint: "di quanto fare meglio dell'indice; 0 = basta fare meglio" },
+};
 
-/** Mounted per opening: create (`goal` null) or edit a goal. */
-function GoalDialog({ goal, onClose }: { goal: Goal | null; onClose: () => void }) {
-  const [form, setForm] = useState<FormState>(() => initialForm(goal));
+const FORM_FIELDS = ["name", "horizon", "start_date", "end_date", "recurring", "scope", "portfolio_id", "target_pct", "kind", "benchmark"];
+
+/** Mounted per opening: create (`goal` null, or `template` to prefill) or edit a goal. */
+function GoalDialog({ goal, template, onClose }: { goal: Goal | null; template?: GoalCreate; onClose: () => void }) {
+  const [form, setForm] = useState<FormState>(() => initialForm(goal ?? template ?? null));
   const [localErrors, setLocalErrors] = useState<Record<string, string>>({});
   const portfolios = usePortfolios();
   const create = useCreateGoal();
@@ -76,6 +91,16 @@ function GoalDialog({ goal, onClose }: { goal: Goal | null; onClose: () => void 
   const custom = form.horizon === "custom";
 
   const set = <K extends keyof FormState>(field: K, value: FormState[K]) => setForm((f) => ({ ...f, [field]: value }));
+  /** The index margin starts at 0; leaving it, an untouched 0 goes back to the usual 2. */
+  const setKind = (kind: GoalKind) =>
+    setForm((f) => {
+      let target = f.target_pct;
+      if (kind === "beat_index" && f.kind !== "beat_index") target = "0";
+      else if (kind !== "beat_index" && f.kind === "beat_index" && (target === "0" || target === "")) target = "2";
+      return { ...f, kind, target_pct: target };
+    });
+  const index = form.kind === "beat_index";
+  const targetField = TARGET_LABEL[form.kind];
   const serverField = errorField(mutation.error);
   const fieldError = (field: string) =>
     localErrors[field] ?? (mutation.error && serverField === field ? errorMessage(mutation.error) : null);
@@ -87,7 +112,7 @@ function GoalDialog({ goal, onClose }: { goal: Goal | null; onClose: () => void 
     const errors: Record<string, string> = {};
     if (!form.name.trim()) errors.name = "Il nome è obbligatorio";
     const pct = normalizeAmount(form.target_pct);
-    if (pct === null || Number(pct) <= 0) errors.target_pct = "Percentuale non valida";
+    if (pct === null || (index ? Number(pct) < 0 : Number(pct) <= 0)) errors.target_pct = "Percentuale non valida";
     if (!form.start_date) errors.start_date = "Scegli la data di inizio";
     if (custom && !form.end_date) errors.end_date = "Scegli la data di fine";
     else if (custom && form.end_date < form.start_date) errors.end_date = "La fine viene prima dell'inizio";
@@ -104,6 +129,7 @@ function GoalDialog({ goal, onClose }: { goal: Goal | null; onClose: () => void 
       portfolio_id: form.scope === "portfolio" ? form.portfolio_id : null,
       target_pct: pct!,
       kind: form.kind,
+      benchmark: index ? form.benchmark : null,
     };
     const done = {
       onSuccess: () => {
@@ -121,7 +147,7 @@ function GoalDialog({ goal, onClose }: { goal: Goal | null; onClose: () => void 
         <DialogHeader>
           <DialogTitle>{goal ? `Modifica ${goal.name}` : "Nuovo obiettivo"}</DialogTitle>
           <DialogDescription>
-            Crescita del valore nel periodo, misurata dall&apos;apertura del primo giorno. I periodi seguono il calendario (ora italiana).
+            Andamento del valore nel periodo, misurato dall&apos;apertura del primo giorno. I periodi seguono il calendario (ora italiana).
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2" noValidate>
@@ -187,11 +213,8 @@ function GoalDialog({ goal, onClose }: { goal: Goal | null; onClose: () => void 
           ) : (
             <div />
           )}
-          <FormField label="Obiettivo (%)" error={fieldError("target_pct")} hint="es. 2 oppure 2,5">
-            <Input value={form.target_pct} onChange={(e) => set("target_pct", e.target.value)} inputMode="decimal" />
-          </FormField>
           <FormField label="Tipo" error={fieldError("kind")} hint={KIND_OPTIONS.find((o) => o.value === form.kind)?.hint}>
-            <select className={selectClass} value={form.kind} onChange={(e) => set("kind", e.target.value as GoalKind)}>
+            <select className={selectClass} value={form.kind} onChange={(e) => setKind(e.target.value as GoalKind)}>
               {KIND_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
@@ -199,6 +222,20 @@ function GoalDialog({ goal, onClose }: { goal: Goal | null; onClose: () => void 
               ))}
             </select>
           </FormField>
+          <FormField label={targetField.label} error={fieldError("target_pct")} hint={targetField.hint}>
+            <Input value={form.target_pct} onChange={(e) => set("target_pct", e.target.value)} inputMode="decimal" />
+          </FormField>
+          {index && (
+            <FormField label="Indice" error={fieldError("benchmark")} hint="confrontato in euro sullo stesso periodo">
+              <select className={selectClass} value={form.benchmark} onChange={(e) => set("benchmark", e.target.value as GoalBenchmark)}>
+                {BENCHMARK_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+          )}
           {generalError && (
             <p role="alert" className="text-sm text-loss sm:col-span-2">
               {generalError}
@@ -242,17 +279,92 @@ function DeactivateDialog({ goal, onClose }: { goal: Goal; onClose: () => void }
   );
 }
 
+/** The bar and the figures under it, by kind: a minimum/cap shows the target in euros and
+ * the gap; a risk goal the loss against its limit; an index goal the index's % and the
+ * difference in points (no bar: there is no fixed target). */
+function GoalFigures({ goal, p }: { goal: Goal; p: GoalProgress }) {
+  const elapsed = <span>{`tempo trascorso ${Math.round(Number(p.elapsed_pct))}%`}</span>;
+  if (p.kind === "beat_index") {
+    return (
+      <p className="flex flex-wrap justify-between gap-2 text-xs text-muted">
+        <span>{comparisonText(p)}</span>
+        {elapsed}
+      </p>
+    );
+  }
+  if (p.kind === "max_loss") {
+    const loss = lossText(p);
+    return (
+      <>
+        <GoalBar pct={p.loss_pct ?? null} target={p.target_pct} kind="max_loss" elapsed={p.elapsed_pct} label={`Perdita ${goal.name}`} />
+        <p className="flex flex-wrap justify-between gap-2 text-xs text-muted">
+          <span>
+            {[p.target_eur == null ? null : `limite di perdita ${formatMoney(p.target_eur, "EUR")}`, loss].filter(Boolean).join(" · ")}
+          </span>
+          {elapsed}
+        </p>
+      </>
+    );
+  }
+  const gap = gapText(p);
+  return (
+    <>
+      <GoalBar pct={p.pct} target={p.target_pct} kind={p.kind} elapsed={p.elapsed_pct} label={`Avanzamento ${goal.name}`} />
+      <p className="flex flex-wrap justify-between gap-2 text-xs text-muted">
+        <span>
+          {p.kind === "cap" ? "tetto " : "obiettivo "}
+          <Money value={p.target_eur} />
+          {gap && ` · ${gap}`}
+        </span>
+        {elapsed}
+      </p>
+    </>
+  );
+}
+
+/** «Modelli»: the server's ready goals; choosing one opens the dialog prefilled. */
+function TemplatesDialog({ onChoose, onClose }: { onChoose: (t: GoalTemplate) => void; onClose: () => void }) {
+  const { data, isLoading, isError } = useGoalTemplates(true);
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Modelli</DialogTitle>
+          <DialogDescription>Scegli un modello: apre il modulo già compilato, da controllare e confermare.</DialogDescription>
+        </DialogHeader>
+        {isError ? (
+          <p className="text-sm text-loss">Impossibile caricare i modelli</p>
+        ) : isLoading ? (
+          <p className="text-sm text-muted">Caricamento…</p>
+        ) : !data?.length ? (
+          <p className="text-sm text-muted">Nessun modello disponibile</p>
+        ) : (
+          <ul className="grid gap-2" aria-label="Modelli di obiettivo">
+            {data.map((t) => (
+              <li key={t.key}>
+                <Button variant="outline" className="w-full justify-between" aria-label={t.label} onClick={() => onChoose(t)}>
+                  <span>{t.label}</span>
+                  <span className="num text-xs text-muted">{goalTargetLabel(t.body.kind ?? "min", t.body.target_pct, t.body.benchmark)}</span>
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function GoalCard({ goal, progress, onEdit, onDeactivate }: { goal: Goal; progress: GoalProgress | undefined; onEdit: () => void; onDeactivate: () => void }) {
   const admin = useIsAdmin();
   const p = progress;
-  const gap = p ? gapText(p) : null;
   return (
     <Card role="article" aria-label={`Obiettivo ${goal.name}`}>
       <CardHeader className="space-y-1 pb-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="flex items-center gap-2">
             {goal.name}
-            <span className="num text-base font-semibold text-muted">{goalTargetLabel(goal.kind, goal.target_pct)}</span>
+            <span className="num text-base font-semibold text-muted">{goalTargetLabel(goal.kind, goal.target_pct, goal.benchmark)}</span>
           </CardTitle>
           {p ? (
             <StatusBadge tone={STATUS_TONE[p.status] ?? "neutral"}>{p.status}</StatusBadge>
@@ -277,15 +389,7 @@ function GoalCard({ goal, progress, onEdit, onDeactivate }: { goal: Goal; progre
               <span className="num text-lg font-semibold">{`${formatMoney(p.start_eur, "EUR")} → ${p.current_eur == null ? "—" : formatMoney(p.current_eur, "EUR")}`}</span>
               <Pct value={p.pct} tone />
             </div>
-            <GoalBar pct={p.pct} target={p.target_pct} kind={p.kind} elapsed={p.elapsed_pct} label={`Avanzamento ${goal.name}`} />
-            <p className="flex flex-wrap justify-between gap-2 text-xs text-muted">
-              <span>
-                {p.kind === "cap" ? "tetto " : "obiettivo "}
-                <Money value={p.target_eur} />
-                {gap && ` · ${gap}`}
-              </span>
-              <span>{`tempo trascorso ${Math.round(Number(p.elapsed_pct))}%`}</span>
-            </p>
+            <GoalFigures goal={goal} p={p} />
           </div>
         )}
         {admin && (
@@ -329,7 +433,7 @@ function InactiveGoals({ goals, onEdit }: { goals: Goal[]; onEdit: (g: Goal) => 
             {goals.map((g) => (
               <TableRow key={g.id}>
                 <TableCell className="font-medium">{g.name}</TableCell>
-                <TableCell className="num">{goalTargetLabel(g.kind, g.target_pct)}</TableCell>
+                <TableCell className="num">{goalTargetLabel(g.kind, g.target_pct, g.benchmark)}</TableCell>
                 <TableCell>{goalScopeLabel(g)}</TableCell>
                 <TableCell>{horizonLabel(g)}</TableCell>
                 <TableCell className="whitespace-nowrap text-xs text-muted">{formatDateTime(g.updated_at)}</TableCell>
@@ -376,6 +480,8 @@ export default function Goals() {
   const progress = useGoalsProgress();
   const [editing, setEditing] = useState<Goal | null | undefined>(undefined); // null = new
   const [deactivating, setDeactivating] = useState<Goal | null>(null);
+  const [choosing, setChoosing] = useState(false);
+  const [template, setTemplate] = useState<GoalCreate | undefined>(undefined);
   const byId = new Map((progress.data ?? []).map((p) => [p.goal_id, p]));
   const active = data?.filter((g) => g.active) ?? [];
   const inactive = data?.filter((g) => !g.active) ?? [];
@@ -384,14 +490,25 @@ export default function Goals() {
     <div>
       <PageHeader title="Obiettivi">
         <AdminOnly>
-          <Button onClick={() => setEditing(null)}>
-            <Plus />
-            Nuovo obiettivo
-          </Button>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="outline" onClick={() => setChoosing(true)}>
+              <LayoutTemplate />
+              Modelli
+            </Button>
+            <Button
+              onClick={() => {
+                setTemplate(undefined);
+                setEditing(null);
+              }}
+            >
+              <Plus />
+              Nuovo obiettivo
+            </Button>
+          </div>
         </AdminOnly>
       </PageHeader>
       <p className="mb-4 text-sm text-muted">
-        Crescita del valore da raggiungere (minimo) o da non superare (tetto), sul totale o su un portafoglio. Li leggono anche gli agenti e i riepiloghi Telegram; il rischio viene sempre prima.
+        Crescita del valore da raggiungere (minimo) o da non superare (tetto), perdita massima nel periodo, oppure fare meglio di un indice; sul totale o su un portafoglio. Li leggono anche gli agenti e i riepiloghi Telegram; il rischio viene sempre prima.
       </p>
       {isError && <p className="mb-4 text-loss">Impossibile caricare gli obiettivi</p>}
       {progress.isError && <p className="mb-4 text-loss">Impossibile caricare l&apos;avanzamento</p>}
@@ -413,7 +530,17 @@ export default function Goals() {
           </div>
         )
       )}
-      {editing !== undefined && <GoalDialog goal={editing} onClose={() => setEditing(undefined)} />}
+      {choosing && (
+        <TemplatesDialog
+          onClose={() => setChoosing(false)}
+          onChoose={(t) => {
+            setChoosing(false);
+            setTemplate(t.body);
+            setEditing(null);
+          }}
+        />
+      )}
+      {editing !== undefined && <GoalDialog goal={editing} template={editing ? undefined : template} onClose={() => setEditing(undefined)} />}
       {deactivating && <DeactivateDialog goal={deactivating} onClose={() => setDeactivating(null)} />}
     </div>
   );

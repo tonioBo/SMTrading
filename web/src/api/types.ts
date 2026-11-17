@@ -1428,9 +1428,25 @@ export interface StrategiesPerformanceResponse {
 
 export type GoalHorizon = "week" | "month" | "quarter" | "year" | "custom";
 export type GoalScope = "total" | "portfolio";
-/** "min": a gain to reach; "cap": a ceiling not to exceed */
-export type GoalKind = "min" | "cap";
-export type GoalStatus = "raggiunto" | "in linea" | "in ritardo" | "non iniziato" | "concluso" | "oltre il tetto";
+/** "min": a gain to reach; "cap": a ceiling not to exceed; "max_loss": a loss not to
+ * exceed (`target_pct` = the limit, positive); "beat_index": do better than `benchmark`
+ * (`target_pct` = the margin in percentage points, "0" = just better) */
+export type GoalKind = "min" | "cap" | "max_loss" | "beat_index";
+export type GoalBenchmark = "SPY" | "QQQ" | "VWCE.DE";
+export type GoalStatus =
+  | "raggiunto"
+  | "in linea"
+  | "in ritardo"
+  | "non iniziato"
+  | "concluso"
+  | "oltre il tetto"
+  // max_loss
+  | "nel limite"
+  | "vicino al limite"
+  | "superato"
+  // beat_index (also "in linea")
+  | "avanti"
+  | "indietro";
 
 /** A goal; `end_date` only for «custom»; `target_pct` a string ("2"). */
 export interface Goal {
@@ -1444,6 +1460,8 @@ export interface Goal {
   portfolio_id: string | null;
   target_pct: string;
   kind: GoalKind;
+  /** beat_index only (absent from older servers) */
+  benchmark?: GoalBenchmark | null;
   active: boolean;
   created_at: string;
   updated_at: string;
@@ -1461,10 +1479,19 @@ export interface GoalCreate {
   portfolio_id?: string | null;
   target_pct: string;
   kind?: GoalKind;
+  /** required for beat_index, null otherwise */
+  benchmark?: GoalBenchmark | null;
   active?: boolean;
 }
 
 export type GoalPatch = Partial<GoalCreate>;
+
+/** `GET /api/goals/templates`: a ready goal to confirm in the dialog. */
+export interface GoalTemplate {
+  key: string;
+  label: string;
+  body: GoalCreate;
+}
 
 /** The current period of an active goal (EUR strings; null without data). */
 export interface GoalProgress {
@@ -1486,4 +1513,10 @@ export interface GoalProgress {
   elapsed_pct: string;
   status: GoalStatus;
   as_of: string | null;
+  /** beat_index: the index and its % in EUR over the same period; diff_pp = pct − benchmark_pct */
+  benchmark?: GoalBenchmark | null;
+  benchmark_pct?: string | null;
+  diff_pp?: string | null;
+  /** max_loss: max(0, −pct) */
+  loss_pct?: string | null;
 }
