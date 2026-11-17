@@ -1,6 +1,7 @@
 """Admin API: risk profiles, interest rates, app settings and the kill switch."""
 
 import re
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -29,6 +30,7 @@ from smtrading.admin.schemas import (
     RiskProfilePatchIn,
 )
 from smtrading.agents.service import write_audit
+from smtrading.common.config import get_settings
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.fingerprints import name_warning
 from smtrading.common.money import decimal_to_str
@@ -262,7 +264,7 @@ async def _app_settings(session: AsyncSession) -> dict[str, Any]:
         "default_spread_bps": spread,
         "timezone": stored.get("timezone") or DEFAULT_TIMEZONE,
         "mcp_hide_mode": _hide_mode(stored.get("mcp_hide_mode")),
-        "weekly_goal": weekly_goal.weekly_goal_dto(stored.get(weekly_goal.SETTINGS_KEY)),
+        "weekly_goal": weekly_goal.weekly_goal_dto(await weekly_goal.load_weekly_goal(session)),
         "preopen_check": preopen_settings.preopen_dto(
             stored.get(preopen_settings.SETTINGS_KEY)),
     }
@@ -304,15 +306,19 @@ async def put_app_settings(body: AppSettingsIn, session: DbSession, redis: Redis
         updates["timezone"] = body.timezone
     if body.mcp_hide_mode is not None:
         updates["mcp_hide_mode"] = {"on": body.mcp_hide_mode}
-    if body.weekly_goal is not None:
-        updates[weekly_goal.SETTINGS_KEY] = weekly_goal.clean_weekly_goal(
-            body.weekly_goal.model_dump(), current["weekly_goal"])
+    weekly = None
+    if body.weekly_goal is not None:  # «the weekly goal» (goals.service.weekly_goal)
+        weekly = weekly_goal.clean_weekly_goal(body.weekly_goal.model_dump(),
+                                               current["weekly_goal"])
     if body.preopen_check is not None:
         updates[preopen_settings.SETTINGS_KEY] = preopen_settings.clean_preopen(
             body.preopen_check.model_dump(), current["preopen_check"])
     async with _transaction(session, redis):
         for key, value in updates.items():
             await _store_setting(session, key, value)
+        if weekly is not None:
+            today = datetime.now(ZoneInfo(get_settings().tz)).date()
+            await weekly_goal.store_weekly_goal(session, weekly, today)
     return await _app_settings(session)
 
 

@@ -25,6 +25,8 @@ What is checked:
    ERRORS_BEFORE_ALERT failed reads in a row, with its short last error) or its isolation
    policies not `ok` (changed, not verified, not active), with a short reason; a disabled
    reader adds nothing.
+7. the goals: one «🎯» line per active goal at the end of the message, with its progress
+   and status (`goals.progress.summary_lines`), whatever the problems.
 The text is always split with `render.split_message`, every part queued in the same
 transaction, so it never exceeds Telegram's limit.
 
@@ -51,6 +53,7 @@ from smtrading.brokers.sync import ADVISORY_LOCK_KEY as SYNC_LOCK_KEY
 from smtrading.common.config import get_settings
 from smtrading.common.heartbeat import heartbeat_age_s
 from smtrading.engine.quotesource import QuoteSource
+from smtrading.goals.progress import summary_lines
 from smtrading.instruments.market_hours import manual_closure, session_on
 from smtrading.jobs.runs import job_done, run_job_once
 from smtrading.paperclip import config as paperclip_config
@@ -98,6 +101,7 @@ class PreopenReport:
     markets: list[MarketDay]
     quotes_checked: int
     problems: list[str] = field(default_factory=list)
+    goals: list[str] = field(default_factory=list)  # «🎯» lines, see goals.progress
 
 
 def market_days(day: date, zone: ZoneInfo) -> list[MarketDay]:
@@ -152,6 +156,7 @@ def render_report(report: PreopenReport) -> str:
         lines.append("Sistema: servizi attivi; database e Redis ok")
         lines.append("Rischio: kill switch spento, nessun blocco aperture, "
                      "nessun portafoglio bloccato")
+    lines += report.goals
     return "\n".join(lines)
 
 
@@ -315,16 +320,21 @@ async def build_report(sm: async_sessionmaker, qs: QuoteSource, redis, now: date
     markets = market_days(day, zone)
     problems: list[str] = []
     symbols: list[str] = []
+    goals: list[str] = []
     try:
         async with sm() as session:
             db_problems, symbols = await _database_problems(session, now)
+            try:
+                goals = await summary_lines(session, now, zone)
+            except Exception:  # the goals never hold the check back
+                log.exception("pre-open check: goal lines failed")
         problems += db_problems
     except Exception:
         log.exception("pre-open check: database checks failed")
         problems.append("Database non raggiungibile")
     problems += await _redis_problems(redis)
     problems += await _quote_problems(qs, symbols, now)
-    return PreopenReport(day, markets, len(symbols), problems)
+    return PreopenReport(day, markets, len(symbols), problems, goals)
 
 
 # -- scheduler -------------------------------------------------------------------------

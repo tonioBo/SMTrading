@@ -2,7 +2,6 @@
 setting validation)."""
 
 from datetime import UTC, date, datetime, time
-from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -18,9 +17,8 @@ from smtrading.telegram.preopen import (
     render_report,
 )
 from smtrading.telegram.preopen_settings import clean_preopen
-from smtrading.telegram.weekly_goal import clean_weekly_goal, goal_line
+from smtrading.telegram.weekly_goal import clean_weekly_goal
 
-D = Decimal
 ROME = ZoneInfo("Europe/Rome")
 
 
@@ -76,6 +74,15 @@ def test_render_ready():
     assert 3 <= len(lines) - 1 <= 6
 
 
+def test_render_goal_lines_at_the_end():
+    goals = ["🎯 Obiettivo settimanale +2%: dati del periodo non ancora disponibili"]
+    text = render_report(PreopenReport(date(2027, 3, 15), _markets(), 3, [], goals))
+    assert text.split("\n")[-1] == goals[0]
+    text = render_report(PreopenReport(date(2027, 3, 15), _markets(), 3,
+                                       ["Kill switch attivo"], goals))
+    assert text.split("\n")[-1] == goals[0]
+
+
 def test_render_problems_and_closed_markets():
     markets = _markets("NYSE", "NASDAQ")
     markets[2] = MarketDay("MTA", True, "13:00", True)
@@ -117,24 +124,6 @@ def test_clean_weekly_goal():
                 {"pct": "abc"}, {"on": 1}):
         with pytest.raises(SMTError):
             clean_weekly_goal(bad, {"on": True, "pct": "2.0"})
-
-
-# -- weekly goal -----------------------------------------------------------------------
-
-
-def test_goal_line_math():
-    assert goal_line(D("2.0"), D("1000"), D("1004.2")) == (
-        "🎯 Obiettivo settimana +2%: 1.000,00 → 1.020,00 € — attuale 1.004,20 € (+0,42%)")
-    assert goal_line(D("2.5"), D("2000"), D("1990")) == (
-        "🎯 Obiettivo settimana +2,5%: 2.000,00 → 2.050,00 € — attuale 1.990,00 € (-0,50%)")
-    assert goal_line(D("10"), D("100"), D("100")) == (
-        "🎯 Obiettivo settimana +10%: 100,00 → 110,00 € — attuale 100,00 € (0,00%)")
-
-
-def test_goal_line_without_data():
-    assert goal_line(D("2"), None, None) == (
-        "🎯 Obiettivo settimana +2%: dati della settimana non ancora disponibili")
-    assert goal_line(D("2"), D("0"), D("0")).endswith("non ancora disponibili")
 
 
 def test_capped_lists():

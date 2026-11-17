@@ -1,5 +1,5 @@
-"""`GET /api/weekly-goal`: the weekly goal of the home page, from the same maths as the
-Telegram goal line (telegram/weekly_goal.py). Readable by the viewer."""
+"""`GET /api/weekly-goal`: the weekly goal of the home page («the weekly goal» of
+goals.service, the maths of goals.progress). Readable by the viewer."""
 
 # ruff: noqa: F811  (the `env` fixture of test_admin_users, imported then requested)
 
@@ -11,9 +11,10 @@ from sqlalchemy import update
 from test_admin_users import env  # noqa: F401
 
 from smtrading.events import discard_post_commit
+from smtrading.goals.models import Goal
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
-from smtrading.risk.models import AppSetting, EquitySnapshot, SnapshotKind
+from smtrading.risk.models import EquitySnapshot, SnapshotKind
 
 D = Decimal
 ROME = ZoneInfo("Europe/Rome")
@@ -88,7 +89,7 @@ async def test_weekly_goal_total_and_per_portfolio(env, monkeypatch):
 async def test_weekly_goal_without_data_and_custom_pct(env, monkeypatch):
     _clock(monkeypatch, rome(FRI, 18))
     async with env.sm() as s:
-        s.add(AppSetting(key="weekly_goal", value={"on": False, "pct": "1.5"}))
+        await s.execute(update(Goal).values(active=False, target_pct=D("1.5")))
         await s.commit()
     email, _ = await env.add_user("admin")
     c = await env.client(email)

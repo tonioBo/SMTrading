@@ -185,6 +185,7 @@ async def test_ready_at_0845_once(env):
     assert "Sistema: servizi attivi; database e Redis ok" in lines
     assert "Mercati aperti oggi: NYSE, NASDAQ, MTA, XETRA" in lines
     assert "Quotazioni: 2 simboli aggiornati" in lines
+    assert lines[-1] == "🎯 Obiettivo settimanale +2%: dati del periodo non ancora disponibili"
     assert 3 <= len(lines) - 1 <= 6
     assert await _activity_count(sm) == before  # never in the activity feed
     async with sm() as s:

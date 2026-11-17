@@ -35,6 +35,7 @@ from smtrading.activity.models import Activity, ActivityLevel, Decision, Telegra
 from smtrading.agents.models import Agent
 from smtrading.common.config import get_settings
 from smtrading.engine.models import Fill
+from smtrading.goals.progress import period_end_lines, summary_lines
 from smtrading.jobs.runs import run_job_once
 from smtrading.performance.service import get_performance
 from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
@@ -43,7 +44,6 @@ from smtrading.telegram.details import open_positions_lines
 from smtrading.telegram.outbox import enqueue
 from smtrading.telegram.quiet import QUIET_START
 from smtrading.telegram.render import PREFIX, split_message
-from smtrading.telegram.weekly_goal import goal_lines
 
 log = logging.getLogger(__name__)
 
@@ -290,10 +290,13 @@ def _window(kind: Kind, now: datetime, zone: ZoneInfo) -> datetime:
 
 
 async def build_summary(session: AsyncSession, kind: Kind, now: datetime, *,
-                        tz: str | None = None, qs=None, redis=None) -> Parts:
+                        tz: str | None = None, qs=None, redis=None,
+                        period_ends: bool = False) -> Parts:
     """The daily (from local midnight) or weekly (last 7 days) summary: executed and
-    rejected orders, critical and warning events, the weekly goal line (when on, see
-    `weekly_goal`), «📌 Posizioni aperte» (with a quote source `qs`: one line per open
+    rejected orders, critical and warning events, one «🎯» line per active goal
+    (`goals.progress.summary_lines`), with `period_ends` (the scheduler's daily) the «🏁»
+    lines of the goal periods just over (`period_end_lines`, each claimed once in this
+    transaction), «📌 Posizioni aperte» (with a quote source `qs`: one line per open
     position, see `details.open_positions_lines`; nothing when none), the decisions of the period grouped by
     kind (one plain line each, see `decision_line`) and the portfolio
     ranking as a `pre` block, split into messages of at most 4096 characters. Archived
@@ -332,7 +335,9 @@ async def build_summary(session: AsyncSession, kind: Kind, now: datetime, *,
         (f"Ordini eseguiti: {len(filled)} · rifiutati: {len(rejected)} · "
          f"eventi critici: {len(critical)} · avvisi: {len(warnings)}"),
     ]
-    lines += await goal_lines(session, now, zone)
+    lines += await summary_lines(session, now, zone)
+    if period_ends:
+        lines += await period_end_lines(session, now, zone)
     if qs is not None:
         lines += _section("📌 Posizioni aperte",
                           await open_positions_lines(session, qs, redis=redis))
@@ -405,7 +410,8 @@ class SummaryScheduler:
         if job.category == "digest":
             await build_digest(session, now, tz=self._tz)
             return
-        for text, entities in await build_summary(session, job.category, now, tz=self._tz,
-                                                  qs=self._qs, redis=self._redis):
+        for text, entities in await build_summary(
+                session, job.category, now, tz=self._tz, qs=self._qs, redis=self._redis,
+                period_ends=job.category == "daily"):
             await enqueue(session, source="system", category=job.category,
                           level=ActivityLevel.info, text=text, entities=entities)

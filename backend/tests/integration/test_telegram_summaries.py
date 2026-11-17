@@ -24,10 +24,11 @@ from smtrading.engine.models import Fill, OrderSide, OrderType
 from smtrading.engine.quotesource import FakeQuoteSource
 from smtrading.engine.service import PlaceOrderRequest, place_order
 from smtrading.events import discard_post_commit
+from smtrading.goals.models import Goal
 from smtrading.jobs.runs import job_done
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
-from smtrading.risk.models import AppSetting, EquitySnapshot, SnapshotKind
+from smtrading.risk.models import EquitySnapshot, SnapshotKind
 from smtrading.seed import run_seed
 from smtrading.telegram import config as tg_config
 from smtrading.telegram.client import API_URL
@@ -628,8 +629,8 @@ async def test_goal_line_in_daily_and_weekly(maker):
     async with maker() as s:
         [(daily, _)] = await build_summary(s, "daily", rome(FRI, 18), tz=TZ)
         [(weekly, _)] = await build_summary(s, "weekly", rome(FRI, 18, 30), tz=TZ)
-    line = ("🎯 Obiettivo settimana +2%: 1.000,00 → 1.020,00 € — attuale 1.004,20 € "
-            "(+0,42%)")
+    line = ("🎯 Obiettivo settimanale +2%: 1.000,00 → 1.020,00 € — attuale 1.004,20 € "
+            "(+0,42%) · in ritardo")
     assert _goal(daily) == [line] and _goal(weekly) == [line]
     assert daily.split("\n")[2] == line  # right under the counts
 
@@ -638,17 +639,89 @@ async def test_goal_off_custom_pct_and_missing_data(maker):
     async with maker() as s:
         [(text, _)] = await build_summary(s, "daily", rome(FRI, 18), tz=TZ)
     assert _goal(text) == [
-        "🎯 Obiettivo settimana +2%: dati della settimana non ancora disponibili"]
+        "🎯 Obiettivo settimanale +2%: dati del periodo non ancora disponibili"]
     a = await _portfolio(maker, "Test 260 A")
     await _snaps(maker, a, [(rome(FRI, 9), "100"), (rome(FRI, 17), "99")])
     async with maker() as s:
-        s.add(AppSetting(key="weekly_goal", value={"on": True, "pct": "1.5"}))
+        await s.execute(update(Goal).values(target_pct=D("1.5")))
         await s.commit()
         [(text, _)] = await build_summary(s, "daily", rome(FRI, 18), tz=TZ)
-        assert _goal(text) == [("🎯 Obiettivo settimana +1,5%: 100,00 → 101,50 € — attuale "
-                                "99,00 € (-1,00%)")]
-        await s.execute(update(AppSetting).where(AppSetting.key == "weekly_goal")
-                        .values(value={"on": False, "pct": "1.5"}))
+        assert _goal(text) == [("🎯 Obiettivo settimanale +1,5%: 100,00 → 101,50 € — "
+                                "attuale 99,00 € (-1,00%) · in ritardo")]
+        await s.execute(update(Goal).values(active=False))
         await s.commit()
         [(text, _)] = await build_summary(s, "daily", rome(FRI, 18), tz=TZ)
     assert _goal(text) == []
+
+
+async def test_one_line_per_goal_and_archived_portfolio_hidden(maker):
+    from datetime import date
+
+    a = await _portfolio(maker, "Test 260 A")
+    e = await _portfolio(maker, "Test 260 E")
+    await _day_open(maker, a, 1, "1000")  # 1 March: the month's start
+    await _snaps(maker, a, [(rome(FRI, 17), "1030")])
+    async with maker() as s:
+        s.add(Goal(name="mensile", horizon="month", start_date=date(2027, 3, 1),
+                   recurring=True, scope="portfolio", portfolio_id=a,
+                   target_pct=D("3"), kind="min", active=True))
+        s.add(Goal(name="tetto", horizon="quarter", start_date=date(2027, 1, 1),
+                   recurring=True, scope="total", target_pct=D("2"), kind="cap",
+                   active=True))
+        s.add(Goal(name="aprile", horizon="month", start_date=date(2027, 4, 1),
+                   recurring=False, scope="total", target_pct=D("1"), kind="min",
+                   active=True))
+        s.add(Goal(name="febbraio", horizon="month", start_date=date(2027, 2, 1),
+                   recurring=False, scope="total", target_pct=D("1"), kind="min",
+                   active=True))  # over: no line
+        s.add(Goal(name="archiviato", horizon="week", start_date=date(2027, 3, 8),
+                   recurring=False, scope="portfolio", portfolio_id=e,
+                   target_pct=D("1"), kind="min", active=True))
+        await s.commit()
+    await _archive(maker, e)
+    async with maker() as s:
+        [(text, _)] = await build_summary(s, "daily", rome(FRI, 18), tz=TZ)
+    # the week: no Monday day_open, so its first snapshot of the week (Friday 17:00)
+    assert _goal(text) == [
+        ("🎯 Obiettivo settimanale +2%: 1.030,00 → 1.050,60 € — attuale 1.030,00 € "
+        "(0,00%) · in ritardo"),
+        "🎯 Obiettivo aprile +1%: dal 01/04/2027",
+        ("🎯 Obiettivo mensile +3% · Test 260 A: 1.000,00 → 1.030,00 € — attuale 1.030,00 € "
+        "(+3,00%) · raggiunto"),
+        ("🎯 Obiettivo tetto +2% (tetto): 1.000,00 → 1.020,00 € — attuale 1.030,00 € "
+        "(+3,00%) · oltre il tetto"),
+    ]
+
+
+async def test_period_end_line_once(maker):
+    """The «🏁» line of a period over goes in the daily summary of its last day (or of a
+    later one within a week), once; never for a period over before the goal existed."""
+    a = await _portfolio(maker, "Test 260 A")
+    await _day_open(maker, a, MON, "1000")
+    await _snaps(maker, a, [(rome(FRI, 17), "1025")])
+    async with maker() as s:
+        goal_id = await s.scalar(select(Goal.id))
+        await s.execute(update(Goal).values(created_at=rome(1, 9)))
+        await s.commit()
+        [(friday, _)] = await build_summary(s, "daily", rome(FRI, 18), tz=TZ,
+                                            period_ends=True)
+        assert [ln for ln in friday.splitlines() if ln.startswith("🏁")] == []
+        # Sunday 14 March, the week's last day (last week, 1–7 March, has no data)
+        [(sunday, _)] = await build_summary(s, "daily", rome(14, 18), tz=TZ,
+                                            period_ends=True)
+        await s.commit()
+        assert [ln for ln in sunday.splitlines() if ln.startswith("🏁")] == [
+            "🏁 Obiettivo settimanale: raggiunto (+2,50% su +2%)"]
+        assert await job_done(s, "goals.period_end", f"{goal_id}:2027-03-01:2027-03-07")
+        assert await job_done(s, "goals.period_end", f"{goal_id}:2027-03-08:2027-03-14")
+        [(monday, _)] = await build_summary(s, "daily", rome(15, 18), tz=TZ,
+                                            period_ends=True)
+        assert [ln for ln in monday.splitlines() if ln.startswith("🏁")] == []
+        # a goal created this week: last week is never announced
+        await _snaps(maker, a, [(rome(4, 12), "990")])
+        await s.execute(update(Goal).values(created_at=rome(15, 9)))
+        await s.execute(sql("delete from job_runs where job = 'goals.period_end'"))
+        await s.commit()
+        [(monday, _)] = await build_summary(s, "daily", rome(15, 18), tz=TZ,
+                                            period_ends=True)
+        assert [ln for ln in monday.splitlines() if ln.startswith("🏁")] == []

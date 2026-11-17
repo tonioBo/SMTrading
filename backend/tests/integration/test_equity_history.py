@@ -11,9 +11,10 @@ from sqlalchemy import update
 from test_admin_users import env  # noqa: F401
 
 from smtrading.events import discard_post_commit
+from smtrading.goals.models import Goal
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
-from smtrading.risk.models import AppSetting, EquitySnapshot, SnapshotKind
+from smtrading.risk.models import EquitySnapshot, SnapshotKind
 
 D = Decimal
 ROME = ZoneInfo("Europe/Rome")
@@ -125,7 +126,7 @@ async def test_1w_without_the_goal_when_it_is_off(env, monkeypatch):
     a = await _portfolio(env.sm, "Goal off")
     await _snap(env.sm, a, rome(MON, 0, 1), "600", SnapshotKind.day_open)
     async with env.sm() as s:
-        s.add(AppSetting(key="weekly_goal", value={"on": False, "pct": "1.5"}))
+        await s.execute(update(Goal).values(active=False, target_pct=D("1.5")))
         await s.commit()
     body = (await _get(env, range="1w")).json()
     assert body["goal_pct"] is None
@@ -188,3 +189,48 @@ async def test_invalid_range_and_unknown_portfolio(env, monkeypatch):
     # default range
     r = await _get(env)
     assert r.status_code == 200 and r.json()["range"] == "1m"
+
+
+async def test_goal_lines_of_the_shown_scope(env, monkeypatch):
+    """`goals`: the active goals whose current period overlaps the range, of the shown
+    scope (all: total and portfolio goals; one portfolio: its goals only)."""
+    from datetime import date
+
+    _clock(monkeypatch)
+    a = await _portfolio(env.sm, "Linee A")
+    b = await _portfolio(env.sm, "Linee B")
+    await _snap(env.sm, a, rome(MON, 0, 1), "600", SnapshotKind.day_open)
+    await _snap(env.sm, b, rome(WED, 11), "400")
+    async with env.sm() as s:
+        s.add(Goal(name="mese B", horizon="month", start_date=date(2027, 3, 1),
+                   recurring=False, scope="portfolio", portfolio_id=b,
+                   target_pct=D("4"), kind="min", active=True))
+        s.add(Goal(name="anno prossimo", horizon="year", start_date=date(2028, 1, 1),
+                   recurring=False, scope="total", target_pct=D("10"), kind="min",
+                   active=True))  # its period starts after now: not drawn
+        s.add(Goal(name="spento", horizon="week", start_date=date(2027, 3, 8),
+                   recurring=False, scope="total", target_pct=D("1"), kind="min",
+                   active=False))
+        await s.commit()
+
+    body = (await _get(env, range="1w")).json()
+    lines = {g["name"]: g for g in body["goals"]}
+    assert set(lines) == {"settimanale", "mese B"}
+    week = lines["settimanale"]
+    assert set(week) == {"goal_id", "name", "horizon", "scope", "portfolio_id", "kind",
+                         "target_pct", "period_start", "period_end", "base_eur",
+                         "target_eur"}
+    assert datetime.fromisoformat(week["period_start"]) == rome(MON, 0)
+    assert datetime.fromisoformat(week["period_end"]) == rome(15, 0)
+    assert (D(week["base_eur"]), D(week["target_eur"])) == (D(1000), D(1020))
+    month = lines["mese B"]
+    assert (month["scope"], month["portfolio_id"]) == ("portfolio", str(b))
+    assert (D(month["base_eur"]), D(month["target_eur"])) == (D(400), D(416))
+    assert datetime.fromisoformat(month["period_start"]) == rome(1, 0)
+
+    email, _ = await env.add_user("viewer")
+    c = await env.client(email)
+    one = (await c.get(URL, params={"range": "1m", "portfolio_id": str(a)})).json()
+    assert one["goals"] == []
+    one = (await c.get(URL, params={"range": "1m", "portfolio_id": str(b)})).json()
+    assert [g["name"] for g in one["goals"]] == ["mese B"]

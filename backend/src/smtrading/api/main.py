@@ -23,6 +23,7 @@ from smtrading.admin.routes_connectors import router as connectors_router
 from smtrading.admin.routes_dashboard import router as dashboard_router
 from smtrading.admin.routes_equity_history import router as equity_history_router
 from smtrading.admin.routes_fees import router as fees_router
+from smtrading.admin.routes_goals import router as goals_router
 from smtrading.admin.routes_halts import router as halts_router
 from smtrading.admin.routes_live import emergency_router as live_emergency_router
 from smtrading.admin.routes_live import router as live_router
@@ -207,6 +208,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(markets_router)
     app.include_router(system_router)
     app.include_router(dashboard_router)
+    app.include_router(goals_router)
     app.include_router(signals_router)
     app.include_router(positions_router)
     app.include_router(strategies_router)

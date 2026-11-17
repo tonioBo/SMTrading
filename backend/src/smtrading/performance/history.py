@@ -10,10 +10,17 @@ Every series is capped to `MAX_SERIES_POINTS` (`downsample`). `change_pct` is th
 from the first to the last point (None without a positive first value): the dashboard
 compares portfolios of different sizes in percent.
 
-For `1w` each portfolio carries the weekly goal while it is on (`app_settings`
-«Obiettivo settimanale»): from the local Monday 00:00, base = its Monday open (or its
-first snapshot of the week, see `telegram.weekly_goal.portfolio_weeks`), target = base
-grown by the goal percent (default +2%). Admin-only data: never reaches the agents."""
+For `1w` each portfolio carries «the weekly goal» while it is active
+(`goals.service.weekly_goal`, the compatibility of the former setting): from the local
+Monday 00:00, base = its Monday open (or its first snapshot of the week, see
+`telegram.weekly_goal.portfolio_weeks`), target = base grown by the goal percent.
+
+`goals` (every range): one item per active goal whose current period overlaps the range,
+for the shown scope (all portfolios: the total goals and the goals of the listed
+portfolios; one portfolio: its goals only): `goal_id, name, horizon, scope, portfolio_id,
+kind, target_pct, period_start, period_end` (UTC instants of the local midnights opening
+and closing the period), `base_eur` (the goal's start equity, `goals.progress`) and
+`target_eur` (null without data). Admin-only data: never reaches the agents."""
 
 from datetime import UTC, datetime, time, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
@@ -27,6 +34,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import quantize_money
+from smtrading.goals.progress import (
+    current_period,
+    local_midnight,
+    portfolio_periods,
+    visible_goals,
+)
 from smtrading.performance.service import downsample
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.risk.models import EquitySnapshot, SnapshotKind
@@ -126,6 +139,34 @@ async def _goals(session: AsyncSession, now: datetime,
     }
 
 
+async def _goal_lines(session: AsyncSession, portfolios: list[Portfolio], single: bool,
+                      start: datetime | None, now: datetime,
+                      zone: ZoneInfo) -> list[dict[str, Any]]:
+    today = now.astimezone(zone).date()
+    ids = {p.id for p in portfolios}
+    out = []
+    for goal, _ in await visible_goals(session):
+        if (goal.scope == "total" and single) or (
+                goal.scope == "portfolio" and goal.portfolio_id not in ids):
+            continue
+        period = current_period(goal, today)
+        opens = local_midnight(period.start, zone)
+        closes = local_midnight(period.end + timedelta(days=1), zone)
+        if opens > now or (start is not None and closes < start):
+            continue
+        parts = await portfolio_periods(
+            session, period, now, zone, None if goal.scope == "total" else [goal.portfolio_id])
+        base = sum((w.start for w in parts), Decimal(0)) if parts else None
+        out.append({
+            "goal_id": goal.id, "name": goal.name, "horizon": goal.horizon,
+            "scope": goal.scope, "portfolio_id": goal.portfolio_id, "kind": goal.kind,
+            "target_pct": goal.target_pct, "period_start": opens, "period_end": closes,
+            "base_eur": _eur(base),
+            "target_eur": None if base is None else _eur(goal_target(goal.target_pct, base)),
+        })
+    return out
+
+
 def _item(p: Portfolio, points: list[Point], goal: dict[str, Any] | None) -> dict[str, Any]:
     first = points[0][1] if points else None
     last = points[-1][1] if points else None
@@ -158,4 +199,6 @@ async def equity_history(session: AsyncSession, range_: str, *, now: datetime,
     return {
         "range": range_, "start": start, "end": now, "goal_pct": goal_pct,
         "portfolios": [_item(p, series.get(p.id, []), goals.get(p.id)) for p in portfolios],
+        "goals": await _goal_lines(session, portfolios, portfolio_id is not None, start, now,
+                                   zone),
     }

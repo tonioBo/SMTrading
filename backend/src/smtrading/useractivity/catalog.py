@@ -9,6 +9,7 @@ CATEGORIES: dict[str, str] = {
     "agents": "Agenti",
     "fees": "Commissioni",
     "risk": "Rischio e margine",
+    "goals": "Obiettivi",
     "emergency": "Emergenza",
     "connectors": "Connettori",
     "brokers": "Broker",
@@ -75,6 +76,10 @@ LABELS: dict[str, str] = {
     "risk.profile_create": "Creazione profilo di rischio",
     "risk.profile_update": "Modifica profilo di rischio",
     "risk.interest_rates": "Modifica tassi di interesse",
+    # goals
+    "goals.create": "Creazione obiettivo",
+    "goals.update": "Modifica obiettivo",
+    "goals.deactivate": "Disattivazione obiettivo",
     # emergency
     "emergency.kill_switch": "Kill switch",
     "emergency.halt_set": "Sospensione del trading",
@@ -172,6 +177,9 @@ ROUTE_ACTIONS: dict[tuple[str, str], str] = {
     ("PATCH", "/api/risk-profiles/{profile_id}"): "risk.profile_update",
     ("PUT", "/api/interest-rates"): "risk.interest_rates",
     ("PUT", "/api/settings/app"): "system.app_settings",
+    ("POST", "/api/goals"): "goals.create",
+    ("PATCH", "/api/goals/{goal_id}"): "goals.update",
+    ("DELETE", "/api/goals/{goal_id}"): "goals.deactivate",
     ("POST", "/api/kill-switch"): "emergency.kill_switch",
     ("POST", "/api/halts"): "emergency.halt_set",
     ("POST", "/api/halts/{halt_id}/clear"): "emergency.halt_clear",
