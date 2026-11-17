@@ -12,14 +12,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.goals.models import HORIZONS, KINDS, MAX_NAME_LEN, SCOPES, Goal
+from smtrading.goals.models import BENCHMARKS, HORIZONS, KINDS, MAX_NAME_LEN, SCOPES, Goal
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 
 MAX_PCT = Decimal(1000)
 MAX_CUSTOM_DAYS = 3 * 366
 _Q2 = Decimal("0.01")
 FIELDS = ("name", "horizon", "start_date", "end_date", "recurring", "scope",
-          "portfolio_id", "target_pct", "kind", "active")
+          "portfolio_id", "target_pct", "kind", "benchmark", "active")
 WEEKLY_NAME = "settimanale"
 
 
@@ -27,15 +27,17 @@ def _invalid(field: str, message: str) -> SMTError:
     return SMTError(ErrorCode.INVALID_ORDER, message, {"field": field})
 
 
-def parse_pct(value: Any, field: str = "target_pct", max_pct: Decimal = MAX_PCT) -> Decimal:
-    """A percent above 0 and up to `max_pct`, at most 2 decimals (string or integer)."""
+def parse_pct(value: Any, field: str = "target_pct", max_pct: Decimal = MAX_PCT, *,
+              zero: bool = False) -> Decimal:
+    """A percent above 0 (from 0 with `zero`) and up to `max_pct`, at most 2 decimals
+    (string or integer)."""
     if isinstance(value, bool) or not isinstance(value, str | int):
         raise _invalid(field, "percentuale non valida")
     try:
         pct = Decimal(str(value).strip())
     except InvalidOperation:
         raise _invalid(field, "percentuale non valida") from None
-    if not pct.is_finite() or not 0 < pct <= max_pct:
+    if not pct.is_finite() or not (0 <= pct if zero else 0 < pct) or pct > max_pct:
         raise _invalid(field, f"percentuale tra 0 e {max_pct}")
     if pct != pct.quantize(_Q2):
         raise _invalid(field, "al massimo 2 decimali")
@@ -91,6 +93,13 @@ async def validated(session: AsyncSession, raw: dict[str, Any], *,
     horizon = _choice(raw["horizon"], HORIZONS, "horizon")
     scope = _choice(raw["scope"], SCOPES, "scope")
     kind = _choice(raw["kind"], KINDS, "kind")
+    benchmark = None
+    if kind == "beat_index":
+        value = raw.get("benchmark")
+        if value is None:
+            raise _invalid("benchmark", "indice obbligatorio per «battere un indice»")
+        benchmark = _choice(value.strip().upper() if isinstance(value, str) else value,
+                            BENCHMARKS, "benchmark")
     recurring = _bool(raw["recurring"], "recurring")
     active = _bool(raw["active"], "active")
     start = _date(raw["start_date"], "start_date") or today
@@ -114,12 +123,13 @@ async def validated(session: AsyncSession, raw: dict[str, Any], *,
                         else raw["portfolio_id"])
     return {"name": name, "horizon": horizon, "start_date": start, "end_date": end,
             "recurring": recurring, "scope": scope, "portfolio_id": portfolio_id,
-            "target_pct": parse_pct(raw["target_pct"]), "kind": kind, "active": active}
+            "target_pct": parse_pct(raw["target_pct"], zero=kind == "beat_index"),
+            "kind": kind, "benchmark": benchmark, "active": active}
 
 
 DEFAULTS: dict[str, Any] = {"start_date": None, "end_date": None, "recurring": False,
                             "scope": "total", "portfolio_id": None, "kind": "min",
-                            "active": True}
+                            "benchmark": None, "active": True}
 
 
 async def create_goal(session: AsyncSession, body: dict[str, Any], *, today: date) -> Goal:
@@ -182,7 +192,8 @@ def goal_dto(goal: Goal, portfolio: tuple[str, bool] | None = None) -> dict[str,
         "id": goal.id, "name": goal.name, "horizon": goal.horizon,
         "start_date": goal.start_date, "end_date": goal.end_date,
         "recurring": goal.recurring, "scope": goal.scope, "portfolio_id": goal.portfolio_id,
-        "target_pct": goal.target_pct, "kind": goal.kind, "active": goal.active,
+        "target_pct": goal.target_pct, "kind": goal.kind, "benchmark": goal.benchmark,
+        "active": goal.active,
         "created_at": goal.created_at, "updated_at": goal.updated_at,
         "portfolio_name": portfolio[0] if portfolio else None,
         "portfolio_archived": bool(portfolio and portfolio[1]),

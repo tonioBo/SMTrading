@@ -12,6 +12,7 @@ from sqlalchemy import update
 from test_admin_users import env  # noqa: F401
 
 from smtrading.events import discard_post_commit
+from smtrading.goals.models import BenchmarkSnapshot
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
 from smtrading.risk.models import EquitySnapshot, SnapshotKind
@@ -75,8 +76,8 @@ async def test_crud_and_validation(env, monkeypatch):
     assert r.status_code == 200, r.text
     g = r.json()
     assert set(g) == {"id", "name", "horizon", "start_date", "end_date", "recurring",
-                      "scope", "portfolio_id", "target_pct", "kind", "active", "created_at",
-                      "updated_at", "portfolio_name", "portfolio_archived"}
+                      "scope", "portfolio_id", "target_pct", "kind", "benchmark", "active",
+                      "created_at", "updated_at", "portfolio_name", "portfolio_archived"}
     assert (g["name"], g["start_date"], g["end_date"], g["recurring"], g["portfolio_id"],
             g["portfolio_name"], g["target_pct"], g["kind"], g["active"]) == (
         "Mese di marzo", "2027-03-10", None, False, str(pid), "Obiettivi P", "5.5", "min",
@@ -176,7 +177,8 @@ async def test_progress_total_portfolio_and_archived(env, monkeypatch):
     assert set(week) == {"goal_id", "name", "horizon", "scope", "portfolio_id",
                          "portfolio_name", "kind", "period_start", "period_end", "start_eur",
                          "current_eur", "target_eur", "pct", "target_pct", "gap_eur",
-                         "elapsed_pct", "status", "as_of"}
+                         "elapsed_pct", "status", "as_of", "benchmark", "benchmark_pct",
+                         "diff_pp", "loss_pct"}
     assert (week["period_start"], week["period_end"], week["scope"]) == (
         "2027-03-08", "2027-03-14", "total")
     assert (D(week["start_eur"]), D(week["current_eur"]), D(week["target_eur"]),
@@ -258,3 +260,67 @@ async def test_weekly_setting_round_trips_the_goals_limit(env):
     assert r.json()["weekly_goal"]["pct"] == "1000.0"
     r = await c.put("/api/settings/app", json={"weekly_goal": {"pct": "1000.01"}})
     assert r.status_code == 400, r.text
+
+
+async def _bench(sm, ts, price_eur: str, symbol="VWCE.DE") -> None:
+    async with sm() as s:
+        s.add(BenchmarkSnapshot(symbol=symbol, ts=ts, price=D(price_eur), currency="EUR",
+                                fx_eur=D(1), price_eur=D(price_eur)))
+        await s.commit()
+
+
+async def test_max_loss_and_beat_index_goals(env, monkeypatch):
+    """max_loss: the loss limit and its statuses; beat_index: the scope's change against
+    the benchmark's (EUR, from the benchmark snapshots), margin 0 allowed; validation."""
+    _clock(monkeypatch, rome(WED, 12))
+    c = await _admin(env)
+    a = await _portfolio(env.sm, "Rischio A")
+    await _snap(env.sm, a, rome(MON, 0, 1), "1000", SnapshotKind.day_open)
+    await _snap(env.sm, a, rome(WED, 11), "958")
+    bad = [
+        {"name": "x", "horizon": "week", "target_pct": "0", "kind": "max_loss"},
+        {"name": "x", "horizon": "week", "target_pct": "0", "kind": "beat_index"},  # no index
+        {"name": "x", "horizon": "week", "target_pct": "0", "kind": "beat_index",
+         "benchmark": "DAX"},
+        {"name": "x", "horizon": "week", "target_pct": "-1", "kind": "beat_index",
+         "benchmark": "SPY"},
+    ]
+    for body in bad:
+        r = await c.post("/api/goals", json=body)
+        assert r.status_code == 400, (body, r.text)
+    risk = (await c.post("/api/goals", json={
+        "name": "rischio", "horizon": "week", "target_pct": "5", "kind": "max_loss",
+        "scope": "portfolio", "portfolio_id": str(a), "start_date": "2027-03-08",
+        "benchmark": "SPY"})).json()  # a benchmark of another kind is dropped
+    assert (risk["kind"], risk["benchmark"], risk["target_pct"]) == ("max_loss", None, "5")
+    beat = (await c.post("/api/goals", json={
+        "name": "indice", "horizon": "week", "target_pct": "0", "kind": "beat_index",
+        "benchmark": "vwce.de", "scope": "portfolio", "portfolio_id": str(a),
+        "start_date": "2027-03-08"})).json()
+    assert (beat["kind"], beat["benchmark"], beat["target_pct"]) == ("beat_index", "VWCE.DE", "0")
+
+    by = {p["name"]: p for p in (await c.get("/api/goals/progress")).json()}
+    r = by["rischio"]
+    assert (D(r["pct"]), D(r["loss_pct"]), D(r["target_eur"]), D(r["gap_eur"]),
+            r["status"], r["benchmark"], r["benchmark_pct"]) == (
+        D("-4.2"), D("4.2"), D(950), D(-8), "vicino al limite", None, None)
+    b = by["indice"]
+    assert (b["status"], b["benchmark"], b["benchmark_pct"], b["diff_pp"],
+            b["target_eur"]) == ("non iniziato", "VWCE.DE", None, None, None)
+
+    await _bench(env.sm, rome(5, 22, 30), "100")  # Friday close: the base
+    await _bench(env.sm, rome(MON, 15), "97")
+    await _bench(env.sm, rome(WED, 11), "95")
+    await _bench(env.sm, rome(WED, 13), "120")  # after now: ignored
+    b = {p["name"]: p for p in (await c.get("/api/goals/progress")).json()}["indice"]
+    assert (D(b["pct"]), D(b["benchmark_pct"]), D(b["diff_pp"]), D(b["target_eur"]),
+            b["status"], b["loss_pct"]) == (D("-4.2"), D(-5), D("0.8"), D(950), "avanti", None)
+
+    r = await c.patch(f"/api/goals/{beat['id']}", json={"target_pct": "2"})
+    assert r.status_code == 200, r.text
+    b = {p["name"]: p for p in (await c.get("/api/goals/progress")).json()}["indice"]
+    assert b["status"] == "indietro"  # 0,8 < 2 - 0,5
+    r = await c.patch(f"/api/goals/{beat['id']}", json={"kind": "min"})
+    assert (r.json()["kind"], r.json()["benchmark"]) == ("min", None)
+    r = await c.patch(f"/api/goals/{risk['id']}", json={"kind": "beat_index"})
+    assert r.status_code == 400 and r.json()["details"]["field"] == "benchmark"

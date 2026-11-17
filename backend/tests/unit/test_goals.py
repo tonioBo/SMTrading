@@ -118,7 +118,8 @@ def _p(**kw) -> dict:
             "period_start": date(2027, 3, 8), "period_end": date(2027, 3, 14),
             "start_eur": D("1000.00"), "current_eur": D("1004.20"), "target_eur": D("1020.00"),
             "pct": D("0.42"), "target_pct": D("2.00"), "gap_eur": D("15.80"),
-            "elapsed_pct": D(90), "status": "in ritardo", "as_of": None}
+            "elapsed_pct": D(90), "status": "in ritardo", "as_of": None,
+            "benchmark": None, "benchmark_pct": None, "diff_pp": None, "loss_pct": None}
     return {**base, **kw}
 
 
@@ -147,3 +148,55 @@ def test_end_line():
     assert end_line(_p(kind="cap", pct=D("3"))).endswith("tetto superato (+3,00% su +2%)")
     assert end_line(_p(pct=None)) == (
         "🏁 Obiettivo settimanale: nessun dato del periodo (obiettivo +2%)")
+
+
+def test_status_rule_max_loss_and_beat_index():
+    kw = {"started": True, "ended": False}
+    five = D(5)
+    assert status_of("max_loss", D("1"), five, D(50), **kw) == "nel limite"
+    assert status_of("max_loss", D("-3.99"), five, D(50), **kw) == "nel limite"
+    assert status_of("max_loss", D("-4"), five, D(50), **kw) == "vicino al limite"  # 80%
+    assert status_of("max_loss", D("-5"), five, D(50), **kw) == "superato"
+    assert status_of("max_loss", D("-6"), five, D(100), started=True, ended=True) == "superato"
+    assert status_of("max_loss", D("-4"), five, D(100), started=True, ended=True) == "concluso"
+    assert status_of("max_loss", None, five, D(50), **kw) == "non iniziato"
+    zero = D(0)
+    assert status_of("beat_index", D("2"), zero, D(50), benchmark_pct=D("1.5"), **kw) == "avanti"
+    assert status_of("beat_index", D("1.5"), zero, D(50), benchmark_pct=D("1.5"),
+                     **kw) == "avanti"
+    assert status_of("beat_index", D("1.1"), zero, D(50), benchmark_pct=D("1.5"),
+                     **kw) == "in linea"
+    assert status_of("beat_index", D("0.9"), zero, D(50), benchmark_pct=D("1.5"),
+                     **kw) == "indietro"
+    assert status_of("beat_index", D("3"), D(1), D(50), benchmark_pct=D("2.5"),
+                     **kw) == "in linea"  # 0,5 points ahead, 1 wanted
+    assert status_of("beat_index", D("2"), zero, D(50), benchmark_pct=None,
+                     **kw) == "non iniziato"
+    assert status_of("beat_index", D("0"), zero, D(100), benchmark_pct=D(1), started=True,
+                     ended=True) == "concluso"
+
+
+def test_lines_max_loss_and_beat_index():
+    today = date(2027, 3, 12)
+    risk = _p(name="rischio", kind="max_loss", target_pct=D(5), pct=D("-4.2"),
+              current_eur=D("958.00"), loss_pct=D("4.2"), status="vicino al limite",
+              portfolio_name="Prudente")
+    assert progress_line(risk, today) == (
+        "🎯 Obiettivo rischio perdita max 5% · Prudente: da 1.000,00 € — attuale 958,00 € "
+        "(-4,20%) · vicino al limite")
+    assert end_line(risk) == "🏁 Obiettivo rischio · Prudente: limite rispettato (-4,20%, limite -5%)"
+    assert end_line({**risk, "pct": D(-5), "loss_pct": D(5)}).endswith(
+        "limite superato (-5,00%, limite -5%)")
+    beat = _p(name="indice", kind="beat_index", target_pct=D(0), benchmark="VWCE.DE",
+              pct=D("2.1"), benchmark_pct=D("1.5"), diff_pp=D("0.6"), status="avanti")
+    assert progress_line(beat, today) == (
+        "🎯 Obiettivo indice meglio di VWCE.DE: +2,10% contro +1,50% (+0,60 punti) · avanti")
+    assert progress_line({**beat, "target_pct": D("1.5")}, today).startswith(
+        "🎯 Obiettivo indice meglio di VWCE.DE di 1,5 punti: ")
+    assert progress_line({**beat, "benchmark_pct": None}, today) == (
+        "🎯 Obiettivo indice meglio di VWCE.DE: dati dell'indice non ancora disponibili")
+    assert end_line(beat) == "🏁 Obiettivo indice: VWCE.DE battuto (+2,10% contro +1,50%)"
+    assert end_line({**beat, "diff_pp": D("-0.1")}).endswith("VWCE.DE non battuto "
+                                                             "(+2,10% contro +1,50%)")
+    assert end_line({**beat, "benchmark_pct": None}) == (
+        "🏁 Obiettivo indice: nessun dato del periodo (VWCE.DE)")

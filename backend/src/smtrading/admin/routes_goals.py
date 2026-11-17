@@ -6,7 +6,9 @@ level). Every figure is a string (null without data).
 - `POST /api/goals`: name, horizon, target_pct required; start_date (default today,
   local), end_date (custom only, required there), recurring (default false; never for
   custom), scope (default total), portfolio_id (scope portfolio, not archived), kind
-  (default min), active (default true);
+  (min | cap | max_loss | beat_index, default min), benchmark (SPY | QQQ | VWCE.DE,
+  beat_index only and required there; target_pct is then the margin in points, 0
+  allowed), active (default true);
 - `PATCH /api/goals/{goal_id}`: only the fields sent change, validated as a whole;
 - `DELETE /api/goals/{goal_id}`: never deleted, active=false;
 - `GET /api/goals/progress`: the progress of the active goals in their current period
@@ -42,6 +44,7 @@ class GoalIn(BaseModel):
     portfolio_id: str | None = None
     target_pct: str | int | None = None
     kind: str | None = None
+    benchmark: str | None = None
     active: StrictBool | None = None
 
 

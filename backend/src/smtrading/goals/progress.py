@@ -12,15 +12,23 @@ here (the worker writes a snapshot every 5 minutes).
 
 Status (`status_of`): «non iniziato» before the period or without data yet; kind min:
 «raggiunto» once pct ≥ target, «in ritardo» while pct < target × elapsed − 0,5 pp,
-else «in linea»; kind cap: «oltre il tetto» once pct > target, else «in linea». A period
-over (goals that do not recur) is «raggiunto» / «oltre il tetto» as above, else
-«concluso».
+else «in linea»; kind cap: «oltre il tetto» once pct > target, else «in linea»; kind
+max_loss (loss_pct = max(0, −pct), target = the limit): «superato» once loss ≥ target,
+«vicino al limite» once loss ≥ 80% of it, else «nel limite»; kind beat_index (diff_pp =
+pct − benchmark_pct, target = the margin in points; «non iniziato» without the
+benchmark's data): «avanti» once diff ≥ target, «indietro» while diff < target −
+0,5 pp, else «in linea». A period over (goals that do not recur) is «raggiunto» /
+«oltre il tetto» / «superato» / «avanti» as above, else «concluso».
+
+`target_eur` is the equity matching the target: start × (1 + target) for min and cap,
+the floor start × (1 − limit) for max_loss, start × (1 + benchmark + margin) for
+beat_index; `gap_eur` = target_eur − current_eur.
 
 Every figure leaves `goal_progress` as a Decimal rounded to cents (None without data); the
 routes turn them into strings."""
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 from uuid import UUID
@@ -29,6 +37,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from smtrading.goals.benchmark import benchmark_change, local_midnight
 from smtrading.goals.models import HORIZONS, Goal
 from smtrading.goals.periods import Period, elapsed_pct, goal_period, previous_period
 from smtrading.goals.service import portfolio_labels
@@ -39,11 +48,15 @@ from smtrading.risk.models import EquitySnapshot, SnapshotKind
 PERIOD_END_JOB = "goals.period_end"
 END_LOOKBACK = timedelta(days=7)  # a period end not announced within a week is dropped
 BEHIND_MARGIN_PP = Decimal("0.5")
+NEAR_SHARE = Decimal("0.8")  # max_loss: «vicino al limite» from 80% of the limit
 _Q2 = Decimal("0.01")
 
 REACHED, ON_TRACK, BEHIND, NOT_STARTED, OVER, ABOVE_CAP = (
     "raggiunto", "in linea", "in ritardo", "non iniziato", "concluso", "oltre il tetto")
-STATUSES = (REACHED, ON_TRACK, BEHIND, NOT_STARTED, OVER, ABOVE_CAP)
+WITHIN, NEAR_LIMIT, BREACHED = "nel limite", "vicino al limite", "superato"
+AHEAD, LAGGING = "avanti", "indietro"
+STATUSES = (REACHED, ON_TRACK, BEHIND, NOT_STARTED, OVER, ABOVE_CAP, WITHIN, NEAR_LIMIT,
+            BREACHED, AHEAD, LAGGING)
 
 
 # -- pure maths ------------------------------------------------------------------------
@@ -54,6 +67,20 @@ def goal_target(pct: Decimal, start: Decimal) -> Decimal:
     return start * (1 + pct / 100)
 
 
+def kind_target(kind: str, target: Decimal, start: Decimal,
+                benchmark_pct: Decimal | None) -> Decimal | None:
+    """`target_eur` of a goal (see the module docstring)."""
+    if kind == "max_loss":
+        return goal_target(-target, start)
+    if kind == "beat_index":
+        return None if benchmark_pct is None else goal_target(benchmark_pct + target, start)
+    return goal_target(target, start)
+
+
+def loss_of(pct: Decimal | None) -> Decimal | None:
+    return None if pct is None else max(Decimal(0), -pct)
+
+
 def goal_change_pct(start: Decimal, current: Decimal) -> Decimal | None:
     """The change in percent, or None without a positive starting equity."""
     if start <= 0:
@@ -62,10 +89,26 @@ def goal_change_pct(start: Decimal, current: Decimal) -> Decimal | None:
 
 
 def status_of(kind: str, pct: Decimal | None, target: Decimal, elapsed: Decimal, *,
-              started: bool, ended: bool) -> str:
+              started: bool, ended: bool, benchmark_pct: Decimal | None = None) -> str:
     """The status of a goal (see the module docstring); `elapsed` in percent."""
+    if kind == "beat_index" and benchmark_pct is None:
+        pct = None
     if not started or pct is None:
         return OVER if ended and started else NOT_STARTED
+    if kind == "max_loss":
+        loss = max(Decimal(0), -pct)
+        if loss >= target:
+            return BREACHED
+        if ended:
+            return OVER
+        return NEAR_LIMIT if loss >= target * NEAR_SHARE else WITHIN
+    if kind == "beat_index":
+        diff = pct - benchmark_pct
+        if diff >= target:
+            return AHEAD
+        if ended:
+            return OVER
+        return LAGGING if diff < target - BEHIND_MARGIN_PP else ON_TRACK
     if kind == "cap":
         if pct > target:
             return ABOVE_CAP
@@ -92,11 +135,6 @@ class PortfolioPeriod:
     start: Decimal
     current: Decimal
     as_of: datetime  # ts of the snapshot giving `current`
-
-
-def local_midnight(day: date, zone: ZoneInfo) -> datetime:
-    """00:00 local of `day`, in UTC."""
-    return datetime.combine(day, time(0), tzinfo=zone).astimezone(UTC)
 
 
 async def portfolio_periods(session: AsyncSession, period: Period, now: datetime,
@@ -152,19 +190,26 @@ async def period_progress(session: AsyncSession, goal: Goal, period: Period, now
     start = sum((w.start for w in weeks), Decimal(0)) if weeks else None
     current = sum((w.current for w in weeks), Decimal(0)) if weeks else None
     pct = goal_change_pct(start, current) if weeks else None
-    target_eur = goal_target(target, start) if weeks else None
+    bench = (await benchmark_change(session, goal.benchmark, period, now, zone)
+             if goal.kind == "beat_index" and goal.benchmark else None)
+    target_eur = kind_target(goal.kind, target, start, bench) if weeks else None
     elapsed = elapsed_pct(period, local)
+    pct_r, bench_r = round_cents(pct), round_cents(bench)
     return {
         "goal_id": goal.id, "name": goal.name, "horizon": goal.horizon, "scope": goal.scope,
         "portfolio_id": goal.portfolio_id, "portfolio_name": portfolio_name,
         "kind": goal.kind, "period_start": period.start, "period_end": period.end,
         "start_eur": round_cents(start), "current_eur": round_cents(current),
-        "target_eur": round_cents(target_eur), "pct": round_cents(pct), "target_pct": target,
-        "gap_eur": round_cents(target_eur - current) if weeks else None,
+        "target_eur": round_cents(target_eur), "pct": pct_r, "target_pct": target,
+        "gap_eur": (round_cents(target_eur - current)
+                    if target_eur is not None and current is not None else None),
         "elapsed_pct": elapsed,
-        "status": status_of(goal.kind, pct, target, elapsed,
-                            started=today >= period.start, ended=today > period.end),
+        "status": status_of(goal.kind, pct, target, elapsed, started=today >= period.start,
+                            ended=today > period.end, benchmark_pct=bench),
         "as_of": max(w.as_of for w in weeks) if weeks else None,
+        "benchmark": goal.benchmark, "benchmark_pct": bench_r,
+        "diff_pp": pct_r - bench_r if pct_r is not None and bench_r is not None else None,
+        "loss_pct": loss_of(pct_r) if goal.kind == "max_loss" else None,
     }
 
 
@@ -227,8 +272,19 @@ def _goal_pct(pct: Decimal) -> str:
     return "+" + format(pct.normalize(), "f").replace(".", ",") + "%"
 
 
+def _points(value: Decimal) -> str:
+    return format(value.normalize(), "f").replace(".", ",")
+
+
 def _head(p: dict[str, Any]) -> str:
-    head = f"Obiettivo {p['name']} {_goal_pct(p['target_pct'])}"
+    if p["kind"] == "max_loss":
+        head = f"Obiettivo {p['name']} perdita max {_points(p['target_pct'])}%"
+    elif p["kind"] == "beat_index":
+        head = f"Obiettivo {p['name']} meglio di {p['benchmark']}"
+        if p["target_pct"] > 0:
+            head += f" di {_points(p['target_pct'])} punti"
+    else:
+        head = f"Obiettivo {p['name']} {_goal_pct(p['target_pct'])}"
     if p["kind"] == "cap":
         head += " (tetto)"
     if p["portfolio_name"]:
@@ -245,16 +301,35 @@ def progress_line(p: dict[str, Any], today: date) -> str:
         return f"{head}: dal {p['period_start']:%d/%m/%Y}"
     if p["pct"] is None:
         return f"{head}: dati del periodo non ancora disponibili"
+    if p["kind"] == "max_loss":
+        return (f"{head}: da {_number(p['start_eur'])} € — attuale "
+                f"{_number(p['current_eur'])} € ({_signed(p['pct'])}%) · {p['status']}")
+    if p["kind"] == "beat_index":
+        if p["benchmark_pct"] is None:
+            return f"{head}: dati dell'indice non ancora disponibili"
+        return (f"{head}: {_signed(p['pct'])}% contro {_signed(p['benchmark_pct'])}% "
+                f"({_signed(p['diff_pp'])} punti) · {p['status']}")
     return (f"{head}: {_number(p['start_eur'])} → {_number(p['target_eur'])} € — attuale "
             f"{_number(p['current_eur'])} € ({_signed(p['pct'])}%) · {p['status']}")
 
 
 def end_line(p: dict[str, Any]) -> str:
     """«🏁 Obiettivo settimanale: raggiunto (+2,10% su +2%)» / «non raggiunto (…)» for a
-    period just over (pure); kind cap: «tetto rispettato» / «tetto superato»; without
-    data «nessun dato»."""
+    period just over (pure); kind cap: «tetto rispettato» / «tetto superato»; max_loss:
+    «limite rispettato» / «limite superato»; beat_index: «<indice> battuto» / «non
+    battuto»; without data «nessun dato»."""
     name = p["name"] + (f" · {p['portfolio_name']}" if p["portfolio_name"] else "")
     target = _goal_pct(p["target_pct"])
+    if p["kind"] == "max_loss" and p["pct"] is not None:
+        word = "limite rispettato" if p["loss_pct"] < p["target_pct"] else "limite superato"
+        return (f"🏁 Obiettivo {name}: {word} ({_signed(p['pct'])}%, limite "
+                f"-{_points(p['target_pct'])}%)")
+    if p["kind"] == "beat_index":
+        if p["pct"] is None or p["benchmark_pct"] is None:
+            return f"🏁 Obiettivo {name}: nessun dato del periodo ({p['benchmark']})"
+        word = "battuto" if p["diff_pp"] >= p["target_pct"] else "non battuto"
+        return (f"🏁 Obiettivo {name}: {p['benchmark']} {word} ({_signed(p['pct'])}% "
+                f"contro {_signed(p['benchmark_pct'])}%)")
     if p["pct"] is None:
         return f"🏁 Obiettivo {name}: nessun dato del periodo (obiettivo {target})"
     if p["kind"] == "cap":

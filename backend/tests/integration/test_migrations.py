@@ -488,3 +488,44 @@ async def test_0031_goal_checks(db_session):
                 "insert into goals (id, name, horizon, start_date, end_date, recurring, scope,"
                 f" portfolio_id, target_pct, kind, active) values {values}"))
         await nested.rollback()
+
+
+async def test_0032_goal_kinds_round_trip(fresh_db):
+    """0032: max_loss and beat_index (benchmark required there only, margin 0 allowed),
+    goal_alerts and benchmark_snapshots; the downgrade deletes the goals of the new kinds
+    (with their alerts) and keeps the others."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    async def query(sql: str, **params):
+        engine = make_engine(fresh_db)
+        async with engine.begin() as conn:
+            result = await conn.execute(text(sql), params)
+            rows = result.all() if result.returns_rows else []
+        await engine.dispose()
+        return rows
+
+    insert = ("insert into goals (id, name, horizon, start_date, recurring, scope,"
+              " target_pct, kind, benchmark, active) values (gen_random_uuid(), :n, 'week',"
+              " '2026-11-16', false, 'total', :t, :k, :b, true)")
+    await query(insert, n="rischio", t=5, k="max_loss", b=None)
+    await query(insert, n="indice", t=0, k="beat_index", b="VWCE.DE")
+    for t, k, b in ((0, "max_loss", None), (0, "beat_index", None), (0, "min", "SPY"),
+                    (1, "beat_index", "DAX"), (-1, "beat_index", "SPY")):
+        with pytest.raises(DBAPIError, match="ck_goals_"):
+            await query(insert, n="x", t=t, k=k, b=b)
+    await query("insert into goal_alerts (goal_id, period_start, status)"
+                " select id, '2026-11-16', 'superato' from goals where name = 'rischio'")
+    await query("insert into benchmark_snapshots (symbol, ts, price, currency, fx_eur,"
+                " price_eur) values ('SPY', now(), 600, 'USD', 0.9, 540)")
+
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0031")
+    assert await query("select name, kind from goals order by name") == [
+        ("settimanale", "min")]
+    assert await query("select to_regclass('goal_alerts'), to_regclass('benchmark_snapshots')"
+                       ) == [(None, None)]
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    await query(insert, n="indice", t=0, k="beat_index", b="SPY")
+    assert await query("select name, kind, benchmark from goals order by name") == [
+        ("indice", "beat_index", "SPY"), ("settimanale", "min", None)]
