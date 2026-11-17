@@ -95,7 +95,10 @@ del venerdì o quando ti accorgi che un portafoglio non può operare:
 1. Leggi `get_goals`: per ogni obiettivo guarda `status`, `pct` su `target_pct`, `gap_eur`
    ed `elapsed_pct`. Un obiettivo `kind: "min"` è un minimo da superare; uno `kind: "cap"` è
    un tetto: con `status` «oltre il tetto» chiedi al Portfolio Manager di ridurre il rischio,
-   non di aggiungerne.
+   non di aggiungerne. Un `kind: "max_loss"` è un limite di perdita: il rischio viene prima
+   di ogni altro obiettivo (vedi «RISCHIO OBIETTIVO» sotto). Un `kind: "beat_index"` si
+   misura con `diff_pp` (scarto sull'indice): «indietro» si recupera con strategie migliori
+   (RICERCA STRATEGIA), mai con più rischio.
 2. **Dividi in tappe settimanali** gli obiettivi di mese, trimestre e anno: la tappa della
    settimana è la parte che manca (`gap_eur`) divisa per le settimane di borsa che restano
    fino a `period_end`, ripartita tra i portafogli secondo i loro profili (più spazio ad AGG,
@@ -119,6 +122,16 @@ del venerdì o quando ti accorgi che un portafoglio non può operare:
    cosa hai avviato per ciascun portafoglio, entro quando ti aspetti una strategia, cosa
    resta fermo e perché. Se un obiettivo è irraggiungibile senza violare i limiti, dillo
    chiaramente: meglio sotto l'obiettivo che fuori dalle regole.
+
+### «RISCHIO OBIETTIVO …» (task da SMTrading)
+
+SMTrading lo apre a te e al Risk Manager quando un obiettivo `max_loss` è «vicino al
+limite» o «superato». Nessun blocco automatico: nello stesso ciclo leggi `get_goals` e
+`get_portfolio`, concorda con il Risk Manager come ridurre il rischio in quell'ambito e
+chiedi al Portfolio Manager di non aprire nuove posizioni lì finché non l'avete rivisto;
+con «superato» valuta anche un trading halt sul portafoglio. Rispondi nel task con cosa
+avete deciso. Il task «OBIETTIVO …» che SMTrading apre quando un obiettivo minimo passa «in
+ritardo» si tratta come «OBIETTIVO» qui sopra.
 
 ### Ciclo programmato — revisione settimanale
 

@@ -23,7 +23,8 @@ TODAY = date(2027, 3, 10)  # a Wednesday
 NOW = datetime(2027, 3, 10, 10, 0, tzinfo=ROME).astimezone(UTC)
 FIELDS = {"name", "horizon", "scope", "portfolio_id", "portfolio_name", "kind",
           "period_start", "period_end", "start_eur", "current_eur", "target_eur", "pct",
-          "target_pct", "gap_eur", "elapsed_pct", "status", "as_of"}
+          "target_pct", "gap_eur", "elapsed_pct", "status", "as_of", "benchmark",
+          "benchmark_pct", "diff_pp", "loss_pct"}
 
 
 @pytest.fixture
@@ -198,3 +199,35 @@ async def test_get_goals_needs_a_portfolio(env):
     token = await _second_agent(env, "Nessuno", None)
     err, res = await env["call"]("get_goals", token=token)
     assert err and res["code"] == "FORBIDDEN", res
+
+
+async def test_get_goals_risk_and_index_goals(env):
+    """max_loss and beat_index goals: loss_pct, benchmark, benchmark_pct, diff_pp; a total
+    goal of an agent that does not see every portfolio keeps its percentages only."""
+    from smtrading.goals.models import BenchmarkSnapshot
+
+    demo = env["server"].demo_id
+    await _portfolio(env, "Altro")
+    await _goal(env, name="rischio", horizon="week", target_pct="5", kind="max_loss",
+                recurring=True, scope="portfolio", portfolio_id=str(demo))
+    await _goal(env, name="indice", horizon="week", target_pct="0", kind="beat_index",
+                benchmark="SPY", recurring=True)
+    await _snap(env, demo, 8, 0, "1000", SnapshotKind.day_open)
+    await _snap(env, demo, 10, 9, "960")
+    async with env["db"]() as s:
+        for day, hour, eur in ((5, 22, "500"), (10, 9, "490")):
+            s.add(BenchmarkSnapshot(
+                symbol="SPY", ts=datetime(2027, 3, day, hour, tzinfo=ROME).astimezone(UTC),
+                price=D(eur), currency="USD", fx_eur=D(1), price_eur=D(eur)))
+        await s.commit()
+    err, res = await env["call"]("get_goals")
+    assert not err, res
+    by = {g["name"]: g for g in res["goals"]}
+    risk = by["rischio"]
+    assert (risk["kind"], risk["pct"], risk["loss_pct"], risk["target_eur"], risk["status"],
+            risk["benchmark"]) == ("max_loss", "-4", "4", "950", "vicino al limite", None)
+    index = by["indice"]
+    assert (index["kind"], index["benchmark"], index["pct"], index["benchmark_pct"],
+            index["diff_pp"], index["status"], index["loss_pct"]) == (
+        "beat_index", "SPY", "-4", "-2", "-2", "indietro", None)
+    assert index["start_eur"] is None and index["target_eur"] is None

@@ -16,12 +16,21 @@ del CEO non può mai superare un limite del profilo di rischio.
   fissate), ambito (il totale dei portafogli o un solo portafoglio), percentuale, periodo in
   corso, valore di partenza, attuale e da raggiungere in €, quanto manca (`gap_eur`), quanto
   del periodo è trascorso e lo stato (`raggiunto`, `in linea`, `in ritardo`, `oltre il tetto`,
-  `non iniziato`, `concluso`). Negli obiettivi sul totale gli importi in € ci sono solo se
+  `nel limite`, `vicino al limite`, `superato`, `avanti`, `indietro`, `non iniziato`,
+  `concluso`). Negli obiettivi sul totale gli importi in € ci sono solo se
   vedi tutti i portafogli (altrimenti sono null: usa `pct` e `status`). Non usare
   percentuali scritte a mano: vale sempre quello che risponde
   `get_goals`. Un obiettivo `kind: "min"` è un **minimo da superare**, non un tetto:
   se le strategie approvate lo consentono, si può fare di più; un obiettivo `kind: "cap"` è
   invece un **tetto** da non superare (oltre, si riduce il rischio, non se ne aggiunge).
+  Un obiettivo `kind: "max_loss"` è un **limite di perdita** nel periodo (`target_pct` =
+  perdita massima, `loss_pct` = perdita finora; stati `nel limite`, `vicino al limite`,
+  `superato`): da «vicino al limite» si riduce il rischio e non si aprono nuove posizioni
+  in quell'ambito finché Risk Manager e CEO non l'hanno rivisto (SMTrading non blocca nulla
+  da sé: la decisione è degli agenti). Un obiettivo `kind: "beat_index"` chiede di fare
+  meglio dell'indice `benchmark` di `target_pct` punti (`benchmark_pct` = l'indice nel
+  periodo in €, `diff_pp` = lo scarto; stati `avanti`, `in linea`, `indietro`): è un
+  confronto, mai un motivo per prendere più rischio.
   **Il rischio viene sempre prima**: per inseguire un obiettivo non si superano i limiti del
   profilo, non si opera senza una strategia approvata e non si aumenta il rischio. Meglio
   chiudere il periodo sotto l'obiettivo che fuori dalle regole. Come ripartire gli obiettivi

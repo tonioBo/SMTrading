@@ -106,6 +106,12 @@ async def _setup(server, flavor: str) -> str:
         await create_goal(s, {"name": "mensile", "horizon": "month", "target_pct": "5",
                               "recurring": True, "scope": "portfolio",
                               "portfolio_id": str(pid)}, today=date.today())
+        await create_goal(s, {"name": "rischio", "horizon": "month", "target_pct": "5",
+                              "recurring": True, "scope": "portfolio", "kind": "max_loss",
+                              "portfolio_id": str(pid)}, today=date.today())
+        await create_goal(s, {"name": "indice", "horizon": "quarter", "target_pct": "0",
+                              "recurring": True, "kind": "beat_index",
+                              "benchmark": "VWCE.DE"}, today=date.today())
         await s.commit()
     return str(pid)
 
@@ -395,7 +401,8 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
     alerts = next(p for t, p in outputs if t == "get_triggered_alerts")
     assert "watch_changed" in {a["kind"] for a in alerts["alerts"]}, alerts
     goals = next(p for t, p in outputs if t == "get_goals")
-    assert {g["name"] for g in goals["goals"]} >= {"settimanale", "mensile"}, goals
+    assert {g["name"] for g in goals["goals"]} >= {"settimanale", "mensile", "rischio",
+                                                   "indice"}, goals
     clear = next(p for t, p in outputs if t == "set_trading_halt")
     assert clear["code"] == "FORBIDDEN", clear
     markers = [(t, m) for t, p in outputs for m in _human_markers(p)]

@@ -21,7 +21,8 @@ Permesso: `read` sui 2 portafogli.
 Tool consentiti:
 
 - Rischio e stato: `list_portfolios`, `get_risk_limits`, `get_portfolio`, `get_positions`,
-  `list_orders`, `get_order`, `get_transactions`, `get_performance`, `get_trading_halt`
+  `list_orders`, `get_order`, `get_transactions`, `get_performance`, `get_trading_halt`,
+  `get_goals` (gli obiettivi, compresi i limiti di perdita `max_loss`)
 - Verifica pre-trade: `preview_order` (solo `read`, non inserisce nulla)
 - Mercato: `get_quote`, `get_bars`, `get_indicators`, `get_market_status`, `get_instrument`,
   `get_fx_rate`, `get_earnings_calendar`, `get_news`
@@ -91,6 +92,13 @@ Il controllo dei limiti si fa **sempre** (non si salta anche senza novità), ma 
 
 **«MODIFICA STOP» per allargare uno stop**: approva solo se la nuova perdita allo stop resta
 sostenibile rispetto al limite di perdita giornaliera e al profilo; altrimenti veto motivato.
+
+**«RISCHIO OBIETTIVO …» (da SMTrading, anche al CEO)** — un obiettivo `max_loss` (limite
+di perdita nel periodo) è «vicino al limite» o «superato». Il rischio viene prima di ogni
+obiettivo e SMTrading non blocca nulla da sé: nello stesso ciclo `get_goals`,
+`get_portfolio` e `get_risk_limits`; poi veto sulle nuove aperture in quell'ambito finché
+il CEO non l'ha rivisto, e task al Portfolio Manager (copia CEO) su cosa ridurre (chiusure
+parziali, stop più stretti tramite l'ES). Rispondi nel task con le misure prese.
 
 **«PROTEGGI · <portafoglio> · <simbolo>» (allarme operativo, priorità critica)** — una
 posizione aperta è senza stop, con uno stop che non copre tutta la qty, o con stop/target

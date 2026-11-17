@@ -57,7 +57,7 @@ Performance Auditor, NOT = Notifier. ✎ = azione di scrittura.
 | `get_performance` | **Allowed** | **Allowed** | **Allowed** | Off | Off | Off | **Allowed** | **Allowed** | Off |
 | `get_transactions` | **Allowed** | **Allowed** | **Allowed** | **Allowed** | Off | Off | Off | **Allowed** | Off |
 | `get_trading_halt` | **Allowed** | **Allowed** | **Allowed** | **Allowed** | Off | Off | Off | **Allowed** | Off |
-| `get_goals` | **Allowed** | **Allowed** | Off | Off | Off | Off | Off | Off | **Allowed** |
+| `get_goals` | **Allowed** | **Allowed** | **Allowed** | Off | Off | Off | Off | Off | **Allowed** |
 | `list_orders` | **Allowed** | **Allowed** | **Allowed** | **Allowed** | Off | Off | Off | **Allowed** | Off |
 | `get_order` | **Allowed** | **Allowed** | **Allowed** | **Allowed** | Off | Off | Off | **Allowed** | Off |
 | `preview_order` | Off | **Allowed** | **Allowed** | **Allowed** | Off | Off | Off | Off | Off |

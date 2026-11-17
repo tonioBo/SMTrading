@@ -56,13 +56,20 @@ def register(mcp: MCPServer) -> None:
         """The return objectives set for the agent's work and their progress in the
         current period: {goals: [{name, horizon (week|month|quarter|year|custom), scope
         (total: every portfolio together | portfolio), portfolio_id, portfolio_name, kind
-        (min: a minimum to exceed | cap: a ceiling not to pass), period_start, period_end
-        (YYYY-MM-DD, end included), start_eur, current_eur, target_eur, pct, target_pct,
-        gap_eur (target_eur - current_eur), elapsed_pct (business days of the period gone,
-        0-100), status (raggiunto | in linea | in ritardo | oltre il tetto | non iniziato |
-        concluso), as_of}]}. Amounts in EUR, percentages and amounts as strings, null
-        without data yet; the EUR figures of a total goal are null unless the agent holds
-        every portfolio. Total goals plus the goals of the agent's own portfolios; week,
+        (min: a minimum to exceed | cap: a ceiling not to pass | max_loss: a loss not to
+        reach, target_pct = the limit | beat_index: beat `benchmark` by target_pct
+        points), period_start, period_end (YYYY-MM-DD, end included), start_eur,
+        current_eur, target_eur (max_loss: the floor; beat_index: the benchmark's change
+        plus the margin), pct, target_pct, gap_eur (target_eur - current_eur),
+        elapsed_pct (business days of the period gone, 0-100), status (raggiunto | in
+        linea | in ritardo | oltre il tetto | nel limite | vicino al limite | superato |
+        avanti | indietro | non iniziato | concluso), as_of, benchmark (SPY | QQQ |
+        VWCE.DE for beat_index, else null), benchmark_pct (its change in EUR over the
+        period), diff_pp (pct - benchmark_pct), loss_pct (max_loss: the loss so far, 0 or
+        more)}]}. Amounts in EUR, percentages and amounts as strings, null without data
+        yet; the EUR figures of a total goal are null unless the agent holds every
+        portfolio. Total goals plus the goals of the agent's own portfolios; week,
         month, quarter and year are calendar periods (Europe/Rome). Risk limits always
-        come first: a goal never justifies breaking a rule."""
+        come first: a goal never justifies breaking a rule; a max_loss goal «vicino al
+        limite» or «superato» means reducing risk (nothing is blocked automatically)."""
         return await run_tool("get_goals", {}, _get_goals)
