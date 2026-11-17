@@ -57,6 +57,7 @@ Performance Auditor, NOT = Notifier. ✎ = azione di scrittura.
 | `get_performance` | **Allowed** | **Allowed** | **Allowed** | Off | Off | Off | **Allowed** | **Allowed** | Off |
 | `get_transactions` | **Allowed** | **Allowed** | **Allowed** | **Allowed** | Off | Off | Off | **Allowed** | Off |
 | `get_trading_halt` | **Allowed** | **Allowed** | **Allowed** | **Allowed** | Off | Off | Off | **Allowed** | Off |
+| `get_goals` | **Allowed** | **Allowed** | Off | Off | Off | Off | Off | Off | **Allowed** |
 | `list_orders` | **Allowed** | **Allowed** | **Allowed** | **Allowed** | Off | Off | Off | **Allowed** | Off |
 | `get_order` | **Allowed** | **Allowed** | **Allowed** | **Allowed** | Off | Off | Off | **Allowed** | Off |
 | `preview_order` | Off | **Allowed** | **Allowed** | **Allowed** | Off | Off | Off | Off | Off |
@@ -111,7 +112,7 @@ Riepilogo delle azioni di scrittura:
 - `log_decision`: tutti gli agenti che decidono o registrano (tutti e 9).
 
 Dopo ogni aggiornamento di SMTrading che aggiunge o cambia metodi (per esempio l'arrivo di
-`set_trading_halt`/`get_trading_halt`) premi **Refresh actions** nel connettore e ricontrolla
+`set_trading_halt`/`get_trading_halt` o di `get_goals`) premi **Refresh actions** nel connettore e ricontrolla
 questa tabella: le azioni nuove vanno impostate esplicitamente (Allowed o Off).
 
 Anche se Paperclip lo consentisse per errore, SMTrading rifiuta con `FORBIDDEN` gli ordini di
@@ -198,8 +199,10 @@ Altri task utili da creare a mano:
   collegati a un conto reale armato. Ad oggi i 2 portafogli non hanno un collegamento broker:
   gli ordini vengono eseguiti dal motore interno di SMTrading con prezzi reali e nessun ordine
   raggiunge un broker. Gli agenti non vengono informati di questo.
-- L'obiettivo del periodo (per esempio quello settimanale) non è nelle istruzioni: assegnalo
-  al CEO con un task.
+- Gli obiettivi (settimana, mese, trimestre, anno o date fissate; sul totale o su un
+  portafoglio) non sono nelle istruzioni: si fissano nella pagina «Obiettivi» di SMTrading e
+  gli agenti li leggono con `get_goals` (ognuno vede quelli sul totale e quelli dei suoi
+  portafogli). Il CEO li divide in tappe settimanali.
 - I riepiloghi automatici (07:00, 18:00, venerdì 18:30) e gli avvisi su ordini eseguiti/
   rifiutati e rischi critici li invia SMTrading: il Notifier non li ripete.
 - Lo storico di tutte le decisioni (`log_decision`) è visibile nella web app di SMTrading,
