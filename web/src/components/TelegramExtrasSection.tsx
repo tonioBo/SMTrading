@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useIsAdmin } from "@/api/hooks/auth";
@@ -56,7 +57,14 @@ export function TelegramExtrasSection({ goal, preopen }: { goal: WeeklyGoal; pre
           ) : (
             <p>Obiettivo: +{goal.pct.replace(".", ",")}% a settimana</p>
           )}
-          <p className="text-muted">Calcolato sul valore in euro di tutti i portafogli attivi rispetto a quello di lunedì.</p>
+          <p className="text-muted">
+            Calcolato sul valore in euro di tutti i portafogli attivi rispetto a quello di lunedì. È l&apos;obiettivo «settimanale»: gli altri
+            (mese, trimestre, anno, date scelte, singoli portafogli) si gestiscono in{" "}
+            <Link to="/obiettivi" className="text-accent hover:underline">
+              Obiettivi
+            </Link>
+            .
+          </p>
         </section>
         <section className="space-y-2" aria-label="Controllo pre-apertura">
           <h3 className="font-medium">Controllo pre-apertura</h3>

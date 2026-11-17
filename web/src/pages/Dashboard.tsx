@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { useDashboard, useLiveFeed, useWeeklyGoal, FEED_EVENT_LABELS } from "@/api/hooks/dashboard";
+import { useDashboard, useLiveFeed, FEED_EVENT_LABELS } from "@/api/hooks/dashboard";
+import { useGoalsProgress } from "@/api/hooks/goals";
 import { useOpenPositions } from "@/api/hooks/positions";
 import { useSignals } from "@/api/hooks/signals";
-import type { Dashboard as DashboardData, DashboardConnector, MarginAlert, WeeklyGoalProgress } from "@/api/types";
+import type { Dashboard as DashboardData, DashboardConnector, GoalProgress, MarginAlert } from "@/api/types";
 import { EquityHistoryCard } from "@/components/EquityHistoryCard";
+import { GoalBar } from "@/components/GoalBar";
 import { HaltBanner } from "@/components/HaltBanner";
 import { KillSwitchButton } from "@/components/KillSwitchButton";
 import { Money } from "@/components/Money";
@@ -13,12 +15,14 @@ import { Pct } from "@/components/Pct";
 import { Pnl } from "@/components/Pnl";
 import { ProtectionBadge } from "@/components/ProtectionBadge";
 import { SignalBadge } from "@/components/SignalBadges";
+import { StatusBadge } from "@/components/StatusBadge";
 import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { formatDateTime, formatMoney, formatPct, formatQty } from "@/lib/format";
-import { closestSignals, goalProgress } from "@/lib/signals";
+import { formatDateTime, formatMoney, formatQty } from "@/lib/format";
+import { formatDay, goalScopeLabel, goalTargetLabel, STATUS_TONE } from "@/lib/goals";
+import { closestSignals } from "@/lib/signals";
 import { MODE_INFO } from "@/lib/portfolioMode";
 import { heartbeatState } from "@/lib/heartbeat";
 import { cn } from "@/lib/utils";
@@ -129,72 +133,42 @@ function LiveIndicator({ live, updatedAt }: { live: boolean; updatedAt: number }
   );
 }
 
-function GoalBar({ pct, target, label }: { pct: string | null; target: string; label: string }) {
-  const value = goalProgress(pct, target);
-  return (
-    <div
-      role="progressbar"
-      aria-label={label}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={value}
-      className="h-2 w-full overflow-hidden rounded-full bg-border"
-    >
-      <div className={cn("h-full rounded-full", value >= 100 ? "bg-gain" : "bg-accent")} style={{ width: `${value}%` }} />
-    </div>
-  );
+function shortDay(day: string): string {
+  return formatDay(day).slice(0, 5);
 }
 
-function money(v: string | null): string {
-  return v == null ? "—" : formatMoney(v, "EUR");
-}
-
-/** «Obiettivo settimanale»: Monday opening → now, total and per portfolio, against the
- * target % (same figures as the Telegram goal line); hidden while the goal is off. */
-function WeeklyGoalCard({ goal }: { goal: WeeklyGoalProgress }) {
-  const { total } = goal;
+/** «Obiettivi»: every active goal's current period, compact (the page has the details);
+ * hidden without active goals. */
+function GoalsCard({ goals }: { goals: GoalProgress[] }) {
   return (
     <Card>
-      <CardHeader className="pb-2">
-        <CardTitle>Obiettivo settimanale</CardTitle>
-        <p className="text-xs text-muted">
-          {`obiettivo ${formatPct(goal.target_pct)}`}
-          {total.target_eur != null && ` · ${money(total.target_eur)}`}
-          {` · dal lunedì ${goal.week_start.split("-").reverse().join("/")}`}
-        </p>
+      <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0 pb-2">
+        <CardTitle>Obiettivi</CardTitle>
+        <Link to="/obiettivi" className="text-sm text-accent hover:underline" aria-label="Gestisci obiettivi">
+          Gestisci
+        </Link>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {total.start_eur == null ? (
-          <p className="text-sm text-muted">Dati della settimana non ancora disponibili</p>
-        ) : (
-          <>
-            <div className="space-y-1">
+      <CardContent>
+        <ul className="grid gap-x-6 gap-y-3 md:grid-cols-2" aria-label="Obiettivi attivi">
+          {goals.map((g) => (
+            <li key={g.goal_id} className="space-y-1 text-sm">
               <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <span className="num text-lg font-semibold">{`${money(total.start_eur)} → ${money(total.current_eur)}`}</span>
-                <Pct value={total.pct} tone />
+                <span className="flex flex-wrap items-baseline gap-2">
+                  <span className="font-medium">{g.name}</span>
+                  <span className="num text-muted">{goalTargetLabel(g.kind, g.target_pct)}</span>
+                  <span className="text-xs text-muted">{`${goalScopeLabel(g)} · ${shortDay(g.period_start)} – ${shortDay(g.period_end)}`}</span>
+                </span>
+                <span className="flex items-center gap-2">
+                  {g.pct != null && <Pct value={g.pct} tone />}
+                  <StatusBadge tone={STATUS_TONE[g.status] ?? "neutral"}>{g.status}</StatusBadge>
+                </span>
               </div>
-              <GoalBar pct={total.pct} target={goal.target_pct} label="Obiettivo settimanale totale" />
-            </div>
-            {goal.portfolios.length > 0 && (
-              <ul className="space-y-2 text-sm" aria-label="Obiettivo per portafoglio">
-                {goal.portfolios.map((p) => (
-                  <li key={p.portfolio_id} className="space-y-1">
-                    <div className="flex flex-wrap items-baseline justify-between gap-2">
-                      <span>
-                        <Link to={`/portafogli/${p.portfolio_id}`} className="text-accent hover:underline">
-                          {p.name}
-                        </Link>
-                        <span className="num ml-2 text-muted">{`${money(p.start_eur)} → ${money(p.current_eur)}`}</span>
-                      </span>
-                      <Pct value={p.pct} tone />
-                    </div>
-                    <GoalBar pct={p.pct} target={goal.target_pct} label={`Obiettivo settimanale ${p.name}`} />
-                  </li>
-                ))}
-              </ul>
-            )}
-          </>
-        )}
+              {g.pct != null && (
+                <GoalBar pct={g.pct} target={g.target_pct} kind={g.kind} elapsed={g.elapsed_pct} label={`Avanzamento ${g.name}`} />
+              )}
+            </li>
+          ))}
+        </ul>
       </CardContent>
     </Card>
   );
@@ -392,7 +366,7 @@ function PortfolioTable({ portfolios }: { portfolios: DashboardData["portfolios"
 
 export default function Dashboard() {
   const { data, isError, live, dataUpdatedAt } = useDashboard();
-  const goal = useWeeklyGoal().data;
+  const goals = useGoalsProgress().data;
 
   return (
     <div>
@@ -406,7 +380,7 @@ export default function Dashboard() {
         !isError && <p className="text-sm text-muted">Caricamento…</p>
       ) : (
         <div className="space-y-6">
-          {goal?.on && <WeeklyGoalCard goal={goal} />}
+          {goals && goals.length > 0 && <GoalsCard goals={goals} />}
           <EquityHistoryCard />
           <div className="grid gap-4 lg:grid-cols-2">
             <OpenPositionsCard />

@@ -43,7 +43,12 @@ export function useSaveTelegramExtras() {
   return useMutation({
     mutationFn: (body: { weekly_goal?: Partial<WeeklyGoal>; preopen_check?: Partial<PreopenCheck> }) =>
       apiFetch<AppSettings>("/api/settings/app", { method: "PUT", body }),
-    onSuccess: (data) => qc.setQueryData(appSettingsKey, data),
+    onSuccess: (data) => {
+      qc.setQueryData(appSettingsKey, data);
+      // the weekly goal is the «settimanale» goal: the goals page, dashboard and chart follow
+      void qc.invalidateQueries({ queryKey: ["goals"] });
+      void qc.invalidateQueries({ queryKey: ["equity-history"] });
+    },
   });
 }
 
