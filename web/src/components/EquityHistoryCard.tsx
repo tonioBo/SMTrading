@@ -4,8 +4,7 @@ import { LineChart } from "@/components/LineChart";
 import { Pnl } from "@/components/Pnl";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatPct } from "@/lib/format";
-import { GOAL_COLOR, historyLines, type Unit } from "@/lib/equityHistory";
+import { historyLines, type Unit } from "@/lib/equityHistory";
 import { chartNumber } from "@/lib/lineChart";
 
 function signed(v: number, places: number): string {
@@ -39,7 +38,7 @@ export function EquityHistoryCard({ portfolioId }: { portfolioId?: string }) {
   const lines = data ? historyLines(data, unit, single) : [];
   const colors = new Map(lines.filter((l) => !l.reference).map((l) => [l.key, l.color]));
   const shown = data?.portfolios.filter((p) => colors.has(p.id)) ?? [];
-  const hasGoal = lines.some((l) => l.reference);
+  const goals = lines.filter((l) => l.reference);
 
   return (
     <Card>
@@ -94,12 +93,12 @@ export function EquityHistoryCard({ portfolioId }: { portfolioId?: string }) {
                   <Pnl value={p.change_eur} pct={p.change_pct} />
                 </li>
               ))}
-              {hasGoal && data.goal_pct != null && (
-                <li className="flex items-center gap-1.5 text-muted">
-                  <span className="inline-block w-4 border-t-2 border-dashed" style={{ borderColor: single ? GOAL_COLOR : "currentColor" }} />
-                  Obiettivo settimana {formatPct(data.goal_pct).replace(/,?0+%$/, "%")}
+              {goals.map((g) => (
+                <li key={g.key} className="flex items-center gap-1.5 text-muted">
+                  <span className="inline-block w-4 border-t-2 border-dashed" style={{ borderColor: g.color }} />
+                  {g.label}
                 </li>
-              )}
+              ))}
               <li className="text-xs text-muted">{CHANGE_HINT}</li>
             </ul>
           </>

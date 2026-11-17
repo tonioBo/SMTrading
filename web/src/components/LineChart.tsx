@@ -6,8 +6,10 @@ export interface ChartLine {
   label: string;
   color: string;
   points: ChartPoint[];
-  /** reference lines (the weekly goal): dashed, left out of the tooltip */
+  /** reference lines (the goals): dashed, left out of the tooltip */
   reference?: boolean;
+  /** a short label drawn at the right end of a reference line */
+  tag?: string;
 }
 
 interface Props {
@@ -121,6 +123,21 @@ export function LineChart({ lines, formatValue, formatTick, axisTime, ariaLabel 
           .map((l) => (
             <Dot key={l.key} color={l.color} left={pct(geo.x(l.points[0].t), W)} top={pct(geo.y(l.points[0].v), H)} />
           ))}
+        {lines
+          .filter((l) => l.reference && l.tag && l.points.length > 0)
+          .map((l) => {
+            const last = l.points[l.points.length - 1];
+            return (
+              <span
+                key={`tag-${l.key}`}
+                className="pointer-events-none absolute -translate-x-full -translate-y-full whitespace-nowrap pb-0.5 text-[10px] font-medium"
+                style={{ left: pct(geo.x(last.t), W), top: pct(geo.y(last.v), H), color: l.color }}
+                data-testid={`tag-${l.key}`}
+              >
+                {l.tag}
+              </span>
+            );
+          })}
         {hover?.hits.map((h) => (
           <Dot key={h.line.key} color={h.line.color} left={pct(geo.x(h.point.t), W)} top={pct(geo.y(h.point.v), H)} ring />
         ))}
