@@ -278,27 +278,37 @@ async def test_failed_issue_retried_timeout_adopted_and_given_up(env):
 class FakeRouter:
     def __init__(self):
         self.calls: list[str] = []
+        self.fail: set[str] = set()  # "bars", "quotes SPY", "fx_on 2027-03-05", ...
+        self.rates = {}  # day -> dated FX (default 0.9)
+
+    def _check(self, call):
+        self.calls.append(call)
+        if call in self.fail or call.split(" ")[0] in self.fail:
+            raise RuntimeError(call)
 
     async def get_quotes(self, symbols):
-        self.calls.append(f"quotes {','.join(symbols)}")
-        return {"SPY": Quote("SPY", None, None, D(110), NOW, "t"),
-                "VWCE.DE": Quote("VWCE.DE", D(99), D(101), None, NOW, "t")}
+        self._check(f"quotes {','.join(symbols)}")
+        quotes = {"SPY": Quote("SPY", None, None, D(110), NOW, "t"),
+                  "VWCE.DE": Quote("VWCE.DE", D(99), D(101), None, NOW, "t")}
+        return {s: quotes[s] for s in symbols if s in quotes}
 
     async def get_fx_rate(self, base, quote):
-        self.calls.append(f"fx {base}{quote}")
+        self._check(f"fx {base}{quote}")
         return D("0.9")
 
+    async def get_fx_rate_on(self, base, quote, day):
+        self._check(f"fx_on {day.isoformat()}")
+        return self.rates.get(day, D("0.9"))
+
     async def get_bars(self, symbol, timeframe, start, end):
-        self.calls.append(f"bars {symbol} {timeframe}")
+        self._check(f"bars {symbol} {timeframe}")
         # Thursday 4 and Friday 5 March (US bars at 05:00 UTC, XETRA at 23:00 UTC before)
         hour = 5 if symbol == "SPY" else -1
         return [Bar(datetime(2027, 3, d, tzinfo=UTC) + timedelta(hours=hour), D(1), D(1),
                     D(1), D(c), D(1)) for d, c in ((4, 98), (5, 100))]
 
 
-async def test_benchmark_sampler_backfills_and_samples(env):
-    sm = env
-    pid = await _portfolio(sm)
+async def _instruments(sm):
     async with sm() as s:
         for sym, ccy in (("SPY", "USD"), ("VWCE.DE", "EUR")):
             if await s.get(Instrument, sym) is None:
@@ -307,18 +317,32 @@ async def test_benchmark_sampler_backfills_and_samples(env):
         await s.execute(update(Instrument).where(Instrument.symbol == "SPY")
                         .values(currency="USD"))
         await s.commit()
+
+
+async def _bench_rows(sm, symbol=None):
+    stmt = select(BenchmarkSnapshot).order_by(BenchmarkSnapshot.symbol, BenchmarkSnapshot.ts)
+    if symbol:
+        stmt = stmt.where(BenchmarkSnapshot.symbol == symbol)
+    async with sm() as s:
+        return [(r.symbol, r.ts.astimezone(ROME).strftime("%d %H:%M"), r.price_eur)
+                for r in await s.scalars(stmt)]
+
+
+async def test_benchmark_sampler_backfills_and_samples(env):
+    sm = env
+    pid = await _portfolio(sm)
+    await _instruments(sm)
     await _goal(sm, name="spy", kind="beat_index", benchmark="SPY", target_pct=D(0))
     await _goal(sm, name="vwce", kind="beat_index", benchmark="VWCE.DE", target_pct=D(0),
                 recurring=False, start_date=datetime(2027, 3, 8).date())
     await _snap(sm, pid, rome(8, 0, 1), "1000", SnapshotKind.day_open)
     await _snap(sm, pid, rome(10, 11), "1080")
     clock, fake, router = Clock(NOW), FakeIssues(), FakeRouter()
+    router.rates = {datetime(2027, 3, 4).date(): D("0.8")}  # each close at its day's FX
     await _job(sm, clock, fake, router).tick()
-    async with sm() as s:
-        rows = [(r.symbol, r.ts.astimezone(ROME).strftime("%d %H:%M"), r.price_eur)
-                for r in await s.scalars(select(BenchmarkSnapshot)
-                                         .order_by(BenchmarkSnapshot.symbol, BenchmarkSnapshot.ts))]
-    assert rows == [("SPY", "04 22:30", D("88.2")), ("SPY", "05 22:30", D(90)),
+    assert "quotes SPY" in router.calls and "quotes VWCE.DE" in router.calls
+    rows = await _bench_rows(sm)
+    assert rows == [("SPY", "04 22:30", D("78.4")), ("SPY", "05 22:30", D(90)),
                     ("SPY", "10 12:00", D(99)),
                     ("VWCE.DE", "04 22:30", D(98)), ("VWCE.DE", "05 22:30", D(100)),
                     ("VWCE.DE", "10 12:00", D(100))]
@@ -336,6 +360,81 @@ async def test_benchmark_sampler_backfills_and_samples(env):
     async with sm() as s:
         assert await s.scalar(select(func.count()).select_from(BenchmarkSnapshot)) == 6
     assert await _outbox(sm) == []  # beat_index sends no alert
+
+
+async def test_benchmark_backfill_retried_with_backoff_and_no_late_base(env):
+    sm = env
+    pid = await _portfolio(sm)
+    await _instruments(sm)
+    await _goal(sm, name="spy", kind="beat_index", benchmark="SPY", target_pct=D(0))
+    await _snap(sm, pid, rome(8, 0, 1), "1000", SnapshotKind.day_open)
+    await _snap(sm, pid, rome(10, 11), "1080")
+    clock, fake, router = Clock(NOW), FakeIssues(), FakeRouter()
+    router.fail = {"bars", "quotes VWCE.DE"}
+    job = _job(sm, clock, fake, router)
+    await job.tick()
+    # only the sample of Wednesday: more than a day after the start, no base
+    assert await _bench_rows(sm) == [("SPY", "10 12:00", D(99))]
+    async with sm() as s:
+        (p,) = await active_progress(s, NOW, ROME)
+    assert (p["benchmark_pct"], p["status"]) == (None, "non iniziato")
+
+    router.fail = set()
+    router.calls.clear()
+    clock.t += timedelta(minutes=4)  # within the first backoff (5 minutes)
+    await job.tick()
+    assert not any(c.startswith("bars") for c in router.calls)
+    clock.t += timedelta(minutes=2)
+    await job.tick()
+    assert [c for c in router.calls if c.startswith("bars")] == ["bars SPY 1d"]
+    async with sm() as s:
+        (p,) = await active_progress(s, clock.t, ROME)
+    assert (p["benchmark_pct"], p["status"]) == (D(10), "indietro")
+
+
+async def test_benchmark_day_without_fx_left_out_and_retried(env):
+    sm = env
+    await _instruments(sm)
+    await _goal(sm, name="spy", kind="beat_index", benchmark="SPY", target_pct=D(0))
+    clock, fake, router = Clock(NOW), FakeIssues(), FakeRouter()
+    router.fail = {"fx_on 2027-03-05"}
+    job = _job(sm, clock, fake, router)
+    await job.tick()
+    assert await _bench_rows(sm) == [("SPY", "04 22:30", D("88.2")),
+                                     ("SPY", "10 12:00", D(99))]
+    router.fail = set()
+    clock.t += timedelta(minutes=6)
+    await job.tick()
+    assert await _bench_rows(sm) == [("SPY", "04 22:30", D("88.2")),
+                                     ("SPY", "05 22:30", D(90)),
+                                     ("SPY", "10 12:00", D(99))]
+    router.calls.clear()
+    clock.t += timedelta(hours=2)
+    await job.tick()  # done: never again
+    assert not any(c.startswith("bars") for c in router.calls)
+
+
+async def test_benchmark_stale_current_row_gives_no_change(env):
+    from smtrading.goals.benchmark import benchmark_change
+    from smtrading.goals.periods import Period
+
+    sm = env
+    async with sm() as s:
+        for day, h, eur in ((5, 22, "100"), (8, 22, "105")):  # Friday, Monday
+            s.add(BenchmarkSnapshot(symbol="SPY", ts=rome(day, h), price=D(eur),
+                                    currency="EUR", fx_eur=D(1), price_eur=D(eur)))
+        await s.commit()
+        month = Period(datetime(2027, 3, 5).date(), datetime(2027, 3, 31).date())
+        week = Period(datetime(2027, 3, 8).date(), datetime(2027, 3, 14).date())
+        assert await benchmark_change(s, "SPY", week, rome(9, 12), ROME) == D(5)
+        assert await benchmark_change(s, "SPY", week, rome(9, 23), ROME) is None  # Tue night
+        assert await benchmark_change(s, "SPY", week, rome(13, 12), ROME) is None
+        # Friday's close read on Sunday or Monday morning is still fresh
+        assert await benchmark_change(s, "SPY", month, rome(7, 12), ROME) == D(0)
+        assert await benchmark_change(s, "SPY", month, rome(8, 9), ROME) == D(0)
+        # no row before a period, and its first one more than a day after the start
+        late = Period(datetime(2027, 3, 4).date(), datetime(2027, 3, 31).date())
+        assert await benchmark_change(s, "SPY", late, rome(8, 9), ROME) is None
 
 
 def test_texts_are_agent_safe():
