@@ -616,3 +616,26 @@ async def test_global_live_alerts_are_never_visible_to_agents(db_session):
     types = [i["type"] for i in items]
     assert not any(t.startswith("live.") for t in types)
     assert "system.note" in types  # other global rows stay visible
+
+
+async def test_feed_compacts_large_decision_details(db_session):
+    """Agents read the feed in one tool call: a decision's long details (backtest stats,
+    reports) are compacted in the feed — the full text stays in get_decisions."""
+    from smtrading.activity.service import FEED_TEXT_MAX
+
+    agent, _ = await create_agent(db_session, f"ag-{uuid.uuid4().hex[:6]}")
+    big = {"ref": "STR-9", "status": "approvata", "reason": "x" * 2000,
+           "dev": {"sharpe": "1", "trades": 10, "notes": "y" * 3000}, "symbols": ["AAA"]}
+    record_activity(db_session, ActivityDraft("decision.other", ActivityLevel.info, False,
+                                              "decisione", {"decision_id": 1, "details": big,
+                                                            "symbols": ["AAA"]}),
+                    portfolio_id=None, agent_id=None)
+    await _settle(db_session)
+    items, _ = await list_feed(db_session, agent.id, limit=50)
+    [item] = [i for i in items if i["type"] == "decision.other"]
+    details = item["data"]["details"]
+    assert details["ref"] == "STR-9" and details["status"] == "approvata"
+    assert len(details["reason"]) <= FEED_TEXT_MAX + 1
+    assert "dev" not in details
+    assert item["data"]["details_compact"] is True
+    assert item["data"]["decision_id"] == 1
