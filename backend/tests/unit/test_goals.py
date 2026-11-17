@@ -185,8 +185,15 @@ def test_lines_max_loss_and_beat_index():
         "🎯 Obiettivo rischio perdita max 5% · Prudente: da 1.000,00 € — attuale 958,00 € "
         "(-4,20%) · vicino al limite")
     assert end_line(risk) == "🏁 Obiettivo rischio · Prudente: limite rispettato (-4,20%, limite -5%)"
-    assert end_line({**risk, "pct": D(-5), "loss_pct": D(5)}).endswith(
+    assert end_line({**risk, "pct": D(-5), "loss_pct": D(5), "status": "superato"}).endswith(
         "limite superato (-5,00%, limite -5%)")
+    # a loss of 4,996% rounds to 5,00% but is within the limit (the status, unrounded)
+    assert end_line({**risk, "pct": D("-5.00"), "loss_pct": D("5.00"),
+                     "status": "concluso"}).endswith("limite rispettato (-5,00%, limite -5%)")
+    assert end_line({**risk, "pct": None}) == (
+        "🏁 Obiettivo rischio · Prudente: nessun dato del periodo (limite -5%)")
+    assert end_line(_p(kind="cap", pct=None)) == (
+        "🏁 Obiettivo settimanale: nessun dato del periodo (tetto +2%)")
     beat = _p(name="indice", kind="beat_index", target_pct=D(0), benchmark="VWCE.DE",
               pct=D("2.1"), benchmark_pct=D("1.5"), diff_pp=D("0.6"), status="avanti")
     assert progress_line(beat, today) == (

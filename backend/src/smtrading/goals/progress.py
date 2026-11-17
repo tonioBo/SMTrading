@@ -316,14 +316,11 @@ def progress_line(p: dict[str, Any], today: date) -> str:
 def end_line(p: dict[str, Any]) -> str:
     """«🏁 Obiettivo settimanale: raggiunto (+2,10% su +2%)» / «non raggiunto (…)» for a
     period just over (pure); kind cap: «tetto rispettato» / «tetto superato»; max_loss:
-    «limite rispettato» / «limite superato»; beat_index: «<indice> battuto» / «non
-    battuto»; without data «nessun dato»."""
+    «limite rispettato» / «limite superato» (from the status, so from the unrounded
+    loss); beat_index: «<indice> battuto» / «non battuto»; without data «nessun dato del
+    periodo (obiettivo|tetto|limite …)»."""
     name = p["name"] + (f" · {p['portfolio_name']}" if p["portfolio_name"] else "")
     target = _goal_pct(p["target_pct"])
-    if p["kind"] == "max_loss" and p["pct"] is not None:
-        word = "limite rispettato" if p["loss_pct"] < p["target_pct"] else "limite superato"
-        return (f"🏁 Obiettivo {name}: {word} ({_signed(p['pct'])}%, limite "
-                f"-{_points(p['target_pct'])}%)")
     if p["kind"] == "beat_index":
         if p["pct"] is None or p["benchmark_pct"] is None:
             return f"🏁 Obiettivo {name}: nessun dato del periodo ({p['benchmark']})"
@@ -331,7 +328,13 @@ def end_line(p: dict[str, Any]) -> str:
         return (f"🏁 Obiettivo {name}: {p['benchmark']} {word} ({_signed(p['pct'])}% "
                 f"contro {_signed(p['benchmark_pct'])}%)")
     if p["pct"] is None:
-        return f"🏁 Obiettivo {name}: nessun dato del periodo (obiettivo {target})"
+        what = {"max_loss": f"limite -{_points(p['target_pct'])}%",
+                "cap": f"tetto {target}"}.get(p["kind"], f"obiettivo {target}")
+        return f"🏁 Obiettivo {name}: nessun dato del periodo ({what})"
+    if p["kind"] == "max_loss":
+        word = "limite superato" if p["status"] == BREACHED else "limite rispettato"
+        return (f"🏁 Obiettivo {name}: {word} ({_signed(p['pct'])}%, limite "
+                f"-{_points(p['target_pct'])}%)")
     if p["kind"] == "cap":
         word = "tetto rispettato" if p["pct"] <= p["target_pct"] else "tetto superato"
     else:
