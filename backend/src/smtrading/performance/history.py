@@ -22,9 +22,11 @@ kind, benchmark, target_pct, period_start, period_end` (UTC instants of the loca
 midnights opening and closing the period), `base_eur` (the goal's start equity,
 `goals.progress`) and `target_eur` (`goals.progress.kind_target`: for max_loss the floor,
 for beat_index the benchmark's change plus the margin; null without data).
-`benchmarks` ({symbol: [{ts, pct}]}): for each benchmark of a listed beat_index goal (the
-first one per symbol), its change in EUR from the goal's period start over the range
-(`goals.benchmark.benchmark_series`, downsampled), empty without such a goal.
+`benchmarks` ({symbol: [{ts, pct}]}): for each benchmark of a listed beat_index goal, its
+change in EUR from the goal's period start over the range
+(`goals.benchmark.benchmark_series`, downsampled), empty without such a goal. One series
+per symbol: when listed goals on the same index have different periods, the one whose
+period starts latest gives it (the client rebases each series to the range start).
 Admin-only data: never reaches the agents."""
 
 from datetime import UTC, datetime, time, timedelta
@@ -152,7 +154,7 @@ async def _goal_lines(session: AsyncSession, portfolios: list[Portfolio], single
     today = now.astimezone(zone).date()
     ids = {p.id for p in portfolios}
     out = []
-    benchmarks: dict[str, list] = {}
+    bench_periods: dict[str, object] = {}  # symbol -> the latest-starting period
     for goal, _ in await visible_goals(session):
         if (goal.scope == "total" and single) or (
                 goal.scope == "portfolio" and goal.portfolio_id not in ids):
@@ -168,12 +170,9 @@ async def _goal_lines(session: AsyncSession, portfolios: list[Portfolio], single
         bench = None
         if goal.kind == "beat_index" and goal.benchmark:
             bench = await benchmark_change(session, goal.benchmark, period, now, zone)
-            if goal.benchmark not in benchmarks:
-                series = await benchmark_series(session, goal.benchmark, period, start, now,
-                                                zone)
-                benchmarks[goal.benchmark] = [
-                    {"ts": ts, "pct": pct.quantize(_Q2, rounding=ROUND_HALF_EVEN)}
-                    for ts, pct in downsample(series)]
+            known = bench_periods.get(goal.benchmark)
+            if known is None or period.start > known.start:
+                bench_periods[goal.benchmark] = period
         target = None if base is None else kind_target(goal.kind, goal.target_pct, base, bench)
         out.append({
             "goal_id": goal.id, "name": goal.name, "horizon": goal.horizon,
@@ -182,6 +181,11 @@ async def _goal_lines(session: AsyncSession, portfolios: list[Portfolio], single
             "period_start": opens, "period_end": closes, "base_eur": _eur(base),
             "target_eur": _eur(target),
         })
+    benchmarks: dict[str, list] = {}
+    for symbol, period in sorted(bench_periods.items()):
+        series = await benchmark_series(session, symbol, period, start, now, zone)
+        benchmarks[symbol] = [{"ts": ts, "pct": pct.quantize(_Q2, rounding=ROUND_HALF_EVEN)}
+                              for ts, pct in downsample(series)]
     return out, benchmarks
 
 

@@ -267,3 +267,16 @@ async def test_benchmark_series_of_beat_index_goals(env, monkeypatch):
             ] == [(rome(MON, 0), D(0)), (rome(WED, 15), D(4)), (rome(FRI, 17), D(10))]
     one = (await _get(env, range="1d", portfolio_id=str(a))).json()
     assert [D(p["pct"]) for p in one["benchmarks"]["SPY"]] == [D(10)]  # within the range
+
+    # a second goal on SPY whose period starts later (Thursday): its period gives the
+    # one SPY series (base: the Wednesday row, the latest before Thursday)
+    async with env.sm() as s:
+        s.add(Goal(name="indice corto", horizon="custom", start_date=date(2027, 3, 11),
+                   end_date=date(2027, 3, 20), recurring=False, scope="portfolio",
+                   portfolio_id=a, target_pct=D("0"), kind="beat_index", benchmark="SPY",
+                   active=True))
+        await s.commit()
+    body = (await _get(env, range="1w")).json()
+    assert list(body["benchmarks"]) == ["SPY"]
+    assert [(datetime.fromisoformat(p["ts"]), D(p["pct"])) for p in body["benchmarks"]["SPY"]
+            ] == [(rome(11, 0), D(0)), (rome(FRI, 17), D("5.77"))]
