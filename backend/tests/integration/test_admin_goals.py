@@ -349,6 +349,11 @@ async def test_templates_prefill_valid_goals(env, monkeypatch):
     beat = by["beat_vwce_quarter"]["body"]
     assert (beat["kind"], beat["benchmark"], beat["target_pct"], beat["scope"]) == (
         "beat_index", "VWCE.DE", "0", "total")
+    # only the migrated weekly goal (+2% on the total, recurring) can be there already
+    assert {t["key"] for t in rows if t["exists"]} <= {"weekly_total"}
+    assert not by[f"risk_monthly:{a}"]["exists"]
     for t in rows:
         r = await c.post("/api/goals", json=t["body"])
         assert r.status_code == 200, (t["key"], r.text)
+    rows = (await viewer.get("/api/goals/templates")).json()
+    assert all(t["exists"] for t in rows)

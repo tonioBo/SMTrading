@@ -11,8 +11,9 @@ level). Every figure is a string (null without data).
   allowed), active (default true);
 - `PATCH /api/goals/{goal_id}`: only the fields sent change, validated as a whole;
 - `DELETE /api/goals/{goal_id}`: never deleted, active=false;
-- `GET /api/goals/templates`: the «Modelli» ([{key, label, body}], `body` a POST body
-  that prefills the dialog; per portfolio: one per live portfolio);
+- `GET /api/goals/templates`: the «Modelli» ([{key, label, body, exists}], `body` a POST
+  body that prefills the dialog; per portfolio: one per live portfolio; `exists` true
+  when an equivalent active goal is already there);
 - `GET /api/goals/progress`: the progress of the active goals in their current period
   (goals of archived portfolios left out)."""
 

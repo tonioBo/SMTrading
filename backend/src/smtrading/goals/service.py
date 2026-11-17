@@ -231,10 +231,17 @@ def _body(name: str, horizon: str, target: str, *, kind: str = "min",
             "target_pct": target, "kind": kind, "benchmark": benchmark, "active": True}
 
 
+def _same(kind: str, horizon: str, scope: str, portfolio_id, target, benchmark,
+          recurring: bool) -> tuple:
+    return (kind, horizon, scope, str(portfolio_id) if portfolio_id else None,
+            Decimal(str(target)), benchmark, bool(recurring))
+
+
 async def goal_templates(session: AsyncSession, *, today: date) -> list[dict[str, Any]]:
-    """The «Modelli» of the Obiettivi page: [{key, label, body}], `body` a create body to
-    prefill the dialog (the admin confirms); the per-portfolio ones once per live
-    portfolio, by name."""
+    """The «Modelli» of the Obiettivi page: [{key, label, body, exists}], `body` a create
+    body to prefill the dialog (the admin confirms); the per-portfolio ones once per live
+    portfolio, by name; `exists` when an active goal already is the same (kind, horizon,
+    scope, portfolio, target, benchmark, recurring; the name aside)."""
     portfolios = list(await session.execute(
         select(Portfolio.id, Portfolio.name)
         .where(Portfolio.status != PortfolioStatus.archived).order_by(Portfolio.name)))
@@ -254,6 +261,13 @@ async def goal_templates(session: AsyncSession, *, today: date) -> list[dict[str
     out.append({"key": "beat_vwce_quarter", "label": "Battere VWCE nel trimestre (totale)",
                 "body": _body("battere VWCE", "quarter", "0", kind="beat_index",
                               benchmark="VWCE.DE", today=today)})
+    existing = {_same(g.kind, g.horizon, g.scope, g.portfolio_id, g.target_pct, g.benchmark,
+                      g.recurring)
+                for g in await session.scalars(select(Goal).where(Goal.active.is_(True)))}
+    for t in out:
+        b = t["body"]
+        t["exists"] = _same(b["kind"], b["horizon"], b["scope"], b["portfolio_id"],
+                            b["target_pct"], b["benchmark"], b["recurring"]) in existing
     return out
 
 
