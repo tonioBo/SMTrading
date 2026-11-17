@@ -19,6 +19,7 @@ from smtrading.common.db import make_engine
 from smtrading.common.heartbeat import write_heartbeat
 from smtrading.common.logsetup import configure_logging
 from smtrading.engine.processor import OrderProcessor
+from smtrading.goals.alerts import GoalAlerts
 from smtrading.instruments.closures import ClosureRefresher
 from smtrading.jobs.scheduler import JobScheduler
 from smtrading.marketdata.router import MarketDataRouter
@@ -158,6 +159,8 @@ async def run() -> None:
                                              lambda: PaperclipReader(sessionmaker).run())),
                     tg.create_task(supervise("protection alarm",
                                              lambda: ProtectionAlarm(sessionmaker).run())),
+                    tg.create_task(supervise("goal alerts",
+                                             lambda: GoalAlerts(sessionmaker, router).run())),
                     tg.create_task(
                         supervise("pre-open check",
                                   lambda: PreopenCheck(sessionmaker, router, redis).run())

@@ -105,6 +105,7 @@ def _idle_telegram_loops(monkeypatch):
     monkeypatch.setattr(worker, "SummaryScheduler", _IdleProcessor)
     monkeypatch.setattr(worker, "LiveMonitor", _IdleProcessor)
     monkeypatch.setattr(worker, "ProtectionAlarm", _IdleProcessor)
+    monkeypatch.setattr(worker, "GoalAlerts", _IdleProcessor)
     monkeypatch.setattr(worker, "register_live_secrets", _no_live_keys)
 
 
