@@ -277,6 +277,37 @@ async def list_decisions(
     return list(await session.scalars(stmt.order_by(Decision.id.desc()).limit(limit)))
 
 
+FEED_TEXT_MAX = 300  # a feed string longer than this is cut (full text in get_decisions)
+
+
+def _compact(value):
+    """Scalars and short lists of scalars only; long text cut at FEED_TEXT_MAX."""
+    if isinstance(value, str):
+        return value if len(value) <= FEED_TEXT_MAX else value[:FEED_TEXT_MAX] + "…"
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list) and len(value) <= 20 and all(
+            isinstance(v, (str, int, float, bool)) or v is None for v in value):
+        return [_compact(v) for v in value]
+    return _OMIT
+
+
+_OMIT = object()
+
+
+def _feed_data(kind: str, data):
+    """The feed is read by agents in one tool call: a decision's details (backtest
+    statistics, long reports) are compacted to their scalar fields — the full record is in
+    get_decisions (by decision_id)."""
+    if not kind.startswith("decision.") or not isinstance(data, dict):
+        return data
+    details = data.get("details")
+    if not isinstance(details, dict):
+        return data
+    compact = {k: c for k, v in details.items() if (c := _compact(v)) is not _OMIT}
+    return {**data, "details": compact, "details_compact": True}
+
+
 async def list_feed(
     session: AsyncSession,
     viewer_agent_id: uuid.UUID,
@@ -322,7 +353,8 @@ async def list_feed(
             "id": a.id, "ts": a.ts, "type": a.type, "level": a.level,
             "agent": agent_name, "agent_id": a.agent_id,
             "portfolio": portfolio_name, "portfolio_id": a.portfolio_id,
-            "summary": a.summary, "data": a.data, "already_sent": _already_sent(a.telegram),
+            "summary": a.summary, "data": _feed_data(a.type, a.data),
+            "already_sent": _already_sent(a.telegram),
         }
         for a, agent_name, portfolio_name in rows
     ]
