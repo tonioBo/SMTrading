@@ -41,10 +41,12 @@ export const commonHandlers = [
       total: { start_eur: null, current_eur: null, target_eur: null, pct: null }, portfolios: [],
     }),
   ),
+  // Dashboard «Obiettivi»: no active goal unless a test overrides it
+  http.get("*/api/goals/progress", () => HttpResponse.json([])),
   // «Andamento» (Dashboard, portfolio detail): no snapshot unless a test overrides it
   http.get("*/api/portfolios/equity-history", ({ request }) =>
     HttpResponse.json({
-      range: new URL(request.url).searchParams.get("range") ?? "1m", start: null, end: "2026-11-16T12:00:00Z", goal_pct: null, portfolios: [],
+      range: new URL(request.url).searchParams.get("range") ?? "1m", start: null, end: "2026-11-16T12:00:00Z", goal_pct: null, portfolios: [], goals: [],
     }),
   ),
   // Dashboard «Posizioni aperte» / «Segnali più vicini»: empty unless a test overrides them

@@ -10,6 +10,7 @@ import Brokers from "@/pages/Brokers";
 import Connectors from "@/pages/Connectors";
 import Dashboard from "@/pages/Dashboard";
 import Fees from "@/pages/Fees";
+import Goals from "@/pages/Goals";
 import LiveAudit from "@/pages/LiveAudit";
 import Login from "@/pages/Login";
 import Markets from "@/pages/Markets";
@@ -40,6 +41,7 @@ export const routes: RouteObject[] = [
           { path: "segnali", element: <Signals /> },
           { path: "posizioni", element: <Positions /> },
           { path: "strategie", element: <Strategies /> },
+          { path: "obiettivi", element: <Goals /> },
           { path: "agenti", element: <Agents /> },
           { path: "agenti/:id", element: <AgentDetail /> },
           { path: "costi-agenti", element: <AgentCosts /> },

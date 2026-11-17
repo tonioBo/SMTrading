@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
-import type { EquityPoint } from "@/api/types";
+import type { EquityPoint, GoalHorizon, GoalKind, GoalScope } from "@/api/types";
 
 export type EquityHistoryRange = "1d" | "1w" | "1m" | "3m" | "all";
 
@@ -30,12 +30,31 @@ export interface EquityHistoryPortfolio {
   goal: EquityHistoryGoal | null;
 }
 
+/** An active goal whose current period overlaps the range (every range): dashboard =
+ * total goals and the listed portfolios' goals; one portfolio = its goals only.
+ * `period_start`/`period_end`: ISO instants of the local midnights opening/closing it. */
+export interface EquityHistoryGoalLine {
+  goal_id: string;
+  name: string;
+  horizon: GoalHorizon;
+  scope: GoalScope;
+  portfolio_id: string | null;
+  kind: GoalKind;
+  target_pct: string;
+  period_start: string;
+  period_end: string;
+  base_eur: string | null;
+  target_eur: string | null;
+}
+
 export interface EquityHistory {
   range: EquityHistoryRange;
   start: string | null;
   end: string;
   goal_pct: string | null;
   portfolios: EquityHistoryPortfolio[];
+  /** absent from older servers */
+  goals?: EquityHistoryGoalLine[];
 }
 
 /** New snapshots arrive every 5 minutes: refresh at that pace. */

@@ -1432,3 +1432,67 @@ export interface StrategiesPerformanceResponse {
   as_of: string;
   strategies: StrategyPerformance[];
 }
+
+// --- «Obiettivi» (GET/POST /api/goals, PATCH/DELETE /api/goals/{id}, GET /api/goals/progress) ---
+
+export type GoalHorizon = "week" | "month" | "quarter" | "year" | "custom";
+export type GoalScope = "total" | "portfolio";
+/** "min": a gain to reach; "cap": a ceiling not to exceed */
+export type GoalKind = "min" | "cap";
+export type GoalStatus = "raggiunto" | "in linea" | "in ritardo" | "non iniziato" | "concluso" | "oltre il tetto";
+
+/** A goal; `end_date` only for «custom»; `target_pct` a string ("2"). */
+export interface Goal {
+  id: string;
+  name: string;
+  horizon: GoalHorizon;
+  start_date: string;
+  end_date: string | null;
+  recurring: boolean;
+  scope: GoalScope;
+  portfolio_id: string | null;
+  target_pct: string;
+  kind: GoalKind;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+  portfolio_name: string | null;
+  portfolio_archived: boolean;
+}
+
+export interface GoalCreate {
+  name: string;
+  horizon: GoalHorizon;
+  start_date?: string;
+  end_date?: string | null;
+  recurring?: boolean;
+  scope?: GoalScope;
+  portfolio_id?: string | null;
+  target_pct: string;
+  kind?: GoalKind;
+  active?: boolean;
+}
+
+export type GoalPatch = Partial<GoalCreate>;
+
+/** The current period of an active goal (EUR strings; null without data). */
+export interface GoalProgress {
+  goal_id: string;
+  name: string;
+  horizon: GoalHorizon;
+  scope: GoalScope;
+  portfolio_id: string | null;
+  portfolio_name: string | null;
+  kind: GoalKind;
+  period_start: string;
+  period_end: string;
+  start_eur: string | null;
+  current_eur: string | null;
+  target_eur: string | null;
+  pct: string | null;
+  target_pct: string;
+  gap_eur: string | null;
+  elapsed_pct: string;
+  status: GoalStatus;
+  as_of: string | null;
+}
