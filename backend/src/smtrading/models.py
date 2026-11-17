@@ -10,6 +10,7 @@ import smtrading.brokers.models
 import smtrading.connectors.models
 import smtrading.engine.models
 import smtrading.fees.models
+import smtrading.goals.models
 import smtrading.instruments.closures
 import smtrading.instruments.models
 import smtrading.ledger.models

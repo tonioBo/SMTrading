@@ -419,3 +419,72 @@ async def test_0030_downgrade_deactivates_asset_class_rules(fresh_db):
     await engine.dispose()
     assert got == {"zz-crypto": False, "zz-all": True}
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+
+
+async def test_0031_goals_migrate_the_weekly_goal_setting(fresh_db):
+    """0031: the weekly goal setting becomes a recurring weekly goal on the total (absent
+    = on at +2%, off = inactive), the setting row goes; the downgrade writes it back from
+    that goal and drops the table."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    async def query(sql: str, **params):
+        engine = make_engine(fresh_db)
+        async with engine.begin() as conn:
+            result = await conn.execute(text(sql), params)
+            rows = result.all() if result.returns_rows else []
+        await engine.dispose()
+        return rows
+
+    goal_cols = ("select name, horizon, start_date::text, end_date, recurring, scope,"
+                 " portfolio_id, target_pct::text, kind, active from goals")
+    # fresh database: no setting at all → on at +2%
+    assert await query(goal_cols) == [
+        ("settimanale", "week", "2026-01-05", None, True, "total", None, "2.00", "min", True)]
+    assert await query("select key from app_settings where key = 'weekly_goal'") == []
+
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0030")
+    got = await query("select value from app_settings where key = 'weekly_goal'")
+    assert got == [({"on": True, "pct": "2.00"},)]
+    assert await query("select to_regclass('goals')") == [(None,)]
+
+    await query("update app_settings set value = cast(:v as jsonb) where key = 'weekly_goal'",
+                v=json.dumps({"on": False, "pct": "1.5"}))
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    assert [(r[0], r[7], r[9]) for r in await query(goal_cols)] == [
+        ("settimanale", "1.50", False)]
+    assert await query("select key from app_settings where key = 'weekly_goal'") == []
+
+    # a malformed stored percent falls back to +2%; other goals are dropped on downgrade
+    await query("insert into goals (id, name, horizon, start_date, end_date, recurring,"
+                " scope, target_pct, kind, active) values (gen_random_uuid(), 'mese',"
+                " 'custom', '2026-11-01', '2026-11-30', false, 'total', 5, 'min', true)")
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0030")
+    assert await query("select value from app_settings where key = 'weekly_goal'") == [
+        ({"on": False, "pct": "1.50"},)]
+    await query("update app_settings set value = cast(:v as jsonb) where key = 'weekly_goal'",
+                v=json.dumps({"pct": "abc"}))
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    assert [(r[7], r[9]) for r in await query(goal_cols)] == [("2.00", True)]
+
+
+async def test_0031_goal_checks(db_session):
+    """The goals table refuses inconsistent rows."""
+    bad = [
+        "(gen_random_uuid(), 'x', 'week', '2026-11-16', null, false, 'portfolio', null, 2, 'min', true)",
+        "(gen_random_uuid(), 'x', 'custom', '2026-11-16', null, false, 'total', null, 2, 'min', true)",
+        "(gen_random_uuid(), 'x', 'week', '2026-11-16', '2026-11-20', false, 'total', null, 2, 'min', true)",
+        "(gen_random_uuid(), 'x', 'custom', '2026-11-16', '2026-11-01', false, 'total', null, 2, 'min', true)",
+        "(gen_random_uuid(), 'x', 'custom', '2026-11-16', '2026-11-30', true, 'total', null, 2, 'min', true)",
+        "(gen_random_uuid(), 'x', 'day', '2026-11-16', null, false, 'total', null, 2, 'min', true)",
+        "(gen_random_uuid(), 'x', 'week', '2026-11-16', null, false, 'total', null, 0, 'min', true)",
+        "(gen_random_uuid(), 'x', 'week', '2026-11-16', null, false, 'total', null, 2, 'max', true)",
+    ]
+    for values in bad:
+        nested = await db_session.begin_nested()
+        with pytest.raises(DBAPIError, match="ck_goals_"):
+            await db_session.execute(text(
+                "insert into goals (id, name, horizon, start_date, end_date, recurring, scope,"
+                f" portfolio_id, target_pct, kind, active) values {values}"))
+        await nested.rollback()
