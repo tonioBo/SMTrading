@@ -1,8 +1,8 @@
 """Goals, plan 14 Task D: the kinds `max_loss` (a loss limit over the period) and
 `beat_index` (beat a benchmark by `target_pct` points, 0 allowed) with the nullable
 `goals.benchmark` (SPY | QQQ | VWCE.DE, required for beat_index only); `goal_alerts` (the
-last status seen per goal and period, for the status-change alerts, with their Paperclip
-issues) and `benchmark_snapshots` (the benchmark prices in EUR sampled by the worker).
+last status seen per goal and period, for the status-change alerts, with the goal's kind
+and target it was seen for and their Paperclip issues) and `benchmark_snapshots` (the benchmark prices in EUR sampled by the worker).
 
 Downgrade: older code knows only min and cap, so the goals of the new kinds are deleted
 (their alerts with them), then the column, the tables and the checks go back to 0031.
@@ -39,6 +39,8 @@ def upgrade() -> None:
         sa.Column("goal_id", sa.UUID(), sa.ForeignKey("goals.id"), primary_key=True),
         sa.Column("period_start", sa.Date(), primary_key=True),
         sa.Column("status", sa.String(24), nullable=False),
+        sa.Column("kind", sa.String(16), nullable=False),
+        sa.Column("target_pct", sa.Numeric(9, 2), nullable=False),
         sa.Column("alerted", sa.String(24), nullable=True),
         sa.Column("near_sent", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("sent", JSONB(), nullable=False, server_default=sa.text("'{}'::jsonb")),

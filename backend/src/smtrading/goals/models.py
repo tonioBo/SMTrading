@@ -88,15 +88,18 @@ class GoalAlert(Base):
     """The last status of a goal's period seen by the alerts job (`goals.alerts`):
     `alerted` the warning status announced and not recovered yet, `near_sent` the
     «vicino al limite» of a max_loss goal announced (once per period), `sent` the local
-    date each warning was last sent ({event: "YYYY-MM-DD"}), `issues` the Paperclip
-    issues of the period per key ({"ident", "attempts", "uncertain", "title",
-    "description", "assignee", "priority"})."""
+    date each event was last sent ({event: "YYYY-MM-DD"}), `issues` the Paperclip
+    issues of the period per key ({"ident", "attempts" (refused answers), "retries" and
+    "retry_at" (outages), "uncertain", "title", "description", "assignee",
+    "priority"})."""
 
     __tablename__ = "goal_alerts"
 
     goal_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("goals.id"), primary_key=True)
     period_start: Mapped[date] = mapped_column(Date, primary_key=True)
     status: Mapped[str] = mapped_column(String(24))
+    kind: Mapped[str] = mapped_column(String(16))
+    target_pct: Mapped[Decimal] = mapped_column(Numeric(9, 2))
     alerted: Mapped[str | None] = mapped_column(String(24))
     near_sent: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     sent: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
@@ -108,7 +111,7 @@ class GoalAlert(Base):
 
 class BenchmarkSnapshot(Base):
     """A benchmark price at `ts`, with the FX to EUR of that moment (a backfilled daily
-    close carries the FX of when it was backfilled)."""
+    close carries the ECB rate of its day)."""
 
     __tablename__ = "benchmark_snapshots"
 

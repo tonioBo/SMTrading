@@ -515,8 +515,9 @@ async def test_0032_goal_kinds_round_trip(fresh_db):
                     (1, "beat_index", "DAX"), (-1, "beat_index", "SPY")):
         with pytest.raises(DBAPIError, match="ck_goals_"):
             await query(insert, n="x", t=t, k=k, b=b)
-    await query("insert into goal_alerts (goal_id, period_start, status)"
-                " select id, '2026-11-16', 'superato' from goals where name = 'rischio'")
+    await query("insert into goal_alerts (goal_id, period_start, status, kind, target_pct)"
+                " select id, '2026-11-16', 'superato', kind, target_pct from goals"
+                " where name = 'rischio'")
     await query("insert into benchmark_snapshots (symbol, ts, price, currency, fx_eur,"
                 " price_eur) values ('SPY', now(), 600, 'USD', 0.9, 540)")
 

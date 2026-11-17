@@ -162,19 +162,66 @@ async def test_behind_alerts_once_recovers_and_survives_restart(env):
     await _job(sm, clock, fake).tick()  # a restart: nothing again
     assert len(await _outbox(sm)) == 1 and len(fake.created) == 1
 
-    await _snap(sm, pid, clock.t - timedelta(minutes=1), "1010")
+    await _snap(sm, pid, clock.t - timedelta(minutes=1), "1006")  # in line, not past 0,25
+    await _job(sm, clock, fake).tick()
+    assert len(await _outbox(sm)) == 1
+
+    await _snap(sm, pid, clock.t - timedelta(seconds=30), "1010")
     await _job(sm, clock, fake).tick()
     assert (await _outbox(sm))[1:] == ["🟢 Obiettivo settimana di nuovo in linea: +1,00% su +2%"]
 
-    await _snap(sm, pid, clock.t + timedelta(minutes=4), "1001")  # behind again, same day
+    # behind again the same day: sent (the last message must not say «in linea»), and
+    # the issue of the period is not opened twice
+    await _snap(sm, pid, clock.t + timedelta(minutes=4), "1001")
     clock.t += timedelta(minutes=5)
     await _job(sm, clock, fake).tick()
-    assert len(await _outbox(sm)) == 2 and len(fake.created) == 1
+    assert (await _outbox(sm))[2:] == [
+        "🟠 Obiettivo settimana in ritardo: +0,10% su +2% (tempo trascorso 50,14%)"]
+    assert len(fake.created) == 1
+    # a second recovery the same day is held: the warning stays the last message
+    await _snap(sm, pid, clock.t + timedelta(minutes=4), "1010")
+    clock.t += timedelta(minutes=5)
+    await _job(sm, clock, fake).tick()
+    assert len(await _outbox(sm)) == 3
     async with sm() as s:
         row = (await s.scalars(select(GoalAlert))).one()
         assert (row.status, row.alerted, str(row.period_start)) == (
-            "in ritardo", None, "2027-03-08")
+            "in linea", "in ritardo", "2027-03-08")
         assert await s.scalar(select(func.count()).select_from(Activity)) == activity
+    # the next day it is sent; reaching the goal reads «raggiunto»
+    clock.t = rome(11, 9)
+    await _snap(sm, pid, clock.t - timedelta(minutes=1), "1015")
+    await _job(sm, clock, fake).tick()
+    assert (await _outbox(sm))[3].startswith("🟢 Obiettivo settimana di nuovo in linea: +1,50%")
+    await _snap(sm, pid, clock.t + timedelta(minutes=1), "990")
+    clock.t += timedelta(minutes=5)
+    await _job(sm, clock, fake).tick()
+    await _snap(sm, pid, clock.t + timedelta(minutes=1), "1021")
+    clock.t += timedelta(minutes=5)
+    await _job(sm, clock, fake).tick()
+    assert (await _outbox(sm))[5:] == ["🎉 Obiettivo settimana raggiunto: +2,10% su +2%"]
+
+
+async def test_changed_target_starts_the_alerts_over(env):
+    sm = env
+    await _paperclip(sm)
+    pid = await _portfolio(sm)
+    gid = await _goal(sm)
+    await _snap(sm, pid, rome(8, 0, 1), "1000", SnapshotKind.day_open)
+    await _snap(sm, pid, rome(10, 11), "1002")
+    clock, fake = Clock(NOW), FakeIssues()
+    await _job(sm, clock, fake).tick()
+    async with sm() as s:
+        await s.execute(update(Goal).where(Goal.id == gid).values(target_pct=D(3)))
+        await s.commit()
+    clock.t += timedelta(minutes=5)
+    await _job(sm, clock, fake).tick()
+    assert (await _outbox(sm))[1:] == [
+        "🟠 Obiettivo settimana in ritardo: +0,20% su +3% (tempo trascorso 50,07%)"]
+    assert len(fake.created) == 2
+    async with sm() as s:
+        row = (await s.scalars(select(GoalAlert))).one()
+    assert (row.kind, row.target_pct, row.alerted) == ("min", D(3), "in ritardo")
 
 
 async def test_max_loss_near_breached_issues_and_no_paperclip(env):
@@ -203,6 +250,10 @@ async def test_max_loss_near_breached_issues_and_no_paperclip(env):
         "(nessun blocco automatico)")]
     assert [(i["assignee"], i["priority"]) for i in fake.created[2:]] == [
         ("rm-1", "critical"), ("ceo-1", "critical")]
+
+    await _snap(sm, pid, rome(10, 11, 35), "953")  # −4,7%: not 0,5 pp under the limit
+    await _job(sm, clock, fake).tick()
+    assert len(await _outbox(sm)) == 2
 
     await _snap(sm, pid, rome(10, 11, 40), "970")  # back near: recovered, no second near
     await _job(sm, clock, fake).tick()
@@ -256,23 +307,44 @@ async def test_failed_issue_retried_timeout_adopted_and_given_up(env):
     fake.fail = None
     title = "OBIETTIVO settimana · in ritardo · 08/03–14/03/2027"
     fake.existing = [{"title": title, "identifier": "SMT-9"}]
+    await job.tick()  # within the backoff: not tried
+    assert fake.lookups == []
+    clock.t += timedelta(minutes=5)
     await job.tick()
     assert fake.created == [] and fake.lookups == [title]
     async with sm() as s:
         row = (await s.scalars(select(GoalAlert))).one()
     assert row.issues["behind:CEO"]["ident"] == "SMT-9"
+    assert row.issues["behind:CEO"]["attempts"] == 0
     assert len(await _outbox(sm)) == 1
 
-    # a missing agent: tried ISSUE_ATTEMPTS times, then given up
+    # a missing agent or an outage counts no attempt (tried again with a backoff)
     fake.agents_list = []
     await _goal(sm, name="rischio", kind="max_loss", target_pct=D(1), scope="portfolio",
                 portfolio_id=pid)
     await _snap(sm, pid, rome(10, 11, 30), "980")
     for _ in range(ISSUE_ATTEMPTS + 2):
+        clock.t += timedelta(hours=1)
         await job.tick()
-    async with sm() as s:
-        rows = [r for r in await s.scalars(select(GoalAlert)) if r.status == "superato"]
-    assert [e["attempts"] for e in rows[0].issues.values()] == [ISSUE_ATTEMPTS] * 2
+    fake.agents_list = FakeIssues().agents_list
+    fake.fail = "HTTP 503"
+    clock.t += timedelta(hours=1)
+    await job.tick()
+
+    async def entries():
+        async with sm() as s:
+            rows = [r for r in await s.scalars(select(GoalAlert)) if r.status == "superato"]
+        return list(rows[0].issues.values())
+
+    assert [(e["attempts"], e["retries"]) for e in await entries()] == [
+        (0, ISSUE_ATTEMPTS + 3)] * 2
+    # a refused answer (4xx) counts: given up after ISSUE_ATTEMPTS
+    fake.fail = "HTTP 422"
+    for _ in range(ISSUE_ATTEMPTS + 2):
+        clock.t += timedelta(hours=1)
+        await job.tick()
+    assert [e["attempts"] for e in await entries()] == [ISSUE_ATTEMPTS] * 2
+    assert fake.created == []
 
 
 class FakeRouter:
@@ -435,6 +507,15 @@ async def test_benchmark_stale_current_row_gives_no_change(env):
         # no row before a period, and its first one more than a day after the start
         late = Period(datetime(2027, 3, 4).date(), datetime(2027, 3, 31).date())
         assert await benchmark_change(s, "SPY", late, rome(8, 9), ROME) is None
+
+
+def test_reached_reads_raggiunto():
+    from smtrading.goals.alerts import BACK_EV, alert_text
+
+    p = {"name": "x", "portfolio_name": None, "target_pct": D(2), "pct": D("2.1"),
+         "status": "raggiunto"}
+    assert alert_text(BACK_EV, p) == "🎉 Obiettivo x raggiunto: +2,10% su +2%"
+    assert alert_text(BACK_EV, {**p, "status": "in linea"}).startswith("🟢 Obiettivo x di")
 
 
 def test_texts_are_agent_safe():

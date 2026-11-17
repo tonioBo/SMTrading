@@ -4,11 +4,12 @@ Each run first samples the benchmarks of the active beat_index goals
 (`goals.benchmark.BenchmarkSampler`, with the market data router), then reads the
 progress of every active goal (`goals.progress.active_progress`, current period not
 over) and compares it with the last status seen for that goal and period
-(`goal_alerts`, so a restart sends nothing again):
+(`goal_alerts`, so a restart sends nothing again; the row keeps the goal's kind and
+target, and starts over when either changes):
 
 - min: becoming «in ritardo» → «🟠 Obiettivo <name> in ritardo: x% su y% (tempo trascorso
-  z%)» and, with Paperclip on, an «OBIETTIVO …» issue to the CEO; leaving it for «in
-  linea» or «raggiunto» → «🟢 Obiettivo <name> di nuovo in linea: …»;
+  z%)» and, with Paperclip on, an «OBIETTIVO …» issue to the CEO; back «in linea» → «🟢
+  Obiettivo <name> di nuovo in linea: …», reaching it → «🎉 Obiettivo <name> raggiunto: …»;
 - cap: becoming «oltre il tetto» → «🔴 …»; back under it → «🟢 … di nuovo sotto il tetto»;
 - max_loss: «vicino al limite» → «🟠 …» once per period; «superato» → «🔴 …»; both open
   a «RISCHIO OBIETTIVO …» issue to the Risk Manager and one to the CEO (nothing is
@@ -16,20 +17,28 @@ over) and compares it with the last status seen for that goal and period
 - beat_index: no alert (its status is in the summaries and get_goals).
 
 A warning is sent once per transition (`alerted` holds the warning announced and not
-recovered) and at most once per local day per goal, period and warning (`sent`), so a
-goal swinging around its threshold does not repeat itself; a recovery is sent only for a
-warning that was sent. The messages go to Telegram as `system` (never the activity feed
-the agents read). The issues are deduplicated per goal, period and kind (their keys in
-`goal_alerts.issues`); a failed one is tried again on the next runs (at most
-ISSUE_ATTEMPTS), after a timeout the retry first adopts an open issue with the same
+recovered); a recovery is announced only past a margin (hysteresis, so a goal hovering
+at its threshold does not flip-flop): «in linea» again once pct ≥ expected − 0,25 pp
+(«raggiunto» always), under the cap once pct ≤ cap − 0,25 pp, back in the limit once the
+loss < limit − 0,5 pp. At most one recovery per local day per goal, period and warning
+(`sent`): a second one the same day is held (the warning stays the last message, the
+recovery is sent on a later run), so the last message never says «in linea» while the
+goal is behind; a warning after a same-day recovery is always sent. The messages go to
+Telegram as `system` (never the activity feed the agents read). The issues are
+deduplicated per goal, period and kind (their keys in `goal_alerts.issues`). A refused
+one (a 4xx answer, but 408 and 429) counts as an attempt (at most ISSUE_ATTEMPTS); an
+outage (network, timeout, 5xx, 408/429) or an agent not found in Paperclip counts
+nothing and is tried again with a backoff (5 minutes, doubling, at most an hour) while
+its period lasts; after a timeout the retry first adopts an open issue with the same
 title (`paperclip.issues`). The Paperclip configuration is read only when an issue is
 due; every Paperclip and market data request is made with no transaction open."""
 
 import asyncio
 import copy
 import logging
+import re
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -50,6 +59,7 @@ from smtrading.goals.progress import (
     WITHIN,
     active_progress,
     current_period,
+    visible_goals,
 )
 from smtrading.paperclip.client import PaperclipError
 from smtrading.paperclip.config import PaperclipConfig, load_config
@@ -59,7 +69,11 @@ from smtrading.telegram.outbox import enqueue
 log = logging.getLogger(__name__)
 
 INTERVAL_S = 300
-ISSUE_ATTEMPTS = 3
+ISSUE_ATTEMPTS = 3  # refused answers (4xx) before an issue is given up
+RETRY_FIRST, RETRY_MAX = timedelta(minutes=5), timedelta(hours=1)
+BACK_MARGIN_PP = Decimal("0.25")  # min / cap: recovery margin
+LOSS_BACK_MARGIN_PP = Decimal("0.5")  # max_loss: back in the limit below limit − this
+_REFUSED = re.compile(r"^HTTP 4(?!08|29)\d\d$")
 CEO_NAMES = ("CEO SMTrading", "CEO")
 CEO, RM = "CEO", "RM"
 _Q2 = Decimal("0.01")
@@ -101,6 +115,8 @@ def alert_text(event: str, p: dict[str, Any]) -> str:
     if event == BEHIND_EV:
         return (f"🟠 Obiettivo {name} in ritardo: {_signed(p['pct'])}% su +{_plain(target)}% "
                 f"(tempo trascorso {_plain(p['elapsed_pct'])}%)")
+    if event == BACK_EV and p["status"] == REACHED:
+        return f"🎉 Obiettivo {name} raggiunto: {_signed(p['pct'])}% su +{_plain(target)}%"
     if event == BACK_EV:
         return f"🟢 Obiettivo {name} di nuovo in linea: {_signed(p['pct'])}% su +{_plain(target)}%"
     if event == ABOVE_EV:
@@ -166,19 +182,37 @@ KIND_WARNINGS = {"min": {BEHIND}, "cap": {ABOVE_CAP}, "max_loss": {BREACHED}}
 ISSUES = {BEHIND_EV: (CEO,), NEAR_EV: (RM, CEO), BREACHED_EV: (RM, CEO)}
 
 
-def step(row: GoalAlert, kind: str, status: str, today: date) -> list[str]:
-    """The events of `status` for the alert state `row` (updated in place)."""
+def recovered(alerted: str, p: dict[str, Any]) -> bool:
+    """Whether the progress `p` recovers from the warning `alerted` (with the margins of
+    the module docstring)."""
+    statuses, _ = RECOVERIES[alerted]
+    if p["status"] not in statuses:
+        return False
+    target, pct = p["target_pct"], p["pct"]
+    if alerted == BEHIND:
+        return (p["status"] == REACHED
+                or pct >= target * p["elapsed_pct"] / 100 - BACK_MARGIN_PP)
+    if alerted == ABOVE_CAP:
+        return pct <= target - BACK_MARGIN_PP
+    return p["loss_pct"] < target - LOSS_BACK_MARGIN_PP
+
+
+def step(row: GoalAlert, p: dict[str, Any], today: date) -> list[str]:
+    """The events of the progress `p` for the alert state `row` (updated in place)."""
+    kind, status = p["kind"], p["status"]
     events: list[str] = []
     sent = dict(row.sent or {})
-    if row.alerted is not None and status in RECOVERIES[row.alerted][0]:
-        events.append(RECOVERIES[row.alerted][1])
-        row.alerted = None
-    if status in KIND_WARNINGS.get(kind, ()) and row.alerted != status:
-        event = WARNINGS[status]
-        if sent.get(event) != today.isoformat():
+    if row.alerted is not None and recovered(row.alerted, p):
+        event = RECOVERIES[row.alerted][1]
+        if sent.get(event) != today.isoformat() or status == REACHED:
             events.append(event)
             sent[event] = today.isoformat()
-            row.alerted = status
+            row.alerted = None
+    if status in KIND_WARNINGS.get(kind, ()) and row.alerted != status:
+        event = WARNINGS[status]
+        events.append(event)
+        sent[event] = today.isoformat()
+        row.alerted = status
     if kind == "max_loss":
         if status == NEAR_LIMIT and not row.near_sent and row.alerted is None:
             events.append(NEAR_EV)
@@ -187,6 +221,21 @@ def step(row: GoalAlert, kind: str, status: str, today: date) -> list[str]:
     row.status = status
     row.sent = sent
     return events
+
+
+def _due(entry: dict, now: datetime) -> bool:
+    """A queued issue still to create, whose retry time has come."""
+    if entry.get("ident") or int(entry.get("attempts") or 0) >= ISSUE_ATTEMPTS:
+        return False
+    retry_at = entry.get("retry_at")
+    return retry_at is None or datetime.fromisoformat(retry_at) <= now
+
+
+def _later(entry: dict, now: datetime) -> None:
+    """A transient failure: no attempt counted, tried again after the backoff."""
+    retries = int(entry.get("retries") or 0)
+    entry["retries"] = retries + 1
+    entry["retry_at"] = (now + min(RETRY_FIRST * 2 ** retries, RETRY_MAX)).isoformat()
 
 
 # -- the job -----------------------------------------------------------------------------
@@ -253,10 +302,16 @@ class GoalAlerts:
                                         with_for_update=True)
                 if row is None:
                     row = GoalAlert(goal_id=p["goal_id"], period_start=p["period_start"],
-                                    status=p["status"], near_sent=False, sent={}, issues={})
+                                    status=p["status"], kind=p["kind"],
+                                    target_pct=p["target_pct"], near_sent=False, sent={},
+                                    issues={})
                     session.add(row)
+                elif row.kind != p["kind"] or row.target_pct != p["target_pct"]:
+                    # the goal was changed: its alerts start over
+                    row.kind, row.target_pct = p["kind"], p["target_pct"]
+                    row.alerted, row.near_sent, row.sent, row.issues = None, False, {}, {}
                 issues = copy.deepcopy(row.issues or {})
-                for event in step(row, p["kind"], p["status"], today):
+                for event in step(row, p, today):
                     await enqueue(session, source="system", category="system",
                                   level="info" if event in (BACK_EV, BELOW_EV, WITHIN_EV)
                                   else "warning", text=alert_text(event, p))
@@ -269,28 +324,36 @@ class GoalAlerts:
                             issues[key] = {**issue_for(event, p, role), "assignee": role,
                                            "ident": None, "attempts": 0, "uncertain": False}
                 row.issues = issues
-                due = due or any(not e.get("ident") and int(e.get("attempts") or 0)
-                                 < ISSUE_ATTEMPTS for e in issues.values())
+                due = due or any(_due(e, now) for e in issues.values())
         if due:
-            await self._create_issues(today)
+            await self._create_issues(today, now)
 
-    async def _create_issues(self, today: date) -> None:
+    async def _pending(self, today: date, now: datetime) -> list[tuple]:
+        """(goal_id, period_start, key, entry) of the issues due, current periods only."""
         async with self._sm() as session:
-            cfg = await load_config(session)
-            if not _usable(cfg):
-                return
-            rows = list(await session.scalars(select(GoalAlert)))
-            live = {(p["goal_id"], p["period_start"])
-                    for p in await active_progress(session, self._clock(), self._zone)
-                    if today <= p["period_end"]}
-        pending = [(r.goal_id, r.period_start, key, dict(entry))
-                   for r in rows if (r.goal_id, r.period_start) in live
-                   for key, entry in (r.issues or {}).items()
-                   if not entry.get("ident")
-                   and int(entry.get("attempts") or 0) < ISSUE_ATTEMPTS]
+            live = {}
+            for goal, _ in await visible_goals(session):
+                period = current_period(goal, today)
+                if today <= period.end:
+                    live[goal.id] = period.start
+            if not live:
+                return []
+            rows = list(await session.scalars(
+                select(GoalAlert).where(GoalAlert.goal_id.in_(list(live)))))
+        return [(r.goal_id, r.period_start, key, dict(entry))
+                for r in rows if live.get(r.goal_id) == r.period_start
+                for key, entry in (r.issues or {}).items() if _due(entry, now)]
+
+    async def _create_issues(self, today: date, now: datetime) -> None:
+        pending = await self._pending(today, now)
         if not pending:
             return
-        results: dict[tuple, tuple[str | None, bool]] = {}
+        async with self._sm() as session:
+            cfg = await load_config(session)
+        if not _usable(cfg):
+            return
+        # key -> ("created", ident) | ("refused", None) | ("later", timed_out)
+        results: dict[tuple, tuple[str, Any]] = {}
         try:
             async with self._issues_factory(cfg) as client:
                 agents = await client.agents()
@@ -302,7 +365,7 @@ class GoalAlerts:
                     if assignee is None:
                         log.warning("goal issue: agent %s not found in Paperclip",
                                     entry.get("assignee"))
-                        results[(goal_id, start, key)] = (None, False)
+                        results[(goal_id, start, key)] = ("later", False)
                         continue
                     try:
                         found = (await client.open_issue_with_title(entry["title"])
@@ -311,18 +374,20 @@ class GoalAlerts:
                             title=entry["title"], description=entry["description"],
                             assignee_agent_id=assignee,
                             priority=entry.get("priority") or "high")
-                        results[(goal_id, start, key)] = (ident, False)
+                        results[(goal_id, start, key)] = ("created", ident)
                     except PaperclipError as e:
                         log.warning("goal issue not created in Paperclip: %s", e.message)
-                        results[(goal_id, start, key)] = (None, e.message == "timeout")
+                        results[(goal_id, start, key)] = (
+                            ("refused", None) if _REFUSED.match(e.message)
+                            else ("later", e.message == "timeout"))
         except PaperclipError as e:
             log.warning("goal issues: Paperclip unavailable: %s", e.message)
         except Exception:
             log.warning("goal issues: unexpected error", exc_info=True)
-        if not results:
-            results = {(g, s, k): (None, False) for g, s, k, _ in pending}
+        for goal_id, start, key, _ in pending:
+            results.setdefault((goal_id, start, key), ("later", False))
         async with self._sm() as session, session.begin():
-            for (goal_id, start, key), (ident, timed_out) in results.items():
+            for (goal_id, start, key), (outcome, value) in results.items():
                 row = await session.get(GoalAlert, (goal_id, start), with_for_update=True)
                 if row is None or key not in (row.issues or {}):
                     continue
@@ -330,10 +395,12 @@ class GoalAlerts:
                 entry = issues[key]
                 if entry.get("ident"):
                     continue
-                if ident:
-                    entry.update(ident=ident, uncertain=False)
-                else:
+                if outcome == "created" and value:
+                    entry.update(ident=value, uncertain=False, retry_at=None)
+                elif outcome == "refused":
                     entry["attempts"] = int(entry.get("attempts") or 0) + 1
-                    if timed_out:
+                else:
+                    if value:
                         entry["uncertain"] = True
+                    _later(entry, now)
                 row.issues = issues
