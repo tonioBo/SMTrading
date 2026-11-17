@@ -1491,6 +1491,8 @@ export interface GoalTemplate {
   key: string;
   label: string;
   body: GoalCreate;
+  /** An equivalent active goal is already there (older servers: absent). */
+  exists?: boolean;
 }
 
 /** The current period of an active goal (EUR strings; null without data). */

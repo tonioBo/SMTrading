@@ -42,7 +42,7 @@ const index = goal("g5", "indice", { horizon: "quarter", target_pct: "0", kind: 
 
 const templates: GoalTemplate[] = [
   {
-    key: "weekly", label: "Settimanale +2% totale",
+    key: "weekly", label: "Settimanale +2% totale", exists: true,
     body: { name: "Settimanale +2%", horizon: "week", recurring: true, scope: "total", portfolio_id: null, target_pct: "2", kind: "min" },
   },
   {
@@ -207,7 +207,7 @@ describe("Obiettivi", () => {
     expect(within(r).getByText("vicino al limite")).toHaveClass("text-warn");
     expect(within(r).getByText("perdita max 5%")).toBeInTheDocument();
     expect(within(r).getByText(/perdita 4,00% su un limite di 5%/)).toBeInTheDocument();
-    expect(within(r).getByText(/limite di perdita 570,00 €/)).toBeInTheDocument();
+    expect(within(r).getByText(/soglia minima 570,00 €/)).toBeInTheDocument();
     expect(within(r).getByRole("progressbar", { name: "Perdita rischio" })).toHaveAttribute("aria-valuenow", "80");
 
     const i = screen.getByRole("article", { name: "Obiettivo indice" });
@@ -273,7 +273,10 @@ describe("Obiettivi", () => {
     renderApp("/obiettivi");
     await user.click(await screen.findByRole("button", { name: "Modelli" }));
     const list = await screen.findByRole("dialog");
-    expect(await within(list).findByRole("button", { name: "Settimanale +2% totale" })).toBeInTheDocument();
+    const weekly = await within(list).findByRole("button", { name: "Settimanale +2% totale" });
+    expect(weekly).toBeDisabled();
+    expect(within(weekly).getByText("già presente")).toBeInTheDocument();
+    expect(within(list).getByRole("button", { name: "Rischio mensile −5% · Beta" })).toBeEnabled();
     expect(within(list).getByRole("button", { name: "Battere VWCE nel trimestre (totale)" })).toBeInTheDocument();
     await user.click(within(list).getByRole("button", { name: "Rischio mensile −5% · Beta" }));
     const dialog = await screen.findByRole("dialog", { name: "Nuovo obiettivo" });

@@ -17,6 +17,13 @@ describe("GoalBar", () => {
     expect(fill()).toHaveClass("bg-loss");
   });
 
+  it("the elapsed-time marker: drawn for a minimum, never for a risk goal", () => {
+    const { container, rerender } = render(<GoalBar pct="1" target="2" kind="min" elapsed="50" label="x" />);
+    expect(container.querySelector('[title="tempo trascorso"]')).not.toBeNull();
+    rerender(<GoalBar pct="1" target="5" kind="max_loss" elapsed="50" label="x" />);
+    expect(container.querySelector('[title="tempo trascorso"]')).toBeNull();
+  });
+
   it("minimum reached is green, cap exceeded is red", () => {
     const { rerender } = render(<GoalBar pct="2" target="2" kind="min" label="x" />);
     expect(fill()).toHaveClass("bg-gain");

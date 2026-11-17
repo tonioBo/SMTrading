@@ -296,10 +296,10 @@ function GoalFigures({ goal, p }: { goal: Goal; p: GoalProgress }) {
     const loss = lossText(p);
     return (
       <>
-        <GoalBar pct={p.loss_pct ?? null} target={p.target_pct} kind="max_loss" elapsed={p.elapsed_pct} label={`Perdita ${goal.name}`} />
+        <GoalBar pct={p.loss_pct ?? null} target={p.target_pct} kind="max_loss" label={`Perdita ${goal.name}`} />
         <p className="flex flex-wrap justify-between gap-2 text-xs text-muted">
           <span>
-            {[p.target_eur == null ? null : `limite di perdita ${formatMoney(p.target_eur, "EUR")}`, loss].filter(Boolean).join(" · ")}
+            {[p.target_eur == null ? null : `soglia minima ${formatMoney(p.target_eur, "EUR")}`, loss].filter(Boolean).join(" · ")}
           </span>
           {elapsed}
         </p>
@@ -322,7 +322,8 @@ function GoalFigures({ goal, p }: { goal: Goal; p: GoalProgress }) {
   );
 }
 
-/** «Modelli»: the server's ready goals; choosing one opens the dialog prefilled. */
+/** «Modelli»: the server's ready goals; choosing one opens the dialog prefilled; one whose
+ * equivalent goal is already active is disabled («già presente»). */
 function TemplatesDialog({ onChoose, onClose }: { onChoose: (t: GoalTemplate) => void; onClose: () => void }) {
   const { data, isLoading, isError } = useGoalTemplates(true);
   return (
@@ -342,9 +343,11 @@ function TemplatesDialog({ onChoose, onClose }: { onChoose: (t: GoalTemplate) =>
           <ul className="grid gap-2" aria-label="Modelli di obiettivo">
             {data.map((t) => (
               <li key={t.key}>
-                <Button variant="outline" className="w-full justify-between" aria-label={t.label} onClick={() => onChoose(t)}>
+                <Button variant="outline" className="w-full justify-between" aria-label={t.label} disabled={t.exists === true} onClick={() => onChoose(t)}>
                   <span>{t.label}</span>
-                  <span className="num text-xs text-muted">{goalTargetLabel(t.body.kind ?? "min", t.body.target_pct, t.body.benchmark)}</span>
+                  <span className="num text-xs text-muted">
+                    {t.exists ? "già presente" : goalTargetLabel(t.body.kind ?? "min", t.body.target_pct, t.body.benchmark)}
+                  </span>
                 </Button>
               </li>
             ))}

@@ -146,7 +146,7 @@ function GoalsCardFigures({ g }: { g: GoalProgress }) {
     const loss = lossText(g);
     return (
       <>
-        <GoalBar pct={g.loss_pct ?? null} target={g.target_pct} kind="max_loss" elapsed={g.elapsed_pct} label={`Perdita ${g.name}`} />
+        <GoalBar pct={g.loss_pct ?? null} target={g.target_pct} kind="max_loss" label={`Perdita ${g.name}`} />
         {loss && <p className="text-xs text-muted">{loss}</p>}
       </>
     );
