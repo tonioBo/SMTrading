@@ -280,13 +280,15 @@ def _ending_periods(goal: Goal, today: date) -> list[Period]:
     candidates = [period]
     if goal.recurring:
         candidates.append(previous_period(goal.horizon, period))
-    return [c for c in candidates if c.end <= today and c.end >= goal.start_date
+    return [c for c in candidates if c.end < today and c.end >= goal.start_date
             and today - END_LOOKBACK <= c.end]
 
 
 async def period_end_lines(session: AsyncSession, now: datetime, zone: ZoneInfo) -> list[str]:
-    """«🏁 …» once per goal and period over: a period ends with its last day, so the
-    daily summary of that day (or of a later one within END_LOOKBACK) carries it. Each
+    """«🏁 …» once per goal and period over: a period is over once its last day is, so
+    the daily summary of the next day (or of a later one within END_LOOKBACK) carries
+    it with the final numbers — the 18:00 summary of the last day itself would freeze
+    them while US markets are still open (a month ending on a weekday). Each
     is claimed in `job_runs` (`goals.period_end`) in the caller's transaction. Periods
     that ended before the goal was created, or without data, are never announced."""
     today = now.astimezone(zone).date()

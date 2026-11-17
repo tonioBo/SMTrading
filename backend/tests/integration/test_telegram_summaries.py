@@ -694,8 +694,9 @@ async def test_one_line_per_goal_and_archived_portfolio_hidden(maker):
 
 
 async def test_period_end_line_once(maker):
-    """The «🏁» line of a period over goes in the daily summary of its last day (or of a
-    later one within a week), once; never for a period over before the goal existed."""
+    """The «🏁» line of a period over goes in the daily summary of the day after its last
+    day (or of a later one within a week), once; never for a period over before the goal
+    existed."""
     a = await _portfolio(maker, "Test 260 A")
     await _day_open(maker, a, MON, "1000")
     await _snaps(maker, a, [(rome(FRI, 17), "1025")])
@@ -706,17 +707,23 @@ async def test_period_end_line_once(maker):
         [(friday, _)] = await build_summary(s, "daily", rome(FRI, 18), tz=TZ,
                                             period_ends=True)
         assert [ln for ln in friday.splitlines() if ln.startswith("🏁")] == []
-        # Sunday 14 March, the week's last day (last week, 1–7 March, has no data)
+        # Sunday 14 March, the week's last day: not over yet
         [(sunday, _)] = await build_summary(s, "daily", rome(14, 18), tz=TZ,
                                             period_ends=True)
         await s.commit()
-        assert [ln for ln in sunday.splitlines() if ln.startswith("🏁")] == [
+        assert [ln for ln in sunday.splitlines() if ln.startswith("🏁")] == []
+        assert not await job_done(s, "goals.period_end", f"{goal_id}:2027-03-08:2027-03-14")
+        # Monday 15 March, the day after (last week, 1–7 March, has no data)
+        [(monday, _)] = await build_summary(s, "daily", rome(15, 18), tz=TZ,
+                                            period_ends=True)
+        await s.commit()
+        assert [ln for ln in monday.splitlines() if ln.startswith("🏁")] == [
             "🏁 Obiettivo settimanale: raggiunto (+2,50% su +2%)"]
         assert await job_done(s, "goals.period_end", f"{goal_id}:2027-03-01:2027-03-07")
         assert await job_done(s, "goals.period_end", f"{goal_id}:2027-03-08:2027-03-14")
-        [(monday, _)] = await build_summary(s, "daily", rome(15, 18), tz=TZ,
-                                            period_ends=True)
-        assert [ln for ln in monday.splitlines() if ln.startswith("🏁")] == []
+        [(tuesday, _)] = await build_summary(s, "daily", rome(16, 18), tz=TZ,
+                                             period_ends=True)
+        assert [ln for ln in tuesday.splitlines() if ln.startswith("🏁")] == []
         # a goal created this week: last week is never announced
         await _snaps(maker, a, [(rome(4, 12), "990")])
         await s.execute(update(Goal).values(created_at=rome(15, 9)))
@@ -725,3 +732,32 @@ async def test_period_end_line_once(maker):
         [(monday, _)] = await build_summary(s, "daily", rome(15, 18), tz=TZ,
                                             period_ends=True)
         assert [ln for ln in monday.splitlines() if ln.startswith("🏁")] == []
+
+
+async def test_period_end_weekday_month_end_announced_next_day(maker):
+    """A month over on a weekday (Wednesday 31 March 2027) is not announced by that
+    day's 18:00 summary (US markets still open) but by the next day's, with the final
+    numbers of the period (the snapshots after 18:00 count, the next month's do not)."""
+    from datetime import date
+
+    a = await _portfolio(maker, "Test 260 A")
+    await _day_open(maker, a, 1, "1000")
+    await _snaps(maker, a, [(rome(31, 17), "1010"), (rome(31, 22), "1040"),
+                            (datetime(2027, 4, 1, 12, tzinfo=ROME).astimezone(UTC), "900")])
+    async with maker() as s:
+        s.add(Goal(name="mensile", horizon="month", start_date=date(2027, 3, 1),
+                   recurring=True, scope="total", target_pct=D("3"), kind="min",
+                   active=True, created_at=rome(1, 9)))
+        await s.commit()
+        [(wednesday, _)] = await build_summary(s, "daily", rome(31, 18), tz=TZ,
+                                               period_ends=True)
+        await s.commit()
+        assert [ln for ln in wednesday.splitlines() if "mensile" in ln
+                and ln.startswith("🏁")] == []
+        thursday_at = datetime(2027, 4, 1, 18, tzinfo=ROME).astimezone(UTC)
+        [(thursday, _)] = await build_summary(s, "daily", thursday_at, tz=TZ,
+                                              period_ends=True)
+        await s.commit()
+        assert [ln for ln in thursday.splitlines() if "mensile" in ln
+                and ln.startswith("🏁")] == [
+            "🏁 Obiettivo mensile: raggiunto (+4,00% su +3%)"]
