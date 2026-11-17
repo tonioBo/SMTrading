@@ -24,8 +24,9 @@ del CEO non può mai superare un limite del profilo di rischio.
   se le strategie approvate lo consentono, si può fare di più; un obiettivo `kind: "cap"` è
   invece un **tetto** da non superare (oltre, si riduce il rischio, non se ne aggiunge).
   Un obiettivo `kind: "max_loss"` è un **limite di perdita** nel periodo (`target_pct` =
-  perdita massima, `loss_pct` = perdita finora; stati `nel limite`, `vicino al limite`,
-  `superato`): da «vicino al limite» si riduce il rischio e non si aprono nuove posizioni
+  perdita massima, `loss_pct` = la perdita attuale del periodo, dall'inizio a ora, non la
+  peggiore toccata; stati `nel limite`, `vicino al limite`, `superato`, sulla perdita
+  attuale: se l'equity risale lo stato torna indietro): da «vicino al limite» si riduce il rischio e non si aprono nuove posizioni
   in quell'ambito finché Risk Manager e CEO non l'hanno rivisto (SMTrading non blocca nulla
   da sé: la decisione è degli agenti). Un obiettivo `kind: "beat_index"` chiede di fare
   meglio dell'indice `benchmark` di `target_pct` punti (`benchmark_pct` = l'indice nel

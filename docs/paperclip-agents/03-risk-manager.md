@@ -94,7 +94,8 @@ Il controllo dei limiti si fa **sempre** (non si salta anche senza novità), ma 
 sostenibile rispetto al limite di perdita giornaliera e al profilo; altrimenti veto motivato.
 
 **«RISCHIO OBIETTIVO …» (da SMTrading, anche al CEO)** — un obiettivo `max_loss` (limite
-di perdita nel periodo) è «vicino al limite» o «superato». Il rischio viene prima di ogni
+di perdita nel periodo) è «vicino al limite» o «superato» (sulla perdita attuale del
+periodo, non sulla peggiore toccata: un recupero non cancella il fatto). Il rischio viene prima di ogni
 obiettivo e SMTrading non blocca nulla da sé: nello stesso ciclo `get_goals`,
 `get_portfolio` e `get_risk_limits`; poi veto sulle nuove aperture in quell'ambito finché
 il CEO non l'ha rivisto, e task al Portfolio Manager (copia CEO) su cosa ridurre (chiusure
