@@ -146,12 +146,13 @@ Principi applicati (decisioni del titolare del 18/11, `00` §2 e §4):
 | J5 | Task creato da un umano (utente) | CEO o agente assegnato | esegue e risponde nel task | — | Coperto: `00` §6, `01` task 9 |
 | J6 | Collegamento a un conto reale attivato o disattivato dagli amministratori | ES (`LIVE_NOT_ARMED`, `LIVE_CASH_LIMIT`, rifiuti del broker) | vedi B5-B6; nessun metodo degli agenti tocca il collegamento | Telegram per ogni ordine reale | Coperto: `00` §12 |
 | J7 | Task creati dal RM (ESEGUI, CHIUDI, PROTEGGI, MODIFICA STOP) senza risposta | RM, sentinella | sollecito, poi task al CEO | — | **Lacuna corretta**: `03` sentinella 4 |
+| J8 | Errore ripetuto o perdita evitabile (uscita mancata, passaggio non consegnato, dimensione sbagliata, regola non seguita) | chi lo trova, stesso ciclo; PA nell'audit | `log_decision` `lesson`; se ripete una lezione o una regola del team: «LEZIONE RIPETUTA» al CEO, che crea una `team_rule`, chiede RIVEDI STRATEGIA o registra «nessuna azione» con il motivo; gli agenti leggono le regole attive al primo ciclo della giornata e prima di proposte, approvazioni ed esecuzioni; umani informati il venerdì | le lezioni e le regole del team nei riepiloghi Telegram delle 18:00 e del venerdì | **Lacuna corretta**: `00` §9 «Lezioni e regole del team», `01` «Lezioni e regole del team» e revisione 6-8, `08` audit 3 e 8b, `02` checklist 0, `03` PROPOSTA 1, `04` «Prima di ogni task» 3, `07` RIVEDI STRATEGIA 1, `#44`-`#46` |
 
 ## Conteggio
 
-- Scenari: **77** (A 10 · B 9 · C 9 · D 7 · E 4 · F 15 · G 5 · H 4 · I 7 · J 7; B5 raggruppa
+- Scenari: **78** (A 10 · B 9 · C 9 · D 7 · E 4 · F 15 · G 5 · H 4 · I 7 · J 8; B5 raggruppa
   i 16 codici d'errore del rifiuto all'invio).
-- Già coperti: **37**. Lacune corrette il 18/11: **40**, di cui 4 righe già coperte con un
+- Già coperti: **37**. Lacune corrette il 18/11: **41**, di cui 4 righe già coperte con un
   passo ambiguo (F2, F3, I4, J1).
 
 ## Decisioni affidate agli agenti
@@ -176,6 +177,7 @@ decide e su quale base (scritto nei file indicati):
 | Chiusura delle posizioni intraday | **PM**, riserva **RM** | orari reali di chiusura | `02` regola 5, `03` sentinella 7 |
 | Short tattico su PRU | **CEO** e **RM** (eccezionale) | carattere prudente | `00` §4 |
 | Ripresa dopo `LIVE_NOT_ARMED` | **ES/RM** al giorno di borsa successivo | esito di `preview_order` e dell'invio | `00` §12 |
+| Lezioni trasformate in regole del team, loro ritiro | **CEO** (chiunque registra le lezioni) | lezioni, audit, risultati; mai oltre profilo, kill switch, halt | `00` §9, `01`, `08` |
 
 Limiti che **non** sono decisioni del team (gli agenti informano una volta e lavorano entro
 il limite, senza attendere): kill switch, halt degli amministratori, blocco del portafoglio,

@@ -98,7 +98,9 @@ Per rivedere vecchi risultati: `list_backtests` (filtro `status`, `limit`), poi 
 Il PA ha visto i risultati reali di una strategia approvata scostarsi dal suo backtest, o il
 CEO chiede la revisione per la data `review_by`.
 
-1. `get_decisions` `kind: "strategy"` per la strategia (parametri, simboli, `backtest_id`).
+1. `get_decisions` `kind: "strategy"` per la strategia (parametri, simboli, `backtest_id`),
+   più le lezioni (`kind` `lesson`) e le regole del team (`team_rule`) che la citano: sono
+   ipotesi da verificare nel backtest (00 §9 «Lezioni e regole del team»).
 2. Rifai il backtest con gli stessi parametri sui **dati recenti** (stesse regole dei passi
    4-7 sopra: `buy_and_hold` di confronto, almeno 1 anno `1d` che arrivi a oggi).
 3. `log_decision` `kind: "other"` con i risultati e il confronto con il backtest approvato.

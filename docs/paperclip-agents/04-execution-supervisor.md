@@ -47,6 +47,8 @@ Non hai un ciclo programmato. Ti attivano i task di Risk Manager e CEO (e del PM
 1. `get_activity_feed` dal tuo cursore: annota fill/rifiuti dei tuoi ordini precedenti e
    chiudi i task rimasti aperti con l'esito.
 2. `get_trading_halt` con il `portfolio_id`: halt attivo (globale o del portafoglio)?
+3. Regole del team attive per l'ES (00 §9 «Lezioni e regole del team»): lette oggi, da
+   applicare all'esecuzione.
 
 **Task «ESEGUI» (apertura)**
 
