@@ -59,12 +59,13 @@ from smtrading.telegram.weekly_goal import (
     week_monday,
 )
 
-RANGES: tuple[str, ...] = ("1d", "1w", "1m", "3m", "all")
+RANGES: tuple[str, ...] = ("2h", "6h", "12h", "1d", "1w", "1m", "3m", "all")
 SPANS: dict[str, timedelta | None] = {
+    "2h": timedelta(hours=2), "6h": timedelta(hours=6), "12h": timedelta(hours=12),
     "1d": timedelta(days=1), "1w": timedelta(weeks=1), "1m": timedelta(days=30),
     "3m": timedelta(days=90), "all": None,
 }
-INTRADAY = frozenset({"1d", "1w"})
+INTRADAY = frozenset({"2h", "6h", "12h", "1d", "1w"})
 _Q2 = Decimal("0.01")
 
 Point = tuple[datetime, Decimal]

@@ -2,9 +2,15 @@ import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
 import type { EquityPoint, GoalBenchmark, GoalHorizon, GoalKind, GoalScope } from "@/api/types";
 
-export type EquityHistoryRange = "1d" | "1w" | "1m" | "3m" | "all";
+export type EquityHistoryRange = "2h" | "6h" | "12h" | "1d" | "1w" | "1m" | "3m" | "all";
+
+/** Ranges drawn with hours on the x axis (the rest: dates). */
+export const HOURLY_RANGES: ReadonlySet<EquityHistoryRange> = new Set(["2h", "6h", "12h", "1d"]);
 
 export const EQUITY_HISTORY_RANGES: { label: string; value: EquityHistoryRange }[] = [
+  { label: "2h", value: "2h" },
+  { label: "6h", value: "6h" },
+  { label: "12h", value: "12h" },
   { label: "1g", value: "1d" },
   { label: "1s", value: "1w" },
   { label: "1m", value: "1m" },
