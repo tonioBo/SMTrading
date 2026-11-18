@@ -6,7 +6,6 @@ The board key never reaches a response, an error, the audit or a log; the activi
 summary masks it by its field name (`board_key`)."""
 
 import uuid
-from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
@@ -30,11 +29,14 @@ from smtrading.paperclip.client import PaperclipClient, PaperclipError
 from smtrading.paperclip.config import (
     KEY_PREFIX,
     SETTINGS_KEY,
+    SmtAgent,
     config_dto,
     load_config,
     load_state,
+    match_agent,
     save_config,
     save_state,
+    smt_agents,
 )
 from smtrading.paperclip.models import AgentCostDay
 from smtrading.paperclip.reader import isolation_policies, key_expiring, set_baseline
@@ -151,28 +153,6 @@ async def _status(session: AsyncSession) -> dict[str, Any]:
     }
 
 
-@dataclass(frozen=True)
-class _SmtAgent:
-    id: uuid.UUID
-    name: str
-
-
-def _match(pid: str, name: str | None, agents: list[_SmtAgent], agent_map: dict[str, str]
-           ) -> _SmtAgent | None:
-    """The SMTrading agent of a Paperclip agent: `agent_map`, else the same name (case
-    insensitive)."""
-    if pid in agent_map:
-        return next((a for a in agents if str(a.id) == agent_map[pid]), None)
-    low = (name or "").casefold()
-    return next((a for a in agents if low and a.name.casefold() == low), None)
-
-
-async def _agents(session: AsyncSession) -> list[_SmtAgent]:
-    """Plain values (they outlive the session's transaction)."""
-    rows = await session.execute(select(Agent.id, Agent.name).order_by(Agent.name))
-    return [_SmtAgent(i, n) for i, n in rows.all()]
-
-
 # --- routes ----------------------------------------------------------------------------------
 
 @router.get("/paperclip/config")
@@ -211,7 +191,7 @@ async def put_paperclip_config(
 async def verify_paperclip(session: DbSession) -> dict:
     """A test read (agents and policies) with the stored configuration."""
     cfg = await load_config(session)
-    agents = await _agents(session)
+    agents = await smt_agents(session)
     await session.rollback()  # no transaction open during the requests (R9)
     try:
         async with _client(cfg) as client:
@@ -224,7 +204,7 @@ async def verify_paperclip(session: DbSession) -> dict:
         pid, name = str(a.get("id") or ""), a.get("name")
         if not pid:
             continue
-        smt = _match(pid, name, agents, cfg.agent_map)
+        smt = match_agent(pid, name, agents, cfg.agent_map)
         out.append({"id": pid, "name": name,
                     "smt_agent": {"id": str(smt.id), "name": smt.name} if smt else None})
     return {"ok": True, "agents": out, "policies_count": len(policies), "error": None}
@@ -280,11 +260,11 @@ async def get_agent_costs(session: DbSession, period: str = Query("day")) -> dic
         .group_by(AgentCostDay.paperclip_agent_id)
         .order_by(AgentCostDay.paperclip_agent_id)
     )).all()
-    agents = await _agents(session)
+    agents = await smt_agents(session)
     by_agent: dict[uuid.UUID, list] = {a.id: [] for a in agents}
     unmatched = []
     for pid, name, api, sub, other, runs in costs:
-        smt = _match(pid, name, agents, cfg.agent_map)
+        smt = match_agent(pid, name, agents, cfg.agent_map)
         if smt is not None:
             by_agent[smt.id].append((name, api, sub, other, runs))
         else:
@@ -314,14 +294,14 @@ async def get_agent_costs(session: DbSession, period: str = Query("day")) -> dic
                         "month": await _month(session, to, cfg, state, agents)})
 
 
-async def _month(session: AsyncSession, today, cfg, state: dict, agents: list[_SmtAgent]
+async def _month(session: AsyncSession, today, cfg, state: dict, agents: list[SmtAgent]
                  ) -> dict:
     """The current month against the budget (whatever the period), with each agent's share
     of the billed spend (SMTrading agents, then the unmatched Paperclip ones by name)."""
     spend = await budget.month_spend(session, today)
     shares: dict[tuple[str | None, str], Decimal] = {}
     for pid, name, usd in spend:
-        smt = _match(pid, name, agents, cfg.agent_map)
+        smt = match_agent(pid, name, agents, cfg.agent_map)
         key = (str(smt.id), smt.name) if smt else (None, name or pid)
         shares[key] = shares.get(key, Decimal(0)) + usd
     total = sum(shares.values(), start=Decimal(0))
