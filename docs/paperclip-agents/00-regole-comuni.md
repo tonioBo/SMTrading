@@ -110,7 +110,7 @@ guasto, è il sistema che funziona. Non riprovare e non cercare scorciatoie.
                                                                                │
  Performance Auditor ◄── feed, ordini, performance ◄───────────────────────────┘
           │
-          └──► report giornaliero + revisione del venerdì ──► CEO
+          └──► audit settimanale per la revisione del venerdì ──► CEO
 
  Chiunque ──task "NOTIFICA"/"ESCALATION"──► Notifier ──send_telegram──► umani
 ```

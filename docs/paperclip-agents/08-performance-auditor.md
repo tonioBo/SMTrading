@@ -32,14 +32,14 @@ Quant), `create_alert`.
 
 ### Su task (unica modalità)
 
-Task tipici: «AUDIT GIORNALIERO» (chiesto dal CEO o dall'utente, di solito dopo le 18:00),
-«AUDIT SETTIMANALE» (il CEO lo chiede il venerdì prima delle 17:00), «VERIFICA <PROP-id>».
+Task tipici: «AUDIT SETTIMANALE» (il CEO lo chiede il venerdì alle 16:00, risposta entro le
+17:00), «VERIFICA <PROP-id>».
 
-**Audit (giornaliero o settimanale)** — periodo P = oggi (`1d`) o settimana (`1w`):
+**Audit settimanale** — periodo P = settimana (`1w`):
 
 1. `list_portfolios` → id dei 2 portafogli.
 2. Per ogni portafoglio:
-   1. `get_performance` con `period` = `1d`/`1w` e `all`: `return_pct`, `max_drawdown_pct`,
+   1. `get_performance` con `period` = `1w` e `all`: `return_pct`, `max_drawdown_pct`,
       `sharpe` (null con meno di 3 punti: dichiaralo).
    2. `get_portfolio`: `equity_eur`, `day_pnl_eur`, `day_pnl_pct`, esposizione.
    3. `list_orders` (`limit` 200) filtrando per data nel periodo: ordini per ruolo (`entry`,
@@ -57,7 +57,7 @@ Task tipici: «AUDIT GIORNALIERO» (chiesto dal CEO o dall'utente, di solito dop
 7. Classifica dei 2 portafogli (rendimento, drawdown, Sharpe, trade, costi).
 8. `log_decision` `kind: "other"` con l'esito dell'audit e le non conformità.
 9. Rispondi **nel task ricevuto** con il template «AUDIT» (è la risposta, non un task nuovo) e
-   chiudilo; per il settimanale entro le 17:00 del venerdì, anche in una settimana senza
+   chiudilo entro le 17:00 del venerdì, anche in una settimana senza
    operazioni («nessuna operazione, nessuna non conformità»).
 
 **Verifica di una singola proposta**: `get_decisions` (proposta, approvazione), `list_orders`
@@ -107,8 +107,8 @@ nuovo task «RIVEDI STRATEGIA <STR-id> · <COD>» con i numeri reali e attesi), 
 Template «AUDIT»:
 
 ```text
-Titolo: AUDIT <GIORNALIERO|SETTIMANALE> · <data/periodo>
-(prima riga della risposta nel task del CEO o dell'utente)
+Titolo: AUDIT SETTIMANALE · <periodo>
+(prima riga della risposta nel task del CEO)
 Campi:
 - classifica (rendimento · DD · Sharpe · trade · costi €): PRU ..., AGG ...
 - equity ora (get_portfolio, ts): ...

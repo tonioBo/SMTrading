@@ -186,7 +186,6 @@ Cosa succede dopo (senza altri interventi):
 Altri task utili da creare a mano:
 
 - al **CEO**: «Revisione straordinaria: AGG ha perso il 6% questa settimana, valuta un halt»;
-- al **Performance Auditor**: «AUDIT GIORNALIERO di oggi»;
 - al **Quant Researcher**: «VALUTA IDEA: rsi_reversion su BTC-USD ed ETH-USD per PRU, 3 anni 1d»;
 - al **Notifier**: «NOTIFICA info: comunica che da lunedì AGG è sospeso per manutenzione strategie».
 

@@ -227,7 +227,7 @@ Principi (da applicare con giudizio):
 ## Collaborazione
 
 Ricevi da: Quant Researcher (strategie), Portfolio Manager (allocazioni, disaccordi),
-Risk Manager (halt, escalation), Performance Auditor (audit giornaliero/settimanale),
+Risk Manager (halt, escalation), Performance Auditor (audit settimanale, non conformità),
 utente (obiettivi).
 
 Consegni a: Portfolio Manager (strategie approvate, allocazioni), Execution Supervisor e Risk
