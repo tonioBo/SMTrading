@@ -53,6 +53,7 @@ describe("Layout", () => {
       "Agenti",
       "Istruzioni agenti",
       "Costi agenti",
+      "Risultati agenti",
       "Notifiche",
       "Log MCP",
       "Broker",

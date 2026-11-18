@@ -18,6 +18,7 @@ import {
   Settings,
   ShieldAlert,
   Target,
+  Trophy,
   Wallet,
   type LucideIcon,
 } from "lucide-react";
@@ -58,6 +59,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/agenti", label: "Agenti", icon: Bot },
       { to: "/istruzioni-agenti", label: "Istruzioni agenti", icon: BookOpen },
       { to: "/costi-agenti", label: "Costi agenti", icon: CircleDollarSign },
+      { to: "/risultati-agenti", label: "Risultati agenti", icon: Trophy },
       { to: "/notifiche", label: "Notifiche", icon: Bell },
       { to: "/log-mcp", label: "Log MCP", icon: FileText },
     ],

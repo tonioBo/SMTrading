@@ -1487,6 +1487,84 @@ export interface StrategiesPerformanceResponse {
   strategies: StrategyPerformance[];
 }
 
+// --- «Risultati agenti» (GET /api/agent-results?period=…) ---
+
+export type AgentResultsPeriod = "week" | "1m" | "3m" | "all";
+
+export interface AgentResultsTeam {
+  /** net realised P/L (EUR) of the trades closed in the period; null when a rate is missing */
+  pnl_eur: string | null;
+  costs_eur: string | null;
+  orders_executed: number;
+  proposals: number;
+  approvals: number;
+  vetoes: number;
+  approval_rate_pct: string | null;
+  lessons: number;
+  lessons_repeated: number;
+  rules_active: number;
+  /** USD: API + subscription + other, every Paperclip agent */
+  cost_usd: string;
+  billed_usd: string;
+  unmatched_cost_usd: string;
+  pnl_per_usd: string | null;
+  cost_per_order_usd: string | null;
+}
+
+export interface AgentResultRow {
+  agent_id: string;
+  name: string;
+  active: boolean;
+  decisions: Partial<Record<DecisionKind, number>>;
+  decisions_total: number;
+  proposals: number;
+  approved: number;
+  vetoed: number;
+  pending: number;
+  approval_rate_pct: string | null;
+  lessons_written: number;
+  lessons_about: number;
+  lessons_repeated: number;
+  mcp_calls: number;
+  mcp_errors: number;
+  mcp_error_pct: string | null;
+  orders_executed: number;
+  paperclip_names: string[];
+  runs: number;
+  cost_usd: string;
+  billed_usd: string;
+  cost_per_order_usd: string | null;
+}
+
+export interface StrategyResultRow {
+  /** null: «Senza strategia» */
+  ref: string | null;
+  name: string | null;
+  status: string | null;
+  portfolios: string[];
+  trades_opened: number;
+  trades_closed: number;
+  wins: number;
+  win_rate_pct: string | null;
+  realized_pnl_eur: string | null;
+  costs_eur: string | null;
+  net_pnl_eur: string | null;
+  avg_holding_s: number | null;
+  open_positions: number;
+}
+
+export interface AgentResults {
+  as_of: string;
+  period: AgentResultsPeriod;
+  /** null for «tutto» */
+  from: string | null;
+  to: string;
+  last_read_at: string | null;
+  team: AgentResultsTeam;
+  agents: AgentResultRow[];
+  strategies: StrategyResultRow[];
+}
+
 // --- «Obiettivi» (GET/POST /api/goals, PATCH/DELETE /api/goals/{id}, GET /api/goals/progress) ---
 
 export type GoalHorizon = "week" | "month" | "quarter" | "year" | "custom";
