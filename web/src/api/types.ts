@@ -729,6 +729,16 @@ export interface InstrumentCreate {
   shortable: boolean;
 }
 
+/** US pre-market / after-hours price while the regular session is closed: information
+ * only (orders, stops, valuation and P/L use the regular session). */
+export interface ExtendedHours {
+  session: "pre" | "post";
+  price: string;
+  /** percent vs the latest regular close */
+  change_pct_vs_close: string;
+  ts: string;
+}
+
 export interface Quote {
   symbol: string;
   bid: string | null;
@@ -736,6 +746,8 @@ export interface Quote {
   last: string | null;
   ts: string | null;
   provider: string | null;
+  /** US equities (GET /api/quotes): null while the regular session is open or no price */
+  extended?: ExtendedHours | null;
 }
 
 /** GET /api/quotes: a quote per symbol, or `{error}` for a symbol that failed. */
@@ -1350,6 +1362,10 @@ export interface OpenPosition {
   distance_to_stop_pct: string | null;
   risk_at_stop_eur: string | null;
   protection: Protection;
+  /** US positions, regular session closed: the extended-hours price (information only) */
+  extended?: ExtendedHours | null;
+  /** the extended-hours price is at or beyond the stop: gap risk at the open */
+  extended_beyond_stop?: boolean;
 }
 
 export interface OpenPositionsPortfolio {

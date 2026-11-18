@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDateTime, formatMoney, formatPct, formatQty, formatSignedMoney, signTone } from "./format";
+import { formatClock, formatDateTime, formatMoney, formatPct, formatQty, formatSignedMoney, signTone } from "./format";
 
 describe("formatMoney", () => {
   it("formats EUR in it-IT with grouping and 2 decimals", () => {
@@ -91,5 +91,14 @@ describe("signTone", () => {
     expect(signTone("-0.4", 0)).toBe("gain");
     expect(signTone(null)).toBeNull();
     expect(signTone("abc")).toBeNull();
+  });
+});
+
+describe("formatClock", () => {
+  it("shows the Rome time today, the day too otherwise", () => {
+    const now = new Date("2026-11-17T22:00:00Z");
+    expect(formatClock("2026-11-17T21:45:00Z", now)).toBe("22:45");
+    expect(formatClock("2026-11-14T00:30:00Z", now)).toBe("14/11 01:30");
+    expect(formatClock("nope", now)).toBe("nope");
   });
 });

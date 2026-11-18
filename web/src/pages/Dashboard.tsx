@@ -13,6 +13,7 @@ import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
 import { Pct } from "@/components/Pct";
 import { Pnl } from "@/components/Pnl";
+import { GapRiskBadge } from "@/components/ExtendedHours";
 import { ProtectionBadge } from "@/components/ProtectionBadge";
 import { SignalBadge } from "@/components/SignalBadges";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -264,6 +265,7 @@ function OpenPositionsCard() {
                 <span className="flex items-center gap-2">
                   <Pnl value={p.pnl_eur} pct={p.pnl_pct} />
                   <ProtectionBadge protection={p.protection} />
+                  {p.extended_beyond_stop && <GapRiskBadge side={p.side} />}
                 </span>
               </li>
             ))}

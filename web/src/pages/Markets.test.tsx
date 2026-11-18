@@ -120,6 +120,37 @@ describe("Markets", () => {
     expect(within(quote).getByText("medio")).toBeInTheDocument();
   });
 
+  it("shows the after-hours price under the main price, information only", async () => {
+    server.use(
+      http.get("*/api/quotes", () =>
+        HttpResponse.json({
+          AAPL: {
+            symbol: "AAPL", bid: "257.4", ask: "257.5", last: "257.46", ts: null, provider: "alpaca",
+            extended: { session: "post", price: "255.4", change_pct_vs_close: "-0.8", ts: new Date().toISOString() },
+          },
+        }),
+      ),
+    );
+    renderApp("/mercati");
+    const quote = await screen.findByLabelText("Quota AAPL");
+    expect(await within(quote).findByText("257,46")).toBeInTheDocument();
+    const line = within(quote).getByLabelText("Prezzo fuori orario");
+    expect(line).toHaveTextContent(/^🌙 After-hours 255,40 \$ \(-0,8%\) · \d\d:\d\d$/);
+    expect(line).toHaveClass("text-muted");
+  });
+
+  it("shows no extended-hours line while the session is open", async () => {
+    server.use(
+      http.get("*/api/quotes", () =>
+        HttpResponse.json({ AAPL: { symbol: "AAPL", bid: "1", ask: "2", last: "1.5", ts: null, provider: "alpaca", extended: null } }),
+      ),
+    );
+    renderApp("/mercati");
+    const quote = await screen.findByLabelText("Quota AAPL");
+    expect(await within(quote).findByText("1,5")).toBeInTheDocument();
+    expect(within(quote).queryByLabelText("Prezzo fuori orario")).toBeNull();
+  });
+
   it("follows and unfollows symbols", async () => {
     const user = userEvent.setup();
     renderApp("/mercati");

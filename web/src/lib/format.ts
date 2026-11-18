@@ -108,6 +108,27 @@ export function formatDateTime(iso: string): string {
   return `${p.day}/${p.month}/${p.year} ${p.hour}:${p.minute}:${p.second}`;
 }
 
+const CLOCK = new Intl.DateTimeFormat("it-IT", {
+  timeZone: "Europe/Rome",
+  year: "numeric",
+  day: "2-digit",
+  month: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+/** ISO timestamp → "HH:mm" in Europe/Rome, "dd/MM HH:mm" when not on `now`'s day. */
+export function formatClock(iso: string, now: Date = new Date()): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const parts = (d: Date) => Object.fromEntries(CLOCK.formatToParts(d).map((x) => [x.type, x.value]));
+  const p = parts(date);
+  const n = parts(now);
+  const time = `${p.hour}:${p.minute}`;
+  return p.day === n.day && p.month === n.month && p.year === n.year ? time : `${p.day}/${p.month} ${time}`;
+}
+
 /** Bytes as "512 B", "1,5 KB", "2,3 MB" (one decimal, it-IT). */
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;

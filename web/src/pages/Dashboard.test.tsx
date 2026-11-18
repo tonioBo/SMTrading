@@ -243,12 +243,27 @@ describe("Dashboard", () => {
     expect(within(positions).getByText("AAPL")).toBeInTheDocument();
     expect(within(positions).getByText("+18,40 €")).toHaveClass("text-gain");
     expect(within(positions).getByText("🔴 senza stop")).toBeInTheDocument();
+    expect(within(positions).queryByText(/rischio gap/)).toBeNull();
     expect(screen.getByRole("link", { name: "Tutte le posizioni" })).toHaveAttribute("href", "/posizioni");
     const closest = await screen.findByRole("list", { name: "Segnali più vicini" });
     const items = within(closest).getAllByRole("listitem");
     expect(items.map((li) => li.querySelector(".font-medium")?.textContent)).toEqual(["NEAR", "A", "B", "C", "D"]);
     expect(within(items[0]).getByText("🟡 vicino")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Tutti i segnali" })).toHaveAttribute("href", "/segnali");
+  });
+
+  it("compact «Posizioni aperte» shows the gap-risk badge only", async () => {
+    const position = {
+      portfolio_id: "p1", portfolio_name: "Alfa", symbol: "AAPL", name: "Apple", market: "NASDAQ", currency: "USD", side: "short",
+      qty: "-2", avg_price: "180", opened_at: null, last: "190", stale: false, value_eur: "-350", pnl_eur: "-18.4", pnl_pct: "-5.5",
+      stop: { order_id: "o1", price: "195", tif: "gtc" }, target: null, distance_to_stop_pct: "2.6", risk_at_stop_eur: "9", protection: "ok",
+      extended: { session: "pre", price: "199", change_pct_vs_close: "4.7", ts: "2026-11-17T12:00:00Z" }, extended_beyond_stop: true,
+    };
+    server.use(http.get("*/api/positions/open", () => HttpResponse.json({ as_of: "2026-11-17T12:00:00Z", positions: [position], portfolios: [] })));
+    renderApp("/");
+    const positions = await screen.findByRole("list", { name: "Posizioni aperte" });
+    expect(within(positions).getByText("⚠ sopra lo stop fuori orario: rischio gap all'apertura")).toBeInTheDocument();
+    expect(within(positions).queryByText(/fuori orario 199/)).toBeNull(); // the badge only
   });
 
   it("updates the kill-switch badge from the kill_switch WS event", async () => {

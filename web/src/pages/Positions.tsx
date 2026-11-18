@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { useOpenPositions } from "@/api/hooks/positions";
 import type { OpenPosition, OpenPositionsPortfolio, ProtectiveLeg } from "@/api/types";
+import { ExtendedPositionLine, GapRiskBadge } from "@/components/ExtendedHours";
 import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
 import { Pnl } from "@/components/Pnl";
@@ -47,6 +48,7 @@ function PositionRow({ p }: { p: OpenPosition }) {
       <TableCell className="num text-right">
         {price(p.last, p.currency)}
         {p.stale && <span className="ml-1 text-xs text-warn" title="ultima quotazione in memoria">*</span>}
+        <ExtendedPositionLine ext={p.extended} currency={p.currency} />
       </TableCell>
       <TableCell className="text-right">
         <Money value={p.value_eur} />
@@ -65,7 +67,10 @@ function PositionRow({ p }: { p: OpenPosition }) {
         <Money value={p.risk_at_stop_eur} />
       </TableCell>
       <TableCell>
-        <ProtectionBadge protection={p.protection} />
+        <div className="flex flex-wrap gap-1">
+          <ProtectionBadge protection={p.protection} />
+          {p.extended_beyond_stop && <GapRiskBadge side={p.side} />}
+        </div>
       </TableCell>
     </TableRow>
   );

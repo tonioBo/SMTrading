@@ -93,6 +93,26 @@ describe("Positions", () => {
     expect(screen.getByText("1 copre parziale")).toBeInTheDocument();
   });
 
+  it("shows the extended-hours price and the gap-risk badge below the stop", async () => {
+    current = {
+      ...body,
+      positions: [
+        pos({ extended: { session: "post", price: "240", change_pct_vs_close: "-8.54", ts: "2026-11-16T21:45:00Z" }, extended_beyond_stop: true }),
+        pos({ portfolio_id: "p2", portfolio_name: "Prudente", symbol: "MSFT", extended: { session: "pre", price: "263", change_pct_vs_close: "0.23", ts: "2026-11-17T12:00:00Z" }, extended_beyond_stop: false }),
+      ],
+    };
+    renderApp("/posizioni");
+    const agg = await screen.findByRole("table", { name: "Posizioni Portafoglio Aggressivo" });
+    const row = within(agg).getAllByRole("row")[1];
+    expect(within(row).getByText(/^fuori orario/)).toHaveTextContent("fuori orario 240,00 $ (-8,5%)");
+    expect(within(row).getByText("⚠ sotto lo stop fuori orario: rischio gap all'apertura")).toBeInTheDocument();
+    expect(within(row).getByText("262,40 $")).toBeInTheDocument(); // the regular price is unchanged
+    const pru = screen.getByRole("table", { name: "Posizioni Prudente" });
+    const msft = within(pru).getAllByRole("row")[1];
+    expect(within(msft).getByText(/^fuori orario/)).toHaveTextContent("fuori orario 263,00 $ (+0,2%)");
+    expect(within(msft).queryByText(/rischio gap/)).toBeNull();
+  });
+
   it("shows the empty state", async () => {
     current = { as_of: "2026-11-16T21:00:00Z", positions: [], portfolios: [] };
     renderApp("/posizioni");

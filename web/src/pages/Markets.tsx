@@ -17,6 +17,7 @@ import {
 import type { AssetClass, Instrument, InstrumentCreate, MarketClosure, MarketClosureCreate, MarketClosureKind, MarketStatus, Quote, TrackSource } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
+import { ExtendedQuoteLine } from "@/components/ExtendedHours";
 import { FormField, selectClass } from "@/components/FormField";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
@@ -362,6 +363,11 @@ function QuotesSection({ tracked }: { tracked: string[] }) {
     const base = snap && !("error" in snap) ? snap : null;
     return live[s] ?? base;
   });
+  // the live feed carries no extended-hours price: it comes from the snapshot only
+  const extended = symbols.map((s) => {
+    const snap = snapshot.data?.[s];
+    return snap && !("error" in snap) ? snap.extended : null;
+  });
   const price = (v: string | null | undefined) => (v ? formatQty(v) : "—");
   return (
     <Card className="mt-6">
@@ -391,6 +397,7 @@ function QuotesSection({ tracked }: { tracked: string[] }) {
                     "—"
                   )}
                 </div>
+                <ExtendedQuoteLine ext={extended[i]} />
                 <div className="num text-xs text-muted">
                   Bid {price(quotes[i]?.bid)} · Ask {price(quotes[i]?.ask)}
                 </div>
