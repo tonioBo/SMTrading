@@ -35,7 +35,7 @@ per symbol: when listed goals on the same index have different periods, the one 
 period starts latest gives it (the client rebases each series to the range start).
 Admin-only data: never reaches the agents."""
 
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 from uuid import UUID
@@ -177,7 +177,7 @@ async def _goals(session: AsyncSession, now: datetime,
     goal = await load_weekly_goal(session)
     if not goal.on:
         return None, {}
-    week_start = datetime.combine(week_monday(now, zone), time(0), tzinfo=zone).astimezone(UTC)
+    week_start = local_midnight(week_monday(now, zone), zone)
     return goal.pct, {
         w.portfolio_id: {
             "week_start": week_start, "base_eur": _eur(w.start),
