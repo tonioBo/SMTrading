@@ -7,7 +7,7 @@ import { StatusBadge, type StatusTone } from "@/components/StatusBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatDateTime, formatDecimal, formatQty } from "@/lib/format";
-import { DIRECTION_LABELS } from "@/lib/signals";
+import { DIRECTION_LABELS, STRATEGY_LABELS } from "@/lib/signals";
 
 const STATUS_TONE = { ok: "ok", "dati incompleti": "warn", "non supportata": "neutral" } as const satisfies Record<string, StatusTone>;
 
@@ -23,16 +23,32 @@ function paramsText(params: Record<string, unknown>): string {
   return entries.length === 0 ? "—" : entries.map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : String(v)}`).join(", ");
 }
 
-/** «uscita: RSI 2 sopra 70 · attuale 8,0» (RSI with one decimal, prices like the table). */
+/** Rules whose threshold is a parameter already written in the rule (RSI, ROC levels). */
+const LEVEL_RULES = new Set(["rsi_reversion", "momentum"]);
+
+/** «uscita: RSI 2 sopra 70 · attuale 8,0» (RSI / ROC with one decimal, prices like the table). */
 function exitText(type: string | null, s: SignalSymbol): string | null {
   if (!s.position || !s.exit) return null;
-  const current = type === "rsi_reversion" ? formatDecimal(s.exit.value, 1) : value(s.exit.value);
-  const threshold = type === "rsi_reversion" ? "" : ` (${value(s.exit.threshold)})`;
+  const level = type != null && LEVEL_RULES.has(type);
+  const current = level ? formatDecimal(s.exit.value, 1) : value(s.exit.value);
+  const threshold = level ? "" : ` (${value(s.exit.threshold)})`;
   return `uscita: ${s.exit.rule}${threshold} · attuale ${current}`;
+}
+
+/** «filtro: Chiusura sopra SMA 200 (183,20) · attuale 190,00 · ok», «filtro: ATR 14 al
+ * massimo 3% del prezzo · attuale 4,20% · blocca l'ingresso» per entry filter. */
+function filterTexts(s: SignalSymbol): { text: string; passed: boolean }[] {
+  return (s.filters ?? []).map((f) => {
+    const pct = f.rule.startsWith("ATR");
+    const threshold = pct ? "" : ` (${value(f.threshold)})`;
+    const current = pct ? (f.value == null || f.value === "" ? "—" : `${formatDecimal(f.value, 2)}%`) : value(f.value);
+    return { text: `filtro: ${f.rule}${threshold} · attuale ${current} · ${f.passed ? "ok" : "blocca l'ingresso"}`, passed: f.passed };
+  });
 }
 
 function SymbolRow({ s, type }: { s: SignalSymbol; type: string | null }) {
   const exit = exitText(type, s);
+  const filters = filterTexts(s);
   return (
     <TableRow>
       <TableCell className="font-medium">{s.symbol}</TableCell>
@@ -44,7 +60,12 @@ function SymbolRow({ s, type }: { s: SignalSymbol; type: string | null }) {
       <TableCell className="num text-right">{value(s.distance)}</TableCell>
       <TableCell>
         <div className="flex flex-col items-start gap-1">
-          <SignalBadge s={s} />
+          <SignalBadge s={s} type={type} />
+          {filters.map((f) => (
+            <span key={f.text} className={`num whitespace-nowrap text-xs ${f.passed ? "text-muted" : "text-warn"}`}>
+              {f.text}
+            </span>
+          ))}
           {exit && (
             <div className="flex flex-wrap items-center gap-1">
               <span className="num whitespace-nowrap text-xs text-muted">{exit}</span>
@@ -64,7 +85,9 @@ function StrategyBlock({ strategy }: { strategy: StrategySignal }) {
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="num font-semibold">{strategy.ref}</span>
         <span>{strategy.name}</span>
-        <span className="text-muted">{strategy.type ?? "—"}</span>
+        <span className="text-muted" title={strategy.type ?? undefined}>
+          {strategy.type == null ? "—" : (STRATEGY_LABELS[strategy.type] ?? strategy.type)}
+        </span>
         <span className="num text-muted">{paramsText(strategy.params)}</span>
         <StatusBadge tone="neutral">{strategy.timeframe ?? "—"}</StatusBadge>
         {strategy.status !== "ok" && <StatusBadge tone={STATUS_TONE[strategy.status] ?? "neutral"}>{strategy.status}</StatusBadge>}

@@ -8,6 +8,7 @@ const SIGNAL_TONE: Record<SignalTone, StatusTone> = {
   pending: "info",
   now: "ok",
   closed: "ok",
+  blocked: "warn",
   near: "warn",
   above: "neutral",
   far: "neutral",
@@ -16,8 +17,8 @@ const SIGNAL_TONE: Record<SignalTone, StatusTone> = {
 const EXIT_TONE: Record<ExitTone, StatusTone> = { fires: "danger", near: "warn" };
 
 /** The entry status of a signal row («Segnali», dashboard). */
-export function SignalBadge({ s }: { s: SignalSymbol }) {
-  const b = signalBadge(s);
+export function SignalBadge({ s, type }: { s: SignalSymbol; type?: string | null }) {
+  const b = signalBadge(s, type);
   return (
     <StatusBadge tone={SIGNAL_TONE[b.tone]} title={s.position ? `${formatQty(s.position.qty)} @ ${formatQty(s.position.avg_price)}` : undefined}>
       {`${b.icon} ${b.label}`}

@@ -54,6 +54,23 @@ describe("signalBadge", () => {
     expect(signalBadge(row({ ...cross, distance: "-4", triggered_now: true })).label).toBe("scatterebbe ora");
   });
 
+  it("past the threshold but an entry filter does not pass: «bloccato dal filtro»", () => {
+    const sma = { rule: "Chiusura sopra SMA 5", value: "15", threshold: "17", passed: false };
+    expect(signalBadge(row({ distance: "-30", filters: [sma] }))).toMatchObject({
+      tone: "blocked", icon: "⛔", label: "soglia raggiunta · bloccato dal filtro",
+    });
+    // not yet at the threshold: the usual near / far; a passing filter changes nothing
+    expect(signalBadge(row({ distance: "6", filters: [sma] })).label).toBe("vicino");
+    expect(signalBadge(row({ distance: "-30", filters: [{ ...sma, passed: true }] })).label).toBe("lontano");
+  });
+
+  it("momentum: near within 2 ROC points of the band, whatever the threshold", () => {
+    const roc = { direction: "above" as const, threshold: "0", indicator: "ROC 63" };
+    expect(signalBadge(row({ ...roc, distance: "1.5" }), "momentum").label).toBe("vicino");
+    expect(signalBadge(row({ ...roc, distance: "2.5" }), "momentum").label).toBe("lontano");
+    expect(signalBadge(row({ ...roc, distance: "1.5" })).label).toBe("lontano"); // 20% of 0
+  });
+
   it("far when the distance is unknown", () => {
     expect(signalBadge(row({ distance: "" })).label).toBe("lontano");
     expect(signalBadge(row({ distance: "n/d" })).label).toBe("lontano");
@@ -78,6 +95,15 @@ describe("exitBadge", () => {
     const price = { rule: "SMA 2 sotto SMA 5", value: "102", threshold: "100" };
     expect(exitBadge("sma_cross", exit({ ...price, distance: "2" }))?.label).toBe("uscita vicina");
     expect(exitBadge("breakout", exit({ ...price, distance: "2.5" }))).toBeNull();
+  });
+
+  it("momentum: near within 2 ROC points; donchian like the price rules", () => {
+    const roc = { rule: "ROC 63 sotto 0", value: "1.5", threshold: "0" };
+    expect(exitBadge("momentum", exit({ ...roc, distance: "1.5" }))?.label).toBe("uscita vicina");
+    expect(exitBadge("momentum", exit({ ...roc, distance: "2.5" }))).toBeNull();
+    const stop = { rule: "Chiusura sotto stop 2 × ATR 14", value: "102", threshold: "100" };
+    expect(exitBadge("donchian", exit({ ...stop, distance: "2" }))?.label).toBe("uscita vicina");
+    expect(exitBadge("donchian", exit({ ...stop, distance: "-1", triggered: true }))?.label).toBe("uscita scatterebbe");
   });
 
   it("nothing without an exit", () => {
@@ -118,7 +144,7 @@ describe("closestSignals", () => {
   it("fired first, then by distance relative to the «vicino» band; no position, pending, already-above or unknown", () => {
     const top = closestSignals(resp, 5);
     expect(top.map((t) => t.symbol.symbol)).toEqual(["NOW", "NEAR1", "CROSS", "NEAR2", "FAR"]);
-    expect(top[0]).toMatchObject({ portfolioId: "p2", portfolioName: "Beta", ref: "S2" });
+    expect(top[0]).toMatchObject({ portfolioId: "p2", portfolioName: "Beta", ref: "S2", type: "rsi_reversion" });
     expect(closestSignals(resp, 2)).toHaveLength(2);
     expect(closestSignals(undefined, 5)).toEqual([]);
   });

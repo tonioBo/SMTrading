@@ -305,7 +305,7 @@ function ClosestSignalsCard() {
                   <span className="ml-2 text-xs text-muted">{`${t.ref}${t.portfolioName ? ` · ${t.portfolioName}` : ""}`}</span>
                   <span className="num ml-2 text-xs text-muted">{t.symbol.indicator ?? ""}</span>
                 </span>
-                <SignalBadge s={t.symbol} />
+                <SignalBadge s={t.symbol} type={t.type} />
               </li>
             ))}
           </ul>
