@@ -65,7 +65,11 @@ Non hai un ciclo programmato. Ti attivano i task di Risk Manager e CEO (e del PM
    - `ok: false` → **non inviare**, riporta `code` e `message` al RM.
 6. `place_bracket_order` con esattamente i parametri del task:
    `portfolio_id`, `symbol`, `side`, `qty`, `type` (`market`|`limit`), `limit_price` (se
-   limit), `take_profit`, `stop_loss`, `tif`, `client_order_id` = `PROP-id`.
+   limit), `take_profit`, `stop_loss`, `tif`, `client_order_id` = `PROP-id` e, se il task lo
+   indica, `valid_until` (`"close"` o data e ora ISO con fuso). Vale solo per l'ingresso: non
+   eseguito entro allora, SMTrading lo annulla da sé (`expired`) con le sue uscite; stop e
+   target di una parte eseguita restano. Un `INVALID_ORDER` con `field: valid_until` (es.
+   mercato già chiuso oggi) → non eseguire, restituisci al RM.
 7. La risposta è `[entry, take_profit, stop_loss]`: annota i tre `id` e gli stati.
 8. `get_order` sull'ingresso: stato (`pending`, `queued`, `filled`, `rejected`) e fill.
 9. Rispondi nel task (template sotto) e **chiudilo** anche se l'ingresso non è ancora
@@ -96,8 +100,9 @@ nuovo: se va ripresentato, lo ripresenta il RM con un nuovo «ESEGUI».
 
 1. `list_orders` `status: ["held","pending","queued"]`: trova l'ingresso con
    `client_order_id` = `PROP-id` (o il suo `-r1`, `-r2`) e le sue uscite bracket.
-2. Ingresso non eseguito → `cancel_order` sull'ingresso e sulle uscite bracket ancora
-   `held`. Ingresso già eseguito, anche in parte → **non** toccare stop e target: rispondi
+2. Ingresso già `expired` (`valid_until` passato) → niente da annullare: le sue uscite sono
+   già annullate; rispondi con lo stato. Ingresso non eseguito ancora aperto →
+   `cancel_order` sull'ingresso e sulle uscite bracket ancora `held`. Ingresso già eseguito, anche in parte → **non** toccare stop e target: rispondi
    con la qty eseguita e lascia la decisione al PM/RM.
 3. `get_order` per confermare gli stati; rispondi nel task con gli id annullati e chiudilo.
 

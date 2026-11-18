@@ -20,7 +20,7 @@ Legenda: **O** = obbligatorio (anche se non è successo nulla) · **C** = condiz
 | lun-ven 09:00-22:00 ogni ora :00 | Sentinella rischio (oraria) | RM | `03` «Ciclo programmato (sentinella)» | **O** una riga per portafoglio; task solo se serve (sotto) |
 | lun-ven 09:05-21:05 ogni ora :05 | Sentinella portafogli (oraria) | PM | `02` «Ciclo programmato (sentinella)» | **O** controllo ingressi in attesa (ANNULLA se scaduti); «Nessuna novità» o proposte; alle 09:05 controllo BUONGIORNO |
 | lun-ven 15:35 | Sentinella portafogli (oraria), 2° cron | PM | `02` sentinella, punto 6 (apertura USA) | giro opportunità; ANALISI se c'è uno slot libero |
-| lun-ven 17:05-17:30, 21:05-22:00 | (i cicli PM che cadono nelle finestre) | PM | `02` sentinella, punto 7 | controllo barra in formazione; PROPOSTA se il segnale scatta |
+| lun-ven 17:05-17:30, 21:05-22:00 | (i cicli PM che cadono nelle finestre) | PM | `02` sentinella, punto 7 | controllo barra in formazione; PROPOSTA se il segnale scatta, con `valid_until: "close"` |
 | lun-ven 10-22 ogni 2 ore | Scansione notizie (ogni 2 ore) | NA | `06` «Scansione rapida» | «Nessuna notizia materiale» o task NOTIZIA |
 | lun-ven 22:15 | Chiusura USA (serale) | PM | `02` «Ciclo Chiusura USA (serale)» | «Nessun segnale alla chiusura» o PROPOSTA per l'apertura successiva |
 | sab-dom 10, 13, 16, 19, 22 | Sentinella rischio (weekend, crypto) | RM | `03` sentinella | come la sentinella feriale, solo crypto |
@@ -73,7 +73,7 @@ Borse dei portafogli tutte chiuse (festività) o weekend → niente AGENDA, nien
 | 8 | Allocazione mancante | PM | CEO | task «ALLOCAZIONE · <COD>»; `log_decision` allocation (proposta) | C | `log_decision` allocation | CEO risponde con l'esito e chiude |
 | 9 | Sentinella 09:05/15:35, slot libero | PM | MA | task «ANALISI · <COD> · <simboli o tema>» | C | analisi (max 10 simboli) | MA risponde nel task e chiude; PM legge al ciclo dopo |
 | 10 | Segnale valido (sentinella, finestre pre-chiusura, 22:15, ANALISI, NOTIZIA) | PM | RM | task «PROPOSTA <PROP-id> · <COD> · <SIMBOLO> · <buy\|sell>»; `log_decision` proposal | C | checklist, `log_decision` approval/veto, poi #11 o #12 | RM risponde e chiude PROPOSTA |
-| 11 | Proposta approvata | RM | ES | task «ESEGUI <PROP-id> · <COD> · <SIMBOLO> · <lato>» | C | `preview_order`, `place_bracket_order` | ES risponde «ESITO …» e chiude sempre, anche «in attesa (order_id …)» |
+| 11 | Proposta approvata | RM | ES | task «ESEGUI <PROP-id> · <COD> · <SIMBOLO> · <lato>» (con `valid_until` se la proposta lo ha; RM lo aggiunge, `"close"`, alle proposte pre-chiusura) | C | `preview_order`, `place_bracket_order` (`valid_until` incluso) | ES risponde «ESITO …» e chiude sempre, anche «in attesa (order_id …)» |
 | 12 | Veto | RM | PM | task «VETO <PROP-id>» | C | corregge (`-v2`, nuova PROPOSTA) o rinuncia; 2° veto → #22 | PM risponde e chiude |
 | 13 | Chiusura discrezionale | PM | RM | task «CHIUSURA · <COD> · <SIMBOLO> · <qty>» | C | `log_decision` approval, #14 | RM risponde e chiude |
 | 14 | Chiusura / protezione / intraday all'ultimo ciclo / margine | RM | ES | task «CHIUDI · <COD> · <SIMBOLO>» o «PROTEGGI · <nome portafoglio> · <simbolo>» | C | `close_position` / `place_oco_order` | ES risponde e chiude |
@@ -96,7 +96,8 @@ Borse dei portafogli tutte chiuse (festività) o weekend → niente AGENDA, nien
 | 30 | Scostamento reale vs backtest | PA | QR | task «RIVEDI STRATEGIA <STR-id> · <COD>» | C | backtest sui dati recenti; se cambia: nuovo «APPROVA STRATEGIA …» al CEO (#6) | QR risponde «confermata» o «da rivedere/sospendere» (menziona il CEO) e chiude |
 | 31 | Routine venerdì 17:00 | CEO | NOT | report nel task della Routine + task «NOTIFICA · revisione settimanale · ALL» | **O** ogni venerdì | `send_telegram` info | NOT chiude; CEO chiude la Routine |
 | 32 | Proposta 22:15 | PM | RM | «PROPOSTA …» con validità all'apertura successiva | C | al primo ciclo RM (09:00, nel weekend crypto 10:00) | come #10 |
-| 33 | Ingresso non eseguito che non vale più (segnale sparito alle 22:15, validità scaduta in sentinella) | PM | ES (copia RM, informativa) | task «ANNULLA <PROP-id>»; `log_decision` other | C | `cancel_order` su ingresso e uscite bracket; se già eseguito non tocca stop/target | ES risponde con gli id annullati e chiude |
+| 33 | Ingresso non eseguito che non vale più (segnale sparito alle 22:15, validità scaduta in sentinella) | PM | ES (copia RM, informativa) | task «ANNULLA <PROP-id>»; `log_decision` other | C, solo se l'ingresso è ancora aperto (con `valid_until: "close"` SMTrading lo ha già reso `expired`: ANNULLA non serve) | `cancel_order` su ingresso e uscite bracket; se già eseguito non tocca stop/target | ES risponde con gli id annullati e chiude |
+| 34 | `valid_until` dell'ingresso passato senza esecuzione | SMTrading | PM (feed) | ingresso `expired`, uscite bracket annullate; `order.expired` nel feed; parte già eseguita: stop e target restano sulla qty eseguita | **O** | nessuna azione; il PM ne tiene conto al ciclo successivo | — |
 ## 5. Decisioni (18/11)
 
 Le 12 questioni aperte trovate nell'audit, decise dal titolare il 18/11 e applicate nei file:
@@ -107,7 +108,9 @@ Le 12 questioni aperte trovate nell'audit, decise dal titolare il 18/11 e applic
    <obiettivo>» al PM; il CEO è menzionato e rivede, non scrive al PM (`01`, `02`, `03`).
 3. **Ingresso non eseguito con segnale sparito:** il PM al ciclo delle 22:15 crea «ANNULLA
    <PROP-id>» all'ES; l'ES annulla l'ingresso e le sue uscite bracket, risponde con gli id e
-   chiude (`02`, `04`).
+   chiude (`02`, `04`). Dal 18/11 (piano 16) gli ingressi preparati nelle finestre
+   pre-chiusura hanno `valid_until: "close"` e SMTrading li annulla da sé alla chiusura
+   (`expired`): l'ANNULLA delle 22:15 resta solo come riserva (`02`, `03`, `04`).
 4. **ESEGUI in attesa:** l'ES risponde «in attesa (order_id …)» e chiude; il PM ricontrolla gli
    ingressi in attesa a ogni sentinella e, se non valgono più, usa «ANNULLA» (`02`, `04`).
 5. **RIVEDI STRATEGIA** (PA → Quant): il Quant rifà il backtest sui dati recenti; se cambia,

@@ -82,7 +82,10 @@ Il controllo dei limiti si fa **sempre** (non si salta anche senza novità), ma 
 4. `get_instrument` del simbolo: mercato consentito, `lot_size`, `shortable`.
 5. `get_quote` (+ `get_indicators` `atr` 14 sul timeframe della proposta): la proposta è
    ancora attuale (prezzo e orario entro la validità indicata dal PM)? Stop e target dal lato
-   giusto?
+   giusto? **`valid_until`**: una proposta preparata in una finestra pre-chiusura (17:05–17:30,
+   21:05–22:00, su barra in formazione) deve avere `valid_until: "close"`; se manca, mettilo
+   tu nell'ESEGUI (e scrivilo nella risposta). Sulle crypto `"close"` non esiste: data e ora
+   o nessuno.
 6. `get_positions`: peso della posizione dopo l'ingresso ≤ `max_position_pct`.
 7. `preview_order` con gli stessi `side`, `type`, `qty`, `limit_price`: deve dare `ok: true`.
 8. `get_earnings_calendar` sul simbolo: valuta il rischio eventi societari.
@@ -204,7 +207,8 @@ Campi:
 - portfolio_id: ...
 - ordine: place_bracket_order
   symbol "...", side "...", qty "...", type "market|limit", limit_price "...",
-  stop_loss "...", take_profit "...", tif "gtc|day", client_order_id "<PROP-id>"
+  stop_loss "...", take_profit "...", tif "gtc|day", client_order_id "<PROP-id>",
+  valid_until "close|<data e ora ISO con fuso>" (se presente nella proposta)
 - decision_id proposta: ...   decision_id approvazione: ...
 - validità: fino alle HH:MM, prezzo entro ... – ...
 - intraday: sì/no (se sì: chiudere entro HH:MM)

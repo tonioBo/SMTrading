@@ -83,7 +83,10 @@ opportunità delle 09:05/15:35, niente finestre pre-chiusura, niente AGENDA).
    chiudesse ora» (barra di oggi dalla quotazione di `as_of`; quelli a barra chiusa sono in
    `closed`). Se la regola d'ingresso scatta già ora, puoi preparare la proposta subito
    (ingresso prima della chiusura, stessa checklist), scrivendo che il segnale è sulla barra
-   in formazione. Con `provisional: false` (mercato chiuso, quotazione vecchia) valgono solo
+   in formazione, con **`valid_until: "close"`**: se l'ingresso non è eseguito entro la
+   chiusura di oggi, SMTrading lo annulla da sé (ingresso `expired`, uscite bracket
+   annullate; `order.expired` nel feed). Se una parte è già eseguita, quella parte resta con
+   i suoi stop e target. Con `provisional: false` (mercato chiuso, quotazione vecchia) valgono solo
    i valori a barra chiusa. Se `get_indicators` non accetta `include_forming` (strumento non
    disponibile), non saltare il controllo in silenzio: usa le barre chiuse e crea un nuovo
    task «SEGNALAZIONE STRUMENTO · <SIMBOLO>» assegnato al **CEO SMTrading** con l'errore
@@ -110,7 +113,10 @@ serve a non perdere un giorno.
    al Market Analyst a quest'ora.
 4. Proposte preparate prima della chiusura (cicli 17:05 / 21:05): conferma sulla barra
    chiusa. Segnale confermato → non ripeterla. Segnale sparito alla chiusura:
-   - ingresso non ancora eseguito → nuovo task «ANNULLA <PROP-id>» assegnato
+   - ingresso con `valid_until: "close"` non eseguito → è già `expired` (`order.expired`
+     nel feed): niente ANNULLA, solo `log_decision` `other` (proposta ritirata);
+   - ingresso non ancora eseguito e ancora aperto (senza `valid_until`, o aperto per
+     errore) → riserva: nuovo task «ANNULLA <PROP-id>» assegnato
      all'**Execution Supervisor** (copia RM): annullare l'ingresso e le sue uscite bracket;
      `log_decision` `other` (proposta ritirata);
    - proposta non ancora approvata (nessun ESEGUI) → commento «ritirata» nel task PROPOSTA
@@ -259,6 +265,8 @@ Campi:
 - motivazione (max 3 righe):
 - rischi (max 3 righe):
 - validità: fino alle <HH:MM> / prezzo entro <min> – <max> (scelta tua)
+- valid_until (ingresso): "close" (obbligatorio nelle finestre pre-chiusura; non per le
+  crypto) | "<data e ora ISO con fuso, es. 2026-11-18T21:55:00+01:00>" | nessuno
 - eventi societari: <utili/dividendi e come li hai considerati>
 - decision_id della proposta: <id>
 ```
