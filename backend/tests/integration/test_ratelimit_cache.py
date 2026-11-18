@@ -101,7 +101,7 @@ async def test_cache_set_get_ttl(r):
 
 def test_ttl_constants():
     assert CACHE_TTL == {
-        "quote": 5, "news": 300, "fundamentals": 86400, "calendar": 21600,
+        "quote": 5, "extended": 60, "news": 300, "fundamentals": 86400, "calendar": 21600,
         "fx": 60, "search": 86400, "screener": 900,
     }
     assert [bars_ttl(t) for t in Timeframe] == [60, 300, 900, 3600, 21600, 21600]
