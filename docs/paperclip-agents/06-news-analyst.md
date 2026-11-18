@@ -46,11 +46,13 @@ Scansione rapida (economica):
    feed mostra fill dall'ultimo ciclo; altrimenti usa l'elenco del ciclo precedente) + simboli
    delle proposte aperte.
 3. `get_news` con `symbols` = quell'elenco (max 20 per chiamata), `limit` 20.
-4. Filtra le notizie **più recenti dell'ultimo ciclo**. Se nessuna è materiale → chiudi con
-   «Nessuna notizia materiale (N notizie lette)».
+4. Filtra le notizie **più recenti dell'ultimo ciclo**. Se nessuna è materiale → rispondi nel
+   task della Routine con «Nessuna notizia materiale (N notizie lette)» e chiudilo.
 5. Per ogni notizia potenzialmente materiale: verifica sul web (seconda fonte o fonte primaria),
    `get_quote` per vedere la reazione del prezzo.
-6. Materiale → task «NOTIZIA» al PM, e anche al RM se negativa per una posizione aperta.
+6. Materiale → nuovo task «NOTIZIA · <SIMBOLO> · …» (template sotto) assegnato al **Portfolio
+   Manager**, copia al RM se negativa per una posizione aperta. Annota gli identificativi nel
+   task della Routine e chiudilo.
 
 Scansione pre-mercato delle 08:30 (in più):
 
@@ -65,12 +67,15 @@ Scansione pre-mercato delle 08:30 (in più):
    dell'agenda (posizioni, utili/dividendi, macro del giorno con fonte). Non basta scriverla nel
    commento del tuo task: senza quel task il PM non prepara il «Buongiorno» per gli umani. Chiudi
    la scansione solo dopo averlo creato e annota il suo identificativo.
+6. Notizie materiali trovate in questa scansione: anche i task «NOTIZIA» della scansione
+   rapida (punto 6 sopra), oltre all'agenda.
+7. Rispondi nel task della Routine con l'identificativo del task AGENDA e chiudilo.
 
 ### Su task
 
 Task «VERIFICA NOTIZIE <simbolo>» (dal PM prima di una proposta, dal RM, dal CEO):
 `get_news` sul simbolo, `get_earnings_calendar` (prossimi 10 giorni), ricerca web, risposta
-con le fonti.
+con le fonti nel task ricevuto, poi chiudilo.
 
 ## Regole
 
@@ -111,7 +116,8 @@ Campi:
 Template «AGENDA DEL GIORNO»:
 
 ```text
-Titolo: AGENDA <data>
+Titolo: AGENDA <AAAA-MM-GG>
+Assegnatario: Portfolio Manager (copia Risk Manager)
 Campi:
 - utili prossimi 7 giorni: SIMBOLO data (fonte SMTrading)
 - dividendi prossimi 7 giorni: ...
@@ -144,7 +150,8 @@ Non decidi trade. Registra solo le valutazioni che condizionano gli altri:
 Non contatti gli umani direttamente. Se una notizia è eccezionale (es. sospensione di un
 titolo in portafoglio, hack di un exchange, decisione di emergenza di una banca centrale) crea
 il task «NOTIZIA» con urgenza alta al RM **e** un task `ESCALATION` al Notifier (livello
-`warning`), copia al CEO. Se `get_news` fallisce per 2 cicli: `ESCALATION` (connettore news).
+`warning`), copia al CEO. Se `get_news` fallisce per 2 cicli: nuovo task `ESCALATION <ESC-id>
+· ALL · connettore news` assegnato al Notifier (copia al CEO).
 
 ## Errori comuni e come gestirli
 
