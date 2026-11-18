@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useAgentCosts } from "@/api/hooks/paperclip";
-import type { AgentCostPeriod, AgentCostRow, AgentCosts as AgentCostsData } from "@/api/types";
+import type { AgentCostMonth, AgentCostPeriod, AgentCostRow, AgentCosts as AgentCostsData } from "@/api/types";
 import { DataTable, type Column } from "@/components/DataTable";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatDateTime, formatPct } from "@/lib/format";
+import { formatDateTime, formatDecimal, formatPct } from "@/lib/format";
 import { formatUsd } from "@/lib/paperclip";
 
 const PERIODS: { value: AgentCostPeriod; label: string }[] = [
@@ -84,6 +84,84 @@ const unmatchedColumns: Column<Unmatched>[] = [
   { key: "other", header: "Altro ($)", align: "right", sortValue: (r) => num(r.other_usd), cell: (r) => <Usd value={r.other_usd} /> },
 ];
 
+const pctText = (v: string) => `${formatDecimal(v, 1)}%`;
+const MONTHS = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"];
+
+function monthName(key: string): string {
+  const [y, m] = key.split("-").map(Number);
+  return `${MONTHS[m - 1] ?? key} ${y}`;
+}
+
+/** The current month against the budget: spend so far, daily average, projection, shares. */
+function MonthCard({ month }: { month: AgentCostMonth }) {
+  const over = month.budget_usd != null && Number(month.projected_usd) > Number(month.budget_usd);
+  const near = month.spent_pct != null && Number(month.spent_pct) >= 80;
+  return (
+    <Card role="region" aria-label="Mese in corso">
+      <CardHeader>
+        <CardTitle>Mese in corso · {monthName(month.month)}</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <div>
+            <dt className="text-muted">Speso finora</dt>
+            <dd className={`num text-lg font-medium ${near ? "text-loss" : ""}`}>
+              <Usd value={month.spent_usd} />
+              {month.spent_pct != null && <span className="ml-1 text-xs text-muted">({pctText(month.spent_pct)} del budget)</span>}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-muted">Media giornaliera</dt>
+            <dd className="num text-lg font-medium">
+              <Usd value={month.daily_avg_usd} />
+              <span className="ml-1 text-xs text-muted">
+                ({month.days_elapsed} di {month.days_in_month} giorni)
+              </span>
+            </dd>
+          </div>
+          <div>
+            <dt className="text-muted">Proiezione a fine mese</dt>
+            <dd className={`num text-lg font-medium ${over ? "text-loss" : ""}`}>
+              <Usd value={month.projected_usd} />
+              {month.projected_pct != null && <span className="ml-1 text-xs text-muted">({pctText(month.projected_pct)} del budget)</span>}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-muted">Budget mensile</dt>
+            <dd className="num text-lg font-medium">
+              {month.budget_usd == null ? "—" : <Usd value={month.budget_usd} />}
+              <span className="ml-1 text-xs text-muted">
+                {month.budget_source === "paperclip" ? "(da Paperclip)" : month.budget_source === "settings" ? "(da Impostazioni)" : "(non impostato)"}
+              </span>
+            </dd>
+          </div>
+        </dl>
+        {over && (
+          <p role="alert" className="text-loss">
+            A questo ritmo il mese chiude oltre il budget.
+          </p>
+        )}
+        {month.shares.length > 0 && (
+          <ul aria-label="Quota per agente" className="space-y-1">
+            {month.shares.map((s) => (
+              <li key={`${s.agent_id ?? ""}-${s.name}`} className="flex items-center gap-2">
+                <span className="w-40 truncate">{s.name}</span>
+                <span className="h-2 flex-1 rounded bg-border/40">
+                  <span className="block h-2 rounded bg-accent" style={{ width: `${Math.min(100, Number(s.pct ?? 0))}%` }} />
+                </span>
+                <span className="num w-28 text-right">
+                  <Usd value={s.usd} /> · {s.pct == null ? "—" : pctText(s.pct)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="text-xs text-muted">Conta la spesa fatturata (a consumo API e altro); le esecuzioni incluse nell&apos;abbonamento non pesano sul budget.</p>
+      </CardContent>
+    </Card>
+  );
+}
+
 /** «Costi agenti»: what each agent cost in Paperclip (USD) next to what it did in SMTrading. */
 export default function AgentCosts() {
   const [period, setPeriod] = useState<AgentCostPeriod>("day");
@@ -109,6 +187,7 @@ export default function AgentCosts() {
         )}
       </p>
       {isError && <p className="text-loss">Impossibile caricare i costi degli agenti</p>}
+      {data?.month && <MonthCard month={data.month} />}
       <Card>
         <CardContent className="pt-6">
           <DataTable aria-label="Costi per agente" columns={columns} rows={data?.agents} rowKey={(r) => r.agent_id} loading={isLoading} empty="Nessun agente" />

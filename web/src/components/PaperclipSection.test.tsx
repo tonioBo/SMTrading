@@ -28,6 +28,7 @@ function baseConfig(): PaperclipConfig {
     enabled: true,
     board_key_masked: "••••abcd",
     agent_map: {},
+    monthly_budget_usd: null,
     error: null,
   };
 }
@@ -129,6 +130,33 @@ describe("PaperclipSection", () => {
     await user.click(within(region).getByRole("button", { name: "Salva" }));
     await waitFor(() => expect(puts).toHaveLength(1));
     expect(puts[0]).toEqual({ base_url: "https://pc.example.org" });
+  });
+
+  it("monthly budget: saved when changed", async () => {
+    config = baseConfig();
+    status = baseStatus();
+    const user = userEvent.setup();
+    renderApp("/impostazioni");
+    const region = await section();
+    const budget = await within(region).findByLabelText("Budget mensile ($)");
+    await user.type(budget, "300");
+    await user.click(within(region).getByRole("button", { name: "Salva" }));
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ monthly_budget_usd: "300" });
+  });
+
+  it("monthly budget: emptied is sent as null", async () => {
+    config = { ...baseConfig(), monthly_budget_usd: "250" };
+    status = baseStatus();
+    const user = userEvent.setup();
+    renderApp("/impostazioni");
+    const region = await section();
+    const budget = await within(region).findByLabelText("Budget mensile ($)");
+    expect(budget).toHaveValue("250");
+    await user.clear(budget);
+    await user.click(within(region).getByRole("button", { name: "Salva" }));
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ monthly_budget_usd: null });
   });
 
   it("a new host asks for the board key again; the same host keeps it", async () => {
@@ -313,6 +341,8 @@ describe("PaperclipSection", () => {
     const region = await section();
     expect(await within(region).findByText("https://paperclip.example.com")).toBeInTheDocument();
     expect(within(region).getByText("••••abcd")).toBeInTheDocument();
+    expect(within(region).getByText("Budget mensile")).toBeInTheDocument();
+    expect(within(region).queryByLabelText("Budget mensile ($)")).toBeNull();
     expect(within(region).queryByRole("button", { name: "Salva" })).toBeNull();
     expect(within(region).queryByRole("button", { name: "Verifica" })).toBeNull();
     expect(within(region).queryByLabelText("Chiave board")).toBeNull();

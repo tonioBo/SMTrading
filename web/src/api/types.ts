@@ -1158,6 +1158,8 @@ export interface PaperclipConfig {
   board_key_masked: string | null;
   /** Paperclip agent id → SMTrading agent id */
   agent_map: Record<string, string>;
+  /** USD; used when the Paperclip company has no budget of its own (null = none) */
+  monthly_budget_usd: string | null;
   /** set when the stored key cannot be read: it must be entered again */
   error: string | null;
 }
@@ -1169,6 +1171,8 @@ export interface PaperclipConfigPatch {
   board_key?: string;
   enabled?: boolean;
   agent_map?: Record<string, string>;
+  /** null = no budget of our own */
+  monthly_budget_usd?: string | null;
 }
 
 export interface PaperclipVerifyResult {
@@ -1234,6 +1238,27 @@ export interface AgentCosts {
   last_read_at: string | null;
   agents: AgentCostRow[];
   unmatched: { paperclip_agent_id: string; name: string | null; api_usd: string; subscription_usd: string; other_usd: string }[];
+  /** the current month (whatever the period): billed spend = API + other, never the subscription */
+  month: AgentCostMonth;
+}
+
+export interface AgentCostMonth {
+  /** AAAA-MM */
+  month: string;
+  from: string;
+  to: string;
+  days_elapsed: number;
+  days_in_month: number;
+  spent_usd: string;
+  daily_avg_usd: string;
+  projected_usd: string;
+  /** null when there is no budget (neither the Paperclip company's nor the settings' one) */
+  budget_usd: string | null;
+  budget_source: "paperclip" | "settings" | null;
+  spent_pct: string | null;
+  projected_pct: string | null;
+  /** agent_id null = a Paperclip agent not matched to an SMTrading agent */
+  shares: { agent_id: string | null; name: string; usd: string; pct: string | null }[];
 }
 
 /** GET /api/signals: how close each approved strategy is to an entry (decimals as strings). */

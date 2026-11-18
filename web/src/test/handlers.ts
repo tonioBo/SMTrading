@@ -32,7 +32,7 @@ export const commonHandlers = [
     }),
   ),
   http.get("*/api/paperclip/config", () =>
-    HttpResponse.json({ base_url: null, company_id: null, enabled: false, board_key_masked: null, agent_map: {}, error: null }),
+    HttpResponse.json({ base_url: null, company_id: null, enabled: false, board_key_masked: null, agent_map: {}, monthly_budget_usd: null, error: null }),
   ),
   // Dashboard «Obiettivi»: no active goal unless a test overrides it
   http.get("*/api/goals/progress", () => HttpResponse.json([])),
