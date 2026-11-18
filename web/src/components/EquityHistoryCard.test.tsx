@@ -274,12 +274,12 @@ describe("EquityHistoryCard", () => {
       http.get("*/api/portfolios/equity-history", ({ request }) => {
         const qs = new URL(request.url).searchParams;
         requests.push(qs);
-        return HttpResponse.json(withGoals(qs.get("range") ?? "1m"));
+        return HttpResponse.json(withGoals("1w"));
       }),
     );
     renderCard();
     const legend = await screen.findByRole("list", { name: "Legenda" });
-    expect(requests[0].get("range")).toBe("1w");
+    expect(requests[0].get("range")).toBe("1d"); // the default range: one day
     expect(requests[0].has("portfolio_id")).toBe(false);
     expect(within(legend).getByText("Prudente")).toBeInTheDocument();
     expect(within(legend).getByText("-10,00 €")).toBeInTheDocument();

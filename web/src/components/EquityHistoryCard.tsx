@@ -34,7 +34,7 @@ const FORMAT: Record<Unit, { value: (v: number) => string; tick: (v: number, ste
  */
 export function EquityHistoryCard({ portfolioId }: { portfolioId?: string }) {
   const single = portfolioId != null;
-  const [range, setRange] = useState<EquityHistoryRange>("1w");
+  const [range, setRange] = useState<EquityHistoryRange>("1d");
   const [unit, setUnit] = useState<Unit>(single ? "eur" : "pct");
   const { data, isLoading, isError } = useEquityHistory(range, portfolioId);
   const lines = data ? historyLines(data, unit, single) : [];
