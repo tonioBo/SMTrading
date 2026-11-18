@@ -84,7 +84,7 @@ Il controllo dei limiti si fa **sempre** (non si salta anche senza novità), ma 
    ancora attuale (prezzo e orario entro la validità indicata dal PM)? Stop e target dal lato
    giusto? **`valid_until`**: una proposta preparata in una finestra pre-chiusura (17:05–17:30,
    21:05–22:00, su barra in formazione) deve avere `valid_until: "close"`; se manca, mettilo
-   tu nell'ESEGUI (e scrivilo nella risposta). Sulle crypto `"close"` non esiste: data e ora
+   tu nell'ESEGUI (e scrivilo nella risposta). Su crypto e FX `"close"` non esiste: data e ora
    o nessuno.
 6. `get_positions`: peso della posizione dopo l'ingresso ≤ `max_position_pct`.
 7. `preview_order` con gli stessi `side`, `type`, `qty`, `limit_price`: deve dare `ok: true`.

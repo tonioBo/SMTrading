@@ -177,7 +177,7 @@ def register(mcp: MCPServer) -> None:
         client_order_id returns the same order (or the same error). Needs trade.
         valid_until (optional): an ISO 8601 datetime with an offset (e.g.
         2026-11-18T21:55:00+01:00) or "close" (today's regular session close of the
-        market; not for crypto). Still unfilled then, the order is canceled and becomes
+        market; not for crypto or FX). Still unfilled then, the order is canceled and becomes
         expired; a part already filled stands."""
         params = {
             "portfolio_id": portfolio_id, "symbol": symbol, "side": side, "type": type,
@@ -210,7 +210,7 @@ def register(mcp: MCPServer) -> None:
         OCO group, both reduce_only and held until the entry fills. Returns
         [entry, take_profit, stop_loss]. For a buy: take_profit > entry > stop_loss.
         Needs trade. valid_until (optional, the entry only): an ISO 8601 datetime with an
-        offset or "close" (today's regular session close of the market; not for crypto).
+        offset or "close" (today's regular session close of the market; not for crypto or FX).
         An entry still unfilled then is canceled and becomes expired, with its exits; if
         part of it filled, the exits keep protecting that part with their own tif."""
         params = {

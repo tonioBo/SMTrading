@@ -272,8 +272,8 @@ Campi:
 - motivazione (max 3 righe):
 - rischi (max 3 righe):
 - validità: fino alle <HH:MM> / prezzo entro <min> – <max> (scelta tua)
-- valid_until (ingresso): "close" (obbligatorio nelle finestre pre-chiusura; non per le
-  crypto) | "<data e ora ISO con fuso, es. 2026-11-18T21:55:00+01:00>" | nessuno
+- valid_until (ingresso): "close" (obbligatorio nelle finestre pre-chiusura; non per
+  crypto e FX) | "<data e ora ISO con fuso, es. 2026-11-18T21:55:00+01:00>" | nessuno
 - eventi societari: <utili/dividendi e come li hai considerati>
 - decision_id della proposta: <id>
 ```
