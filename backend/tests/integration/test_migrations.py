@@ -554,3 +554,27 @@ async def test_0033_order_valid_until_round_trip(fresh_db):
     assert await query(column) == [] and await query(index) == [(None,)]
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
     assert await query(index) == [("ix_orders_open_valid_until",)]
+
+
+async def test_0035_plan_close_round_trip(fresh_db):
+    """0035: goals.closes_positions / plan_since and plan_closures; reversible."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    async def query(sql: str):
+        engine = make_engine(fresh_db)
+        async with engine.begin() as conn:
+            rows = (await conn.execute(text(sql))).all()
+        await engine.dispose()
+        return rows
+
+    column = ("select column_default from information_schema.columns"
+              " where table_name = 'goals' and column_name = 'closes_positions'")
+    table = "select to_regclass('plan_closures')::text"
+    assert await query(column) == [("false",)]
+    assert await query(table) == [("plan_closures",)]
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0034")
+    assert await query(column) == [] and await query(table) == [(None,)]
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    assert await query(table) == [("plan_closures",)]
