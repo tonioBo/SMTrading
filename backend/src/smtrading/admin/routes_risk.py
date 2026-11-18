@@ -37,6 +37,7 @@ from smtrading.common.money import decimal_to_str
 from smtrading.engine.service import set_kill_switch_and_cancel
 from smtrading.instruments.models import AssetClass
 from smtrading.mcp.dto import parse_decimal, parse_enum, to_jsonable
+from smtrading.paperclip import watchdog_settings
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.risk.models import AppSetting, InterestKind, InterestRate, RiskProfile
 from smtrading.risk.profiles import DEFAULT_RISK_PROFILE_NAME
@@ -45,7 +46,6 @@ from smtrading.risk.settings import (
     DEFAULT_STALE_QUOTE_S,
     is_kill_switch_on,
 )
-from smtrading.paperclip import watchdog_settings
 from smtrading.telegram import preopen_settings, weekly_goal
 
 router = APIRouter(prefix="/api", tags=["risk"], dependencies=[Depends(require_access)])
