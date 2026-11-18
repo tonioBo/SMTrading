@@ -620,6 +620,11 @@ export interface PreopenCheck {
   at: string;
 }
 
+/** Hand-off watchdog: Telegram warnings when a hand-off between agents is missing. */
+export interface HandoffWatchdog {
+  on: boolean;
+}
+
 export interface AppSettings {
   stale_quote_s: Record<string, number>;
   default_spread_bps: Record<string, number>;
@@ -627,6 +632,7 @@ export interface AppSettings {
   mcp_hide_mode: boolean;
   weekly_goal?: WeeklyGoal;
   preopen_check?: PreopenCheck;
+  handoff_watchdog?: HandoffWatchdog;
 }
 
 export interface Connector {

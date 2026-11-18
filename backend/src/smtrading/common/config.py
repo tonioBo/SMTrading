@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     agent_docs_dir: str | None = None
     # where the agents' AGENTS.md files for Paperclip's External mode are written
     agent_docs_export_dir: str = "/agent-instructions"
+    # the api health endpoint the worker waits for before its alerting jobs start
+    api_health_url: str = "http://api:8000/health"
 
 
 @lru_cache

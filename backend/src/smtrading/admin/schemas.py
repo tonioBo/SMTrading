@@ -226,9 +226,14 @@ class PreopenCheckIn(BaseModel):
     at: str | None = None  # HH:MM, local time
 
 
+class HandoffWatchdogIn(BaseModel):
+    on: StrictBool | None = None
+
+
 class AppSettingsIn(BaseModel):
     """Per asset class maps and the default timezone; absent fields are left unchanged,
-    a present map is merged class by class (and so are `weekly_goal`, `preopen_check`)."""
+    a present map is merged class by class (and so are `weekly_goal`, `preopen_check`,
+    `handoff_watchdog`)."""
 
     stale_quote_s: dict[str, StrictInt] | None = None
     default_spread_bps: dict[str, StrictInt] | None = None
@@ -236,6 +241,7 @@ class AppSettingsIn(BaseModel):
     mcp_hide_mode: StrictBool | None = None
     weekly_goal: WeeklyGoalIn | None = None
     preopen_check: PreopenCheckIn | None = None
+    handoff_watchdog: HandoffWatchdogIn | None = None
 
 
 class KillSwitchIn(BaseModel):

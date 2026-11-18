@@ -3,7 +3,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { useIsAdmin } from "@/api/hooks/auth";
 import { useSaveTelegramExtras } from "@/api/hooks/system";
-import type { PreopenCheck, WeeklyGoal } from "@/api/types";
+import type { HandoffWatchdog, PreopenCheck, WeeklyGoal } from "@/api/types";
 import { FormField } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,9 +12,17 @@ import { errorMessage } from "@/lib/errors";
 
 const checkboxClass = "h-4 w-4 accent-[rgb(var(--accent))]";
 
-/** «Messaggi Telegram»: the weekly goal of the summaries and the pre-open check. Admins
- * edit, viewers only read. Neither reaches the agents. */
-export function TelegramExtrasSection({ goal, preopen }: { goal: WeeklyGoal; preopen: PreopenCheck }) {
+/** «Messaggi Telegram»: the weekly goal of the summaries, the pre-open check and the
+ * hand-off watchdog. Admins edit, viewers only read. None reaches the agents. */
+export function TelegramExtrasSection({
+  goal,
+  preopen,
+  watchdog,
+}: {
+  goal: WeeklyGoal;
+  preopen: PreopenCheck;
+  watchdog?: HandoffWatchdog;
+}) {
   const admin = useIsAdmin();
   const save = useSaveTelegramExtras();
   const [pct, setPct] = useState(goal.pct);
@@ -98,6 +106,26 @@ export function TelegramExtrasSection({ goal, preopen }: { goal: WeeklyGoal; pre
           )}
           <p className="text-muted">Quotazioni, mercati del giorno, stato del sistema e blocchi, in un solo messaggio.</p>
         </section>
+        {watchdog && (
+          <section className="space-y-2" aria-label="Controllo dei passaggi">
+            <h3 className="font-medium">Controllo dei passaggi</h3>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                className={checkboxClass}
+                checked={watchdog.on}
+                disabled={!admin || save.isPending}
+                onChange={(e) => save.mutate({ handoff_watchdog: { on: e.target.checked } }, { onSuccess: saved })}
+              />
+              Avvisa su Telegram quando un passaggio tra agenti manca
+            </label>
+            <p className="text-muted">
+              Legge i task di Paperclip ogni 5 minuti: AGENDA entro le 08:50 e BUONGIORNO entro le 09:20 nei giorni di borsa, PROTEGGI e RISCHIO
+              OBIETTIVO senza risposta dopo 45 minuti, ESEGUI ancora aperti dopo 30 minuti a mercato aperto. Un avviso per passaggio al giorno;
+              serve il lettore Paperclip attivo.
+            </p>
+          </section>
+        )}
         {save.error && (
           <p role="alert" className="text-loss">
             {errorMessage(save.error)}

@@ -37,6 +37,7 @@ from smtrading.common.money import decimal_to_str
 from smtrading.engine.service import set_kill_switch_and_cancel
 from smtrading.instruments.models import AssetClass
 from smtrading.mcp.dto import parse_decimal, parse_enum, to_jsonable
+from smtrading.paperclip import watchdog_settings
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.risk.models import AppSetting, InterestKind, InterestRate, RiskProfile
 from smtrading.risk.profiles import DEFAULT_RISK_PROFILE_NAME
@@ -267,6 +268,8 @@ async def _app_settings(session: AsyncSession) -> dict[str, Any]:
         "weekly_goal": weekly_goal.weekly_goal_dto(await weekly_goal.load_weekly_goal(session)),
         "preopen_check": preopen_settings.preopen_dto(
             stored.get(preopen_settings.SETTINGS_KEY)),
+        "handoff_watchdog": watchdog_settings.watchdog_dto(
+            stored.get(watchdog_settings.SETTINGS_KEY)),
     }
 
 
@@ -313,6 +316,9 @@ async def put_app_settings(body: AppSettingsIn, session: DbSession, redis: Redis
     if body.preopen_check is not None:
         updates[preopen_settings.SETTINGS_KEY] = preopen_settings.clean_preopen(
             body.preopen_check.model_dump(), current["preopen_check"])
+    if body.handoff_watchdog is not None:
+        updates[watchdog_settings.SETTINGS_KEY] = watchdog_settings.clean_watchdog(
+            body.handoff_watchdog.model_dump(), current["handoff_watchdog"])
     async with _transaction(session, redis):
         for key, value in updates.items():
             await _store_setting(session, key, value)
