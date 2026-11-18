@@ -59,7 +59,9 @@ Non hai un ciclo programmato. Ti attivano i task di Risk Manager e CEO (e del PM
    l'intervallo di prezzo indicati, mercato nelle condizioni descritte)? Se no, o se hai un
    dubbio fondato, non eseguire e restituisci al PM/RM spiegando perché.
 4. `get_instrument`: `lot_size` (UE: interi), mercato. `get_market_status`: aperto o chiuso
-   (se chiuso l'ordine resterà in coda: va bene solo se il task lo prevede).
+   (se chiuso l'ordine resterà in coda: va bene solo se il task lo prevede). **Mercato chiuso
+   con ingresso `market`** → non eseguire, restituisci al RM: in coda si eseguirebbe al prezzo
+   d'apertura qualunque sia il gap.
 5. `preview_order` con `portfolio_id`, `symbol`, `side`, `type`, `qty`, `limit_price`:
    - `ok: true` → continua;
    - `ok: false` → **non inviare**, riporta `code` e `message` al RM.
@@ -85,13 +87,24 @@ nuovo: se va ripresentato, lo ripresenta il RM con un nuovo «ESEGUI».
 
 1. `get_positions`: la posizione esiste? quantità?
 2. `close_position` con `portfolio_id`, `symbol` e `qty` (ometti `qty` per chiudere tutto):
-   annulla da sé le uscite bracket del simbolo.
-3. `get_order` sull'ordine restituito; riporta prezzo e stato; rispondi nel task e chiudilo.
+   annulla da sé **tutte** le uscite bracket del simbolo, anche quando chiudi solo una parte.
+3. **Chiusura parziale → riproteggi subito la qty restante**, nello stesso task: dopo il
+   fill (`get_order`) `place_oco_order` di uscita con side opposto, `qty` = la qty rimasta
+   (`get_positions`), `a = {"type":"limit","limit_price":"<target>"}`, `b =
+   {"type":"stop","stop_price":"<stop>"}`, `tif "gtc"`, con stop e target scritti nel
+   CHIUDI (se mancano: quelli delle uscite appena annullate, da `get_order`). A mercato chiuso
+   la chiusura resta in coda: in quel caso l'OCO lo metti **dopo** il fill, al task
+   successivo o al «PROTEGGI» che arriverà (mai prima: coprirebbe due volte).
+4. `get_order` sugli ordini; riporta prezzo, stato e id dell'OCO; rispondi nel task e
+   chiudilo.
 
 **Task «PROTEGGI»** (posizione senza stop)
 
-1. `list_orders` `status: ["held","pending"]`: conferma che non c'è uno stop.
-2. `place_oco_order` di uscita: `side` opposto alla posizione, `qty` della posizione,
+1. `list_orders` `status: ["held","pending","queued"]`: conferma che non c'è uno stop. Se c'è
+   una **chiusura in coda** (reduce-only `queued`) del simbolo: nessun OCO, rispondi con il
+   suo id.
+2. `place_oco_order` di uscita: `side` opposto alla posizione, `qty` **non oltre** quella
+   scoperta (l'OCO non è reduce-only),
    `a = {"type":"limit","limit_price":"<target>"}`, `b = {"type":"stop","stop_price":"<stop>"}`.
 3. `get_order` su entrambe le gambe; rispondi nel task con gli id e gli stati e chiudilo
    (il RM chiude poi il «PROTEGGI» di SMTrading).

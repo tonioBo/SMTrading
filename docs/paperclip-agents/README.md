@@ -193,10 +193,18 @@ Altri task utili da creare a mano:
 
 - Portafogli attivi (sostituiscono i 4 «Test 250», archiviati):
 
-  | Codice | Nome | Profilo | Capitale | Ordine max | Posizione max | Perdita giorn. max | Escalation 2/3 | Mercati | Short | Stile |
-  |---|---|---|---|---|---|---|---|---|---|---|
-  | PRU | `Portafoglio Prudente` | 2 · Prudente | 500 € | 1500 € | 15% (≈ 75 €) | 3% (≈ 15 €) | ≈ 10 € | azioni/ETF USA+UE, crypto | no | lungo/medio |
-  | AGG | `Portafoglio Aggressivo` | 4 · Aggressivo | 500 € | 5000 € | 40% (≈ 200 €) | 8% (≈ 40 €) | ≈ 26,67 € | tutti | solo «short tattico» | swing + intraday |
+  | Codice | Nome | Profilo | Capitale iniziale | Carattere |
+  |---|---|---|---|---|
+  | PRU | `Portafoglio Prudente` | 2 · Prudente | 500 € | prudente, lungo/medio termine, rischio piccolo per operazione |
+  | AGG | `Portafoglio Aggressivo` | 4 · Aggressivo | 500 € | swing + intraday, rischio più ampio |
+
+  I limiti (perdita giornaliera, eventuali ordine e posizione massimi, mercati, short) sono
+  **solo** nel profilo di rischio del portafoglio: gli agenti li leggono a ogni ciclo con
+  `get_risk_limits` e le istruzioni non riportano numeri. Un limite non impostato nel
+  profilo lo decide il Risk Manager (rischio allo stop, peso, numero di posizioni,
+  esposizione, perdita della settimana), motivandolo nella `log_decision`. Un cambio di
+  profilo vale dal ciclo successivo. Catalogo degli scenari e di chi decide:
+  [`SCENARIOS.md`](SCENARIOS.md) (non va incollato negli agenti).
 
   Costi: commissione 0, 0,15% sul cambio valuta, slippage circa 5 bp (nei testi degli agenti:
   «costi di esecuzione»).

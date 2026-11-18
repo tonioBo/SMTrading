@@ -20,7 +20,7 @@ Legenda: **O** = obbligatorio (anche se non è successo nulla) · **C** = condiz
 | lun-ven 09:00-22:00 ogni ora :00 | Sentinella rischio (oraria) | RM | `03` «Ciclo programmato (sentinella)» | **O** controllo completo a ogni ciclo (niente uscita rapida); una riga per portafoglio; task solo se serve (sotto) |
 | lun-ven 09:05-21:05 ogni ora :05 | Sentinella portafogli (oraria) | PM | `02` «Ciclo programmato (sentinella)» | **O** uscita rapida «Nessuna novità» se feed e alert vuoti (non alle 09:05/15:35, non in pre-chiusura, non con ingressi in attesa); altrimenti controllo ingressi in attesa (ANNULLA se scaduti), proposte; alle 09:05 controllo BUONGIORNO |
 | lun-ven 15:35 | Sentinella portafogli (oraria), 2° cron | PM | `02` sentinella, punto 6 (apertura USA) | giro opportunità; ANALISI se c'è uno slot libero |
-| lun-ven 17:05-17:30, 21:05-22:00 | (i cicli PM che cadono nelle finestre) | PM | `02` sentinella, punto 7 | controllo barra in formazione; PROPOSTA se il segnale scatta, con `valid_until: "close"` |
+| lun-ven 17:05-17:30, 21:05-22:00 (di norma; l'ora prima della chiusura reale di `get_market_status`) | (i cicli PM che cadono nelle finestre) | PM | `02` sentinella, punto 7 | controllo barra in formazione; PROPOSTA se il segnale scatta, con `valid_until: "close"` |
 | lun-ven 10-22 ogni 2 ore | Scansione notizie (ogni 2 ore) | NA | `06` «Scansione rapida» | «Nessuna notizia materiale» o task NOTIZIA |
 | lun-ven 22:15 | Chiusura USA (serale) | PM | `02` «Ciclo Chiusura USA (serale)» | «Nessun segnale alla chiusura» o PROPOSTA per l'apertura successiva |
 | sab-dom 10, 13, 16, 19, 22 | Sentinella rischio (weekend, crypto) | RM | `03` sentinella | come la sentinella feriale, solo crypto |
@@ -44,6 +44,9 @@ successivi vengono saltati (sovrapposizione disattivata). «Ronda ticket» è ar
 | obiettivo `cap` «oltre il tetto», recuperi, raggiunto | solo Telegram | — | nessun task: lo segnala il PM con «OBIETTIVO <data>» |
 | ogni 5 min, passaggio mancante | Telegram «⚠ Passaggio mancante: …» (uno per passaggio al giorno) | umani | nei giorni di borsa: AGENDA al PM entro le 08:50, BUONGIORNO al NOT e il suo Telegram entro le 09:20; sempre: PROTEGGI / RISCHIO OBIETTIVO senza risposta dopo 45 min, ESEGUI aperto dopo 30 min a mercato aperto. Nessun task: rispondi e chiudi i tuoi task in tempo |
 | dopo un riavvio | allarmi (protezione, obiettivi, pre-apertura, passaggi) | — | il primo controllo parte almeno 3 min dopo l'avvio |
+| data di stacco di uno split | annulla **tutti** gli ordini aperti del simbolo (stop e target compresi), `split_orders_canceled` nel feed | feed | poi l'allarme di protezione apre «PROTEGGI» al RM: stop e target sulla nuova scala |
+| perdita giornaliera superata (dopo un fill o al controllo periodico) | reduce-only fino a mezzanotte | feed + Telegram | nessun task |
+| kill switch acceso con annullamento degli ordini | annulla tutti gli ordini aperti, uscite comprese | Telegram | «PROTEGGI» per ogni posizione; l'OCO di uscita passa perché riduce |
 
 ## 3. Catena del mattino (lun-ven)
 
@@ -76,7 +79,7 @@ Borse dei portafogli tutte chiuse (festività) o weekend → niente AGENDA, nien
 | 9 | Sentinella 09:05/15:35, slot libero | PM | MA | task «ANALISI · <COD> · <simboli o tema>» | C | analisi (max 10 simboli) | MA risponde nel task e chiude; PM legge al ciclo dopo |
 | 10 | Segnale valido (sentinella, finestre pre-chiusura, 22:15, ANALISI, NOTIZIA) | PM | RM | task «PROPOSTA <PROP-id> · <COD> · <SIMBOLO> · <buy\|sell>»; `log_decision` proposal | C | checklist, `log_decision` approval/veto, poi #11 o #12 | RM risponde e chiude PROPOSTA |
 | 11 | Proposta approvata | RM | ES | task «ESEGUI <PROP-id> · <COD> · <SIMBOLO> · <lato>» (con `valid_until` se la proposta lo ha; RM lo aggiunge, `"close"`, alle proposte pre-chiusura) | C | `preview_order`, `place_bracket_order` (`valid_until` incluso) | ES risponde «ESITO …» e chiude sempre, anche «in attesa (order_id …)» |
-| 12 | Veto | RM | PM | task «VETO <PROP-id>» | C | corregge (`-v2`, nuova PROPOSTA) o rinuncia; 2° veto → #22 | PM risponde e chiude |
+| 12 | Veto | RM | PM | task «VETO <PROP-id>» | C | corregge (`-v2`, nuova PROPOSTA) o rinuncia; 2° veto → #35 | PM risponde e chiude |
 | 13 | Chiusura discrezionale | PM | RM | task «CHIUSURA · <COD> · <SIMBOLO> · <qty>» | C | `log_decision` approval, #14 | RM risponde e chiude |
 | 14 | Chiusura / protezione / intraday all'ultimo ciclo / margine | RM | ES | task «CHIUDI · <COD> · <SIMBOLO>» o «PROTEGGI · <nome portafoglio> · <simbolo>» | C | `close_position` / `place_oco_order` | ES risponde e chiude |
 | 15 | SMTrading: posizione senza stop valido | SMTrading | RM | task «PROTEGGI · <nome portafoglio> · <simbolo>» | C | verifica, #14 con lo stesso titolo | RM risponde con gli id degli ordini e chiude; ES senza esito al ciclo dopo → #22 critical |
@@ -87,8 +90,8 @@ Borse dei portafogli tutte chiuse (festività) o weekend → niente AGENDA, nien
 | 20 | RISCHIO OBIETTIVO (RM) | RM | PM (copia CEO, informativa) | task «RIDUZIONE RISCHIO · <COD> · <obiettivo>», uno per portafoglio | C | niente aperture nell'ambito; #13 / #17 | PM risponde e chiude |
 | 21 | Rischio complessivo in crescita | RM | CEO | task «HALT · <COD\|ALL> · <motivo>» | C | `set_trading_halt`, `log_decision` risk_rule, #21b | CEO risponde e chiude |
 | 21b | Halt attivato o revocato | CEO | ES (copia PM, RM) | task «HALT · <COD\|ALL> · attivato\|revocato» | C | annulla ingressi in attesa se richiesto | ES risponde e chiude (Telegram lo manda SMTrading) |
-| 22 | Condizioni §11 (2/3 perdita, disaccordo dopo 2 proposte, errori ripetuti, dati mancanti 2 cicli, `LIVE_NOT_ARMED`, serve un umano) | chiunque (RM, PM, ES, NA, MA, QR) | NOT (copia CEO, informativa; ES e `LIVE_NOT_ARMED` anche RM) | task «ESCALATION <ESC-id> · <COD\|ALL> · <tipo>» | C (vincolante) | `send_telegram` warning/critical (salvo `already_sent`) | NOT risponde e chiude; il CEO agisce solo se serve (halt, #23) |
-| 23 | Serve un umano (profilo, capitale, kill switch, sblocco, halt degli amministratori, strumento) | CEO | NOT | task «RICHIESTA UMANI · <tipo>» | C | `send_telegram` warning con domanda chiusa | NOT chiude; la risposta degli umani arriva al CEO in Paperclip |
+| 22 | Condizioni §11 (2/3 perdita, disaccordo dopo 2 proposte, errori ripetuti, dati mancanti 2 cicli, `LIVE_NOT_ARMED`, limite che solo gli amministratori tolgono) | chiunque (RM, PM, ES, NA, MA, QR) | NOT (copia CEO, informativa; ES e `LIVE_NOT_ARMED` anche RM) | task «ESCALATION <ESC-id> · <COD\|ALL> · <tipo>» | C (vincolante) | `send_telegram` warning/critical (salvo `already_sent`), testo informativo | NOT risponde e chiude; nessuno attende risposta; il CEO agisce solo se serve (halt, #35) |
+| 23 | Limite che solo gli amministratori possono cambiare (profilo, capitale, kill switch, sblocco, halt degli amministratori, strumento) | CEO | NOT | task «RICHIESTA UMANI · <tipo>» (informativo) | C | `send_telegram` warning: cosa servirebbe e cosa fa il team intanto | NOT chiude; il team continua entro i limiti attuali |
 | 24 | Decisione da comunicare | CEO (o chi decide) | NOT | task «NOTIFICA · <tipo> · <COD\|ALL>» | C (max 1 per decisione) | `send_telegram` info | NOT chiude |
 | 25 | Notizia materiale (scansioni) | NA | PM (copia RM se negativa su posizione) | task «NOTIZIA · <SIMBOLO> · <impatto> · <urgenza>» | C (max 1 per simbolo per ciclo) | valuta proposta o chiusura (#10/#13) | PM risponde e chiude |
 | 26 | Notizia eccezionale | NA | RM se tocca posizioni aperte, altrimenti PM; + NOT (copia CEO) | NOTIZIA urgente + «ESCALATION …» warning | C | vedi #22 | come #22; chi riceve la NOTIZIA risponde e chiude |
@@ -97,10 +100,26 @@ Borse dei portafogli tutte chiuse (festività) o weekend → niente AGENDA, nien
 | 29 | Non conformità alta / drawdown incoerente | PA | CEO | task «NON CONFORMITÀ · <COD> · <NC-id>» | C, stesso giorno | verifica, decide, `log_decision` | CEO risponde e chiude |
 | 30 | Scostamento reale vs backtest | PA | QR | task «RIVEDI STRATEGIA <STR-id> · <COD>» | C | backtest sui dati recenti; se cambia: nuovo «APPROVA STRATEGIA …» al CEO (#6) | QR risponde «confermata» o «da rivedere/sospendere» (menziona il CEO) e chiude |
 | 31 | Routine venerdì 17:00 | CEO | NOT | report nel task della Routine + task «NOTIFICA · revisione settimanale · ALL» | **O** ogni venerdì | `send_telegram` info | NOT chiude; CEO chiude la Routine |
-| 32 | Proposta 22:15 | PM | RM | «PROPOSTA …» con validità all'apertura successiva | C | al primo ciclo RM (09:00, nel weekend crypto 10:00) | come #10 |
+| 32 | Proposta 22:15 | PM | RM | «PROPOSTA …» con validità all'apertura successiva, ingresso `limit` al prezzo massimo accettabile e `valid_until` ISO (mai `market` a mercato chiuso) | C | al primo ciclo RM (09:00, nel weekend crypto 10:00) | come #10 |
 | 33 | Ingresso non eseguito che non vale più (segnale sparito alle 22:15, validità scaduta in sentinella) | PM | ES (copia RM, informativa) | task «ANNULLA <PROP-id>»; `log_decision` other | C, solo se l'ingresso è ancora aperto (con `valid_until: "close"` SMTrading lo ha già reso `expired`: ANNULLA non serve) | `cancel_order` su ingresso e uscite bracket; se già eseguito non tocca stop/target | ES risponde con gli id annullati e chiude |
 | 34 | `valid_until` dell'ingresso passato senza esecuzione | SMTrading | PM (feed) | ingresso `expired`, uscite bracket annullate; `order.expired` nel feed; parte già eseguita: stop e target restano sulla qty eseguita | **O** | nessuna azione; il PM ne tiene conto al ciclo successivo | — |
+| 35 | 2° veto con disaccordo | PM | CEO (copia RM) | task «DISACCORDO · <COD> · <SIMBOLO o tema>» (+ #22 informativo) | C | CEO decide: «veto confermato» o «ripresentabile» (`-v3` al RM); può fissare con `risk_rule` una soglia `null` del profilo | CEO risponde e chiude |
+| 36 | Strategia sospesa o revocata | CEO | PM | task «STRATEGIA SOSPESA <STR-id> · <COD>»; `log_decision` strategy con `details.open_positions` | C | toglie alert, ANNULLA ingressi (#33), posizioni mantenute o CHIUSURA (#13) | PM risponde e chiude |
+| 37 | `review_by` passato o entro 7 giorni (revisione del venerdì) | CEO | QR | task «RIVEDI STRATEGIA <STR-id> · <COD>» | C | come #30 | QR risponde e chiude |
+| 38 | Tool MCP non raggiungibili per 2 cicli | PM / RM | CEO + NOT | task «SMTRADING NON RAGGIUNGIBILE · <data ora>» al CEO + ESCALATION (#22) | C | CEO verifica al suo ciclo; NOT invia appena il collegamento torna | ognuno chiude il suo; al ritorno ciclo completo di recupero |
+| 39 | Profilo di rischio cambiato (valori nuovi in `get_risk_limits`) | RM | NOT | task «NOTIFICA · profilo · <COD>» | C (una volta) | `send_telegram` info | NOT chiude; i nuovi valori valgono dal ciclo stesso |
+| 40 | Ripresa aperture dopo un obiettivo `max_loss` (decisa dal CEO nel suo RISCHIO OBIETTIVO) | RM | PM | commento nel RIDUZIONE RISCHIO o task «RIPRESA APERTURE · <COD>»; `log_decision` risk_rule | C | il PM riprende la sentinella normale | PM risponde e chiude |
+| 41 | Chiusura parziale | RM | ES | «CHIUDI» con stop e target per la qty restante | C | `close_position` + `place_oco_order` sulla qty restante (dopo il fill) | ES risponde con gli id e chiude |
+| 42 | Notizia eccezionale su posizione aperta (#26) | NA | RM | NOTIZIA urgente | C | RM decide: CHIUDI, MODIFICA STOP o nessuna azione, copia PM | RM risponde e chiude |
+| 43 | Halt revocato, kill switch spento, reduce-only finito | SMTrading (feed) | PM | — | C | al ciclo successivo il PM rivaluta gli ingressi di tutte le strategie (gli ingressi annullati non tornano) | — |
 ## 5. Decisioni (18/11)
+
+Le decisioni della sera del 18/11 (catalogo degli scenari, [`SCENARIOS.md`](SCENARIOS.md)):
+limiti solo dal profilo di rischio (`null` = decide l'agente, il RM con i suoi cinque
+controlli); team autonomo, umani solo informati, arbitraggio del CEO; short tattico non più
+solo AGG (su PRU solo eccezionale); passaggi #35-#43 sopra.
+
+### Decisioni del mattino del 18/11
 
 Le 12 questioni aperte trovate nell'audit, decise dal titolare il 18/11 e applicate nei file:
 

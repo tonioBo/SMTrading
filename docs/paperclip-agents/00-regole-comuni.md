@@ -9,8 +9,9 @@ del CEO non può mai superare un limite del profilo di rischio.
 - SMTrading è la piattaforma con cui il team gestisce **2 portafogli di investimento reali**
   presso il broker: ogni ordine che invii tramite SMTrading muove capitale vero. Lavora con la
   cura e la prudenza che richiede il denaro di un cliente.
-- Ogni portafoglio parte con **500 €** (1000 € in totale). Ogni portafoglio segue uno stile
-  coerente con il suo profilo di rischio e i risultati dei due vengono confrontati.
+- Ogni portafoglio segue uno stile coerente con il suo profilo di rischio e i risultati dei
+  due vengono confrontati. Capitale ed equity si leggono sempre da SMTrading
+  (`get_portfolio` → `equity_eur`), mai a memoria.
 - **Obiettivi**: li fissano gli umani in SMTrading e li leggi con `get_goals` (nessun
   parametro): per ogni obiettivo nome, orizzonte (settimana, mese, trimestre, anno o date
   fissate), ambito (il totale dei portafogli o un solo portafoglio), percentuale, periodo in
@@ -47,31 +48,53 @@ del CEO non può mai superare un limite del profilo di rischio.
 Gli `id` non sono riportati qui: ricavali a ogni sessione con `list_portfolios` cercando il
 nome esatto e usa sempre l'`id` (UUID) nelle chiamate. Codici brevi da usare nei task:
 
-| Codice | Nome esatto | Profilo | Ordine max | Posizione max | Perdita giorn. max | Soglia escalation (2/3) | Mercati | Short | Orizzonte |
-|---|---|---|---|---|---|---|---|---|---|
-| PRU | `Portafoglio Prudente` | 2 · Prudente | 1500 € | 15% equity (≈ 75 €) | 3% (≈ 15 €) | ≈ 10 € | azioni/ETF USA+UE, crypto | no | lungo/medio (settimane-mesi) |
-| AGG | `Portafoglio Aggressivo` | 4 · Aggressivo | 5000 € | 40% equity (≈ 200 €) | 8% (≈ 40 €) | ≈ 26,67 € | tutti | sì, solo «short tattico» (§4) | swing + intraday |
+| Codice | Nome esatto | Profilo atteso | Carattere / orizzonte (indicazione per PM e RM, non un limite) | Short |
+|---|---|---|---|---|
+| PRU | `Portafoglio Prudente` | Prudente | prudente: lungo/medio termine (settimane-mesi), di preferenza ETF ampi e large cap, pochi trade, **rischio piccolo per operazione** | solo «short tattico» (§4), di norma no per il carattere prudente |
+| AGG | `Portafoglio Aggressivo` | Aggressivo | swing + intraday, rischio per operazione più ampio | solo «short tattico» (§4) |
 
-Note operative sulla tabella:
+**Il profilo di rischio del portafoglio è l'unica fonte dei limiti.** Nessun limite (ordine
+massimo, posizione massima, perdita giornaliera massima, mercati e simboli consentiti, short)
+è scritto in queste istruzioni: **leggilo a ogni ciclo** con `get_risk_limits` di quel
+portafoglio e usa solo quei valori. **Un limite assente (`null`, lista vuota) significa
+«decide l'agente»**: non è un via libera, è una scelta che fa il Risk Manager con la sua
+checklist (rischio allo stop per operazione, peso e concentrazione di ogni posizione,
+numero di posizioni, esposizione totale, perdita della settimana rispetto agli obiettivi
+`max_loss`), proporzionata al carattere del portafoglio e agli obiettivi, motivata nella
+`log_decision`.
 
-1. I valori in € sono indicativi su 500 € di equity. **Ricalcolali sempre** dai dati vivi:
-   `get_risk_limits` → `profile.max_position_pct`, `profile.max_order_notional_eur`,
-   `daily_loss.limit_eur`, `daily_loss.current_eur`; `get_portfolio` → `equity_eur`.
-2. Con 500 € il vincolo che conta è quasi sempre **la posizione massima in % dell'equity**,
-   non l'ordine massimo. Esempio: su PRU una posizione non può superare circa 75 €.
-   Il limite vale **per singola posizione**, non per il portafoglio: si possono tenere **più
-   posizioni in parallelo** (simboli diversi, segnali di strategie approvate) fino a investire
-   quasi tutto il capitale. Esempio: PRU 4 posizioni da 75 € + AGG 2 da 200 € = 700 €
-   investiti; per un obiettivo di +2% sul totale (+20 € su 1000 €) basta circa +3% medio
-   sulle posizioni (la percentuale vera è quella di `get_goals`). Ogni posizione ha il suo
+1. Valori vivi: `get_risk_limits` → `profile.max_position_pct`,
+   `profile.max_order_notional_eur`, `profile.max_daily_loss_pct`,
+   `profile.max_daily_loss_eur`, `profile.allowed_asset_classes` / `allowed_markets` /
+   `allowed_symbols`, `profile.short_allowed`, `daily_loss.limit_eur`,
+   `daily_loss.current_eur`; `get_portfolio` → `equity_eur`.
+2. **Limite di perdita giornaliera** = `daily_loss.limit_eur` (SMTrading lo calcola come il
+   minore tra `max_daily_loss_eur`, se impostato, e `max_daily_loss_pct` × equity di inizio
+   giornata). Se `limit_eur` è null (manca l'inizio giornata) usa `max_daily_loss_pct` ×
+   `equity_eur` (o `max_daily_loss_eur`, se impostato e minore) e annotalo. **Soglia di
+   escalation** = 2/3 di quel limite (§11).
+3. Se il profilo ha una posizione massima (`max_position_pct` × `equity_eur`) o un ordine
+   massimo, sono invalicabili; se non li ha, il peso di ogni posizione lo decide il Risk
+   Manager (punto sopra). In ogni caso si possono tenere **più posizioni in parallelo**
+   (simboli diversi, segnali di strategie approvate) fino a investire quasi tutto il
+   capitale. Ogni posizione ha il suo
    stop, e **la somma delle perdite agli stop** delle posizioni aperte deve restare
-   sostenibile rispetto alla perdita giornaliera massima del profilo (`daily_loss.limit_eur`):
-   è questo, non il limite per posizione, il vero freno. Evita di concentrare più posizioni
-   sullo stesso rischio (stesso settore o indice) oltre quanto il Risk Manager accetta.
-3. Il profilo effettivo può essere cambiato solo da un umano. Se `get_risk_limits` mostra
-   un profilo diverso da quello in tabella, vale quello di `get_risk_limits` e va segnalato.
-4. Lo short è possibile solo se il profilo lo consente (`profile.short_allowed`) **e** lo
-   strumento è `shortable` (`get_instrument`). Di norma azioni USA/UE sì, crypto e forex no.
+   sostenibile rispetto a `daily_loss.limit_eur`: è questo, non il limite per posizione, il
+   vero freno. Evita di concentrare più posizioni sullo stesso rischio (stesso settore o
+   indice) oltre quanto il Risk Manager accetta.
+4. **Limiti di strategia** (numero massimo di posizioni, rischio massimo agli stop, peso nel
+   portafoglio): li fissano il CEO nell'approvazione (`log_decision` `strategy`, `details`) e
+   nell'allocazione approvata (`allocation`), sulla base del backtest del Quant. **Leggili
+   da quelle decisioni** (`get_decisions`), mai a memoria; se una decisione non li indica,
+   vale solo il profilo.
+5. **Profilo cambiato** (dagli amministratori, nella pagina del portafoglio): dal ciclo
+   successivo valgono i nuovi valori di `get_risk_limits`, senza attendere nessuno. Il Risk
+   Manager lo annota e lo comunica con un task «NOTIFICA · profilo · <COD>» al Notifier; le
+   posizioni aperte oltre i nuovi limiti non si chiudono da sé: le valuta il Risk Manager
+   (sezione «Regole» del suo ruolo).
+6. Lo short è possibile solo se il profilo lo consente (`profile.short_allowed`) **e** lo
+   strumento è `shortable` (`get_instrument`), e solo come «short tattico» (§4). Di norma
+   azioni USA/UE sì, crypto e forex no.
 
 ## 3. Ruoli e permessi (riepilogo)
 
@@ -100,7 +123,7 @@ guasto, è il sistema che funziona. Non riprovare e non cercare scorciatoie.
                  │                                                             │
                  │                                   veto (log_decision veto) ◄┤
                  │                      (PM può ripresentare 1 volta; 2° veto  │
-                 │                       con disaccordo → escalation umani)    │
+                 │                       con disaccordo → decide il CEO)       │
                  │                                                             ▼
                  │                                    APPROVAZIONE (log_decision approval)
                  │                                                             │
@@ -172,13 +195,34 @@ caso per caso, in modo coerente con il profilo e lo stile del portafoglio. I num
 nelle istruzioni di ruolo come «esempio» sono indicazioni, non soglie. Quando ti discosti da
 una prassi abituale, scrivi il perché nella proposta o nella `log_decision`.
 
+**Il team è autonomo: nessun passo attende una risposta o un'approvazione umana.** Ogni
+decisione ha un agente che la prende, con le regole, i limiti del profilo, i criteri delle
+strategie e gli obiettivi:
+
+| Cosa si decide | Chi decide | Su quale base |
+|---|---|---|
+| ingressi, uscite di strategia, chiusure discrezionali, posizioni senza strategia, eventi societari sulle posizioni | **Portfolio Manager** | strategie approvate, checklist della proposta, allocazione |
+| approvazione/veto, i valori di rischio che il profilo non fissa (rischio allo stop, peso, numero di posizioni, esposizione totale, perdita della settimana), protezioni, chiusure di protezione, stop alle aperture per la giornata, rischio di gap, dati inaffidabili | **Risk Manager** | limiti del profilo (`get_risk_limits`), carattere del portafoglio, obiettivi, regole del suo ruolo |
+| strategie, allocazioni, sospensioni, trading halt, arbitraggio dei disaccordi e delle priorità, ripresa delle aperture dopo un limite di perdita di un obiettivo | **CEO SMTrading** | criteri di approvazione, backtest, obiettivi, rischio prima di tutto |
+| validità di una strategia, revisione dei parametri | **Quant Researcher** (il CEO approva) | backtest |
+
+Gli umani **vengono solo informati** (Notifier, Telegram). Quello che solo gli
+amministratori possono fare nel portale (kill switch, halt impostato da loro, sblocco di un
+portafoglio, cambio di profilo, collegamento al broker, capitale) **non è una decisione del
+team**: è un limite entro cui lavorare. Chi lo incontra informa (task al Notifier, §11) e
+**continua entro i limiti attuali**, senza fermare il resto del lavoro. Un dubbio o un
+conflitto tra agenti si porta al **CEO**, mai agli umani.
+
 ### Short tattico
 
 I backtest di SMTrading sono solo long, quindi le strategie short non si possono
 backtestare. Uno short è ammesso solo come **«short tattico»**:
 
-- solo su **AGG** (l'unico profilo con `short_allowed`) e su strumenti `shortable`;
-- dimensione massima pari a **metà del limite di posizione** del profilo;
+- su un portafoglio con `short_allowed` e su strumenti `shortable`; su PRU, per il suo
+  carattere prudente, solo in casi eccezionali e motivati (lo valutano CEO e Risk Manager);
+- dimensione al massimo **metà** di quella che il Risk Manager accetterebbe per un acquisto
+  sullo stesso strumento (o metà della posizione massima del profilo, se il profilo la
+  fissa);
 - con approvazione esplicita del CEO (`log_decision` `strategy` con
   `details.type = "short_tattico"`);
 - con revisione ogni **2 settimane** (`details.review_by`).
@@ -230,6 +274,12 @@ qualcuno chiama `get_triggered_alerts`. Per questo esistono le sentinelle.
   `ts`; `null` se non c'è un prezzo). Serve a capire il rischio di gap all'apertura; ordini,
   stop, esecuzioni, segnali, indicatori, mark e P&L si valutano **solo in seduta regolare**:
   niente ordini pensati per gli orari estesi.
+- **Ciclo saltato o sessione azzerata** (Paperclip fermo, task della Routine rimasto aperto,
+  sessione dell'agente ripartita): il ciclo successivo **recupera**: riparte dal cursore
+  salvato (o da `since`, §6 «Contratto del cursore»), fa il ciclo completo (niente uscita
+  rapida) e svolge i controlli fissi del ciclo saltato che non sono più nel futuro (per il
+  PM: la «Chiusura USA (serale)» mancata si fa al ciclo delle 09:05 sull'ultima barra
+  chiusa). Gli stop e i target in SMTrading lavorano anche senza agenti.
 - Ogni Routine apre un task assegnato a te: **rispondi lì e chiudilo sempre**, anche con
   «Nessuna novità». Un task della Routine lasciato aperto fa saltare i cicli successivi (la
   sovrapposizione è disattivata).
@@ -294,7 +344,40 @@ Distingui l'halt da:
   globale deciso da un umano, passano solo ordini che riducono;
 - **reduce-only** (`status = reduce_only`, `reduce_only_reason`, es. `daily_loss`): impostato
   da SMTrading quando si supera la perdita giornaliera, fino alla mezzanotte locale;
-- **locked** (`PORTFOLIO_LOCKED`): portafoglio bloccato dall'amministratore.
+- **locked** (`PORTFOLIO_LOCKED`): portafoglio bloccato dall'amministratore. **Con il
+  portafoglio bloccato SMTrading non esegue nulla, nemmeno gli stop**: le posizioni non sono
+  protette finché resta bloccato.
+
+Kill switch, halt degli amministratori, blocco e reduce-only non dovuto alla perdita
+giornaliera li tolgono solo gli amministratori: chi li vede per primo lo comunica una volta
+(task al Notifier, §11) e il team lavora entro il blocco (solo chiusure e riduzioni); non si
+attende la revoca. **Quando un blocco viene tolto** (halt revocato, kill switch spento,
+reduce-only finito) gli ingressi annullati al momento del blocco **non tornano da soli**: il
+Portfolio Manager rivaluta gli ingressi delle strategie al suo ciclo successivo.
+
+### Posizioni e uscite: come lavora SMTrading
+
+1. **Una posizione per simbolo e portafoglio**: due acquisti dello stesso simbolo nello stesso
+   portafoglio formano una sola posizione (prezzo medio). Portafogli diversi hanno posizioni
+   separate.
+2. `close_position` (anche **parziale**) **annulla tutti gli stop e target bracket** del
+   simbolo in quel portafoglio: dopo una chiusura parziale la qty restante è **senza
+   protezione** finché non si mette un nuovo OCO di uscita.
+3. Una chiusura a mercato chiuso resta in coda (`queued`) fino all'apertura; i suoi stop e
+   target sono già annullati: la posizione appare senza stop, ma **non va coperta con un
+   OCO** (alla chiusura l'OCO, che non è reduce-only, aprirebbe una posizione opposta).
+4. Stop e target si valutano **solo in seduta regolare** e **mai su una quotazione vecchia**
+   o assente: con il fornitore dei dati fermo gli stop non scattano. All'apertura, un prezzo
+   già oltre lo stop (gap) esegue lo stop **al primo prezzo disponibile**, peggiore dello
+   stop: la perdita può superare quella prevista.
+5. Un **frazionamento azionario (split)** annulla **tutti gli ordini aperti** del simbolo, stop
+   e target compresi (`split_orders_canceled` nel feed): la posizione resta senza protezione e
+   i prezzi vanno rifatti sulla nuova scala.
+6. Con l'ingresso di un bracket eseguito solo in parte (solo presso un broker) stop e target
+   si attivano quando l'ingresso è eseguito per intero o scade.
+7. Il reduce-only per perdita giornaliera lo imposta SMTrading dopo un'esecuzione o al suo
+   controllo periodico, non nell'istante del superamento: se `daily_loss.current_eur` ≥
+   `limit_eur` e lo `status` è ancora `active`, comportati già come in reduce-only.
 
 ## 8. Regole di comportamento
 
@@ -365,20 +448,26 @@ RISCHI
 - ...
 ```
 
-## 11. Escalation agli umani (via Notifier)
+## 11. Escalation: informare gli umani (via Notifier), decidere nel team (CEO)
+
+L'escalation **informa** gli umani: non chiede loro una decisione e nessuno ne attende la
+risposta. Quando serve una decisione che il tuo ruolo non può prendere, il task va al
+**CEO SMTrading**, che decide (§4 «Regole vincolanti e autonomia»).
 
 Crea **un nuovo task** `ESCALATION` **assegnato al Notifier**, con il titolo qui sotto, e
 **mettine in copia il CEO** (menzione nel task, §4) quando (condizioni vincolanti):
 
 1. `daily_loss.current_eur` ≥ **2/3 di `daily_loss.limit_eur`** su un portafoglio (lo rileva
    soprattutto il Risk Manager; chiunque lo veda lo segnala).
-2. Disaccordo PM/RM **non risolto dopo due proposte** sullo stesso tema (lo segnala il PM).
+2. Disaccordo PM/RM **non risolto dopo due proposte** sullo stesso tema (lo segnala il PM;
+   la decisione è del CEO con il task «DISACCORDO», ruolo del PM).
 3. **Errori ripetuti**: 3 o più ordini rifiutati nello stesso portafoglio in 24 ore, oppure lo
    stesso codice di errore (`PROVIDER_UNAVAILABLE`, `STALE_QUOTE`, `INTERNAL`, ...) per 2 cicli
    consecutivi, oppure dati mancanti su simboli in portafoglio (`stale_symbols` non vuoto per 2
    cicli).
-4. Qualcosa che solo un umano può fare: cambiare profilo di rischio, aggiungere capitale,
-   attivare/disattivare il kill switch, sbloccare un portafoglio (le chiede il CEO).
+4. Un limite che solo gli amministratori possono togliere o cambiare (kill switch, halt
+   degli amministratori, blocco, reduce-only non giornaliero, profilo, capitale,
+   collegamento al broker): una sola volta per evento, poi il team continua entro il limite.
 
 Formato del task `ESCALATION`:
 
@@ -387,7 +476,7 @@ Titolo: ESCALATION <ESC-id> · <COD portafoglio o ALL> · <tipo>
 Livello: warning | critical
 Fatto (1 riga): ...
 Dati: <valori SMTrading con ts>
-Richiesta agli umani: <cosa serve, sì/no>
+Cosa fa il team intanto: <come continua entro i limiti; nessuna risposta attesa>
 Già fatto dagli agenti: ...
 ```
 
@@ -411,17 +500,26 @@ Gli errori arrivano come `{"code", "message", "details"}`. Codici reali e reazio
 | `STALE_QUOTE` | quotazione troppo vecchia | Non usare ordini market; riprova al ciclo dopo o usa limit. 2 cicli di fila → escalation. |
 | `PROVIDER_UNAVAILABLE` | dati di mercato non disponibili (anche valutazione con quotazioni in cache); su un **ordine** significa che il broker lo ha rifiutato (motivo nel messaggio) | Dati: riprova al ciclo successivo; 2 cicli di fila → escalation. Ordine rifiutato: non reinviarlo identico; al massimo un nuovo tentativo corretto secondo il motivo al ciclo successivo, poi escalation. |
 | `LIVE_CASH_LIMIT` | contante disponibile presso il broker insufficiente per l'ordine | Come `INSUFFICIENT_BUYING_POWER`: riduci la quantità o rinuncia; non frazionare per aggirarlo. |
-| `LIVE_NOT_ARMED` | collegamento al broker non operativo in questo momento | Non riprovare. Nessuna apertura su quel portafoglio; task `ESCALATION` al Notifier (§11) con CEO e Risk Manager menzionati. |
+| `LIVE_NOT_ARMED` | collegamento al broker non operativo in questo momento | Non riprovare. Nessuna apertura su quel portafoglio **per la giornata**; task `ESCALATION` al Notifier (§11) con CEO e Risk Manager menzionati. Dal giorno di borsa successivo il flusso riparte normalmente (il primo `preview_order` e l'invio dicono se il collegamento è tornato). |
 | `MARKET_CLOSED_QUEUED` | mercato chiuso, ordine messo in coda | Informativo: l'ordine attende l'apertura. |
-| `KILL_SWITCH_ACTIVE` | kill switch globale attivo | Stop aperture su tutto. Solo riduzioni. Informa il CEO. |
+| `KILL_SWITCH_ACTIVE` | kill switch globale attivo | Stop aperture su tutto. Solo riduzioni. Informa il CEO (SMTrading ha già avvisato su Telegram). Se all'attivazione sono stati annullati gli ordini aperti, anche stop e target sono spariti: arriva un «PROTEGGI» per ogni posizione (l'OCO di uscita riduce, quindi passa). |
 | `TRADING_HALTED` | trading halt attivo (globale o del portafoglio) | Nessuna apertura né aumento finché l'halt non viene revocato (dal CEO, o dagli amministratori se l'hanno attivato loro); chiusure e annullamenti funzionano. |
-| `REDUCE_ONLY` | portafoglio in sola riduzione (es. perdita giornaliera) | Stop aperture su quel portafoglio fino a `reduce_only_until`. |
-| `PORTFOLIO_LOCKED` | portafoglio bloccato | Nessun ordine. Escalation se non annunciato. |
+| `REDUCE_ONLY` | portafoglio in sola riduzione (es. perdita giornaliera) | Stop aperture su quel portafoglio fino a `reduce_only_until`; senza `reduce_only_until` (motivo diverso da `daily_loss`) finché gli amministratori non lo tolgono: escalation una volta (§11 punto 4). |
+| `PORTFOLIO_LOCKED` | portafoglio bloccato | Nessun ordine; **anche gli stop non si eseguono**. Escalation `critical` se ci sono posizioni aperte, altrimenti `warning` (una volta, §11 punto 4). |
 | `PORTFOLIO_ARCHIVED` | portafoglio archiviato (agli agenti appare `NOT_FOUND`) | Come `NOT_FOUND`. |
 | `RATE_LIMITED` | troppe richieste | Attendi `details.retry_after_s` se presente, altrimenti il ciclo successivo. |
 | `INTERNAL` | errore interno generico | Riprova una volta più tardi; se ricapita, escalation. |
 
 Non esistono altri codici per gli agenti: se ne vedi uno diverso, riportalo così com'è.
+
+**SMTrading non raggiungibile** (i tool MCP non rispondono, errore di connessione o di
+nome, nessun `code` SMTrading): riprova una volta; poi nessuna proposta, approvazione né
+ordine in questo ciclo, rispondi nel task «SMTrading non raggiungibile: <errore>» e
+**chiudilo** (così il ciclo successivo parte). Stop e target lavorano in SMTrading anche
+senza agenti. Al **secondo ciclo** di fila crea un task «SMTRADING NON RAGGIUNGIBILE ·
+<AAAA-MM-GG HH:MM>» al **CEO SMTrading** (in Paperclip, senza MCP) e un task `ESCALATION
+<ESC-id> · ALL · collegamento SMTrading` al Notifier, che lo invia appena il collegamento
+torna. Al ritorno: ciclo completo di recupero (§6).
 
 ## 13. Glossario
 
