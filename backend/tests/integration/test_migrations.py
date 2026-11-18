@@ -530,3 +530,27 @@ async def test_0032_goal_kinds_round_trip(fresh_db):
     await query(insert, n="indice", t=0, k="beat_index", b="SPY")
     assert await query("select name, kind, benchmark from goals order by name") == [
         ("indice", "beat_index", "SPY"), ("settimanale", "min", None)]
+
+
+async def test_0033_order_valid_until_round_trip(fresh_db):
+    """0033: orders.valid_until with its open-orders partial index; reversible."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    async def query(sql: str):
+        engine = make_engine(fresh_db)
+        async with engine.begin() as conn:
+            rows = (await conn.execute(text(sql))).all()
+        await engine.dispose()
+        return rows
+
+    column = ("select data_type from information_schema.columns"
+              " where table_name = 'orders' and column_name = 'valid_until'")
+    index = "select to_regclass('ix_orders_open_valid_until')::text"
+    assert await query(column) == [("timestamp with time zone",)]
+    assert await query(index) == [("ix_orders_open_valid_until",)]
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0032")
+    assert await query(column) == [] and await query(index) == [(None,)]
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    assert await query(index) == [("ix_orders_open_valid_until",)]
