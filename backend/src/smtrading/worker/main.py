@@ -21,6 +21,7 @@ from smtrading.common.heartbeat import write_heartbeat
 from smtrading.common.logsetup import configure_logging
 from smtrading.engine.processor import OrderProcessor
 from smtrading.goals.alerts import GoalAlerts
+from smtrading.goals.plan_closer import PlanCloser
 from smtrading.instruments.closures import ClosureRefresher
 from smtrading.jobs.scheduler import JobScheduler
 from smtrading.marketdata.router import MarketDataRouter
@@ -40,7 +41,8 @@ HEARTBEAT_INTERVAL_S = 10
 RESTART_DELAY_S = 5
 HEALTH_FIRST_DELAY_S = 30
 HEALTH_INTERVAL_S = 300
-# the alerting jobs (protection alarm, goal alerts, pre-open check, hand-off watchdog) wait
+# the alerting jobs (protection alarm, goal alerts, plan closer, pre-open check, hand-off
+# watchdog) wait
 # STARTUP_DELAY_S after the worker start and until the api health endpoint answers, so a
 # deploy restart fires nothing; after STARTUP_MAX_WAIT_S they start anyway (fail open)
 STARTUP_DELAY_S = 180
@@ -223,6 +225,8 @@ async def run() -> None:
                         gate, lambda: ProtectionAlarm(sessionmaker).run()))),
                     tg.create_task(supervise("goal alerts", lambda: gated(
                         gate, lambda: GoalAlerts(sessionmaker, router).run()))),
+                    tg.create_task(supervise("plan closer", lambda: gated(
+                        gate, lambda: PlanCloser(sessionmaker, router, redis).run()))),
                     tg.create_task(supervise("pre-open check", lambda: gated(
                         gate, lambda: PreopenCheck(sessionmaker, router, redis).run()))),
                     tg.create_task(supervise("hand-off watchdog", lambda: gated(

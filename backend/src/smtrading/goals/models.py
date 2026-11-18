@@ -159,7 +159,7 @@ class PlanClosure(Base):
     period_end: Mapped[date] = mapped_column(Date)
     ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id"))
-    symbol: Mapped[str] = mapped_column(String(32))
+    symbol: Mapped[str] = mapped_column(String(64))
     qty: Mapped[Decimal] = mapped_column(Numeric(38, 18))
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     state: Mapped[str] = mapped_column(String(16), default="pending")

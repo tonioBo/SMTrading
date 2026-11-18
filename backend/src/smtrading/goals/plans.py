@@ -14,15 +14,22 @@ position of an ended piano still open (`risk.checks`)."""
 
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from smtrading.goals.models import Goal, PlanClosure
 from smtrading.goals.periods import Period, goal_period, previous_period
 from smtrading.instruments.market_hours import CALENDARS, local_date, session_on
+from smtrading.portfolios.models import Portfolio, PortfolioStatus
 
 GRACE_BY_HORIZON = {"week": 1, "month": 3, "quarter": 5, "year": 10}
 GRACE_MIN, GRACE_MAX = 1, 10
 _FX_CLOSE = time(22, 0, tzinfo=UTC)
 _MAX_SCAN_DAYS = 60  # calendar days scanned looking for the Nth session
+OPEN_STATES = ("pending", "grace", "closing")
 
 
 def grace_days(horizon: str, period: Period) -> int:
@@ -84,3 +91,38 @@ def grace_deadline(market: str, after: datetime, n: int) -> datetime:
     except ValueError:  # outside the calendar's window
         return _weekday_deadline(after, n)
     return _weekday_deadline(after, n)
+
+
+# -- the open closings (risk check, MCP, admin API, the job) ----------------------------
+
+
+def plan_rows():
+    """The open rows of active piani in portfolios not archived."""
+    return (select(PlanClosure)
+            .join(Goal, Goal.id == PlanClosure.goal_id)
+            .join(Portfolio, Portfolio.id == PlanClosure.portfolio_id)
+            .where(PlanClosure.state.in_(OPEN_STATES), Goal.active.is_(True),
+                   Goal.closes_positions.is_(True),
+                   Portfolio.status != PortfolioStatus.archived))
+
+
+async def open_closure(session: AsyncSession, portfolio_id: UUID,
+                       symbol: str) -> PlanClosure | None:
+    """The open closing of the position (`portfolio_id`, `symbol`), if any."""
+    return await session.scalar(
+        plan_rows().where(PlanClosure.portfolio_id == portfolio_id,
+                           PlanClosure.symbol == symbol)
+        .order_by(PlanClosure.id).limit(1))
+
+
+async def open_closures(session: AsyncSession,
+                        portfolio_ids: list[UUID] | None = None) -> list[PlanClosure]:
+    stmt = plan_rows().order_by(PlanClosure.id)
+    if portfolio_ids is not None:
+        stmt = stmt.where(PlanClosure.portfolio_id.in_(portfolio_ids))
+    return list(await session.scalars(stmt))
+
+
+def grace_until(row: PlanClosure | None) -> datetime | None:
+    """The `plan_grace_until` of a position: its grace deadline while in grace."""
+    return row.deadline if row is not None and row.state == "grace" else None

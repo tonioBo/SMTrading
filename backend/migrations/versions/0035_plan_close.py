@@ -29,7 +29,7 @@ def upgrade() -> None:
         sa.Column("period_end", sa.Date(), nullable=False),
         sa.Column("ended_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("portfolio_id", sa.UUID(), sa.ForeignKey("portfolios.id"), nullable=False),
-        sa.Column("symbol", sa.String(32), nullable=False),
+        sa.Column("symbol", sa.String(64), nullable=False),
         sa.Column("qty", sa.Numeric(38, 18), nullable=False),
         sa.Column("opened_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("state", sa.String(16), nullable=False),

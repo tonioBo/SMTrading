@@ -416,6 +416,8 @@ async def _persist(session: AsyncSession, adm: _Admission, **extra) -> Order:
     )
     if check is not None and not check.ok:
         _reject(order, check.code, check.message)
+        if check.details:
+            order.reject_details = check.details  # not stored: the raised error carries it
     else:
         ends = [t for t in (_tif_expiry(adm), req.valid_until) if t is not None]
         order.expires_at = min(ends) if ends else None
@@ -429,10 +431,8 @@ def _rejection_error(order: Order) -> SMTError:
         code = ErrorCode(order.reject_code)
     except ValueError:
         code = ErrorCode.INVALID_ORDER
-    return SMTError(
-        code, order.reject_message or "order rejected", {"order_id": str(order.id)},
-        persisted=True,
-    )
+    details = {**(getattr(order, "reject_details", None) or {}), "order_id": str(order.id)}
+    return SMTError(code, order.reject_message or "order rejected", details, persisted=True)
 
 
 def _raise_if_rejected(*orders: Order) -> None:
