@@ -12,6 +12,8 @@ export interface ChartLine {
   tag?: string;
   /** a thinner solid stroke (the indices compared by the goals) */
   thin?: boolean;
+  /** a thicker stroke (the «Totale» of the portfolios) */
+  bold?: boolean;
 }
 
 interface Props {
@@ -107,7 +109,7 @@ export function LineChart({ lines, formatValue, formatTick, axisTime, ariaLabel 
                 d={l.points.map((p, i) => `${i ? "L" : "M"}${geo.x(p.t).toFixed(2)},${geo.y(p.v).toFixed(2)}`).join("")}
                 fill="none"
                 stroke={l.color}
-                strokeWidth={l.thin ? 1 : l.reference ? 1.25 : 2}
+                strokeWidth={l.thin ? 1 : l.reference ? 1.25 : l.bold ? 3 : 2}
                 strokeDasharray={l.reference ? "6 4" : undefined}
                 strokeLinejoin="round"
                 vectorEffect="non-scaling-stroke"

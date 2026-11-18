@@ -4,7 +4,7 @@ import { LineChart } from "@/components/LineChart";
 import { Pnl } from "@/components/Pnl";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { historyLines, type Unit } from "@/lib/equityHistory";
+import { historyLines, TOTAL_COLOR, TOTAL_KEY, totalChange, type Unit } from "@/lib/equityHistory";
 import { chartNumber } from "@/lib/lineChart";
 
 function signed(v: number, places: number): string {
@@ -27,7 +27,9 @@ const FORMAT: Record<Unit, { value: (v: number) => string; tick: (v: number, ste
 
 /**
  * «Andamento»: the equity over time. Dashboard (no `portfolioId`): every live portfolio,
- * in % since the range start by default so portfolios of any size compare, toggle €/%.
+ * in % since the range start by default so portfolios of any size compare, toggle €/%,
+ * plus their «Totale» (bold, first in the legend) with more than one: the sum of their
+ * equity, in % on the sum at the start, as the total goals compute it.
  * Portfolio detail: that portfolio only, in €.
  */
 export function EquityHistoryCard({ portfolioId }: { portfolioId?: string }) {
@@ -37,6 +39,7 @@ export function EquityHistoryCard({ portfolioId }: { portfolioId?: string }) {
   const { data, isLoading, isError } = useEquityHistory(range, portfolioId);
   const lines = data ? historyLines(data, unit, single) : [];
   const colors = new Map(lines.filter((l) => !l.reference && !l.thin).map((l) => [l.key, l.color]));
+  const total = data && colors.has(TOTAL_KEY) ? totalChange(data) : null;
   const shown = data?.portfolios.filter((p) => colors.has(p.id)) ?? [];
   const goals = lines.filter((l) => l.reference);
   const indices = lines.filter((l) => l.thin);
@@ -87,6 +90,13 @@ export function EquityHistoryCard({ portfolioId }: { portfolioId?: string }) {
               ariaLabel={`Andamento ${single ? "del portafoglio" : "dei portafogli"} (${unit === "pct" ? "%" : "€"})`}
             />
             <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm" aria-label="Legenda">
+              {total && (
+                <li className="flex items-center gap-1.5 font-medium" title={`somma dei portafogli · ${CHANGE_HINT}`}>
+                  <span className="inline-block h-1 w-4 rounded-full" style={{ background: TOTAL_COLOR }} />
+                  <span>Totale</span>
+                  <Pnl value={total.change_eur} pct={total.change_pct} />
+                </li>
+              )}
               {shown.map((p) => (
                 <li key={p.id} className="flex items-center gap-1.5" title={CHANGE_HINT}>
                   <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: colors.get(p.id) }} />

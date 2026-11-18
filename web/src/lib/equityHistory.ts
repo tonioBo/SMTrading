@@ -11,6 +11,45 @@ export const SERIES_COLORS = ["#10b981", "#3b82f6", "#a855f7", "#f59e0b", "#ec48
 export const ACCENT = "rgb(var(--accent))";
 export const GOAL_COLOR = "rgb(var(--warn))";
 export const BENCHMARK_COLOR = "rgb(var(--muted))";
+/** The «Totale» line (dashboard, more than one portfolio): neutral and thicker. */
+export const TOTAL_COLOR = "rgb(var(--fg))";
+export const TOTAL_KEY = "total";
+
+/**
+ * The portfolios summed, on the union of their timestamps, each carried forward from its
+ * own last point; a portfolio counts from its first point in the range. As the total
+ * goals (`goals/progress.py`): € = the sum of the counted portfolios' equity; % = that sum
+ * over the sum of their first points − 1, so a portfolio appearing mid-range adds its
+ * equity to both and makes no jump, and the last point is Σ last / Σ first − 1.
+ */
+export function totalPoints(series: ChartPoint[][], unit: Unit): ChartPoint[] {
+  const times = [...new Set(series.flatMap((s) => s.map((p) => p.t)))].sort((a, b) => a - b);
+  const at = series.map(() => -1);
+  const out: ChartPoint[] = [];
+  for (const t of times) {
+    let sum = 0;
+    let base = 0;
+    series.forEach((s, i) => {
+      while (at[i] + 1 < s.length && s[at[i] + 1].t <= t) at[i] += 1;
+      if (at[i] < 0) return;
+      sum += s[at[i]].v;
+      base += s[0].v;
+    });
+    if (unit === "eur") out.push({ t, v: Number(sum.toFixed(2)) });
+    else if (base > 0) out.push({ t, v: Number(((sum / base - 1) * 100).toPrecision(12)) });
+  }
+  return out;
+}
+
+/** The «Totale» row of the legend: Σ change over Σ first (the portfolios with data). */
+export function totalChange(data: EquityHistory): { change_eur: string; change_pct: string | null } | null {
+  const counted = data.portfolios.filter((p) => p.series.length > 0 && p.first_eur != null && p.change_eur != null);
+  if (counted.length < 2) return null;
+  const cents = (v: string) => Math.round(Number(v) * 100);
+  const change = counted.reduce((sum, p) => sum + cents(p.change_eur!), 0);
+  const first = counted.reduce((sum, p) => sum + cents(p.first_eur!), 0);
+  return { change_eur: (change / 100).toFixed(2), change_pct: first > 0 ? ((change / first) * 100).toFixed(2) : null };
+}
 
 /** A flat dashed line at `v` from `from` to `to` (none when the span is empty). */
 function flat(key: string, label: string, tag: string, color: string, v: number, from: number, to: number): ChartLine | null {
@@ -19,13 +58,14 @@ function flat(key: string, label: string, tag: string, color: string, v: number,
 }
 
 /**
- * The chart lines of a response: each portfolio (in € or % since its first point), then
+ * The chart lines of a response: each portfolio (in € or % since its first point), the
+ * «Totale» of the portfolios (dashboard with more than one: `totalPoints`, bold), then
  * the goals, dashed and labelled, from the period start (or the first point) to now (or
  * the period end).
  * - Dashboard: the `goals` list only (the weekly goal is its total goal there, so the
- *   per-portfolio weekly `goal` would duplicate it). A total goal is drawn in % only,
- *   against the shown portfolios' total at their first points; a portfolio goal in the
- *   portfolio's colour.
+ *   per-portfolio weekly `goal` would duplicate it). A total goal is drawn against the
+ *   «Totale»: in % relative to the shown portfolios' total at their first points, in €
+ *   at its target; a portfolio goal in the portfolio's colour.
  * - Portfolio detail: the portfolio's weekly `goal` («1s», as before: the list leaves the
  *   total goals out there) and its own goals from the list.
  * - An index goal (beat_index) has no flat line: its index is drawn instead, in % only,
@@ -37,11 +77,13 @@ export function historyLines(data: EquityHistory, unit: Unit, single: boolean): 
   const lines: ChartLine[] = [];
   const firsts = new Map<string, ChartPoint>();
   const names = new Map<string, string>();
+  const eurSeries: ChartPoint[][] = [];
   data.portfolios
     .filter((p) => p.series.length > 0)
     .forEach((p, i) => {
       const color = single ? ACCENT : SERIES_COLORS[i % SERIES_COLORS.length];
       const eur: ChartPoint[] = p.series.map((s) => ({ t: Date.parse(s.ts), v: Number(s.equity_eur) }));
+      eurSeries.push(eur);
       const points = unit === "pct" ? toPctPoints(eur) : eur;
       if (points.length === 0) return;
       lines.push({ key: p.id, label: p.name, color, points });
@@ -55,6 +97,12 @@ export function historyLines(data: EquityHistory, unit: Unit, single: boolean): 
       const line = flat(`${p.id}-goal`, `Obiettivo ${tag}`, tag, GOAL_COLOR, v, from, Math.max(end, from));
       if (line) lines.push(line);
     });
+
+  if (!single && eurSeries.length > 1) {
+    const points = totalPoints(eurSeries, unit);
+    if (points.length > 0) lines.push({ key: TOTAL_KEY, label: "Totale", color: TOTAL_COLOR, points, bold: true });
+  }
+  const hasTotal = lines.some((l) => l.key === TOTAL_KEY);
 
   const colorOf = new Map(lines.map((l) => [l.key, l.color]));
   for (const g of data.goals ?? []) {
@@ -80,12 +128,13 @@ export function historyLines(data: EquityHistory, unit: Unit, single: boolean): 
     const to = Math.min(Date.parse(g.period_end), end);
     const tag = goalTargetLabel(g.kind, g.target_pct, g.benchmark);
     if (g.scope === "total") {
-      if (single || unit !== "pct" || firsts.size === 0) return null;
+      if (single || firsts.size === 0 || (unit !== "pct" && !hasTotal)) return null;
       const all = [...firsts.values()];
       const base = all.reduce((sum, p) => sum + p.v, 0);
       const from = Math.max(Date.parse(g.period_start), Math.min(...all.map((p) => p.t)));
       const text = `${g.name} ${tag}`;
-      return flat(`goal-${g.goal_id}`, `Obiettivo ${text}`, text, GOAL_COLOR, (target / base - 1) * 100, from, to);
+      const v = unit === "pct" ? (target / base - 1) * 100 : target;
+      return flat(`goal-${g.goal_id}`, `Obiettivo ${text}`, text, GOAL_COLOR, v, from, to);
     }
     const first = g.portfolio_id == null ? undefined : firsts.get(g.portfolio_id);
     if (!first) return null;

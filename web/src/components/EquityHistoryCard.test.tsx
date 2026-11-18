@@ -6,7 +6,7 @@ import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { EquityHistory, EquityHistoryGoalLine } from "@/api/hooks/equityHistory";
 import { EquityHistoryCard } from "@/components/EquityHistoryCard";
-import { historyLines } from "@/lib/equityHistory";
+import { historyLines, totalChange, totalPoints } from "@/lib/equityHistory";
 import { createQueryClient } from "@/queryClient";
 
 const requests: URLSearchParams[] = [];
@@ -113,30 +113,43 @@ describe("historyLines", () => {
 describe("historyLines with the goals list", () => {
   it("dashboard %: one line per goal (total vs the total at the range start), no per-portfolio weekly duplicates", () => {
     const lines = historyLines(withGoals(), "pct", false);
-    expect(lines.map((l) => l.key)).toEqual(["p1", "p2", "goal-g1", "goal-g2"]);
-    const total = lines[2];
+    expect(lines.map((l) => l.key)).toEqual(["p1", "p2", "total", "goal-g1", "goal-g2"]);
+    expect(lines[2]).toMatchObject({ label: "Totale", bold: true });
+    expect(lines[2].points.map((p) => p.v)).toEqual([0, -0.4]); // 1245 / 1250 - 1
+    const total = lines[3];
     expect(total.reference).toBe(true);
     expect(total.tag).toBe("settimanale +2%");
     expect(total.points[0].t).toBe(Date.parse("2026-11-15T23:00:00Z"));
     expect(total.points[1].t).toBe(Date.parse("2026-11-16T12:00:00Z")); // until now, not the period end
     expect(total.points[0].v).toBeCloseTo(2.326, 3); // 1279.08 / (250 + 1000) - 1
-    const cap = lines[3];
+    const cap = lines[4];
     expect(cap.tag).toBe("Natale tetto +5% · Aggressivo");
     expect(cap.color).toBe(lines[1].color); // the portfolio's colour
     expect(cap.points[0].t).toBe(Date.parse("2026-11-10T08:00:00Z")); // from the first point
     expect(cap.points[0].v).toBeCloseTo(2.9, 3); // 1029 / 1000 - 1
   });
 
-  it("dashboard €: portfolio goals in euros, total goals left out (not comparable with one portfolio)", () => {
+  it("dashboard €: the «Totale» in euros, the total goal at its target against it, portfolio goals in euros", () => {
     const lines = historyLines(withGoals(), "eur", false);
-    expect(lines.map((l) => l.key)).toEqual(["p1", "p2", "goal-g2"]);
-    expect(lines[2].points.map((p) => p.v)).toEqual([1029, 1029]);
+    expect(lines.map((l) => l.key)).toEqual(["p1", "p2", "total", "goal-g1", "goal-g2"]);
+    expect(lines[2].points.map((p) => p.v)).toEqual([1250, 1245]);
+    expect(lines[3].points.map((p) => p.v)).toEqual([1279.08, 1279.08]);
+    expect(lines[4].points.map((p) => p.v)).toEqual([1029, 1029]);
+  });
+
+  it("no «Totale» with one portfolio with data (nor on the portfolio detail): total goals in % only", () => {
+    const h = withGoals();
+    h.portfolios = h.portfolios.filter((p) => p.id !== "p2");
+    expect(historyLines(h, "eur", false).map((l) => l.key)).toEqual(["p1"]);
+    expect(historyLines(h, "pct", false).map((l) => l.key)).toEqual(["p1", "goal-g1"]);
+    expect(totalChange(h)).toBeNull();
+    expect(historyLines(history(), "pct", true).some((l) => l.key === "total")).toBe(false);
   });
 
   it("goals without data, or whose period ended before the shown points, are skipped", () => {
     const h = withGoals();
     h.goals = [goalLine({ base_eur: null, target_eur: null }), goalLine({ goal_id: "g9", period_end: "2026-11-09T23:00:00Z" })];
-    expect(historyLines(h, "pct", false).map((l) => l.key)).toEqual(["p1", "p2"]);
+    expect(historyLines(h, "pct", false).map((l) => l.key)).toEqual(["p1", "p2", "total"]);
   });
 
   it("portfolio detail: its weekly goal line (as before) plus its own goals", () => {
@@ -170,10 +183,41 @@ function withBenchmark(): EquityHistory {
   };
 }
 
+describe("totalPoints", () => {
+  const a = [
+    { t: 0, v: 100 },
+    { t: 10, v: 110 },
+    { t: 20, v: 120 },
+  ];
+  const b = [
+    { t: 5, v: 400 },
+    { t: 20, v: 380 },
+  ];
+  it("€: the sum on every timestamp, each portfolio carried forward, counted from its first point", () => {
+    expect(totalPoints([a, b], "eur")).toEqual([
+      { t: 0, v: 100 },
+      { t: 5, v: 500 },
+      { t: 10, v: 510 },
+      { t: 20, v: 500 },
+    ]);
+  });
+  it("%: on the sum of the first points of the counted portfolios (a late one makes no jump)", () => {
+    const pts = totalPoints([a, b], "pct");
+    expect(pts.map((p) => p.t)).toEqual([0, 5, 10, 20]);
+    expect(pts[0].v).toBe(0);
+    expect(pts[1].v).toBe(0); // b joins at its own first value
+    expect(pts[2].v).toBe(2); // 510 / 500 - 1
+    expect(pts[3].v).toBe(0); // (120 + 380) / (100 + 400) - 1 = Σ last / Σ first - 1
+  });
+  it("the legend's change: Σ change on Σ first", () => {
+    expect(totalChange(history())).toEqual({ change_eur: "-5.00", change_pct: "-0.40" });
+  });
+});
+
 describe("historyLines with the benchmarks", () => {
   it("% mode: a thin, solid, labelled line per index; the index goal itself draws no flat line", () => {
     const lines = historyLines(withBenchmark(), "pct", false);
-    expect(lines.map((l) => l.key)).toEqual(["p1", "p2", "goal-g1", "goal-g2", "bench-VWCE.DE"]);
+    expect(lines.map((l) => l.key)).toEqual(["p1", "p2", "total", "goal-g1", "goal-g2", "bench-VWCE.DE"]);
     const b = lines.at(-1)!;
     expect(b).toMatchObject({ label: "Indice VWCE", tag: "VWCE", thin: true });
     expect(b.reference).toBeFalsy();
@@ -259,14 +303,30 @@ describe("EquityHistoryCard", () => {
     await userEvent.click(screen.getByRole("button", { name: "1m" }));
     await screen.findByRole("button", { name: "1m", pressed: true });
     expect(requests.at(-1)?.get("range")).toBe("1m");
-    // the goals come with every range; in € the total goal is left out
+    // the goals come with every range; in € the total goal is drawn against the «Totale»
     expect(await screen.findByText("Obiettivo Natale tetto +5% · Aggressivo")).toBeInTheDocument();
-    expect(screen.queryByText("Obiettivo settimanale +2%")).toBeNull();
+    expect(screen.getByText("Obiettivo settimanale +2%")).toBeInTheDocument();
+  });
+
+  it("dashboard: the «Totale» first in the legend with Σ change, a bold line, in the tooltip", async () => {
+    server.use(http.get("*/api/portfolios/equity-history", () => HttpResponse.json(withGoals())));
+    renderCard();
+    const legend = await screen.findByRole("list", { name: "Legenda" });
+    const rows = within(legend).getAllByRole("listitem");
+    expect(rows[0]).toHaveTextContent("Totale");
+    expect(within(rows[0]).getByText("-5,00 €")).toBeInTheDocument();
+    expect(rows[0]).toHaveTextContent("(-0,40%)");
+    expect(rows[1]).toHaveTextContent("Prudente");
+    expect(screen.getByTestId("line-total")).toHaveAttribute("stroke-width", "3");
+    fireEvent.pointerMove(screen.getByTestId("line-chart-plot"), { clientX: 10 });
+    expect(within(screen.getByRole("tooltip")).getByText("-0,40%")).toBeInTheDocument();
   });
 
   it("portfolio detail: that portfolio in €, no unit toggle", async () => {
     renderCard("p1");
-    await screen.findByRole("list", { name: "Legenda" });
+    const legend = await screen.findByRole("list", { name: "Legenda" });
+    expect(within(legend).queryByText("Totale")).toBeNull();
+    expect(screen.queryByTestId("line-total")).toBeNull();
     expect(requests[0].get("portfolio_id")).toBe("p1");
     expect(screen.queryByRole("group", { name: "Unità" })).toBeNull();
     expect(screen.getByRole("img", { name: /del portafoglio \(€\)/ })).toBeInTheDocument();
