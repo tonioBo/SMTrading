@@ -300,3 +300,13 @@ async def test_deactivated_plan_and_plan_since(sm, qs):
     clock.t = DEADLINE - timedelta(minutes=5)
     await _job(sm, qs, clock).tick()
     assert await _qty(sm, pid, "AAPL") == 11
+
+
+async def test_piano_since_mid_week_handles_the_current_week(sm, qs):
+    """A goal that becomes a piano on Wednesday (the migrated weekly goal) handles that
+    same week's end, positions opened before the flag included."""
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, "AAPL", 10)
+    await _plan(sm, plan_since=datetime(2027, 1, 13, 10, 0, tzinfo=UTC))
+    await _job(sm, qs, Clock(SUNDAY_NIGHT)).tick()
+    assert (await _rows(sm))["AAPL"].state == "pending"

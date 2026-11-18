@@ -574,6 +574,9 @@ async def test_0035_plan_close_round_trip(fresh_db):
     table = "select to_regclass('plan_closures')::text"
     assert await query(column) == [("false",)]
     assert await query(table) == [("plan_closures",)]
+    # the weekly goal on the total becomes a piano from the migration on
+    assert await query("select name, closes_positions, plan_since is not null from goals") == [
+        ("settimanale", True, True)]
     await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0034")
     assert await query(column) == [] and await query(table) == [(None,)]
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")

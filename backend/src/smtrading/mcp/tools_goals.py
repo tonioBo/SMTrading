@@ -42,12 +42,14 @@ def _plan_actions(goal: Goal, p: dict[str, Any]) -> dict[str, Any]:
         "grace_market_days": days,
         "summary": (
             "At period_end this plan closes the positions of its portfolios. Close the "
-            "ones not in loss yourself in the last cycles of the period (normal close "
-            "flow). Positions still open: not in loss, SMTrading closes them at their "
-            f"market's first session after period_end; in loss, they get {days} market "
-            "day(s) of grace (no additions; close them when it makes sense), then "
-            "SMTrading closes them. New entries near the end must have time to work "
-            "before period_end."),
+            "ones not in loss yourself in the pre-close cycles of each market's last "
+            "session before period_end (for a week: Friday; crypto: the last cycle "
+            "before period_end), through the normal close flow. Positions still open: "
+            "not in loss, SMTrading closes them at their market's first session after "
+            f"period_end; in loss, they get {days} market session(s) of grace after "
+            "period_end (no additions; close them when it makes sense), then SMTrading "
+            "closes them. New entries near the end must have time to work before "
+            "period_end."),
     }
 
 

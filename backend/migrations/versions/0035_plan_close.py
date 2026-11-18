@@ -2,6 +2,9 @@
 the positions open at the end of its period are closed) with `goals.plan_since` (when it
 last became one), and `plan_closures` (each position of an ended period of a piano and how
 it is closed: pending, grace with its deadline, closing with SMTrading's order, closed).
+The active recurring weekly goal on the total («settimanale», the one migrated from the old
+setting; the earliest if several) becomes a piano from now (owner decision, plan 17), when
+no other active piano exists.
 
 Downgrade: the table and the columns are dropped (older code closes nothing at a period's
 end; an open grace is simply forgotten).
@@ -51,6 +54,12 @@ def upgrade() -> None:
     )
     op.create_index("ix_plan_closures_open", "plan_closures", ["portfolio_id", "symbol"],
                     postgresql_where=sa.text("state <> 'closed'"))
+    op.execute(
+        "UPDATE goals SET closes_positions = true, plan_since = now() WHERE id = ("
+        " SELECT id FROM goals WHERE active AND recurring AND horizon = 'week'"
+        " AND scope = 'total' AND name = 'settimanale'"
+        " ORDER BY created_at, id LIMIT 1)"
+        " AND NOT EXISTS (SELECT 1 FROM goals WHERE active AND closes_positions)")
 
 
 def downgrade() -> None:

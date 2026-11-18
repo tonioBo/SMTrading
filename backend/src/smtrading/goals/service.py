@@ -134,23 +134,34 @@ PLAN_OVERLAP = ("c'è già un piano attivo che chiude le posizioni di questo por
                 "a fine periodo ({name}): al massimo un piano per portafoglio")
 
 
-async def _check_one_plan(session: AsyncSession, values: dict[str, Any],
-                          goal_id: UUID | None) -> None:
-    """At most one active piano covers a portfolio: a total one covers every portfolio,
-    a portfolio one its own (goals of archived portfolios aside)."""
-    if not (values["active"] and values["closes_positions"]):
-        return
+async def covering_plan(session: AsyncSession, scope: str, portfolio_id: Any,
+                        exclude_id: UUID | None = None) -> Goal | None:
+    """The active piano already covering a goal of `scope` / `portfolio_id`, if any: a
+    total one covers every portfolio, a portfolio one its own (goals of archived
+    portfolios aside)."""
+    pid = UUID(str(portfolio_id)) if portfolio_id is not None else None
     others = await session.scalars(
         select(Goal).where(Goal.active.is_(True), Goal.closes_positions.is_(True),
-                           *([Goal.id != goal_id] if goal_id else [])))
+                           *([Goal.id != exclude_id] if exclude_id else []))
+        .order_by(Goal.created_at, Goal.id))
     archived = set(await session.scalars(
         select(Portfolio.id).where(Portfolio.status == PortfolioStatus.archived)))
     for other in others:
         if other.scope == "portfolio" and other.portfolio_id in archived:
             continue
-        if (values["scope"] == "total" or other.scope == "total"
-                or other.portfolio_id == values["portfolio_id"]):
-            raise _invalid("closes_positions", PLAN_OVERLAP.format(name=other.name))
+        if scope == "total" or other.scope == "total" or other.portfolio_id == pid:
+            return other
+    return None
+
+
+async def _check_one_plan(session: AsyncSession, values: dict[str, Any],
+                          goal_id: UUID | None) -> None:
+    """At most one active piano covers a portfolio (`covering_plan`)."""
+    if not (values["active"] and values["closes_positions"]):
+        return
+    other = await covering_plan(session, values["scope"], values["portfolio_id"], goal_id)
+    if other is not None:
+        raise _invalid("closes_positions", PLAN_OVERLAP.format(name=other.name))
 
 
 def _plan_since(goal: Goal, values: dict[str, Any]) -> None:
@@ -166,11 +177,19 @@ DEFAULTS: dict[str, Any] = {"start_date": None, "end_date": None, "recurring": F
 
 
 async def create_goal(session: AsyncSession, body: dict[str, Any], *, today: date) -> Goal:
+    """`closes_positions` left out (or null): true, unless an active piano already covers
+    the goal's portfolios (then false)."""
     raw = {**DEFAULTS, **{k: v for k, v in body.items() if k in FIELDS}}
     for f in ("name", "horizon", "target_pct"):
         if raw.get(f) is None:
             raise _invalid(f, f"{f} obbligatorio")
+    default_plan = body.get("closes_positions") is None
+    if default_plan:
+        raw["closes_positions"] = False
     values = await validated(session, raw, today=today)
+    if default_plan and values["active"]:
+        values["closes_positions"] = await covering_plan(
+            session, values["scope"], values["portfolio_id"]) is None
     await _check_one_plan(session, values, None)
     goal = Goal(**values)
     _plan_since(goal, values)
@@ -287,7 +306,8 @@ def _dynamic(loss_pct: Decimal | None) -> bool:
 
 async def goal_templates(session: AsyncSession, *, today: date) -> list[dict[str, Any]]:
     """The «Modelli» of the Obiettivi page: [{key, label, body, exists}], `body` a create
-    body to prefill the dialog (the admin confirms); week to year on the total, the
+    body to prefill the dialog (the admin confirms; `closes_positions` true unless an
+    active piano already covers it); week to year on the total, the
     per-portfolio ones once per live portfolio, by name, with prudent or dynamic values
     from its profile's daily-loss breaker (`_dynamic`); `exists` when an active goal already is the same (kind, horizon,
     scope, portfolio, target, benchmark, recurring; the name aside)."""
@@ -348,6 +368,8 @@ async def goal_templates(session: AsyncSession, *, today: date) -> list[dict[str
                 for g in await session.scalars(select(Goal).where(Goal.active.is_(True)))}
     for t in out:
         b = t["body"]
+        b["closes_positions"] = await covering_plan(session, b["scope"],
+                                                    b["portfolio_id"]) is None
         t["exists"] = _same(b["kind"], b["horizon"], b["scope"], b["portfolio_id"],
                             b["target_pct"], b["benchmark"], b["recurring"]) in existing
     return out

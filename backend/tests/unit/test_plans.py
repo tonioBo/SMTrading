@@ -83,3 +83,13 @@ def test_deadline_fx_weekdays():
     end = ended_at(Period(date(2027, 1, 1), date(2027, 1, 29)), ROME)
     assert grace_deadline("FX", end, 1) == datetime(2027, 2, 1, 22, 0, tzinfo=UTC)
     assert grace_deadline("FX", end, 5) == datetime(2027, 2, 5, 22, 0, tzinfo=UTC)
+
+
+def test_week_grace_is_the_monday_session():
+    # the week of 16-22 November 2026 ends on Sunday at midnight (Rome); the markets' last
+    # session is Friday 20; one session of grace = Monday 23's
+    end = ended_at(Period(date(2026, 11, 16), date(2026, 11, 22)), ROME)
+    assert end == datetime(2026, 11, 22, 23, 0, tzinfo=UTC)
+    assert grace_deadline("NASDAQ", end, 1) == datetime(2026, 11, 23, 21, 0, tzinfo=UTC)
+    assert grace_deadline("XETRA", end, 1) == datetime(2026, 11, 23, 16, 30, tzinfo=UTC)
+    assert grace_deadline("CRYPTO", end, 1) == datetime(2026, 11, 23, 23, 0, tzinfo=UTC)

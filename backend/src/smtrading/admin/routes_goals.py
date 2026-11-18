@@ -8,9 +8,10 @@ level). Every figure is a string (null without data).
   custom), scope (default total), portfolio_id (scope portfolio, not archived), kind
   (min | cap | max_loss | beat_index, default min), benchmark (SPY | QQQ | VWCE.DE,
   beat_index only and required there; target_pct is then the margin in points, 0
-  allowed), active (default true), closes_positions (default false: the goal is a
-  «piano», its positions are closed at the end of the period, `goals.plans`; at most one
-  active piano covers a portfolio, else 400 with field closes_positions);
+  allowed), active (default true), closes_positions (the goal is a «piano», its positions
+  are closed at the end of the period, `goals.plans`; default true unless an active piano
+  already covers its portfolios, then false; at most one active piano covers a portfolio,
+  else 400 with field closes_positions);
 - `PATCH /api/goals/{goal_id}`: only the fields sent change, validated as a whole;
 - `DELETE /api/goals/{goal_id}`: never deleted, active=false;
 - `GET /api/goals/templates`: the «Modelli» ([{key, label, body, exists}], `body` a POST
