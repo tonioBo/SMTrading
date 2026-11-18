@@ -54,8 +54,15 @@ def register(mcp: MCPServer) -> None:
     ) -> CallToolResult:
         """Queue a backtest of a long-only strategy (pure simulation, no orders):
         {backtest_id, status: "queued"}; poll get_backtest. strategy: sma_cross
-        (fast=20, slow=50) | rsi_reversion (period=14, buy_below=30, sell_above=70) |
-        breakout (lookback=20, exit_lookback=10) | buy_and_hold. Signals execute at the
+        (fast=20, slow=50) | rsi_reversion (period=14, buy_below=30, sell_above=70;
+        optional sma_filter=n: buy only while the close is above SMA n) | breakout
+        (lookback=20, exit_lookback=10) | momentum (lookback=63, skip=0, enter_above=0,
+        exit_below=0: ROC % of the close `skip` bars ago over `lookback` bars; buy above
+        enter_above, sell below exit_below) | donchian (entry=20, exit=10: close above the
+        entry-bar high / below the exit-bar low; optional atr_stop=k: also sell below the
+        entry-bar highest high minus k x ATR) | buy_and_hold. Every strategy but
+        buy_and_hold accepts max_atr_pct (skip entries when ATR is above that % of the
+        close) and atr_period (14). Signals use the bar's close and execute at the
         next bar's open with slippage; cash is split equally between symbols. With
         portfolio_id (read permission) the portfolio's fees apply, else the global rule.
         Slippage: slippage_bps, else the portfolio's, else 5 bps. At most 2 queued/running per agent, 5 years of daily or 90 days of intraday bars."""

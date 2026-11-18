@@ -203,3 +203,34 @@ async def test_backtest_tool_errors(env):
         assert not err
     err, bad = await call("run_backtest", BT_ARGS)
     assert err and bad["code"] == "RATE_LIMITED"
+
+
+async def test_backtest_new_strategies_and_filters(env):
+    call, server = env["call"], env["server"]
+    server.qs.set_bars(SYM, [
+        Bar(ts=datetime(2024, 1, 1, tzinfo=UTC) + timedelta(days=i), open=D(100 + i),
+            high=D(100 + i), low=D(98 + i), close=D(100 + i), volume=D(1))
+        for i in range(60)])
+    params = {"entry": 5, "exit": 3, "atr_stop": "2", "max_atr_pct": 5}
+    err, out = await call("run_backtest", {**BT_ARGS, "strategy": "donchian",
+                                           "params": params})
+    assert not err and out["status"] == "queued"
+    err, bt = await call("get_backtest", {"backtest_id": out["backtest_id"]})
+    assert bt["params"] == {"entry": 5, "exit": 3, "atr_stop": "2", "max_atr_pct": "5",
+                            "atr_period": 14}
+    engine = make_engine(server.db_url)
+    await BacktestRunner(async_sessionmaker(engine, expire_on_commit=False),
+                         server.qs).run_once()
+    await engine.dispose()
+    err, bt = await call("get_backtest", {"backtest_id": out["backtest_id"]})
+    assert not err and bt["status"] == "completed", bt
+    # a steady rise closing on its highs: entered once the ATR(14) exists (2 = at most 2%
+    # of the price), never stopped out (the stop trails 4 below the high)
+    assert bt["result"]["trades"] == [] and D(bt["result"]["metrics"]["exposure_pct"]) > 70
+
+    err, bad = await call("run_backtest", {**BT_ARGS, "strategy": "momentum",
+                                           "params": {"enter_above": 0, "exit_below": 2}})
+    assert err and bad["code"] == "INVALID_ORDER" and bad["details"]["field"] == "params"
+    err, bad = await call("run_backtest", {**BT_ARGS, "strategy": "sma_cross",
+                                           "params": {"atr_stop": 2}})
+    assert err and bad["code"] == "INVALID_ORDER" and "atr_stop" in bad["message"]
