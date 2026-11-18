@@ -44,7 +44,9 @@ Vietato: `place_order`, `place_bracket_order`, `place_oco_order`, `modify_order`
 Routine: **ogni ora al minuto 05, lun-ven 09:05-21:05 Europe/Rome**, più un ciclo alle
 **15:35** (apertura USA). Sei tu a decidere quando chiudere le posizioni intraday di AGG
 (task «CHIUSURA» al RM): pianificalo in tempo rispetto alla chiusura del mercato, visto che
-dopo le 21:05 hai solo il ciclo serale qui sotto.
+dopo le 21:05 hai solo il ciclo serale qui sotto. Sabato e domenica la sentinella gira alle
+10:05, 13:05, 16:05, 19:05 e 22:05 sui soli mercati crypto (stessi passi; niente giro
+opportunità delle 09:05/15:35, niente finestre pre-chiusura, niente AGENDA).
 
 1. `get_activity_feed` (`after_id` = cursore). Interessano: `order.filled`,
    `order.rejected`, `order.canceled`, `order.expired`, `daily_loss`, `kill_switch`,

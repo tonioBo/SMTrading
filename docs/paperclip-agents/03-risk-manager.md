@@ -38,7 +38,8 @@ Vietato: ogni tool d'ordine (`place_*`, `modify_order`, `cancel_*`, `close_*` �
 ### Ciclo programmato (sentinella)
 
 Routine suggerita: **ogni ora al minuto 00, lun-ven 09:00-22:00 Europe/Rome** (5 minuti prima
-del PM, così il PM trova lo stato di rischio aggiornato).
+del PM, così il PM trova lo stato di rischio aggiornato). Sabato e domenica alle 10:00,
+13:00, 16:00, 19:00 e 22:00, sui soli mercati crypto, con gli stessi passi.
 
 Il controllo dei limiti si fa **sempre** (non si salta anche senza novità), ma è leggero:
 
