@@ -132,6 +132,16 @@ class PaperclipClient:
         body = await self._get(self._company_path("tools/policies"))
         return [p for p in unwrap_list(body, "policies") if isinstance(p, dict)]
 
+    async def issues(self, limit: int) -> list[dict]:
+        """The company's issues (id, identifier, title, status, assigneeAgentId, createdAt,
+        updatedAt), for the hand-off watchdog."""
+        body = await self._get(self._company_path("issues"), {"limit": limit})
+        return [i for i in unwrap_list(body, "issues") if isinstance(i, dict)]
+
+    async def issue_comments(self, issue_id: str) -> list[dict]:
+        body = await self._get(f"/api/issues/{quote(str(issue_id), safe='')}/comments")
+        return [c for c in unwrap_list(body, "comments") if isinstance(c, dict)]
+
     async def current_key_id(self) -> str | None:
         """The id of the key in use: `keyId` of `GET /api/cli-auth/me`."""
         body = await self._get("/api/cli-auth/me")
