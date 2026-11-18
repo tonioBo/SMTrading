@@ -45,6 +45,7 @@ let creates: { body: unknown; key: string | null }[] = [];
 let puts: { id: string; body: unknown }[] = [];
 let reconciles = 0;
 let applies: { id: string; body: unknown }[] = [];
+let guided: { body: unknown; key: string | null }[] = [];
 const server = setupServer(
   ...commonHandlers,
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "admin@example.com", totp_enabled: false })),
@@ -89,6 +90,21 @@ const server = setupServer(
     applies.push({ id: String(params.id), body: await request.json() });
     return HttpResponse.json({ rules: [], created: [], deactivated: [], preset: {} });
   }),
+  http.post("*/api/broker-links/:id/guided-test", async ({ request }) => {
+    const body = (await request.json()) as { order_test: boolean };
+    guided.push({ body, key: request.headers.get("Idempotency-Key") });
+    const steps = [
+      { key: "auth", label: "Autenticazione", status: "ok", detail: "credenziali accettate dal broker" },
+      { key: "account", label: "Lettura del conto", status: "ok", detail: "conto ••••0042 in USD" },
+      { key: "buying_power", label: "Potere d'acquisto", status: "ok", detail: "100000 USD disponibili" },
+      { key: "market", label: "Stato del mercato", status: "ok", detail: "NASDAQ: aperto" },
+      { key: "quote", label: "Quotazione di esempio", status: "error", detail: "AAPL: quotazione non disponibile" },
+    ];
+    if (body.order_test) {
+      steps.push({ key: "order", label: "Ordine di prova e annullamento", status: "skipped", detail: "serve una quotazione" });
+    }
+    return HttpResponse.json({ ok: false, steps, checked_at: "2026-11-18T10:00:00Z" });
+  }),
   http.get("*/api/broker-links/:id/reconciliations", () => HttpResponse.json(reconciliations)),
   http.post("*/api/broker-links/:id/reconcile", () => {
     reconciles += 1;
@@ -103,6 +119,7 @@ afterEach(() => {
   puts = [];
   reconciles = 0;
   applies = [];
+  guided = [];
 });
 afterAll(() => server.close());
 
@@ -225,5 +242,35 @@ describe("Brokers", () => {
     expect(within(table).getByText("Allineato")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Riconcilia ora" }));
     await waitFor(() => expect(reconciles).toBe(1));
+  });
+
+  it("runs the guided connection test step by step, the order only after the typed confirmation", async () => {
+    const user = userEvent.setup();
+    renderApp("/broker");
+    const card = await screen.findByLabelText("Broker Alpaca prova");
+    await user.click(within(card).getByRole("button", { name: "Prova collegamento" }));
+    const form = within(card).getByRole("form", { name: "Prova collegamento Alpaca prova" });
+    await user.click(within(form).getByRole("button", { name: "Avvia prova" }));
+    await waitFor(() => expect(guided).toHaveLength(1));
+    expect(guided[0].body).toEqual({ symbol: "AAPL", order_test: false });
+    expect(guided[0].key).toBeTruthy();
+    const steps = await within(form).findByRole("list", { name: "Esito della prova Alpaca prova" });
+    const items = within(steps).getAllByRole("listitem").map((li) => li.textContent);
+    expect(items[0]).toBe("OKAutenticazione:credenziali accettate dal broker");
+    expect(items[4]).toBe("ErroreQuotazione di esempio:AAPL: quotazione non disponibile");
+    expect(within(form).getByRole("status")).toHaveTextContent("Prova completata con errori");
+
+    await user.click(within(form).getByRole("checkbox", { name: /Includi un ordine di prova/ }));
+    const start = within(form).getByRole("button", { name: "Avvia prova" });
+    expect(start).toBeDisabled();
+    const confirm = within(form).getByLabelText(/Per confermare l'ordine di prova scrivi ORDINE DI PROVA/);
+    await user.type(confirm, "ordine");
+    expect(start).toBeDisabled();
+    await user.clear(confirm);
+    await user.type(confirm, "ORDINE DI PROVA");
+    await user.click(start);
+    await waitFor(() => expect(guided).toHaveLength(2));
+    expect(guided[1].body).toEqual({ symbol: "AAPL", order_test: true, confirm: "ORDINE DI PROVA" });
+    expect(await within(form).findByText("serve una quotazione")).toBeInTheDocument();
   });
 });

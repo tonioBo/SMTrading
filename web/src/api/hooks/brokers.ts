@@ -2,7 +2,16 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
 import { dashboardKey } from "@/api/hooks/dashboard";
 import { newKey, portfoliosKey } from "@/api/hooks/portfolios";
-import type { BrokerLink, BrokerLinkCreate, BrokerLinkPatch, BrokerTestResult, Portfolio, Reconciliation } from "@/api/types";
+import type {
+  BrokerLink,
+  BrokerLinkCreate,
+  BrokerLinkPatch,
+  BrokerTestResult,
+  GuidedTestRequest,
+  GuidedTestResult,
+  Portfolio,
+  Reconciliation,
+} from "@/api/types";
 
 export const brokerLinksKey = ["broker-links"] as const;
 export const reconciliationsKey = (linkId: string) => ["broker-links", linkId, "reconciliations"] as const;
@@ -43,6 +52,16 @@ export function useTestBrokerLink() {
   return useMutation({
     mutationFn: (id: string) =>
       apiFetch<BrokerTestResult>(`/api/broker-links/${id}/test`, { method: "POST", idempotencyKey: newKey() }),
+    onSettled: () => void qc.invalidateQueries({ queryKey: brokerLinksKey, exact: true }),
+  });
+}
+
+/** «Prova collegamento»: the guided read-only checks, optionally a test order canceled at once. */
+export function useGuidedBrokerTest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: GuidedTestRequest }) =>
+      apiFetch<GuidedTestResult>(`/api/broker-links/${id}/guided-test`, { method: "POST", body, idempotencyKey: newKey() }),
     onSettled: () => void qc.invalidateQueries({ queryKey: brokerLinksKey, exact: true }),
   });
 }

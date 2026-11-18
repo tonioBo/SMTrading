@@ -844,6 +844,27 @@ export interface BrokerLinkPatch {
   config?: Record<string, string | null>;
 }
 
+/** «Prova collegamento» (paper/demo links only): one checked step. */
+export interface GuidedTestStep {
+  key: "auth" | "account" | "buying_power" | "market" | "quote" | "order";
+  label: string;
+  status: "ok" | "error" | "skipped";
+  detail: string;
+}
+
+export interface GuidedTestResult {
+  ok: boolean;
+  steps: GuidedTestStep[];
+  checked_at: string;
+}
+
+export interface GuidedTestRequest {
+  symbol: string;
+  order_test: boolean;
+  /** the second confirmation of the test order: GUIDED_ORDER_CONFIRM */
+  confirm?: string;
+}
+
 export interface BrokerTestResult {
   ok: boolean;
   error: string | null;
