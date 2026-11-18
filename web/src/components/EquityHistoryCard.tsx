@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { EQUITY_HISTORY_RANGES, useEquityHistory, type EquityHistoryRange } from "@/api/hooks/equityHistory";
+import { EQUITY_HISTORY_RANGES, HOURLY_RANGES, useEquityHistory, type EquityHistoryRange } from "@/api/hooks/equityHistory";
 import { LineChart } from "@/components/LineChart";
 import { Pnl } from "@/components/Pnl";
 import { Button } from "@/components/ui/button";
@@ -86,7 +86,7 @@ export function EquityHistoryCard({ portfolioId }: { portfolioId?: string }) {
               lines={lines}
               formatValue={FORMAT[unit].value}
               formatTick={FORMAT[unit].tick}
-              axisTime={range === "1d" ? "time" : "day"}
+              axisTime={HOURLY_RANGES.has(range) ? "time" : "day"}
               ariaLabel={`Andamento ${single ? "del portafoglio" : "dei portafogli"} (${unit === "pct" ? "%" : "€"})`}
             />
             <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm" aria-label="Legenda">

@@ -261,8 +261,12 @@ describe("EquityHistoryCard", () => {
     const legend = await screen.findByRole("list", { name: "Legenda" });
     expect(within(legend).getByText("Obiettivo settimanale +2%")).toBeInTheDocument();
     expect(within(legend).getByText("Obiettivo Natale tetto +5% · Aggressivo")).toBeInTheDocument();
-    expect(screen.getByTestId("line-goal-g1")).toHaveAttribute("stroke-dasharray");
-    expect(screen.getByTestId("tag-goal-g2")).toHaveTextContent("Natale tetto +5% · Aggressivo");
+    // a goal inside the portfolios' scale is a dashed line, one outside an edge label
+    const g1 = screen.queryByTestId("line-goal-g1");
+    if (g1) expect(g1).toHaveAttribute("stroke-dasharray");
+    else expect(screen.getByTestId("edge-goal-g1")).toBeInTheDocument();
+    const g2 = screen.queryByTestId("tag-goal-g2") ?? screen.getByTestId("edge-goal-g2");
+    expect(g2).toHaveTextContent("Natale tetto +5% · Aggressivo");
   });
 
   it("dashboard: every portfolio in %, legend with the change, goals, €/% toggle", async () => {

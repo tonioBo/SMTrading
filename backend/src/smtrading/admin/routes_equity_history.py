@@ -1,4 +1,4 @@
-"""Admin API: `GET /api/portfolios/equity-history?range=1d|1w|1m|3m|all[&portfolio_id=]`,
+"""Admin API: `GET /api/portfolios/equity-history?range=2h|6h|12h|1d|1w|1m|3m|all[&portfolio_id=]`,
 the «Andamento» chart (dashboard: every portfolio that is not archived; portfolio detail:
 one portfolio, archived ones too). Read-only, viewer allowed (`require_access`). The
 maths are in `performance.history`.

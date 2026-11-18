@@ -100,6 +100,21 @@ async def test_1d_intraday_points_of_live_portfolios(env, monkeypatch):
     assert [v for _, v in _points(by_name["Storia B"])] == [D(400)]
 
 
+async def test_hour_ranges_keep_only_their_window(env, monkeypatch):
+    """2h / 6h / 12h: every snapshot inside the window, none before it."""
+    _clock(monkeypatch)
+    a = await _portfolio(env.sm, "Ore A")
+    for h, v in ((NOW - timedelta(hours=13), "90"), (NOW - timedelta(hours=7), "95"),
+                 (NOW - timedelta(hours=3), "98"), (NOW - timedelta(minutes=30), "100")):
+        await _snap(env.sm, a, h, v)
+    expected = {"2h": [D(100)], "6h": [D(98), D(100)], "12h": [D(95), D(98), D(100)]}
+    for rng, values in expected.items():
+        r = await _get(env, range=rng)
+        assert r.status_code == 200, r.text
+        (item,) = r.json()["portfolios"]
+        assert [v for _, v in _points(item)] == values, rng
+
+
 async def test_1w_intraday_with_the_weekly_goal(env, monkeypatch):
     _clock(monkeypatch)
     a = await _portfolio(env.sm, "Goal A")

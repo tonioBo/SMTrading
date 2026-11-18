@@ -46,13 +46,23 @@ export function LineChart({ lines, formatValue, formatTick, axisTime, ariaLabel 
       t0 -= 30 * 60_000;
       t1 += 30 * 60_000;
     }
-    const ticks = niceTicks(Math.min(...all.map((p) => p.v)), Math.max(...all.map((p) => p.v)), 4);
+    // the scale follows the real series; reference lines (goals) only when there is none
+    const scaled = lines.filter((l) => !l.reference).flatMap((l) => l.points);
+    const vs = (scaled.length > 0 ? scaled : all).map((p) => p.v);
+    const ticks = niceTicks(Math.min(...vs), Math.max(...vs), 4);
     const v0 = ticks[0];
     const v1 = ticks[ticks.length - 1];
     const x = (t: number) => ((t - t0) / (t1 - t0)) * W;
     const y = (v: number) => H - ((v - v0) / (v1 - v0)) * H;
     const xTicks = Array.from({ length: X_TICKS }, (_, i) => t0 + ((t1 - t0) * (i + 0.5)) / X_TICKS);
-    return { t0, t1, ticks, step: ticks.length > 1 ? ticks[1] - ticks[0] : 1, x, y, xTicks };
+    /** a reference line outside the scale: drawn as a label at the top or bottom edge */
+    const outside = (l: ChartLine): "up" | "down" | null => {
+      if (!l.reference || l.points.length === 0) return null;
+      if (l.points.every((p) => p.v > v1)) return "up";
+      if (l.points.every((p) => p.v < v0)) return "down";
+      return null;
+    };
+    return { t0, t1, ticks, step: ticks.length > 1 ? ticks[1] - ticks[0] : 1, x, y, xTicks, outside };
   }, [lines]);
 
   const data = lines.filter((l) => !l.reference && l.points.length > 0);
@@ -103,7 +113,7 @@ export function LineChart({ lines, formatValue, formatTick, axisTime, ariaLabel 
             <line key={v} x1={0} x2={W} y1={geo.y(v)} y2={geo.y(v)} stroke="rgb(var(--border))" strokeWidth={1} vectorEffect="non-scaling-stroke" />
           ))}
           {lines.map((l) =>
-            l.points.length > 1 ? (
+            l.points.length > 1 && !geo.outside(l) ? (
               <path
                 key={l.key}
                 d={l.points.map((p, i) => `${i ? "L" : "M"}${geo.x(p.t).toFixed(2)},${geo.y(p.v).toFixed(2)}`).join("")}
@@ -128,7 +138,22 @@ export function LineChart({ lines, formatValue, formatTick, axisTime, ariaLabel 
             <Dot key={l.key} color={l.color} left={pct(geo.x(l.points[0].t), W)} top={pct(geo.y(l.points[0].v), H)} />
           ))}
         {lines
-          .filter((l) => l.tag && l.points.length > 0)
+          .filter((l) => geo.outside(l))
+          .map((l) => {
+            const up = geo.outside(l) === "up";
+            return (
+              <span
+                key={`edge-${l.key}`}
+                className={`pointer-events-none absolute right-0 whitespace-nowrap text-[10px] font-medium ${up ? "top-0" : "bottom-0"}`}
+                style={{ color: l.color }}
+                data-testid={`edge-${l.key}`}
+              >
+                {`${l.tag ?? l.label} ${up ? "↑" : "↓"}`}
+              </span>
+            );
+          })}
+        {lines
+          .filter((l) => l.tag && l.points.length > 0 && !geo.outside(l))
           .map((l) => {
             const last = l.points[l.points.length - 1];
             return (
