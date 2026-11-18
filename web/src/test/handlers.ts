@@ -36,6 +36,8 @@ export const commonHandlers = [
   ),
   // Dashboard «Obiettivi»: no active goal unless a test overrides it
   http.get("*/api/goals/progress", () => HttpResponse.json([])),
+  // «Obiettivi»: no piano ended yet unless a test overrides it
+  http.get("*/api/goals/plans", () => HttpResponse.json([])),
   // «Andamento» (Dashboard, portfolio detail): no snapshot unless a test overrides it
   http.get("*/api/portfolios/equity-history", ({ request }) =>
     HttpResponse.json({

@@ -1,10 +1,10 @@
 import { LayoutTemplate, Pencil, Plus, Power, RotateCcw } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
-import { useDeactivateGoal, useCreateGoal, useGoals, useGoalsProgress, useGoalTemplates, usePatchGoal } from "@/api/hooks/goals";
+import { useDeactivateGoal, useCreateGoal, useGoalPlans, useGoals, useGoalsProgress, useGoalTemplates, usePatchGoal } from "@/api/hooks/goals";
 import { useIsAdmin } from "@/api/hooks/auth";
 import { usePortfolios } from "@/api/hooks/portfolios";
-import type { Goal, GoalBenchmark, GoalCreate, GoalHorizon, GoalKind, GoalProgress, GoalScope, GoalTemplate } from "@/api/types";
+import type { Goal, GoalBenchmark, GoalCreate, GoalHorizon, GoalKind, GoalProgress, GoalScope, GoalTemplate, PlanState } from "@/api/types";
 import { AdminOnly } from "@/components/AdminOnly";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FormField, selectClass } from "@/components/FormField";
@@ -52,6 +52,7 @@ interface FormState {
   target_pct: string;
   kind: GoalKind;
   benchmark: GoalBenchmark;
+  closes_positions: boolean;
 }
 
 const DEFAULT_BENCHMARK: GoalBenchmark = "VWCE.DE";
@@ -61,13 +62,14 @@ function initialForm(goal: Goal | GoalCreate | null): FormState {
   if (!goal) {
     return {
       name: "", horizon: "week", start_date: today(), end_date: "", recurring: true, scope: "total",
-      portfolio_id: "", target_pct: "2", kind: "min", benchmark: DEFAULT_BENCHMARK,
+      portfolio_id: "", target_pct: "2", kind: "min", benchmark: DEFAULT_BENCHMARK, closes_positions: false,
     };
   }
   return {
     name: goal.name, horizon: goal.horizon, start_date: goal.start_date ?? today(), end_date: goal.end_date ?? "",
     recurring: goal.recurring ?? goal.horizon !== "custom", scope: goal.scope ?? "total", portfolio_id: goal.portfolio_id ?? "",
     target_pct: toInputDecimal(goal.target_pct), kind: goal.kind ?? "min", benchmark: goal.benchmark ?? DEFAULT_BENCHMARK,
+    closes_positions: goal.closes_positions ?? false,
   };
 }
 
@@ -79,7 +81,7 @@ const TARGET_LABEL: Record<GoalKind, { label: string; hint: string }> = {
   beat_index: { label: "Margine (punti %)", hint: "di quanto fare meglio dell'indice; 0 = basta fare meglio" },
 };
 
-const FORM_FIELDS = ["name", "horizon", "start_date", "end_date", "recurring", "scope", "portfolio_id", "target_pct", "kind", "benchmark"];
+const FORM_FIELDS = ["name", "horizon", "start_date", "end_date", "recurring", "scope", "portfolio_id", "target_pct", "kind", "benchmark", "closes_positions"];
 
 /** Mounted per opening: create (`goal` null, or `template` to prefill) or edit a goal. */
 function GoalDialog({ goal, template, onClose }: { goal: Goal | null; template?: GoalCreate; onClose: () => void }) {
@@ -131,6 +133,7 @@ function GoalDialog({ goal, template, onClose }: { goal: Goal | null; template?:
       target_pct: pct!,
       kind: form.kind,
       benchmark: index ? form.benchmark : null,
+      closes_positions: form.closes_positions,
     };
     const done = {
       onSuccess: () => {
@@ -237,6 +240,29 @@ function GoalDialog({ goal, template, onClose }: { goal: Goal | null; template?:
               </select>
             </FormField>
           )}
+          <div className="space-y-1 sm:col-span-2">
+            <div className="flex items-center gap-2 text-sm">
+              <input
+                id="goal-closes-positions"
+                type="checkbox"
+                checked={form.closes_positions}
+                onChange={(e) => set("closes_positions", e.target.checked)}
+                className="h-4 w-4 accent-[rgb(var(--accent))]"
+                aria-describedby="goal-closes-positions-help"
+              />
+              <label htmlFor="goal-closes-positions">Chiude le posizioni a fine periodo</label>
+            </div>
+            <p id="goal-closes-positions-help" className="text-xs text-muted">
+              Un piano: gli agenti chiudono le posizioni entro la fine del periodo; quelle ancora aperte e non in perdita le chiude
+              SMTrading alla prima apertura del mercato, quelle in perdita dopo qualche giorno di mercato di grazia (settimana 1,
+              mese 3, trimestre 5, anno 10), senza aggiunte. Al massimo un piano per portafoglio.
+            </p>
+            {fieldError("closes_positions") && (
+              <p role="alert" className="text-xs text-loss">
+                {fieldError("closes_positions")}
+              </p>
+            )}
+          </div>
           {generalError && (
             <p role="alert" className="text-sm text-loss sm:col-span-2">
               {generalError}
@@ -359,7 +385,52 @@ function TemplatesDialog({ onChoose, onClose }: { onChoose: (t: GoalTemplate) =>
   );
 }
 
-function GoalCard({ goal, progress, onEdit, onDeactivate }: { goal: Goal; progress: GoalProgress | undefined; onEdit: () => void; onDeactivate: () => void }) {
+const PLAN_STATE_LABEL: Record<PlanState["positions"][number]["state"], string> = {
+  pending: "in attesa dell'apertura",
+  grace: "in grazia",
+  closing: "in chiusura",
+  closed: "chiusa",
+};
+
+/** After a piano's period: how its positions were closed («2 chiuse · 1 in grazia fino al …»). */
+function PlanOutcome({ plan }: { plan: PlanState }) {
+  const { counts } = plan;
+  const parts = [
+    counts.closed ? `${counts.closed} chiuse` : null,
+    counts.grace ? `${counts.grace} in grazia` : null,
+    counts.pending + counts.closing ? `${counts.pending + counts.closing} in chiusura` : null,
+  ].filter(Boolean);
+  return (
+    <div className="space-y-1 rounded-md border p-2 text-xs" aria-label="Esito del piano">
+      <p className="font-medium">
+        {`Fine periodo ${periodLabel(plan.period_start, plan.period_end)}: ${parts.length ? parts.join(" · ") : "nessuna posizione aperta"}`}
+      </p>
+      <ul className="space-y-0.5 text-muted">
+        {plan.positions.map((x) => (
+          <li key={`${x.portfolio_id}:${x.symbol}`}>
+            {`${x.symbol} · ${x.portfolio_name}: ${PLAN_STATE_LABEL[x.state]}`}
+            {x.state === "grace" && x.deadline ? ` fino al ${formatDateTime(x.deadline)}` : ""}
+            {x.state === "closed" && x.closed_by ? (x.closed_by === "system" ? " da SMTrading" : " dagli agenti") : ""}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function GoalCard({
+  goal,
+  progress,
+  plan,
+  onEdit,
+  onDeactivate,
+}: {
+  goal: Goal;
+  progress: GoalProgress | undefined;
+  plan?: PlanState;
+  onEdit: () => void;
+  onDeactivate: () => void;
+}) {
   const admin = useIsAdmin();
   const p = progress;
   return (
@@ -369,6 +440,11 @@ function GoalCard({ goal, progress, onEdit, onDeactivate }: { goal: Goal; progre
           <CardTitle className="flex items-center gap-2">
             {goal.name}
             <span className="num text-base font-semibold text-muted">{goalTargetLabel(goal.kind, goal.target_pct, goal.benchmark)}</span>
+            {goal.closes_positions && (
+              <StatusBadge tone="info" title="Chiude le posizioni a fine periodo">
+                Piano
+              </StatusBadge>
+            )}
           </CardTitle>
           {p ? (
             <StatusBadge tone={STATUS_TONE[p.status] ?? "neutral"}>{p.status}</StatusBadge>
@@ -397,6 +473,7 @@ function GoalCard({ goal, progress, onEdit, onDeactivate }: { goal: Goal; progre
             <GoalParts goal={p} />
           </div>
         )}
+        {plan && <PlanOutcome plan={plan} />}
         {admin && (
           <div className="flex justify-end gap-2">
             <Button size="sm" variant="ghost" aria-label={`Modifica ${goal.name}`} onClick={onEdit}>
@@ -437,7 +514,14 @@ function InactiveGoals({ goals, onEdit }: { goals: Goal[]; onEdit: (g: Goal) => 
           <TableBody>
             {goals.map((g) => (
               <TableRow key={g.id}>
-                <TableCell className="font-medium">{g.name}</TableCell>
+                <TableCell className="font-medium">
+                  {g.name}
+                  {g.closes_positions && (
+                    <StatusBadge tone="neutral" className="ml-2">
+                      Piano
+                    </StatusBadge>
+                  )}
+                </TableCell>
                 <TableCell className="num">{goalTargetLabel(g.kind, g.target_pct, g.benchmark)}</TableCell>
                 <TableCell>{goalScopeLabel(g)}</TableCell>
                 <TableCell>{horizonLabel(g)}</TableCell>
@@ -483,6 +567,8 @@ function InactiveGoals({ goals, onEdit }: { goals: Goal[]; onEdit: (g: Goal) => 
 export default function Goals() {
   const { data, isLoading, isError } = useGoals();
   const progress = useGoalsProgress();
+  const plans = useGoalPlans();
+  const planById = new Map((plans.data ?? []).map((p) => [p.goal_id, p]));
   const [editing, setEditing] = useState<Goal | null | undefined>(undefined); // null = new
   const [deactivating, setDeactivating] = useState<Goal | null>(null);
   const [choosing, setChoosing] = useState(false);
@@ -527,7 +613,7 @@ export default function Goals() {
             ) : (
               <div className="grid gap-4 lg:grid-cols-2">
                 {active.map((g) => (
-                  <GoalCard key={g.id} goal={g} progress={byId.get(g.id)} onEdit={() => setEditing(g)} onDeactivate={() => setDeactivating(g)} />
+                  <GoalCard key={g.id} goal={g} progress={byId.get(g.id)} plan={planById.get(g.id)} onEdit={() => setEditing(g)} onDeactivate={() => setDeactivating(g)} />
                 ))}
               </div>
             )}

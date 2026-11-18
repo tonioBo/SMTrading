@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { Goal, GoalProgress, GoalTemplate } from "@/api/types";
+import type { Goal, GoalProgress, GoalTemplate, PlanState } from "@/api/types";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
 
@@ -61,6 +61,7 @@ const templates: GoalTemplate[] = [
   },
 ];
 let templateCalls = 0;
+let plans: PlanState[] = [];
 
 let role: "admin" | "viewer" = "admin";
 let goals: Goal[] = [];
@@ -91,6 +92,7 @@ const server = setupServer(
       }),
     ]),
   ),
+  http.get("*/api/goals/plans", () => HttpResponse.json(plans)),
   http.get("*/api/goals/templates", () => {
     templateCalls += 1;
     return HttpResponse.json(templates);
@@ -132,6 +134,7 @@ afterEach(() => {
   calls = [];
   postError = null;
   templateCalls = 0;
+  plans = [];
 });
 afterAll(() => server.close());
 
@@ -199,7 +202,7 @@ describe("Obiettivi", () => {
         method: "POST", path: "/api/goals",
         body: {
           name: "Natale", horizon: "custom", start_date: "2026-11-20", end_date: "2026-12-24", recurring: false,
-          scope: "portfolio", portfolio_id: "p2", target_pct: "3.5", kind: "cap", benchmark: null,
+          scope: "portfolio", portfolio_id: "p2", target_pct: "3.5", kind: "cap", benchmark: null, closes_positions: false,
         },
       },
     ]);
@@ -330,6 +333,44 @@ describe("Obiettivi", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("a piano: the checkbox with its help, the «Piano» badge, the error on its field and the outcome", async () => {
+    reset();
+    goals = [{ ...weekly, closes_positions: true }, xmas, old, risk, index];
+    plans = [
+      {
+        goal_id: "g1", period_start: "2026-11-09", period_end: "2026-11-15", grace_days: 1,
+        counts: { pending: 0, grace: 1, closing: 0, closed: 2 },
+        positions: [
+          { portfolio_id: "p1", portfolio_name: "Alfa", symbol: "AAPL", state: "grace", deadline: "2026-11-16T21:00:00Z", closed_by: null, closed_at: null },
+          { portfolio_id: "p1", portfolio_name: "Alfa", symbol: "BTC-USD", state: "closed", deadline: null, closed_by: "system", closed_at: "2026-11-15T23:05:00Z" },
+          { portfolio_id: "p2", portfolio_name: "Beta", symbol: "ENI.MI", state: "closed", deadline: null, closed_by: "agent", closed_at: "2026-11-16T09:00:00Z" },
+        ],
+      },
+    ];
+    const user = userEvent.setup();
+    renderApp("/obiettivi");
+    const w = await screen.findByRole("article", { name: "Obiettivo settimanale" });
+    expect(within(w).getByText("Piano")).toBeInTheDocument();
+    const outcome = await within(w).findByLabelText("Esito del piano");
+    expect(outcome).toHaveTextContent("Fine periodo 09/11/2026 – 15/11/2026: 2 chiuse · 1 in grazia");
+    expect(outcome).toHaveTextContent("AAPL · Alfa: in grazia fino al 16/11/2026 22:00:00");
+    expect(outcome).toHaveTextContent("BTC-USD · Alfa: chiusa da SMTrading");
+    expect(outcome).toHaveTextContent("ENI.MI · Beta: chiusa dagli agenti");
+    expect(within(screen.getByRole("article", { name: "Obiettivo Natale" })).queryByText("Piano")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Nuovo obiettivo" }));
+    const dialog = await screen.findByRole("dialog");
+    const box = within(dialog).getByLabelText("Chiude le posizioni a fine periodo");
+    expect(box).not.toBeChecked();
+    expect(box).toHaveAccessibleDescription(/al massimo un piano per portafoglio/i);
+    await user.type(within(dialog).getByLabelText("Nome"), "mese");
+    await user.click(box);
+    postError = { field: "closes_positions", message: "c'è già un piano attivo (settimanale)" };
+    await user.click(within(dialog).getByRole("button", { name: "Crea" }));
+    expect(await within(dialog).findByText("c'è già un piano attivo (settimanale)")).toBeInTheDocument();
+    expect(calls[0].body).toMatchObject({ name: "mese", closes_positions: true });
+  });
+
   it("edits a goal with its current values", async () => {
     reset();
     const user = userEvent.setup();
@@ -347,7 +388,7 @@ describe("Obiettivi", () => {
       method: "PATCH", path: "/api/goals/g1",
       body: {
         name: "settimanale", horizon: "week", start_date: "2026-01-05", end_date: null, recurring: true,
-        scope: "total", portfolio_id: null, target_pct: "2.5", kind: "min", benchmark: null,
+        scope: "total", portfolio_id: null, target_pct: "2.5", kind: "min", benchmark: null, closes_positions: false,
       },
     });
   });

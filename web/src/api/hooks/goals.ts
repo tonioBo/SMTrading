@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
-import type { Goal, GoalCreate, GoalPatch, GoalProgress, GoalTemplate } from "@/api/types";
+import type { Goal, GoalCreate, GoalPatch, GoalProgress, GoalTemplate, PlanState } from "@/api/types";
 
 export const goalsKey = ["goals"] as const;
 export const goalsProgressKey = ["goals", "progress"] as const;
@@ -16,6 +16,16 @@ export function useGoalsProgress() {
   return useQuery({
     queryKey: goalsProgressKey,
     queryFn: () => apiFetch<GoalProgress[]>("/api/goals/progress"),
+    refetchInterval: GOALS_REFRESH_MS,
+    refetchIntervalInBackground: false,
+  });
+}
+
+/** `GET /api/goals/plans`: the active piani's latest ended period (closed, in grace, …). */
+export function useGoalPlans() {
+  return useQuery({
+    queryKey: [...goalsKey, "plans"],
+    queryFn: () => apiFetch<PlanState[]>("/api/goals/plans"),
     refetchInterval: GOALS_REFRESH_MS,
     refetchIntervalInBackground: false,
   });
