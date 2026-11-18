@@ -3,7 +3,7 @@
 setting) behind the compatibility surfaces (`GET /api/weekly-goal`, the `weekly_goal`
 app setting, the 1w goal of the «Andamento» chart)."""
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
@@ -20,7 +20,7 @@ MAX_PCT = Decimal(1000)
 MAX_CUSTOM_DAYS = 3 * 366
 _Q2 = Decimal("0.01")
 FIELDS = ("name", "horizon", "start_date", "end_date", "recurring", "scope",
-          "portfolio_id", "target_pct", "kind", "benchmark", "active")
+          "portfolio_id", "target_pct", "kind", "benchmark", "active", "closes_positions")
 WEEKLY_NAME = "settimanale"
 
 
@@ -103,6 +103,7 @@ async def validated(session: AsyncSession, raw: dict[str, Any], *,
                             BENCHMARKS, "benchmark")
     recurring = _bool(raw["recurring"], "recurring")
     active = _bool(raw["active"], "active")
+    closes = _bool(raw.get("closes_positions", False), "closes_positions")
     start = _date(raw["start_date"], "start_date") or today
     end = _date(raw["end_date"], "end_date")
     if horizon == "custom":
@@ -125,12 +126,43 @@ async def validated(session: AsyncSession, raw: dict[str, Any], *,
     return {"name": name, "horizon": horizon, "start_date": start, "end_date": end,
             "recurring": recurring, "scope": scope, "portfolio_id": portfolio_id,
             "target_pct": parse_pct(raw["target_pct"], zero=kind == "beat_index"),
-            "kind": kind, "benchmark": benchmark, "active": active}
+            "kind": kind, "benchmark": benchmark, "active": active,
+            "closes_positions": closes}
+
+
+PLAN_OVERLAP = ("c'è già un piano attivo che chiude le posizioni di questo portafoglio "
+                "a fine periodo ({name}): al massimo un piano per portafoglio")
+
+
+async def _check_one_plan(session: AsyncSession, values: dict[str, Any],
+                          goal_id: UUID | None) -> None:
+    """At most one active piano covers a portfolio: a total one covers every portfolio,
+    a portfolio one its own (goals of archived portfolios aside)."""
+    if not (values["active"] and values["closes_positions"]):
+        return
+    others = await session.scalars(
+        select(Goal).where(Goal.active.is_(True), Goal.closes_positions.is_(True),
+                           *([Goal.id != goal_id] if goal_id else [])))
+    archived = set(await session.scalars(
+        select(Portfolio.id).where(Portfolio.status == PortfolioStatus.archived)))
+    for other in others:
+        if other.scope == "portfolio" and other.portfolio_id in archived:
+            continue
+        if (values["scope"] == "total" or other.scope == "total"
+                or other.portfolio_id == values["portfolio_id"]):
+            raise _invalid("closes_positions", PLAN_OVERLAP.format(name=other.name))
+
+
+def _plan_since(goal: Goal, values: dict[str, Any]) -> None:
+    """`plan_since` is now whenever the goal becomes an active piano."""
+    was = bool(goal.active and goal.closes_positions) if goal.id else False
+    if values["active"] and values["closes_positions"] and not was:
+        goal.plan_since = datetime.now(UTC)
 
 
 DEFAULTS: dict[str, Any] = {"start_date": None, "end_date": None, "recurring": False,
                             "scope": "total", "portfolio_id": None, "kind": "min",
-                            "benchmark": None, "active": True}
+                            "benchmark": None, "active": True, "closes_positions": False}
 
 
 async def create_goal(session: AsyncSession, body: dict[str, Any], *, today: date) -> Goal:
@@ -138,7 +170,10 @@ async def create_goal(session: AsyncSession, body: dict[str, Any], *, today: dat
     for f in ("name", "horizon", "target_pct"):
         if raw.get(f) is None:
             raise _invalid(f, f"{f} obbligatorio")
-    goal = Goal(**await validated(session, raw, today=today))
+    values = await validated(session, raw, today=today)
+    await _check_one_plan(session, values, None)
+    goal = Goal(**values)
+    _plan_since(goal, values)
     session.add(goal)
     await session.flush()
     await session.refresh(goal)
@@ -171,6 +206,8 @@ async def update_goal(session: AsyncSession, goal: Goal, body: dict[str, Any], *
     recheck = ("portfolio_id" in body or "scope" in body
                or (body.get("active") is True and not goal.active))
     values = await validated(session, raw, today=today, check_portfolio=recheck)
+    await _check_one_plan(session, values, goal.id)
+    _plan_since(goal, values)
     for key, value in values.items():
         setattr(goal, key, value)
     await session.flush()
@@ -194,7 +231,7 @@ def goal_dto(goal: Goal, portfolio: tuple[str, bool] | None = None) -> dict[str,
         "start_date": goal.start_date, "end_date": goal.end_date,
         "recurring": goal.recurring, "scope": goal.scope, "portfolio_id": goal.portfolio_id,
         "target_pct": goal.target_pct, "kind": goal.kind, "benchmark": goal.benchmark,
-        "active": goal.active,
+        "active": goal.active, "closes_positions": goal.closes_positions,
         "created_at": goal.created_at, "updated_at": goal.updated_at,
         "portfolio_name": portfolio[0] if portfolio else None,
         "portfolio_archived": bool(portfolio and portfolio[1]),

@@ -77,7 +77,9 @@ async def test_crud_and_validation(env, monkeypatch):
     g = r.json()
     assert set(g) == {"id", "name", "horizon", "start_date", "end_date", "recurring",
                       "scope", "portfolio_id", "target_pct", "kind", "benchmark", "active",
-                      "created_at", "updated_at", "portfolio_name", "portfolio_archived"}
+                      "closes_positions", "created_at", "updated_at", "portfolio_name",
+                      "portfolio_archived"}
+    assert g["closes_positions"] is False
     assert (g["name"], g["start_date"], g["end_date"], g["recurring"], g["portfolio_id"],
             g["portfolio_name"], g["target_pct"], g["kind"], g["active"]) == (
         "Mese di marzo", "2027-03-10", None, False, str(pid), "Obiettivi P", "5.5", "min",
@@ -397,3 +399,42 @@ async def test_templates_prudent_or_dynamic_by_profile(env, monkeypatch):
     assert by[f"risk_yearly:{dyn}"]["body"]["target_pct"] == "20"
     qqq = by[f"beat_qqq_quarter:{dyn}"]["body"]
     assert (qqq["kind"], qqq["benchmark"], qqq["scope"]) == ("beat_index", "QQQ", "portfolio")
+
+
+async def test_plans_one_per_portfolio(env, monkeypatch):
+    """A «piano» (closes_positions): at most one active piano covers a portfolio."""
+    _clock(monkeypatch, rome(WED, 10))
+    c = await _admin(env)
+    a = await _portfolio(env.sm, "Piano A")
+    b = await _portfolio(env.sm, "Piano B")
+    body = {"name": "piano A", "horizon": "month", "target_pct": "3", "recurring": True,
+            "scope": "portfolio", "portfolio_id": str(a), "closes_positions": True}
+    r = await c.post("/api/goals", json=body)
+    assert r.status_code == 200 and r.json()["closes_positions"] is True
+    plan_a = r.json()["id"]
+    # the same portfolio, or the total (it covers every portfolio): refused
+    for other in ({**body, "name": "altro A"},
+                  {"name": "totale", "horizon": "week", "target_pct": "2",
+                   "closes_positions": True}):
+        r = await c.post("/api/goals", json=other)
+        assert r.status_code == 400, r.text
+        assert r.json()["details"]["field"] == "closes_positions"
+        assert "piano A" in r.json()["message"]
+    # another portfolio: fine; a goal that closes nothing: fine
+    r = await c.post("/api/goals", json={**body, "name": "piano B", "portfolio_id": str(b)})
+    assert r.status_code == 200
+    r = await c.post("/api/goals", json={**body, "name": "solo obiettivo",
+                                         "closes_positions": False})
+    assert r.status_code == 200
+    # turning an existing goal into a piano is checked too
+    r = await c.patch(f"/api/goals/{r.json()['id']}", json={"closes_positions": True})
+    assert r.status_code == 400
+    # once piano A is off, the total can be one... but piano B still covers B
+    assert (await c.patch(f"/api/goals/{plan_a}", json={"closes_positions": False})
+            ).status_code == 200
+    r = await c.post("/api/goals", json={"name": "totale", "horizon": "week",
+                                         "target_pct": "2", "closes_positions": True})
+    assert r.status_code == 400
+    r = await c.post("/api/goals", json={**body, "closes_positions": "yes"})
+    assert r.status_code in (400, 422)
+    assert (await c.get("/api/goals/plans")).json() == []

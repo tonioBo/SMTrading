@@ -8,12 +8,16 @@ level). Every figure is a string (null without data).
   custom), scope (default total), portfolio_id (scope portfolio, not archived), kind
   (min | cap | max_loss | beat_index, default min), benchmark (SPY | QQQ | VWCE.DE,
   beat_index only and required there; target_pct is then the margin in points, 0
-  allowed), active (default true);
+  allowed), active (default true), closes_positions (default false: the goal is a
+  «piano», its positions are closed at the end of the period, `goals.plans`; at most one
+  active piano covers a portfolio, else 400 with field closes_positions);
 - `PATCH /api/goals/{goal_id}`: only the fields sent change, validated as a whole;
 - `DELETE /api/goals/{goal_id}`: never deleted, active=false;
 - `GET /api/goals/templates`: the «Modelli» ([{key, label, body, exists}], `body` a POST
   body that prefills the dialog; per portfolio: one per live portfolio; `exists` true
   when an equivalent active goal is already there);
+- `GET /api/goals/plans`: per active piano, its latest ended period's positions and how
+  they are closed (`goals.plan_closer.plan_states`);
 - `GET /api/goals/progress`: the progress of the active goals in their current period
   (goals of archived portfolios left out)."""
 
@@ -29,6 +33,7 @@ from smtrading.admin.auth import DbSession, RedisClient, require_access
 from smtrading.admin.common import _transaction
 from smtrading.common.config import get_settings
 from smtrading.goals import service
+from smtrading.goals.plan_closer import plan_states
 from smtrading.goals.progress import active_progress
 from smtrading.mcp.dto import to_jsonable
 
@@ -49,6 +54,7 @@ class GoalIn(BaseModel):
     kind: str | None = None
     benchmark: str | None = None
     active: StrictBool | None = None
+    closes_positions: StrictBool | None = None
 
 
 def _now() -> datetime:
@@ -76,6 +82,11 @@ async def list_goals(session: DbSession) -> list[dict[str, Any]]:
 @router.get("/goals/progress")
 async def goals_progress(session: DbSession) -> list[dict[str, Any]]:
     return to_jsonable(await active_progress(session, _now(), _zone()))
+
+
+@router.get("/goals/plans")
+async def goal_plans(session: DbSession) -> list[dict[str, Any]]:
+    return to_jsonable(await plan_states(session))
 
 
 @router.get("/goals/templates")
