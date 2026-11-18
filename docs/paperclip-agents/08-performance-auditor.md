@@ -77,9 +77,13 @@ Controlli di conformità (ogni violazione è una «non conformità» numerata):
    rifiuta: verifica che i rifiuti `TRADING_HALTED`/`KILL_SWITCH_ACTIVE`/`REDUCE_ONLY` non
    siano stati ripetuti alla cieca).
 5. Ogni posizione aperta ha uno stop di uscita attivo (`list_orders` `held`/`pending`).
-6. Short solo come «short tattico» approvato (solo AGG, ≤ metà del limite di posizione,
+6. Short solo come «short tattico» approvato (`short_allowed`, ≤ metà della dimensione di un acquisto,
    revisione ogni 2 settimane).
 7. Strategie usate solo se approvate (con backtest) e non oltre la loro data di revisione.
+7b. Ogni approvazione del Risk Manager riporta i suoi controlli (`details.checks`: rischio
+    allo stop, peso e concentrazione, numero di posizioni, esposizione totale, perdita della
+    settimana) con le soglie usate, coerenti con le sue `risk_rule`; ogni posizione dopo un
+    cambio di profilo rispetta i nuovi limiti o ha una decisione del RM.
 
 Osservazioni di stile (non sono non conformità, ma commentale): numero di operazioni coerente
 con lo stile (PRU pochi trade, AGG swing + intraday), posizioni intraday di AGG

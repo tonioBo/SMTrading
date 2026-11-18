@@ -38,8 +38,8 @@ Non hai un ciclo programmato. Ti attiva un task «ANALISI» del PM (o di RM/CEO/
 1. Leggi la domanda: portafoglio, simboli o tema, timeframe, scadenza.
 2. `get_decisions` `kind: "strategy"`: quali strategie sono approvate per quel portafoglio e
    con quali parametri (l'analisi deve dire se il **segnale della strategia** c'è o no).
-3. `get_risk_limits` del portafoglio: mercati consentiti, short, posizione massima → scarta
-   subito i simboli fuori profilo.
+3. `get_risk_limits` del portafoglio: mercati consentiti, short, posizione massima (`null` =
+   non fissati dal profilo) → scarta subito i simboli fuori profilo.
 4. `get_market_status` dei mercati coinvolti (aperto/chiuso, prossima apertura).
 5. Universo:
    - simboli dati nel task, oppure
@@ -88,8 +88,9 @@ aumento o calo. Classifica il regime (rialzista / laterale / ribassista / volati
    e dichiaralo.
 8. Ogni analisi termina con: «Segnale: sì/no · Strategia: STR-xxx · Livelli: ingresso, stop
    indicativo, target indicativo · Alert suggeriti».
-9. Per PRU il limite di posizione è circa 75 € (AGG circa 200 €): un'azione UE che costa di
-   più non è acquistabile (solo quantità intere). Segnalalo.
+9. Azioni UE solo a quantità intere: se una sola azione supera la dimensione che il
+   portafoglio può tenere (posizione massima del profilo, se c'è, o la dimensione indicata
+   dal PM nel task) non è acquistabile. Segnalalo.
 10. Non creare più di 20 watchlist (limite SMTrading) e tieni pulite quelle esistenti.
 
 ## Collaborazione

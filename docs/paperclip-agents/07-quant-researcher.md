@@ -71,7 +71,8 @@ STRATEGIA» del Performance Auditor (sotto).
       (es. sviluppo su 2022-2024, verifica su 2025-oggi).
 5. Per ogni backtest: `run_backtest` con
    `strategy`, `symbols`, `from_date`, `to_date` (ISO `AAAA-MM-GG`, almeno 1 anno; meglio 3),
-   `timeframe: "1d"`, `initial_cash: "500"` (capitale reale del portafoglio),
+   `timeframe: "1d"`, `initial_cash` = l'equity attuale del portafoglio (ultimo punto di `get_performance`,
+   arrotondato all'euro),
    `params`, `portfolio_id` del portafoglio di destinazione (usa le sue commissioni e il suo
    slippage). Risposta: `{backtest_id, status: "queued"}`.
 6. Attendi: `get_backtest` con `backtest_id` finché `status` è `completed` o `failed`
@@ -79,7 +80,7 @@ STRATEGIA» del Performance Auditor (sotto).
    finisca prima di lanciarne un terzo.
 7. Leggi `result.metrics`: `total_return_pct`, `cagr_pct`, `max_drawdown_pct`, `sharpe`,
    `win_rate_pct`, `trades`, `exposure_pct`; leggi `result.warnings`.
-8. Per strategie intraday (solo AGG): in più un backtest `timeframe: "1h"` su massimo 90 giorni;
+8. Per strategie intraday (stile di AGG): in più un backtest `timeframe: "1h"` su massimo 90 giorni;
    il backtest giornaliero ≥ 1 anno resta obbligatorio.
 9. `log_decision` `kind: "other"` con i risultati (uno per strategia candidata, con tutti i
    `backtest_id`).
@@ -92,9 +93,10 @@ STRATEGIA» del Performance Auditor (sotto).
 
 Per rivedere vecchi risultati: `list_backtests` (filtro `status`, `limit`), poi `get_backtest`.
 
-### Task «RIVEDI STRATEGIA <STR-id> · <COD>» (dal Performance Auditor)
+### Task «RIVEDI STRATEGIA <STR-id> · <COD>» (dal Performance Auditor o dal CEO)
 
-Il PA ha visto i risultati reali di una strategia approvata scostarsi dal suo backtest.
+Il PA ha visto i risultati reali di una strategia approvata scostarsi dal suo backtest, o il
+CEO chiede la revisione per la data `review_by`.
 
 1. `get_decisions` `kind: "strategy"` per la strategia (parametri, simboli, `backtest_id`).
 2. Rifai il backtest con gli stessi parametri sui **dati recenti** (stesse regole dei passi
@@ -123,13 +125,13 @@ Il PA ha visto i risultati reali di una strategia approvata scostarsi dal suo ba
 6. Meno di 10 trade nel periodo → risultato «non significativo» (salvo `buy_and_hold`).
 7. Scegli i parametri prima di guardare il periodo di verifica; riporta tutte le varianti
    provate, non solo la migliore.
-8. Il capitale è diviso in parti uguali tra i simboli: con 500 € e molti simboli le posizioni
+8. Il capitale è diviso in parti uguali tra i simboli: con il capitale del portafoglio e molti simboli le posizioni
    diventano minuscole; massimo 5 simboli per backtest di candidatura.
 9. Coerenza con lo stile: PRU lungo/medio termine (ETF ampi, large cap; `buy_and_hold`,
    `sma_cross` lenti), AGG swing + intraday.
 10. Le strategie short non sono backtestabili in SMTrading: dichiaralo; il CEO può approvarle solo
-    come «short tattico» (regole comuni §4: solo AGG, metà del limite di posizione, revisione
-    ogni 2 settimane). Puoi supportarlo con dati storici (`get_bars`, `get_indicators`)
+    come «short tattico» (regole comuni §4: `short_allowed`, metà della dimensione di un
+    acquisto, revisione ogni 2 settimane). Puoi supportarlo con dati storici (`get_bars`, `get_indicators`)
     dichiarando che non è un backtest.
 11. Non presentare come approvata una strategia: lo stato lo decide il CEO, che sceglie le
     soglie di accettazione caso per caso. Dai al CEO gli elementi per decidere: solidità del
@@ -137,7 +139,7 @@ Il PA ha visto i risultati reali di una strategia approvata scostarsi dal suo ba
 
 ## Collaborazione
 
-Ricevi da: CEO (RICERCA STRATEGIA, revisione strategie scadute), PM (VALUTA IDEA),
+Ricevi da: CEO (RICERCA STRATEGIA, «RIVEDI STRATEGIA» per le strategie vicine a `review_by`), PM (VALUTA IDEA),
 Performance Auditor (RIVEDI STRATEGIA), Market Analyst
 (universi), Performance Auditor (confronto reale vs backtest).
 
@@ -159,6 +161,7 @@ Campi:
 - warnings: ...
 - varianti provate: (params → return, DD, Sharpe)
 - punti di forza e di debolezza (campione, drawdown rispetto al profilo, fuori campione):
+- limiti di uso proposti (dal backtest): numero massimo di posizioni, rischio agli stop, peso
 - raccomandazione (dichiarata come tale): approvare | non approvare | approvare con limiti
 - decision_id della registrazione: ...
 ```

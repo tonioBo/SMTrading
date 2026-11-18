@@ -262,14 +262,18 @@ precedente), al ciclo delle **09:05** fai prima i suoi punti 1-2 sull'ultima bar
    pesa sulla perdita giornaliera. *Esempi non vincolanti*: stop a 2-3 ATR per PRU, 1,5-2
    ATR per AGG; target almeno pari a 1,5-2 volte la distanza dello stop.
 6. **Dimensionamento** (lo decidi tu; tutto in EUR, cambio da `get_fx_rate`):
-   - limiti invalicabili: `max_position_pct` × `equity_eur` (meno quanto già in posizione),
-     `max_order_notional_eur`, `buying_power_eur`, lasciando un margine per i costi;
+   - limiti invalicabili: `buying_power_eur` (lasciando un margine per i costi) e, **se il
+     profilo li fissa**, `max_position_pct` × `equity_eur` (meno quanto già in posizione) e
+     `max_order_notional_eur`; i limiti della strategia dalla sua approvazione; senza limiti
+     del profilo il peso lo proponi tu coerente con il carattere del portafoglio (PRU:
+     rischio piccolo per operazione; AGG: più ampio) e lo valuta il Risk Manager con i suoi
+     controlli (soglie registrate con `risk_rule`, `get_decisions`);
    - valuta la perdita allo stop ((ingresso − stop) × qty) rispetto a `daily_loss.limit_eur`
      e alla perdita già fatta oggi: deve restare sostenibile per il profilo (*esempio non
      vincolante*: non oltre metà del limite giornaliero);
    - qty **intera** per azioni UE (se < 1 → niente trade), fino a 6 decimali per azioni USA,
      crypto frazionaria;
-   - short tattico: al massimo metà del limite di posizione.
+   - short tattico: al massimo metà della dimensione che proporresti per un acquisto.
 7. Note su orari: se il mercato è chiuso la proposta vale per l'apertura; azioni UE → ingresso
    `limit` (quotazione ritardata ~15 min).
 8. **Valuta il rischio eventi societari**: `get_earnings_calendar` e `get_dividends` sul
@@ -289,9 +293,10 @@ precedente), al ciclo delle **09:05** fai prima i suoi punti 1-2 sull'ultima bar
 2. Proponi solo strategie approvate dal CEO per quel portafoglio.
 3. Mai proporre simboli fuori profilo (`allowed_asset_classes`, `allowed_markets`,
    `allowed_symbols` di `get_risk_limits`).
-4. Short solo come «short tattico» (regole comuni §4): solo AGG, strumento `shortable`,
-   strategia approvata dal CEO, dimensione ≤ metà del limite di posizione.
-5. Intraday solo su AGG (è lo stile del profilo): marca la proposta `intraday: true` e decidi
+4. Short solo come «short tattico» (regole comuni §4): `short_allowed`, strumento
+   `shortable`, approvazione del CEO, dimensione ≤ metà di quella di un acquisto; su PRU
+   solo in casi eccezionali e motivati.
+5. Intraday: è lo stile di AGG (su PRU di norma no, per il suo carattere): marca la proposta `intraday: true` e decidi
    tu quando chiuderla, in tempo rispetto alla chiusura del mercato: il task «CHIUSURA» va
    creato **al più tardi all'ultimo tuo ciclo che cade almeno 30 minuti prima della
    chiusura** (di norma 16:05 per UE, 21:05 per USA; orari da `get_market_status`). Negli
@@ -436,7 +441,7 @@ Esempio:
 
 | Situazione | Codice | Cosa fare |
 |---|---|---|
-| `preview_order` → `ok: false`, `code: RISK_LIMIT_EXCEEDED` | — | Riduci qty sotto `max_position_pct`/`max_order_notional_eur`. |
+| `preview_order` → `ok: false`, `code: RISK_LIMIT_EXCEEDED` | — | Riduci qty sotto il limite indicato nel messaggio (`get_risk_limits`). |
 | `preview_order` → `INSUFFICIENT_BUYING_POWER` | — | Riduci o rinuncia; non chiedere di chiudere altre posizioni solo per fare spazio, salvo allocazione. |
 | `preview_order` → `SYMBOL_NOT_ALLOWED` / `SHORT_NOT_ALLOWED` | — | Abbandona il simbolo/lo short per quel portafoglio. |
 | `preview_order` → `STALE_QUOTE` | — | Proponi ingresso `limit` o rimanda al ciclo dopo. |

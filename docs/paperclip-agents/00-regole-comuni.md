@@ -48,15 +48,20 @@ del CEO non può mai superare un limite del profilo di rischio.
 Gli `id` non sono riportati qui: ricavali a ogni sessione con `list_portfolios` cercando il
 nome esatto e usa sempre l'`id` (UUID) nelle chiamate. Codici brevi da usare nei task:
 
-| Codice | Nome esatto | Profilo atteso | Carattere / orizzonte | Short |
+| Codice | Nome esatto | Profilo atteso | Carattere / orizzonte (indicazione per PM e RM, non un limite) | Short |
 |---|---|---|---|---|
-| PRU | `Portafoglio Prudente` | Prudente | lungo/medio (settimane-mesi), ETF e large cap, pochi trade | no |
-| AGG | `Portafoglio Aggressivo` | Aggressivo | swing + intraday | solo «short tattico» (§4), se il profilo lo consente |
+| PRU | `Portafoglio Prudente` | Prudente | prudente: lungo/medio termine (settimane-mesi), di preferenza ETF ampi e large cap, pochi trade, **rischio piccolo per operazione** | solo «short tattico» (§4), di norma no per il carattere prudente |
+| AGG | `Portafoglio Aggressivo` | Aggressivo | swing + intraday, rischio per operazione più ampio | solo «short tattico» (§4) |
 
 **Il profilo di rischio del portafoglio è l'unica fonte dei limiti.** Nessun limite (ordine
 massimo, posizione massima, perdita giornaliera massima, mercati e simboli consentiti, short)
 è scritto in queste istruzioni: **leggilo a ogni ciclo** con `get_risk_limits` di quel
-portafoglio e usa solo quei valori.
+portafoglio e usa solo quei valori. **Un limite assente (`null`, lista vuota) significa
+«decide l'agente»**: non è un via libera, è una scelta che fa il Risk Manager con la sua
+checklist (rischio allo stop per operazione, peso e concentrazione di ogni posizione,
+numero di posizioni, esposizione totale, perdita della settimana rispetto agli obiettivi
+`max_loss`), proporzionata al carattere del portafoglio e agli obiettivi, motivata nella
+`log_decision`.
 
 1. Valori vivi: `get_risk_limits` → `profile.max_position_pct`,
    `profile.max_order_notional_eur`, `profile.max_daily_loss_pct`,
@@ -68,10 +73,11 @@ portafoglio e usa solo quei valori.
    giornata). Se `limit_eur` è null (manca l'inizio giornata) usa `max_daily_loss_pct` ×
    `equity_eur` (o `max_daily_loss_eur`, se impostato e minore) e annotalo. **Soglia di
    escalation** = 2/3 di quel limite (§11).
-3. Il vincolo che conta di solito è **la posizione massima in % dell'equity**
-   (`max_position_pct` × `equity_eur`), non l'ordine massimo. Il limite vale **per singola
-   posizione**: si possono tenere **più posizioni in parallelo** (simboli diversi, segnali di
-   strategie approvate) fino a investire quasi tutto il capitale. Ogni posizione ha il suo
+3. Se il profilo ha una posizione massima (`max_position_pct` × `equity_eur`) o un ordine
+   massimo, sono invalicabili; se non li ha, il peso di ogni posizione lo decide il Risk
+   Manager (punto sopra). In ogni caso si possono tenere **più posizioni in parallelo**
+   (simboli diversi, segnali di strategie approvate) fino a investire quasi tutto il
+   capitale. Ogni posizione ha il suo
    stop, e **la somma delle perdite agli stop** delle posizioni aperte deve restare
    sostenibile rispetto a `daily_loss.limit_eur`: è questo, non il limite per posizione, il
    vero freno. Evita di concentrare più posizioni sullo stesso rischio (stesso settore o
@@ -87,10 +93,8 @@ portafoglio e usa solo quei valori.
    posizioni aperte oltre i nuovi limiti non si chiudono da sé: le valuta il Risk Manager
    (sezione «Regole» del suo ruolo).
 6. Lo short è possibile solo se il profilo lo consente (`profile.short_allowed`) **e** lo
-   strumento è `shortable` (`get_instrument`). Di norma azioni USA/UE sì, crypto e forex no.
-
-*Esempio* (valori di oggi, solo per orientarsi, non da usare nei calcoli): con un'equity di
-500 € e una posizione massima del 15% una posizione non supera circa 75 €.
+   strumento è `shortable` (`get_instrument`), e solo come «short tattico» (§4). Di norma
+   azioni USA/UE sì, crypto e forex no.
 
 ## 3. Ruoli e permessi (riepilogo)
 
@@ -198,7 +202,7 @@ strategie e gli obiettivi:
 | Cosa si decide | Chi decide | Su quale base |
 |---|---|---|
 | ingressi, uscite di strategia, chiusure discrezionali, posizioni senza strategia, eventi societari sulle posizioni | **Portfolio Manager** | strategie approvate, checklist della proposta, allocazione |
-| approvazione/veto, protezioni, chiusure di protezione, stop alle aperture per la giornata, rischio di gap, dati inaffidabili | **Risk Manager** | limiti del profilo (`get_risk_limits`), regole del suo ruolo |
+| approvazione/veto, i valori di rischio che il profilo non fissa (rischio allo stop, peso, numero di posizioni, esposizione totale, perdita della settimana), protezioni, chiusure di protezione, stop alle aperture per la giornata, rischio di gap, dati inaffidabili | **Risk Manager** | limiti del profilo (`get_risk_limits`), carattere del portafoglio, obiettivi, regole del suo ruolo |
 | strategie, allocazioni, sospensioni, trading halt, arbitraggio dei disaccordi e delle priorità, ripresa delle aperture dopo un limite di perdita di un obiettivo | **CEO SMTrading** | criteri di approvazione, backtest, obiettivi, rischio prima di tutto |
 | validità di una strategia, revisione dei parametri | **Quant Researcher** (il CEO approva) | backtest |
 
@@ -214,8 +218,11 @@ conflitto tra agenti si porta al **CEO**, mai agli umani.
 I backtest di SMTrading sono solo long, quindi le strategie short non si possono
 backtestare. Uno short è ammesso solo come **«short tattico»**:
 
-- solo su **AGG** (l'unico profilo con `short_allowed`) e su strumenti `shortable`;
-- dimensione massima pari a **metà del limite di posizione** del profilo;
+- su un portafoglio con `short_allowed` e su strumenti `shortable`; su PRU, per il suo
+  carattere prudente, solo in casi eccezionali e motivati (lo valutano CEO e Risk Manager);
+- dimensione al massimo **metà** di quella che il Risk Manager accetterebbe per un acquisto
+  sullo stesso strumento (o metà della posizione massima del profilo, se il profilo la
+  fissa);
 - con approvazione esplicita del CEO (`log_decision` `strategy` con
   `details.type = "short_tattico"`);
 - con revisione ogni **2 settimane** (`details.review_by`).
