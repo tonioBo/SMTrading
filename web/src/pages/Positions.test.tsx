@@ -113,6 +113,24 @@ describe("Positions", () => {
     expect(within(msft).queryByText(/rischio gap/)).toBeNull();
   });
 
+  it("shows the «In chiusura piano» badge with the grace deadline", async () => {
+    current = {
+      ...body,
+      positions: [
+        pos({ plan_state: "grace", plan_grace_until: "2027-01-19T21:00:00Z" }),
+        pos({ portfolio_id: "p2", portfolio_name: "Prudente", symbol: "MSFT", plan_state: "pending", plan_grace_until: null }),
+        pos({ portfolio_id: "p2", portfolio_name: "Prudente", symbol: "ENI.MI", plan_state: null }),
+      ],
+    };
+    renderApp("/posizioni");
+    const agg = await screen.findByRole("table", { name: "Posizioni Portafoglio Aggressivo" });
+    expect(within(agg).getByText("In chiusura piano fino al 19/01/2027 22:00:00")).toBeInTheDocument();
+    const pru = screen.getByRole("table", { name: "Posizioni Prudente" });
+    const [, msft, eni] = within(pru).getAllByRole("row");
+    expect(within(msft).getByText("In chiusura piano")).toBeInTheDocument();
+    expect(within(eni).queryByText(/In chiusura piano/)).toBeNull();
+  });
+
   it("shows the empty state", async () => {
     current = { as_of: "2026-11-16T21:00:00Z", positions: [], portfolios: [] };
     renderApp("/posizioni");

@@ -13,6 +13,7 @@ from smtrading.agents import service as agents
 from smtrading.common.db import make_engine
 from smtrading.events import discard_post_commit
 from smtrading.goals import service as goals
+from smtrading.goals.models import Goal
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
 from smtrading.risk.models import EquitySnapshot, SnapshotKind
@@ -24,7 +25,7 @@ NOW = datetime(2027, 3, 10, 10, 0, tzinfo=ROME).astimezone(UTC)
 FIELDS = {"name", "horizon", "scope", "portfolio_id", "portfolio_name", "kind",
           "period_start", "period_end", "start_eur", "current_eur", "target_eur", "pct",
           "target_pct", "gap_eur", "elapsed_pct", "status", "as_of", "benchmark",
-          "benchmark_pct", "diff_pp", "loss_pct"}
+          "benchmark_pct", "diff_pp", "loss_pct", "closes_positions", "plan_end_actions"}
 
 
 @pytest.fixture
@@ -231,3 +232,25 @@ async def test_get_goals_risk_and_index_goals(env):
             index["diff_pp"], index["status"], index["loss_pct"]) == (
         "beat_index", "SPY", "-4", "-2", "-2", "indietro", None)
     assert index["start_eur"] is None and index["target_eur"] is None
+
+
+async def test_get_goals_plan_fields(env):
+    # the migrated weekly goal on the total is a piano: its week ends on Sunday, 1 day of grace
+    err, res = await env["call"]("get_goals")
+    assert not err, res
+    [weekly] = res["goals"]
+    assert (weekly["name"], weekly["closes_positions"], weekly["period_end"]) == (
+        "settimanale", True, "2027-03-14")
+    assert weekly["plan_end_actions"]["grace_market_days"] == 1
+    assert "Friday" in weekly["plan_end_actions"]["summary"]
+    async with env["db"]() as s:
+        await s.execute(update(Goal).values(closes_positions=False))
+        await s.commit()
+    await _goal(env, name="piano mese", horizon="month", target_pct="3", recurring=True)
+    err, res = await env["call"]("get_goals")
+    by = {g["name"]: g for g in res["goals"]}
+    assert by["settimanale"]["closes_positions"] is False
+    assert by["settimanale"]["plan_end_actions"] is None
+    plan = by["piano mese"]  # a piano by default
+    assert plan["closes_positions"] is True and plan["period_end"] == "2027-03-31"
+    assert plan["plan_end_actions"]["grace_market_days"] == 3

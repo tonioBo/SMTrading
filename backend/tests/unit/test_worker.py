@@ -108,6 +108,7 @@ def _idle_telegram_loops(monkeypatch):
     monkeypatch.setattr(worker, "LiveMonitor", _IdleProcessor)
     monkeypatch.setattr(worker, "ProtectionAlarm", _IdleProcessor)
     monkeypatch.setattr(worker, "GoalAlerts", _IdleProcessor)
+    monkeypatch.setattr(worker, "PlanCloser", _IdleProcessor)
     monkeypatch.setattr(worker, "register_live_secrets", _no_live_keys)
     monkeypatch.setattr(worker, "HandoffWatchdog", _IdleProcessor)
     monkeypatch.setattr(worker, "StartupGate", _OpenGate)
@@ -569,7 +570,7 @@ async def test_startup_gate_waiters_share_one_wait():
 
 
 async def test_run_holds_the_alerting_jobs_behind_the_gate(monkeypatch):
-    """Protection alarm, goal alerts, pre-open check and hand-off watchdog start only once
+    """Protection alarm, goal alerts, plan closer, pre-open check and hand-off watchdog start only once
     the startup gate opens; the other jobs start at once."""
     waits: list[int] = []
     before: list = []
@@ -620,9 +621,10 @@ async def test_run_holds_the_alerting_jobs_behind_the_gate(monkeypatch):
     monkeypatch.setattr(worker, "health_checks", lambda router: asyncio.sleep(3600))
     monkeypatch.setattr(worker, "StreamManager", Manager)
     monkeypatch.setattr(worker, "StartupGate", HeldGate)
-    for name in ("ProtectionAlarm", "GoalAlerts", "PreopenCheck", "HandoffWatchdog"):
+    for name in ("ProtectionAlarm", "GoalAlerts", "PlanCloser", "PreopenCheck",
+                 "HandoffWatchdog"):
         monkeypatch.setattr(worker, name, job(name))
     await asyncio.wait_for(worker.run(), 2)
-    assert before == [[], 4]
-    assert sorted(started) == ["GoalAlerts", "HandoffWatchdog", "PreopenCheck",
+    assert before == [[], 5]
+    assert sorted(started) == ["GoalAlerts", "HandoffWatchdog", "PlanCloser", "PreopenCheck",
                                "ProtectionAlarm"]

@@ -77,7 +77,9 @@ async def test_crud_and_validation(env, monkeypatch):
     g = r.json()
     assert set(g) == {"id", "name", "horizon", "start_date", "end_date", "recurring",
                       "scope", "portfolio_id", "target_pct", "kind", "benchmark", "active",
-                      "created_at", "updated_at", "portfolio_name", "portfolio_archived"}
+                      "closes_positions", "created_at", "updated_at", "portfolio_name",
+                      "portfolio_archived"}
+    assert g["closes_positions"] is False
     assert (g["name"], g["start_date"], g["end_date"], g["recurring"], g["portfolio_id"],
             g["portfolio_name"], g["target_pct"], g["kind"], g["active"]) == (
         "Mese di marzo", "2027-03-10", None, False, str(pid), "Obiettivi P", "5.5", "min",
@@ -356,7 +358,8 @@ async def test_templates_prefill_valid_goals(env, monkeypatch):
     assert by[f"risk_monthly:{a}"]["body"] == {
         "name": "rischio mensile", "horizon": "month", "start_date": "2027-03-10",
         "end_date": None, "recurring": True, "scope": "portfolio", "portfolio_id": str(a),
-        "target_pct": "5", "kind": "max_loss", "benchmark": None, "active": True}
+        "target_pct": "5", "kind": "max_loss", "benchmark": None, "active": True,
+        "closes_positions": False}  # the migrated weekly piano covers every portfolio
     beat = by["beat_vwce_quarter"]["body"]
     assert (beat["kind"], beat["benchmark"], beat["target_pct"], beat["scope"]) == (
         "beat_index", "VWCE.DE", "0", "total")
@@ -397,3 +400,59 @@ async def test_templates_prudent_or_dynamic_by_profile(env, monkeypatch):
     assert by[f"risk_yearly:{dyn}"]["body"]["target_pct"] == "20"
     qqq = by[f"beat_qqq_quarter:{dyn}"]["body"]
     assert (qqq["kind"], qqq["benchmark"], qqq["scope"]) == ("beat_index", "QQQ", "portfolio")
+
+
+async def test_plans_one_per_portfolio(env, monkeypatch):
+    """A «piano» (closes_positions): at most one active piano covers a portfolio; a new
+    goal (and a template) is one by default unless another piano already covers it. The
+    migrated weekly goal on the total is one."""
+    _clock(monkeypatch, rome(WED, 10))
+    c = await _admin(env)
+    a = await _portfolio(env.sm, "Piano A")
+    b = await _portfolio(env.sm, "Piano B")
+    [weekly] = (await c.get("/api/goals")).json()
+    assert (weekly["name"], weekly["closes_positions"]) == ("settimanale", True)
+    body = {"name": "piano A", "horizon": "month", "target_pct": "3", "recurring": True,
+            "scope": "portfolio", "portfolio_id": str(a)}
+    # the total piano covers A: an explicit piano is refused, the default is false
+    r = await c.post("/api/goals", json={**body, "closes_positions": True})
+    assert r.status_code == 400, r.text
+    assert r.json()["details"]["field"] == "closes_positions"
+    assert "settimanale" in r.json()["message"]
+    r = await c.post("/api/goals", json={**body, "name": "solo obiettivo"})
+    assert r.status_code == 200 and r.json()["closes_positions"] is False
+    templates = (await c.get("/api/goals/templates")).json()
+    assert {t["body"]["closes_positions"] for t in templates} == {False}
+
+    assert (await c.patch(f"/api/goals/{weekly['id']}", json={"closes_positions": False})
+            ).status_code == 200
+    templates = (await c.get("/api/goals/templates")).json()
+    assert {t["body"]["closes_positions"] for t in templates} == {True}
+    r = await c.post("/api/goals", json=body)  # default: a piano now
+    assert r.status_code == 200 and r.json()["closes_positions"] is True
+    plan_a = r.json()["id"]
+    # the same portfolio, or the total (it covers every portfolio): refused
+    for other in ({**body, "name": "altro A", "closes_positions": True},
+                  {"name": "totale", "horizon": "week", "target_pct": "2",
+                   "closes_positions": True}):
+        r = await c.post("/api/goals", json=other)
+        assert r.status_code == 400, r.text
+        assert "piano A" in r.json()["message"]
+    r = await c.post("/api/goals", json={"name": "totale", "horizon": "week",
+                                         "target_pct": "2"})
+    assert r.status_code == 200 and r.json()["closes_positions"] is False
+    # another portfolio: a piano by default
+    r = await c.post("/api/goals", json={**body, "name": "piano B", "portfolio_id": str(b)})
+    assert r.status_code == 200 and r.json()["closes_positions"] is True
+    # turning an existing goal into a piano is checked too
+    solo = next(g for g in (await c.get("/api/goals")).json() if g["name"] == "solo obiettivo")
+    r = await c.patch(f"/api/goals/{solo['id']}", json={"closes_positions": True})
+    assert r.status_code == 400
+    # piano A off: B still covers B, so the total cannot be one
+    assert (await c.patch(f"/api/goals/{plan_a}", json={"closes_positions": False})
+            ).status_code == 200
+    assert (await c.patch(f"/api/goals/{weekly['id']}", json={"closes_positions": True})
+            ).status_code == 400
+    r = await c.post("/api/goals", json={**body, "closes_positions": "yes"})
+    assert r.status_code in (400, 422)
+    assert (await c.get("/api/goals/plans")).json() == []

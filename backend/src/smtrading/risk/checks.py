@@ -19,6 +19,9 @@ uses unrounded values (valuation *_raw fields, Ruling R8).
   (link armed, strict kill switch, no short, cash cap, fuse) once the estimates are known
   and before the risk limits (order notional, position weight, buying power). With
   `live_effects=False` (a preview, a modify) the fuse never trips the portfolio.
+- «Piani» (`goals.plans`): a position of an ended piano still being closed (pending,
+  grace, closing) cannot grow: RISK_LIMIT_EXCEEDED with details {reason: "plan_grace",
+  symbol, deadline} (deadline null before its first session).
 """
 
 from dataclasses import dataclass
@@ -35,6 +38,7 @@ from smtrading.engine.pricing import QuoteView, fill_price, notional_to_qty
 from smtrading.engine.quotesource import QuoteSource
 from smtrading.fees.calculator import compute_trade_fee
 from smtrading.fees.resolver import FeeQuote, load_rules, resolve_rule
+from smtrading.goals.plans import open_closure
 from smtrading.instruments.models import Instrument
 from smtrading.instruments.service import validate_price, validate_quantity
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
@@ -63,13 +67,15 @@ class CheckResult:
     estimated_fee: FeeQuote | None = None
     estimated_fx_fee_eur: Decimal | None = None
     buying_power_after_eur: Decimal | None = None
+    details: dict | None = None
 
 
 class _Reject(Exception):
-    def __init__(self, code: ErrorCode, message: str) -> None:
+    def __init__(self, code: ErrorCode, message: str, details: dict | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.details = details
 
 
 def _sign(x: Decimal) -> int:
@@ -220,6 +226,18 @@ async def _run(
             "valuation uses cached quotes for " + ", ".join(valuation.stale_symbols),
         )
 
+    if increases:
+        closing = await open_closure(session, portfolio.id, instrument.symbol)
+        if closing is not None:
+            until = (f"until {closing.deadline.isoformat()}" if closing.deadline
+                     else "until its market's first session")
+            raise _Reject(
+                ErrorCode.RISK_LIMIT_EXCEEDED,
+                f"{instrument.symbol} is being closed at the end of a plan ({until}): "
+                "no additions",
+                {"reason": "plan_grace", "symbol": instrument.symbol,
+                 "deadline": closing.deadline.isoformat() if closing.deadline else None})
+
     # 6-7: reduce-only and short permission
     if portfolio.status == PortfolioStatus.reduce_only and not reduces:
         raise _Reject(ErrorCode.REDUCE_ONLY, "portfolio is reduce-only")
@@ -330,6 +348,6 @@ async def pre_trade_check(
             live_effects=live_effects, exclude_order=exclude_order,
         )
     except _Reject as r:
-        return CheckResult(ok=False, code=r.code, message=r.message)
+        return CheckResult(ok=False, code=r.code, message=r.message, details=r.details)
     except SMTError as e:
         return CheckResult(ok=False, code=e.code, message=e.message)

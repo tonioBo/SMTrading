@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Pnl } from "@/components/Pnl";
 import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
 import { ProtectionBadge } from "@/components/ProtectionBadge";
+import { StatusBadge } from "@/components/StatusBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatDateTime, formatDecimal, formatMoney, formatQty } from "@/lib/format";
@@ -34,6 +35,17 @@ function riskLine(t: OpenPositionsPortfolio): string {
   if (t.daily_loss_limit_eur == null) return `Rischio agli stop: ${risk} (nessun limite di perdita giornaliera)`;
   const pct = t.risk_pct_of_limit == null ? "" : ` (${formatDecimal(t.risk_pct_of_limit, 0)}%)`;
   return `Rischio agli stop: ${risk} su ${formatMoney(t.daily_loss_limit_eur, "EUR")}${pct}`;
+}
+
+/** A position being closed at the end of a «piano»: «In chiusura piano fino al …» in grace. */
+function PlanBadge({ p }: { p: OpenPosition }) {
+  if (!p.plan_state) return null;
+  const text = p.plan_grace_until ? `In chiusura piano fino al ${formatDateTime(p.plan_grace_until)}` : "In chiusura piano";
+  return (
+    <StatusBadge tone="warn" title="fine periodo di un piano: nessuna aggiunta, poi chiusura">
+      {text}
+    </StatusBadge>
+  );
 }
 
 function PositionRow({ p }: { p: OpenPosition }) {
@@ -70,6 +82,7 @@ function PositionRow({ p }: { p: OpenPosition }) {
         <div className="flex flex-wrap gap-1">
           <ProtectionBadge protection={p.protection} />
           {p.extended_beyond_stop && <GapRiskBadge side={p.side} />}
+          <PlanBadge p={p} />
         </div>
       </TableCell>
     </TableRow>

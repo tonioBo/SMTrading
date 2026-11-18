@@ -10,10 +10,15 @@
   (beat `benchmark` by `target_pct` points, 0 allowed) (migration 0032).
 - `benchmark` SPY | QQQ | VWCE.DE for beat_index, null otherwise.
 - `target_pct`: the change in percent (2 decimals at most).
+- `closes_positions` (migration 0035): the goal is a «piano»: the positions open at the end
+  of its period are closed (`goals.plans`); `plan_since` the moment it last became one
+  (only the periods ending after it are handled). At most one active piano covers a
+  portfolio.
 
 `goal_alerts`: the last status seen by the worker per goal and period (the status-change
 alerts, `goals.alerts`), with the Paperclip issues opened for it. `benchmark_snapshots`:
-the benchmark prices in EUR sampled by the worker (`goals.benchmark`).
+the benchmark prices in EUR sampled by the worker (`goals.benchmark`). `plan_closures`: the
+positions of a piano's ended period and how they are closed (`goals.plans`).
 Goals are never deleted: DELETE sets `active` false."""
 
 import uuid
@@ -21,13 +26,16 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Numeric,
     String,
+    UniqueConstraint,
     false,
     func,
     text,
@@ -78,6 +86,9 @@ class Goal(Base):
     kind: Mapped[str] = mapped_column(String(16), default="min")
     benchmark: Mapped[str | None] = mapped_column(String(16))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    closes_positions: Mapped[bool] = mapped_column(Boolean, default=False,
+                                                   server_default=false())
+    plan_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -121,3 +132,45 @@ class BenchmarkSnapshot(Base):
     currency: Mapped[str] = mapped_column(String(16))
     fx_eur: Mapped[Decimal] = mapped_column(Numeric(20, 10))
     price_eur: Mapped[Decimal] = mapped_column(Numeric(20, 8))
+
+
+PLAN_STATES = ("pending", "grace", "closing", "closed")
+
+
+class PlanClosure(Base):
+    """A position open at the end of a piano's period (`goals.plans`): `pending` until
+    its market's first session after the end, `grace` (in loss then) until `deadline`,
+    `closing` while SMTrading's close order (`order_id`) is open, `closed` once flat
+    (`closed_by` system | agent). `opened_at` and `qty` are the position's at the end; a
+    position reopened since (another `opened_at`) is not this one any more."""
+
+    __tablename__ = "plan_closures"
+    __table_args__ = (
+        UniqueConstraint("goal_id", "period_start", "portfolio_id", "symbol",
+                         name="uq_plan_closures_position"),
+        CheckConstraint(f"state in ({_in(PLAN_STATES)})", name="ck_plan_closures_state"),
+        Index("ix_plan_closures_open", "portfolio_id", "symbol",
+              postgresql_where=text("state <> 'closed'")),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    goal_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("goals.id"))
+    period_start: Mapped[date] = mapped_column(Date)
+    period_end: Mapped[date] = mapped_column(Date)
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id"))
+    symbol: Mapped[str] = mapped_column(String(64))
+    qty: Mapped[Decimal] = mapped_column(Numeric(38, 18))
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    state: Mapped[str] = mapped_column(String(16), default="pending")
+    grace_days: Mapped[int] = mapped_column()
+    deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    order_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    closed_by: Mapped[str | None] = mapped_column(String(16))
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(default=0, server_default=text("0"))
+    last_error: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

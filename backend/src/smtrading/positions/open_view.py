@@ -34,6 +34,9 @@ pre-market / after-hours price while the regular session is closed, else null) a
 `extended_beyond_stop`: that price is at or beyond the stop (below it for a long, above
 for a short), the gap risk at the next open. Information only: `last`, the values, the
 distance and the risk at the stop stay on the regular session.
+
+`plan_state` (pending | grace | closing, else null) when the position is being closed at
+the end of a «piano» (`goals.plans`), with `plan_grace_until` its grace deadline.
 """
 
 import uuid
@@ -57,6 +60,7 @@ from smtrading.engine.models import (
     TimeInForce,
 )
 from smtrading.engine.quotesource import QuoteSource
+from smtrading.goals.plans import grace_until, open_closures
 from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
@@ -258,6 +262,8 @@ async def open_positions(
         ):
             if is_active_exit(o):
                 orders.setdefault((o.portfolio_id, o.symbol), []).append(o)
+    closing = {(r.portfolio_id, r.symbol): r
+               for r in await open_closures(session, list(held))} if held else {}
     quotes, stale = await _quotes(qs, symbols, redis)
     extended = await extended_hours(router, instruments.values(), now) if router else {}
     fx = _Fx(qs, {"EUR": Decimal(1)})
@@ -342,6 +348,8 @@ async def open_positions(
                 "distance_to_stop_pct": _pct(dist), "risk_at_stop_eur": _money(risk_eur),
                 "protection": protection,
                 "extended": ext, "extended_beyond_stop": beyond,
+                "plan_state": plan.state if (plan := closing.get((p.id, sym))) else None,
+                "plan_grace_until": grace_until(plan),
             })
         if not count:
             continue

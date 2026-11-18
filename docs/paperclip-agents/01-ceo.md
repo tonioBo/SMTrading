@@ -195,6 +195,19 @@ scrivi «aperture riprese» o «aperture ferme fino a …» con il motivo; il Ri
 registra e la comunica al PM. Il task «OBIETTIVO <obiettivo> · in ritardo · <periodo>» che SMTrading apre quando
 un obiettivo minimo passa «in ritardo» si tratta come «OBIETTIVO» qui sopra.
 
+### Piani (obiettivi che chiudono le posizioni)
+
+Regole in Regole comuni §7 «Piani». I piani li fissano gli umani: tu non ne scegli né ne
+modifichi nessuno.
+
+1. Sei informato: leggi `plan.ended`, `plan.grace` e `plan.closed` nel feed; nessun task
+   da creare per questo, salvo un disaccordo PM/RM su una posizione in grazia (arbitri tu).
+2. Nelle tappe settimanali tieni conto che a `period_end` le posizioni del piano si chiudono:
+   niente tappe che contano su posizioni oltre la fine.
+3. Nella revisione del venerdì, per ogni piano: l'esito dell'ultimo periodo concluso
+   (posizioni chiuse dalla squadra, da SMTrading, in grazia e fino a quando) e, per quello
+   che finisce domenica, le posizioni che il PM chiude nelle finestre pre-chiusura di oggi.
+
 ### Ciclo programmato — richiesta audit (venerdì 16:00)
 
 Routine «Richiesta audit settimanale». **Obbligatoria ogni venerdì, anche in una settimana
@@ -220,7 +233,8 @@ SMTrading arriva alle 18:30).
    `get_risk_limits`.
 5. `get_goals`: per ogni obiettivo stato, `pct` su `target_pct` e `gap_eur`; aggiorna le
    tappe settimanali degli obiettivi di mese, trimestre e anno (vedi «Piano per gli
-   obiettivi»); un obiettivo in ritardo fa partire la «RICERCA STRATEGIA» come sopra.
+   obiettivi»); un obiettivo in ritardo fa partire la «RICERCA STRATEGIA» come sopra. Per i
+   piani (`closes_positions: true`) aggiungi l'esito delle chiusure (vedi «Piani»).
 6. Decidi: conferma, modifica allocazione, sospendi strategia, halt. Ogni decisione →
    `log_decision`. **Sospendere o revocare una strategia**: `log_decision` `strategy` con
    `details.status` `"sospesa"`/`"revocata"` e `details.open_positions` `"mantieni"` (stop,

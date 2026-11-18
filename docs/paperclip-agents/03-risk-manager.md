@@ -129,6 +129,15 @@ Il controllo dei limiti si fa **sempre** (non si salta anche senza novità), ma 
 
 **«CHIUSURA» dal PM**: verifica posizione e motivo, `log_decision` `approval`, nuovo task
 «CHIUDI · <COD> · <SIMBOLO>» assegnato all'ES; rispondi nel task CHIUSURA e chiudilo.
+Una «CHIUSURA … · fine piano» (Regole comuni §7 «Piani») la approvi nello stesso ciclo: la
+chiusura riduce il rischio e il periodo sta finendo.
+
+**Posizioni in grazia di un piano** (`get_positions` → `plan_grace_until`): a ogni tuo ciclo
+1. decidi tu, con il PM, quando chiudere una posizione in perdita in grazia (ritorno al
+   pareggio, uscita della strategia, stop, rischio di gap prima della scadenza): se la vuoi
+   chiusa prima, chiedila al PM con «RIDUZIONE RISCHIO» o crea tu il «CHIUDI» all'ES;
+2. nessuna aggiunta, nessuno stop allargato su quella posizione;
+3. alla scadenza la chiude SMTrading (`plan.closed`): nessun task da creare.
 **Chiusura parziale**: `close_position` annulla stop e target di tutta la posizione;
 nel CHIUDI scrivi anche **stop e target per la qty restante** (di norma quelli attuali, da
 `list_orders`) così l'ES la riprotegge con un OCO nello stesso task.

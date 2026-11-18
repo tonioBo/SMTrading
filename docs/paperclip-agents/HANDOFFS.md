@@ -115,12 +115,16 @@ Borse dei portafogli tutte chiuse (festività) o weekend → niente AGENDA, nien
 | 44 | Errore proprio o del team, perdita evitabile (anche trovati nell'audit) | chiunque | — (storico) | `log_decision` `lesson` (`LEZ-…`) nello stesso ciclo | C | il CEO la legge al primo task della giornata o alla revisione del venerdì | — |
 | 45 | Lezione che ripete un errore già visto o una regola del team non seguita | chi registra la lezione (spesso PA) | CEO | task «LEZIONE RIPETUTA · <COD\|ALL> · <LEZ-id>» (urgente) | C, stesso giorno | regola del team, RIVEDI STRATEGIA (#37) o «nessuna azione» con motivo | CEO risponde e chiude |
 | 46 | Lezione trasformata in regola (o regola ritirata) | CEO | agenti di `applies_to` | `log_decision` `team_rule` (`REG-…`, `status` active\|retired) + task «REGOLA DEL TEAM · <REG-id>» | C | leggono le regole attive al primo ciclo della giornata e prima di proposte, approvazioni ed esecuzioni | ognuno risponde e chiude il suo; gli umani lo leggono nella revisione del venerdì (#31) |
+| 47 | Ultima seduta di un piano (`closes_positions: true`) | PM | RM | task «CHIUSURA · <COD> · <SIMBOLO> · totale · fine piano», per ogni posizione non in perdita | C | RM approva nello stesso ciclo, #14 | RM risponde e chiude |
+| 48 | Posizione in grazia (`plan.grace`, `plan_grace_until`) | SMTrading (feed) | PM, RM | — | C | nessuna aggiunta; chiusura quando ha senso con #13 (o RM → «CHIUDI» #14) prima della scadenza | — |
+| 49 | Chiusura automatica di fine piano (`plan.ended`, `plan.closed`) | SMTrading (feed, Telegram agli umani) | PM, RM, CEO | — | **O** a fine periodo | PM rivaluta gli ingressi della strategia; CEO lo riporta nella revisione del venerdì; il NOT non ripete | — |
 ## 5. Decisioni (18/11)
 
 Le decisioni della sera del 18/11 (catalogo degli scenari, [`SCENARIOS.md`](SCENARIOS.md)):
 limiti solo dal profilo di rischio (`null` = decide l'agente, il RM con i suoi cinque
 controlli); team autonomo, umani solo informati, arbitraggio del CEO; short tattico non più
-solo AGG (su PRU solo eccezionale); passaggi #35-#43 sopra.
+solo AGG (su PRU solo eccezionale); passaggi #35-#43 sopra; #44-#46 le lezioni e le regole del team; #47-#49 i piani (obiettivi che
+chiudono le posizioni, `00` §7 «Piani»).
 
 ### Decisioni del mattino del 18/11
 

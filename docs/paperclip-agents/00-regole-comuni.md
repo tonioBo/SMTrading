@@ -37,6 +37,8 @@ del CEO non può mai superare un limite del profilo di rischio.
   profilo, non si opera senza una strategia approvata e non si aumenta il rischio. Meglio
   chiudere il periodo sotto l'obiettivo che fuori dalle regole. Come ripartire gli obiettivi
   tra i portafogli e nelle settimane lo decide il CEO, con un task.
+- **Piani**: un obiettivo con `closes_positions: true` è un **piano**: a fine periodo le sue
+  posizioni si chiudono. Regole in §7 «Piani».
 - **Costi di esecuzione**: commissione 0, **0,15% sul cambio valuta** (es. acquisto di titoli
   in USD da un portafoglio in EUR), **circa 5 bp di slippage** sugli eseguiti. Includili sempre
   nei calcoli.
@@ -386,6 +388,38 @@ Portfolio Manager rivaluta gli ingressi delle strategie al suo ciclo successivo.
    controllo periodico, non nell'istante del superamento: se `daily_loss.current_eur` ≥
    `limit_eur` e lo `status` è ancora `active`, comportati già come in reduce-only.
 
+### Piani (obiettivi che chiudono le posizioni)
+
+1. Un **piano** è un obiettivo con `closes_positions: true` (`get_goals`): le posizioni dei
+   suoi portafogli aperte a `period_end` (fine dell'ultimo giorno, ora italiana) si chiudono.
+   Un piano sul totale copre tutti i portafogli; al massimo un piano per portafoglio. I
+   piani li fissano gli umani; l'obiettivo `settimanale` sul totale è un piano.
+   `plan_end_actions` dice cosa succede e i giorni di grazia.
+2. **Prima la squadra**: il PM chiude le posizioni non in perdita nelle finestre
+   pre-chiusura dell'**ultima seduta del mercato prima di `period_end`**, con il flusso
+   normale `CHIUSURA` → RM → ES. Settimana (lunedì-domenica): l'ultima seduta è il
+   **venerdì** (o il giorno prima se il venerdì è chiuso; orari reali da
+   `get_market_status`). Crypto: all'ultimo ciclo prima di `period_end` (domenica sera
+   per la settimana).
+3. Una posizione **non in perdita** ancora aperta a fine periodo la chiude SMTrading alla
+   prima seduta aperta del suo mercato (ordine a mercato reduce-only).
+4. Una posizione **in perdita** a fine periodo entra nel **periodo di grazia**
+   (`get_positions` → `plan_grace_until`): PM e RM decidono quando chiuderla (ritorno al
+   pareggio, uscita della strategia, stop); alla scadenza SMTrading chiude quella ancora aperta.
+5. Giorni di grazia (sedute del mercato del simbolo dopo `period_end`; crypto giorni di
+   calendario): settimana 1, mese 3, trimestre 5, anno 10, date fissate il 10% della durata
+   (da 1 a 10). Per la settimana la grazia è la seduta del **lunedì** successivo. La scadenza
+   è la chiusura dell'ultima seduta di grazia; SMTrading chiude nell'ultimo quarto d'ora.
+6. **Nessuna aggiunta** a una posizione di un piano concluso: SMTrading rifiuta l'aumento con
+   `RISK_LIMIT_EXCEEDED`, `details.reason = "plan_grace"` (con `symbol` e `deadline`).
+7. Vicino alla fine il PM apre solo ingressi che hanno il tempo di funzionare prima di
+   `period_end`; il periodo successivo di un piano che si ripete parte normalmente.
+8. SMTrading non chiude mai senza una quotazione fresca e a mercato chiuso aspetta
+   l'apertura; le chiusure passano anche con kill switch e halt (riducono).
+9. Nel feed: `plan.ended` (riepilogo dei simboli), `plan.grace` (simbolo, scadenza),
+   `plan.closed` (chiusa da SMTrading). SMTrading avvisa da sé gli umani su Telegram: il
+   Notifier non lo ripete.
+
 ## 8. Regole di comportamento
 
 1. Scrivi sempre in **italiano**, conciso, orientato ai dati.
@@ -540,7 +574,7 @@ Gli errori arrivano come `{"code", "message", "details"}`. Codici reali e reazio
 | `SYMBOL_NOT_FOUND` | simbolo sconosciuto | Cerca con `search_instruments`; non inventare simboli. |
 | `SYMBOL_NOT_ALLOWED` | simbolo fuori dal profilo | Abbandona il simbolo per quel portafoglio. |
 | `SHORT_NOT_ALLOWED` | short vietato dal profilo o strumento non shortable | Abbandona lo short. |
-| `RISK_LIMIT_EXCEEDED` | ordine o posizione oltre i limiti (o troppe aggiunte al catalogo, o backtest troppo lungo) | Ridimensiona sotto il limite letto da `get_risk_limits`; non aggirarlo frazionando. |
+| `RISK_LIMIT_EXCEEDED` | ordine o posizione oltre i limiti (o troppe aggiunte al catalogo, o backtest troppo lungo); con `details.reason = "plan_grace"` la posizione è in chiusura per la fine di un piano (§7 «Piani») | Ridimensiona sotto il limite letto da `get_risk_limits`; non aggirarlo frazionando. Con `plan_grace`: nessuna aggiunta a quel simbolo finché la posizione non è chiusa. |
 | `INSUFFICIENT_BUYING_POWER` | potere d'acquisto insufficiente | Riduci la quantità o rinuncia. |
 | `STALE_QUOTE` | quotazione troppo vecchia | Non usare ordini market; riprova al ciclo dopo o usa limit. 2 cicli di fila → escalation. |
 | `PROVIDER_UNAVAILABLE` | dati di mercato non disponibili (anche valutazione con quotazioni in cache); su un **ordine** significa che il broker lo ha rifiutato (motivo nel messaggio) | Dati: riprova al ciclo successivo; 2 cicli di fila → escalation. Ordine rifiutato: non reinviarlo identico; al massimo un nuovo tentativo corretto secondo il motivo al ciclo successivo, poi escalation. |
@@ -580,6 +614,9 @@ torna. Al ritorno: ciclo completo di recupero (§6).
 - **Reduce-only**: si possono solo ridurre/chiudere posizioni.
 - **Kill switch**: blocco globale delle aperture deciso da un umano.
 - **Trading halt**: blocco delle aperture impostato dal CEO con `set_trading_halt` o dagli amministratori umani (§7); errore `TRADING_HALTED`.
+- **Piano**: obiettivo con `closes_positions: true`: a fine periodo le posizioni si chiudono (§7).
+- **Periodo di grazia**: i giorni di mercato concessi a una posizione in perdita a fine piano
+  (`plan_grace_until`), senza aggiunte, poi SMTrading la chiude.
 - **Stale**: quotazione troppo vecchia (`stale`, `stale_symbols`, `STALE_QUOTE`).
 - **R** / **R:R**: rischio per operazione (distanza ingresso-stop × quantità) e rapporto
   rendimento/rischio (distanza take profit / distanza stop).
