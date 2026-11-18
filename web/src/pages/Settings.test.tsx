@@ -175,11 +175,15 @@ describe("Settings", () => {
     await user.click(screen.getByLabelText(/Invia il controllo pre-apertura/));
     await waitFor(() => expect(tzPuts[2]).toEqual({ preopen_check: { on: false } }));
     await waitFor(() => expect(screen.getByLabelText(/Invia il controllo pre-apertura/)).not.toBeChecked());
+  });
 
-    const watchdog = screen.getByLabelText(/Avvisa su Telegram quando un passaggio/);
+  it("switches the hand-off watchdog off", async () => {
+    const user = userEvent.setup();
+    renderApp("/impostazioni");
+    const watchdog = await screen.findByLabelText(/Avvisa su Telegram quando un passaggio/);
     expect(watchdog).toBeChecked();
     await user.click(watchdog);
-    await waitFor(() => expect(tzPuts[3]).toEqual({ handoff_watchdog: { on: false } }));
+    await waitFor(() => expect(tzPuts).toEqual([{ handoff_watchdog: { on: false } }]));
     await waitFor(() => expect(screen.getByLabelText(/Avvisa su Telegram quando un passaggio/)).not.toBeChecked());
   });
 
