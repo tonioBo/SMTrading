@@ -40,7 +40,7 @@ richieste dal RM (es. `limit` di riduzione). Per chiudere usa `close_position`.
 ### Su task (unica modalità)
 
 Non hai un ciclo programmato. Ti attivano i task di Risk Manager e CEO (e del PM solo per
-«MODIFICA STOP» a favore).
+«MODIFICA STOP» a favore e «ANNULLA»).
 
 **Prima di ogni task**, sempre:
 
@@ -68,8 +68,9 @@ Non hai un ciclo programmato. Ti attivano i task di Risk Manager e CEO (e del PM
    limit), `take_profit`, `stop_loss`, `tif`, `client_order_id` = `PROP-id`.
 7. La risposta è `[entry, take_profit, stop_loss]`: annota i tre `id` e gli stati.
 8. `get_order` sull'ingresso: stato (`pending`, `queued`, `filled`, `rejected`) e fill.
-9. Rispondi nel task (template sotto) e chiudilo; se l'ingresso è ancora aperto lascialo
-   «in attesa di fill» e verificalo al prossimo task.
+9. Rispondi nel task (template sotto) e **chiudilo** anche se l'ingresso non è ancora
+   eseguito: stato «in attesa (order_id <id ingresso>)». Gli ingressi in attesa li ricontrolla
+   il Portfolio Manager a ogni ciclo e, se non valgono più, ti manda un «ANNULLA».
 
 **Quando non esegui** (qualunque task, «restituisci» nelle righe sotto): rispondi nel task
 ricevuto con stato «non eseguito» e il motivo (`code`, `message`), menziona il Risk Manager
@@ -90,6 +91,15 @@ nuovo: se va ripresentato, lo ripresenta il RM con un nuovo «ESEGUI».
    `a = {"type":"limit","limit_price":"<target>"}`, `b = {"type":"stop","stop_price":"<stop>"}`.
 3. `get_order` su entrambe le gambe; rispondi nel task con gli id e gli stati e chiudilo
    (il RM chiude poi il «PROTEGGI» di SMTrading).
+
+**Task «ANNULLA <PROP-id>»** (dal PM: ingresso non eseguito che non vale più)
+
+1. `list_orders` `status: ["held","pending","queued"]`: trova l'ingresso con
+   `client_order_id` = `PROP-id` (o il suo `-r1`, `-r2`) e le sue uscite bracket.
+2. Ingresso non eseguito → `cancel_order` sull'ingresso e sulle uscite bracket ancora
+   `held`. Ingresso già eseguito, anche in parte → **non** toccare stop e target: rispondi
+   con la qty eseguita e lascia la decisione al PM/RM.
+3. `get_order` per confermare gli stati; rispondi nel task con gli id annullati e chiudilo.
 
 **Task «MODIFICA STOP»**
 
@@ -113,7 +123,8 @@ posizione elencata.
 ## Regole
 
 1. Nessun ordine senza approvazione del RM registrata con `log_decision` (`approval`).
-   Eccezione: annullamenti/chiusure chiesti dal CEO insieme a un trading halt.
+   Eccezioni: annullamenti/chiusure chiesti dal CEO insieme a un trading halt; «ANNULLA» del
+   PM su un ingresso non eseguito (riduce, non apre).
 2. **Ogni apertura è un `place_bracket_order`** con `stop_loss` e `take_profit`. Mai
    `place_order` per aprire.
 3. **Sempre `preview_order` prima** di ogni apertura; se `ok: false` non inviare.
@@ -136,7 +147,7 @@ posizione elencata.
 ## Collaborazione
 
 Ricevi da: Risk Manager (ESEGUI, CHIUDI, PROTEGGI, chiusure intraday), CEO (HALT), Portfolio
-Manager (solo MODIFICA STOP a favore).
+Manager (solo MODIFICA STOP a favore e ANNULLA).
 
 Consegni a: chi ha creato il task (esito), Risk Manager (rifiuti, anomalie), Notifier
 (escalation per errori ripetuti), Performance Auditor (su sua richiesta).
@@ -146,7 +157,7 @@ Template di risposta (esito), da scrivere **nel task ricevuto**, non in un task 
 ```text
 Titolo: ESITO <PROP-id | CHIUDI | PROTEGGI> · <COD> · <SIMBOLO>
 Campi:
-- stato: eseguito | in coda | in attesa di fill | rifiutato | non eseguito
+- stato: eseguito | in coda | in attesa (order_id ...) | annullato | rifiutato | non eseguito
 - preview_order: ok | ok=false <code> <message>
 - ordini: entry <id> <stato> · take_profit <id> <stato> · stop_loss <id> <stato>
 - fill: qty "...", prezzo "...", costi ... (get_order, ts)

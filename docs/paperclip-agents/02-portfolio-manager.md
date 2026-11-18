@@ -53,6 +53,11 @@ dopo le 21:05 hai solo il ciclo serale qui sotto.
 2. `get_triggered_alerts` (`after_id` = cursore): `price_alert` dei tuoi livelli,
    `watch_changed`.
 3. Task assegnati a te (risposte RM, analisi MA, notizie NA, strategie CEO).
+   **Ingressi in attesa (ogni ciclo, anche senza novità):** `list_orders` con `status:
+   ["pending","queued"]` dei 2 portafogli, ordini con ruolo `entry`. Per ognuno oltre la
+   validità della sua proposta (orario o prezzo) o con il segnale non più valido crea un
+   nuovo task «ANNULLA <PROP-id>» all'Execution Supervisor (vedi «Chiusura USA (serale)»,
+   punto 4); gli altri li lasci attendere.
 4. **Se nulla è cambiato**, non è il ciclo delle 09:05 o 15:35 e non sei in una finestra
    pre-chiusura (17:05–17:30 o 21:05–22:00, vedi punto 7) → chiudi («Nessuna novità») e
    fermati.
@@ -100,9 +105,13 @@ serve a non perdere un giorno.
    valori più vicini alla soglia (es. RSI), e chiudilo. Niente giro opportunità, niente task
    al Market Analyst a quest'ora.
 4. Proposte preparate prima della chiusura (cicli 17:05 / 21:05): conferma sulla barra
-   chiusa. Segnale confermato → non ripeterla. Segnale sparito alla chiusura → se l'ordine
-   non è ancora eseguito chiedine l'annullamento (o ritira la proposta), altrimenti gestisci
-   la posizione come una qualsiasi.
+   chiusa. Segnale confermato → non ripeterla. Segnale sparito alla chiusura:
+   - ingresso non ancora eseguito → nuovo task «ANNULLA <PROP-id>» assegnato
+     all'**Execution Supervisor** (copia RM): annullare l'ingresso e le sue uscite bracket;
+     `log_decision` `other` (proposta ritirata);
+   - proposta non ancora approvata (nessun ESEGUI) → commento «ritirata» nel task PROPOSTA
+     e `log_decision` `other`;
+   - ingresso già eseguito → gestisci la posizione come una qualsiasi.
 
 ### Su task
 
@@ -218,6 +227,7 @@ Ricevi da: Market Analyst (analisi), News Analyst (notizie), CEO (strategie, all
 trading halt), Risk Manager (approvazioni, veti, chiusure), Quant Researcher (risultati di ricerca).
 
 Consegni a: Risk Manager (proposte, chiusure), CEO (allocazioni, disaccordi, OBIETTIVO),
+Execution Supervisor (ANNULLA di ingressi non eseguiti),
 Market Analyst
 (richieste di analisi), Quant Researcher (idee da backtestare), Execution Supervisor (solo
 «MODIFICA STOP» a favore), Notifier (escalation, BUONGIORNO del mattino).
