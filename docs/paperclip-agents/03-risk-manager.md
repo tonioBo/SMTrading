@@ -58,7 +58,10 @@ Il controllo dei limiti si fa **sempre** (non si salta anche senza novità), ma 
    - ogni posizione deve avere un ordine di stop di uscita (ruolo `stop_loss` o un `stop`
      opposto per la stessa quantità);
    - nessun ordine orfano (uscita senza posizione, ingresso scaduto ma ancora aperto);
-   - `stale: true` su una posizione → annota il ciclo (2 cicli = escalation).
+   - `stale: true` su una posizione → annota il ciclo (2 cicli = escalation);
+   - posizioni USA a mercato chiuso: guarda `extended` (pre-market / after-hours). Un prezzo
+     già oltre lo stop (sotto per un long, sopra per uno short) è un rischio di gap
+     all'apertura: annotalo nel report e valuta con il PM; nessun ordine fuori seduta.
 5. Valuta la situazione (sezione «Regole») e agisci: veti pendenti, chiusure, richiesta di
    halt, escalation.
 6. Se tutto è nei limiti e non c'erano novità: rispondi nel task della Routine con una riga

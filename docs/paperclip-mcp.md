@@ -131,7 +131,8 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
   portale e Telegram mostrano sempre la modalita'. Le descrizioni dei tool non citano la simulazione
   dei portafogli (i backtest sono «test su dati storici»).
 - `get_portfolio`: valutazione mark-to-market (EUR): equity, esposizione, margini, potere d'acquisto, posizioni, P&L del giorno.
-- `get_positions`: posizioni aperte con prezzo medio, mark e P&L non realizzato.
+- `get_positions`: posizioni aperte con prezzo medio, mark e P&L non realizzato; le posizioni
+  USA hanno anche `extended` (come in `get_quote`).
 - `get_transactions`: movimenti del ledger del portafoglio, dal piu' recente, con filtri e paginazione (`before_seq`).
 - `get_performance`: serie dell'equity e statistiche (rendimento, max drawdown, sharpe) su un periodo.
 - `get_risk_limits`: stato di rischio: soglie di margine, profilo effettivo (con `description`, il «Quando usarlo» del profilo), perdita giornaliera, kill switch.
@@ -152,7 +153,12 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
 - `close_all_positions`: chiude tutte le posizioni aperte con ordini market reduce-only.
 - `search_instruments`: cerca strumenti per simbolo o nome (al massimo 50 risultati), filtrabili per `asset_class` e `market`: prima il catalogo (`in_catalogo: true`), poi, con `include_provider` (default `true`), i risultati dei provider non ancora in catalogo che si possono aggiungere (`in_catalogo: false`, `aggiungibile: true`). La ricerca non crea nulla: per aggiungerne uno basta chiamare `get_instrument(symbol)` (o quotarlo, o fare trading).
 - `get_instrument`: anagrafica di uno strumento e stato del suo mercato; un simbolo non in catalogo viene aggiunto automaticamente (vedi sotto).
-- `get_quote`: ultime quotazioni (bid, ask, last) fino a 50 simboli.
+- `get_quote`: ultime quotazioni (bid, ask, last) fino a 50 simboli. Le azioni USA hanno
+  anche `extended`: con la seduta regolare chiusa, l'ultimo prezzo pre-market o after-hours
+  `{session: "pre"|"post", price, change_pct_vs_close, ts}` (variazione in % sull'ultima
+  chiusura regolare), altrimenti `null`. Orari estesi: solo informativo, ordini e stop si
+  valutano solo in seduta regolare (nessun trading negli orari estesi; mark, P&L, segnali e
+  indicatori restano sulla seduta regolare). Fonte: Yahoo, cache 60 s.
 - `get_bars`: barre OHLCV per timeframe e intervallo.
 - `get_market_status`: apertura/chiusura e prossimi orari di uno o tutti i mercati
   (`NASDAQ`, `NYSE`, `MTA`, `XETRA`, `EURONEXT_PARIS`, `CRYPTO`, `FX` e `LSE`). Le chiusure

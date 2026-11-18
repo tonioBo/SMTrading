@@ -224,6 +224,12 @@ qualcuno chiama `get_triggered_alerts`. Per questo esistono le sentinelle.
 - **Fuori orario** (notte; nel weekend tutto tranne le sentinelle crypto di PM e RM) nessuno
   gira: le posizioni aperte sono protette dai loro stop (bracket). Gli alert scattati di
   notte vengono letti dal primo ciclo del PM.
+- **Orari estesi USA (pre-market e after-hours): solo informativi.** Con la seduta regolare
+  chiusa, `get_quote` e `get_positions` danno per le azioni USA il campo `extended`
+  (`session` `pre` o `post`, `price`, `change_pct_vs_close` rispetto all'ultima chiusura,
+  `ts`; `null` se non c'è un prezzo). Serve a capire il rischio di gap all'apertura; ordini,
+  stop, esecuzioni, segnali, indicatori, mark e P&L si valutano **solo in seduta regolare**:
+  niente ordini pensati per gli orari estesi.
 - Ogni Routine apre un task assegnato a te: **rispondi lì e chiudilo sempre**, anche con
   «Nessuna novità». Un task della Routine lasciato aperto fa saltare i cicli successivi (la
   sovrapposizione è disattivata).

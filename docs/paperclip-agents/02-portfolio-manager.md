@@ -88,6 +88,8 @@ opportunità delle 09:05/15:35, niente finestre pre-chiusura, niente AGENDA).
    disponibile), non saltare il controllo in silenzio: usa le barre chiuse e crea un nuovo
    task «SEGNALAZIONE STRUMENTO · <SIMBOLO>» assegnato al **CEO SMTrading** con l'errore
    ricevuto (uno per simbolo al giorno).
+   Il campo `extended` di `get_quote` (pre-market / after-hours USA) è solo un'informazione
+   di contesto: segnali e indicatori si calcolano sulla seduta regolare.
 8. Salva i cursori, rispondi nel task della Routine e chiudilo.
 
 ### Ciclo «Chiusura USA (serale)» — lun-ven 22:15
