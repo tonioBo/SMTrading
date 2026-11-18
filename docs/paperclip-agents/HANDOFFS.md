@@ -42,6 +42,8 @@ successivi vengono saltati (sovrapposizione disattivata). «Ronda ticket» è ar
 | ogni 5 min, obiettivo `min` passa «in ritardo» | Telegram + task **«OBIETTIVO <obiettivo> · in ritardo · <periodo>»** (alta) | CEO | uno per obiettivo e periodo |
 | ogni 5 min, obiettivo `max_loss` «vicino al limite» / «superato» | Telegram + 2 task **«RISCHIO OBIETTIVO <obiettivo> · vicino al limite\|limite superato · <periodo> · Risk Manager\|CEO»** (alta / critica) | RM e CEO (uno ciascuno) | uno per obiettivo, periodo e stato |
 | obiettivo `cap` «oltre il tetto», recuperi, raggiunto | solo Telegram | — | nessun task: lo segnala il PM con «OBIETTIVO <data>» |
+| ogni 5 min, passaggio mancante | Telegram «⚠ Passaggio mancante: …» (uno per passaggio al giorno) | umani | nei giorni di borsa: AGENDA al PM entro le 08:50, BUONGIORNO al NOT e il suo Telegram entro le 09:20; sempre: PROTEGGI / RISCHIO OBIETTIVO senza risposta dopo 45 min, ESEGUI aperto dopo 30 min a mercato aperto. Nessun task: rispondi e chiudi i tuoi task in tempo |
+| dopo un riavvio | allarmi (protezione, obiettivi, pre-apertura, passaggi) | — | il primo controllo parte almeno 3 min dopo l'avvio |
 
 ## 3. Catena del mattino (lun-ven)
 
