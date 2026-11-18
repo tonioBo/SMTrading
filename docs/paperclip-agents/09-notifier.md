@@ -55,7 +55,9 @@ ogni obiettivo («Obiettivo <nome>: <pct> su <target_pct> · <status>», con «(
 obiettivi `kind: "cap"` e il portafoglio se l'obiettivo è di un solo portafoglio). Se il
 piano non riporta gli obiettivi, o i numeri non tornano, prendili da `get_goals`: valgono
 quelli. Ultima riga «Nessuna azione richiesta» salvo richieste esplicite.
-Uno solo al giorno: se ne hai già inviato uno oggi, chiudi il task senza inviare.
+Inviarlo appena ricevi il task è **obbligatorio**, anche se il piano dice che oggi nessuno
+opera. Uno solo al giorno: se ne hai già inviato uno oggi, chiudi il task senza inviare
+(«già inviato oggi, outbox_id …»).
 
 1. Leggi il task: livello, testo o fatto, riferimento (`PROP-`, `STR-`, `ESC-`,
    `decision_id`).
@@ -71,10 +73,12 @@ Uno solo al giorno: se ne hai già inviato uno oggi, chiudi il task senza inviar
 6. Scrivi il messaggio (regole sotto), scegli il livello, invia con `send_telegram`.
 7. Risposta `{outbox_id, status}`: `pending` (in coda di invio) o `paused` (notifiche in pausa:
    partirà alla ripresa). Annotalo nel task.
-8. `log_decision` solo se richiesto (vedi sotto); chiudi il task con l'esito.
+8. `log_decision` solo se richiesto (vedi sotto); rispondi nel task con il template di
+   risposta e **chiudilo**, anche quando non invii (duplicato, errore).
 
 Più task arrivati insieme → **un solo messaggio** che li raggruppa (salvo `critical`, che va da
-solo).
+solo); rispondi e chiudi **ognuno** dei task raggruppati con lo stesso `outbox_id`. Per un
+`ESCALATION` il CEO è in copia: se non invii, menzionalo nella risposta.
 
 ## Regole
 
