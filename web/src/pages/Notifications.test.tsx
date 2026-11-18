@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { configure, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -14,6 +14,21 @@ vi.mock("@/lib/ws", async (orig) => ({
 }));
 
 const TOKEN = "123456789:AAFsecret_token_value_wxyz";
+
+// Robust under a loaded parallel run (each test renders the whole app): async queries
+// wait up to 5 s instead of 1 s and a test may take 20 s; no keystroke delay, and the
+// token is pasted (one input event) instead of typed key by key.
+configure({ asyncUtilTimeout: 5000 });
+vi.setConfig({ testTimeout: 20_000 });
+
+function setupUser() {
+  return userEvent.setup({ delay: null });
+}
+
+async function pasteInto(user: ReturnType<typeof setupUser>, field: HTMLElement, text: string) {
+  await user.click(field);
+  await user.paste(text);
+}
 
 const baseSettings: TelegramSettings = {
   configured: true,
@@ -187,24 +202,28 @@ describe("Notifiche", () => {
     expect(screen.getByRole("link", { name: "Notifiche" })).toHaveAttribute("href", "/notifiche");
   });
 
-  it("replace token sends bot_token only when typed", async () => {
-    const user = userEvent.setup();
+  it("saving only the chat id sends no bot_token", async () => {
+    const user = setupUser();
     renderApp("/notifiche");
     const c = await connection();
-    // only the chat id changed: no token in the body
     const chat = c.getByLabelText("ID del gruppo");
     await user.clear(chat);
     await user.type(chat, "-4001");
     await user.click(c.getByRole("button", { name: "Salva" }));
     await waitFor(() => expect(configPuts).toEqual([{ chat_id: "-4001" }]));
+  });
 
+  it("replace token sends bot_token only, trimmed, then hides it", async () => {
+    const user = setupUser();
+    renderApp("/notifiche");
+    const c = await connection();
     await user.click(c.getByRole("button", { name: "Sostituisci token" }));
     const field = c.getByLabelText("Token del bot");
     expect(field).toHaveValue("");
     expect(field).toHaveAttribute("type", "password");
-    await user.type(field, `  ${TOKEN} `);
+    await pasteInto(user, field, `  ${TOKEN} `);
     await user.click(c.getByRole("button", { name: "Salva" }));
-    await waitFor(() => expect(configPuts[1]).toEqual({ bot_token: TOKEN }));
+    await waitFor(() => expect(configPuts).toEqual([{ bot_token: TOKEN }]));
     // back to the masked view, the typed token is gone
     await waitFor(() => expect(c.getByLabelText("Token del bot")).toHaveValue("••••"));
     expect(document.body.innerHTML).not.toContain(TOKEN);
@@ -212,7 +231,7 @@ describe("Notifiche", () => {
 
   it("unreadable config requires the token again", async () => {
     settings = { ...baseSettings, error: "configurazione illeggibile: reinserisci il token" };
-    const user = userEvent.setup();
+    const user = setupUser();
     renderApp("/notifiche");
     const c = await connection();
     expect(c.getByText("configurazione illeggibile: reinserisci il token")).toBeInTheDocument();
@@ -225,7 +244,7 @@ describe("Notifiche", () => {
   });
 
   it("detect groups fills chat id on click", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     renderApp("/notifiche");
     const c = await connection();
     await user.click(c.getByRole("button", { name: "Rileva gruppi" }));
@@ -237,21 +256,21 @@ describe("Notifiche", () => {
   });
 
   it("detect groups uses the token being typed", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     renderApp("/notifiche");
     const c = await connection();
     await user.click(c.getByRole("button", { name: "Sostituisci token" }));
-    await user.type(c.getByLabelText("Token del bot"), TOKEN);
+    await pasteInto(user, c.getByLabelText("Token del bot"), TOKEN);
     await user.click(c.getByRole("button", { name: "Rileva gruppi" }));
     await waitFor(() => expect(detectBodies).toEqual([{ bot_token: TOKEN }]));
   });
 
   it("no mutation keeps the token after detect, manual id and save", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const { queryClient } = renderApp("/notifiche");
     const c = await connection();
     await user.click(c.getByRole("button", { name: "Sostituisci token" }));
-    await user.type(c.getByLabelText("Token del bot"), TOKEN);
+    await pasteInto(user, c.getByLabelText("Token del bot"), TOKEN);
     await user.click(c.getByRole("button", { name: "Rileva gruppi" }));
     await c.findByRole("list", { name: "Gruppi rilevati" });
     expect(mutationsHoldingToken(queryClient)).not.toHaveLength(0);
@@ -269,11 +288,11 @@ describe("Notifiche", () => {
         HttpResponse.json({ code: "INVALID_ORDER", message: "Token del bot non valido", details: { field: "bot_token" } }, { status: 400 }),
       ),
     );
-    const user = userEvent.setup();
+    const user = setupUser();
     const { queryClient } = renderApp("/notifiche");
     const c = await connection();
     await user.click(c.getByRole("button", { name: "Sostituisci token" }));
-    await user.type(c.getByLabelText("Token del bot"), TOKEN);
+    await pasteInto(user, c.getByLabelText("Token del bot"), TOKEN);
     await user.click(c.getByRole("button", { name: "Salva" }));
     expect(await c.findByText("Token del bot non valido")).toBeInTheDocument();
     expect(mutationsHoldingToken(queryClient)).not.toHaveLength(0);
@@ -283,7 +302,7 @@ describe("Notifiche", () => {
   });
 
   it("chat id follows the server: normalised on save, updated when untouched", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const { queryClient } = renderApp("/notifiche");
     const c = await connection();
     const chat = c.getByLabelText("ID del gruppo");
@@ -314,7 +333,7 @@ describe("Notifiche", () => {
         ),
       ),
     );
-    const user = userEvent.setup();
+    const user = setupUser();
     renderApp("/notifiche");
     const c = await connection();
     await user.click(c.getByRole("button", { name: "Sostituisci token" }));
@@ -327,7 +346,7 @@ describe("Notifiche", () => {
   });
 
   it("sends a test message and shows the outcome", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     renderApp("/notifiche");
     const c = await connection();
     await user.click(c.getByRole("button", { name: "Invia messaggio di prova" }));
@@ -336,7 +355,7 @@ describe("Notifiche", () => {
   });
 
   it("pause toggle calls PUT /api/telegram/paused", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     renderApp("/notifiche");
     const c = await connection();
     expect(c.getByText(/I messaggi restano in coda e partono alla ripresa/)).toBeInTheDocument();
@@ -348,7 +367,7 @@ describe("Notifiche", () => {
   });
 
   it("enabled toggle saves only enabled", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     renderApp("/notifiche");
     const c = await connection();
     const toggle = c.getByRole("switch", { name: "Notifiche attive" });
@@ -360,7 +379,7 @@ describe("Notifiche", () => {
   });
 
   it("retry button only on failed rows and calls retry", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     renderApp("/notifiche");
     const table = await screen.findByRole("table", { name: "Ultimi messaggi" });
     await within(table).findByText("Fallito");
@@ -378,7 +397,7 @@ describe("Notifiche", () => {
   });
 
   it("retry all failed calls POST retry-failed, shown only with failed messages", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     renderApp("/notifiche");
     const region = within(await screen.findByRole("region", { name: "Ultimi messaggi" }));
     const button = await region.findByRole("button", { name: "Riprova tutti i falliti" });
@@ -388,7 +407,7 @@ describe("Notifiche", () => {
   });
 
   it("retry all with nothing to retry shows a notice", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     server.use(http.post("*/api/telegram/outbox/retry-failed", () => HttpResponse.json({ retried: 0 })));
     renderApp("/notifiche");
     const region = within(await screen.findByRole("region", { name: "Ultimi messaggi" }));
@@ -419,7 +438,7 @@ describe("Notifiche", () => {
   });
 
   it("decisions filter by kind", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     renderApp("/notifiche");
     const table = await screen.findByRole("table", { name: "Decisioni" });
     expect(await within(table).findByText("Veto su TSLA")).toBeInTheDocument();
@@ -431,7 +450,7 @@ describe("Notifiche", () => {
   });
 
   it("decisions show lessons and team rules", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     server.use(
       http.get("*/api/decisions", ({ request }) => {
         decisionUrls.push(request.url);
@@ -484,7 +503,7 @@ describe("Notifiche", () => {
         });
       }),
     );
-    const user = userEvent.setup();
+    const user = setupUser();
     renderApp("/notifiche");
     await user.click(await screen.findByRole("button", { name: "Carica altre" }));
     expect(await screen.findByText("Decisione vecchia")).toBeInTheDocument();
@@ -495,7 +514,7 @@ describe("Notifiche", () => {
 
 describe("AgentDetail notify permission", () => {
   it("toggle calls PATCH { can_notify }", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     renderApp("/agenti/a1");
     const toggle = await screen.findByRole("switch", { name: "Può inviare su Telegram (notify)" });
     expect(toggle).not.toBeChecked();
@@ -504,7 +523,7 @@ describe("AgentDetail notify permission", () => {
   });
 
   it("halt toggle calls PATCH { can_halt }", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     renderApp("/agenti/a1");
     const toggle = await screen.findByRole("switch", { name: "Può sospendere le aperture (halt)" });
     expect(toggle).not.toBeChecked();

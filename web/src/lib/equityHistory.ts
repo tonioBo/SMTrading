@@ -66,7 +66,7 @@ function flat(key: string, label: string, tag: string, color: string, v: number,
  *   per-portfolio weekly `goal` would duplicate it). A total goal is drawn against the
  *   «Totale»: in % relative to the shown portfolios' total at their first points, in €
  *   at its target; a portfolio goal in the portfolio's colour.
- * - Portfolio detail: the portfolio's weekly `goal` («1s», as before: the list leaves the
+ * - Portfolio detail: the portfolio's weekly `goal` («Sett.» and «1s»: the list leaves the
  *   total goals out there) and its own goals from the list.
  * - An index goal (beat_index) has no flat line: its index is drawn instead, in % only,
  *   as a thin solid line tagged with the symbol (the `benchmarks` series, rebased to its
