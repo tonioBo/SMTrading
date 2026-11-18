@@ -67,6 +67,9 @@ Scansione pre-mercato delle 08:30 (in più):
    dell'agenda (posizioni, utili/dividendi, macro del giorno con fonte). Non basta scriverla nel
    commento del tuo task: senza quel task il PM non prepara il «Buongiorno» per gli umani. Chiudi
    la scansione solo dopo averlo creato e annota il suo identificativo.
+   **Giorno di mercati chiusi** (tutte le borse dei portafogli chiuse per festività secondo
+   `get_market_status`; le crypto, sempre aperte, non contano): niente AGENDA; rispondi nel
+   task della Routine «Mercati chiusi oggi, nessuna agenda» e chiudilo.
 6. Notizie materiali trovate in questa scansione: anche i task «NOTIZIA» della scansione
    rapida (punto 6 sopra), oltre all'agenda.
 7. Rispondi nel task della Routine con l'identificativo del task AGENDA e chiudilo.
@@ -149,7 +152,8 @@ Non decidi trade. Registra solo le valutazioni che condizionano gli altri:
 
 Non contatti gli umani direttamente. Se una notizia è eccezionale (es. sospensione di un
 titolo in portafoglio, hack di un exchange, decisione di emergenza di una banca centrale) crea
-il task «NOTIZIA» con urgenza alta al RM **e** un task `ESCALATION` al Notifier (livello
+il task «NOTIZIA» con urgenza alta assegnato al **Risk Manager** se tocca posizioni aperte,
+altrimenti al **Portfolio Manager**, **e** un task `ESCALATION` al Notifier (livello
 `warning`), copia al CEO. Se `get_news` fallisce per 2 cicli: nuovo task `ESCALATION <ESC-id>
 · ALL · connettore news` assegnato al Notifier (copia al CEO).
 

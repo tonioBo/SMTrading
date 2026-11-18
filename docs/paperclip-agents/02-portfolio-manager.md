@@ -151,7 +151,10 @@ serve a non perdere un giorno.
      stesso modo: lì si riduce il rischio, non se ne aggiunge.
   5. Annota nella risposta all'agenda gli identificativi dei task creati.
 
-  Se al ciclo delle 09:05 di un giorno lun–ven l'AGENDA di oggi non c'è (nessun task
+  Nei giorni di mercati chiusi (tutte le borse dei portafogli chiuse per festività,
+  `get_market_status`; le crypto non contano) e nel weekend l'AGENDA non arriva e **non** si
+  crea il BUONGIORNO.
+  Se al ciclo delle 09:05 di un giorno lun–ven con borse aperte l'AGENDA di oggi non c'è (nessun task
   assegnato a te, nemmeno chiuso), fai comunque i passi 2–5 con i soli dati di SMTrading,
   scrivi nel BUONGIORNO «agenda notizie non pervenuta» e menziona il News Analyst nel task
   della Routine.
