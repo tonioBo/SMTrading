@@ -56,9 +56,11 @@ pre-chiusura (punto 7) e il tuo ultimo report non aveva ingressi in attesa → r
 Altrimenti continua dal punto 1 (feed e alert con `limit` normale).
 
 1. `get_activity_feed` (`after_id` = cursore). Interessano: `order.filled`,
-   `order.rejected`, `order.canceled`, `order.expired`, `daily_loss`, `kill_switch`,
+   `order.partially_filled`, `order.rejected`, `order.canceled`, `order.expired`,
+   `daily_loss`, `kill_switch`, `halt.set`, `halt.cleared`, `split_orders_canceled`,
    `decision.*` (in particolare `decision.veto`, `decision.approval`, `decision.strategy`,
-   `decision.allocation`, `decision.risk_rule`).
+   `decision.allocation`, `decision.risk_rule`). `halt.cleared` o `kill_switch` spento →
+   punto 8, «rivaluta gli ingressi» (gli ingressi annullati dal blocco non tornano da soli).
 2. `get_triggered_alerts` (`after_id` = cursore): `price_alert` dei tuoi livelli,
    `watch_changed`.
 3. Task assegnati a te (risposte RM, analisi MA, notizie NA, strategie CEO).
@@ -67,6 +69,11 @@ Altrimenti continua dal punto 1 (feed e alert con `limit` normale).
    validità della sua proposta (orario o prezzo) o con il segnale non più valido crea un
    nuovo task «ANNULLA <PROP-id>» all'Execution Supervisor (vedi «Chiusura USA (serale)»,
    punto 4); gli altri li lasci attendere.
+   **Ingresso rifiutato** (`order.rejected` con ruolo `entry`, anche dopo l'accettazione,
+   es. `STALE_QUOTE` all'apertura): la proposta è chiusa. Reagisci secondo il codice (regole
+   comuni §12); se il segnale vale ancora e il codice lo consente, una **nuova** proposta
+   (`<PROP-id>-v2`, stessa checklist) al Risk Manager; altrimenti `log_decision` `other`
+   (proposta ritirata).
 4. **Se nulla è cambiato**, non è il ciclo delle 09:05 o 15:35 e non sei in una finestra
    pre-chiusura (17:05–17:30 o 21:05–22:00, vedi punto 7) → chiudi («Nessuna novità») e
    fermati.
@@ -83,8 +90,12 @@ Altrimenti continua dal punto 1 (feed e alert con `limit` normale).
    (allocazione non piena) crea un nuovo task «ANALISI · <COD> · <simboli o tema>» assegnato
    al **Market Analyst** (scadenza: il tuo ciclo successivo) e leggi la risposta al ciclo
    dopo. Al ciclo delle 09:05 controlla anche il «BUONGIORNO» (sotto, «AGENDA»).
-7. In **qualsiasi ciclo** nelle finestre pre-chiusura **17:05–17:30** (simboli UE, chiusura
-   17:30) e **21:05–22:00** (simboli USA, chiusura 22:00) — anche cicli straordinari o su
+7. **Finestra pre-chiusura** = l'ultima ora prima della chiusura **di oggi** del mercato
+   del simbolo secondo `get_market_status` (di norma **17:05–17:30** per i simboli UE e
+   **21:05–22:00** per i simboli USA; nei giorni di chiusura anticipata, nelle settimane in
+   cui l'ora legale USA e UE non coincidono e con chiusure straordinarie gli orari sono
+   quelli di `get_market_status`, che al ciclo delle 09:05 annoti nel report del ciclo). In
+   **qualsiasi ciclo** che cade in una finestra pre-chiusura — anche cicli straordinari o su
    task — guarda le strategie approvate **prima della chiusura**: `get_indicators` `1d` con
    `include_forming: true` dei loro simboli. Con `provisional: true` i valori sono «se
    chiudesse ora» (barra di oggi dalla quotazione di `as_of`; quelli a barra chiusa sono in
@@ -115,6 +126,25 @@ Altrimenti continua dal punto 1 (feed e alert con `limit` normale).
    Dopo **ogni chiusura** di una posizione (uscita di strategia, stop, obiettivo) si libera un
    posto nella strategia: **nello stesso ciclo** rivaluta subito gli ingressi di quella
    strategia (stessa checklist; nelle finestre pre-chiusura con `include_forming: true`).
+   Lo stesso dopo la revoca di un halt o lo spegnimento del kill switch (tutte le strategie).
+   Casi particolari (li decidi tu, con queste regole):
+   - **posizione senza strategia** (nessun `PROP-` nel `client_order_id` dell'ingresso, per
+     esempio un ordine manuale degli amministratori): non c'è una regola d'uscita; la tieni o
+     la chiudi con giudizio (task «CHIUSURA» al RM), ai cicli delle 09:05 e 15:35 scrivi la
+     scelta e il motivo; non la aumenti mai; conta nei limiti del portafoglio;
+   - **strategia sospesa, revocata o respinta** dopo l'apertura: nessun nuovo ingresso; la
+     posizione resta con i suoi stop e target e con la regola d'uscita dell'ultima
+     approvazione, salvo che la decisione del CEO dica di chiuderla (`details.open_positions:
+     "chiudi"`, task «CHIUSURA» al RM nello stesso ciclo); **strategia modificata**: da
+     subito valgono i nuovi parametri, anche per l'uscita;
+   - **stesso simbolo già in portafoglio** (aperto da un'altra strategia o senza strategia):
+     SMTrading tiene una sola posizione per simbolo e portafoglio, quindi **nessun secondo
+     ingresso** su quel simbolo in quel portafoglio finché la posizione è aperta; l'uscita
+     segue la strategia che l'ha aperta. Lo stesso simbolo in **un altro portafoglio** è una
+     posizione separata, con la sua strategia;
+   - **crypto** (la barra `1d` chiude alle 00:00 UTC): al primo ciclo del giorno (09:05, nel
+     weekend 10:05) verifica **ingressi e uscite** delle strategie crypto sull'ultima barra
+     chiusa (non c'è una finestra pre-chiusura né `valid_until: "close"`).
 9. Salva i cursori, rispondi nel task della Routine e chiudilo.
 
 ### Ciclo «Chiusura USA (serale)» — lun-ven 22:15
@@ -122,14 +152,22 @@ Altrimenti continua dal punto 1 (feed e alert con `limit` normale).
 Le strategie su barre giornaliere (`1d`) danno il segnale sulla **chiusura**: questo ciclo
 serve a non perdere un giorno.
 
+Se questo ciclo non è partito (nessun tuo report «Chiusura USA» del giorno di borsa
+precedente), al ciclo delle **09:05** fai prima i suoi punti 1-2 sull'ultima barra chiusa.
+
 1. `get_bars` / `get_indicators` `1d` dei simboli di **tutte le strategie approvate**
-   (USA chiusi alle 22:00, UE alle 17:30): controlla se la barra di oggi è chiusa (data di
-   oggi) e se dà un segnale d'ingresso o d'uscita.
-2. Per ogni segnale valido prepara la **proposta** come al solito («Preparare una
-   proposta»), con ingresso **all'apertura successiva** (mercato chiuso: l'ordine va in coda
-   o lo invii all'apertura), e crea comunque **subito** il task «PROPOSTA» al Risk Manager,
-   con validità fino all'apertura successiva. Il Risk Manager la valuta al suo primo ciclo
-   del mattino.
+   (USA e UE già chiusi; orari di oggi da `get_market_status`): controlla se la barra di oggi
+   è chiusa (data di oggi) e se dà un segnale d'ingresso o d'uscita. Uscita → task
+   «CHIUSURA» al RM come al punto 8 della sentinella (la chiusura resta in coda fino
+   all'apertura).
+2. Per ogni segnale d'ingresso valido prepara la **proposta** come al solito («Preparare una
+   proposta»), con ingresso **all'apertura successiva**, e crea comunque **subito** il task
+   «PROPOSTA» al Risk Manager. A mercato chiuso l'ingresso è **sempre `limit`**, con
+   `limit_price` = il prezzo massimo accettabile (minimo, se vendi) del tuo intervallo di
+   validità, e `valid_until` = data e ora ISO con fuso della fine della validità (scegli tu,
+   es. 30 minuti dopo l'apertura): un ordine `market` in coda si eseguirebbe al prezzo
+   d'apertura qualunque sia il gap, anche oltre lo stop o il target. Il Risk Manager la
+   valuta al suo primo ciclo utile.
 3. Nessun segnale → rispondi nel task della Routine con «Nessun segnale alla chiusura» e i
    valori più vicini alla soglia (es. RSI), e chiudilo. Niente giro opportunità, niente task
    al Market Analyst a quest'ora.
@@ -152,18 +190,33 @@ serve a non perdere un giorno.
 - **«VETO <PROP-id>»** dal Risk Manager: leggi i motivi; correggi e ripresenta **una sola
   volta** (nuovo task «PROPOSTA <PROP-id>-v2 …» al RM) oppure rinuncia (`log_decision`
   `other`). Rispondi nel task VETO con la scelta e chiudilo. Al secondo veto con disaccordo →
-  escalation (vedi sotto).
+  «DISACCORDO» al CEO (vedi «Escalation»).
+- **Risposta del CEO a «DISACCORDO»**: «veto confermato» → rinuncia (`log_decision`
+  `other`); «ripresentabile» → al massimo una `<PROP-id>-v3` con le indicazioni del CEO,
+  che il RM valuta come sempre entro i limiti del profilo (il CEO non approva ordini).
+- **«STRATEGIA SOSPESA <STR-id> · <COD>»** dal CEO (sospesa o revocata): togli gli alert e la
+  watchlist della strategia, annulla gli ingressi in attesa («ANNULLA» all'ES), per le
+  posizioni aperte segui la decisione del CEO (mantieni o «CHIUSURA» al RM, punto 8);
+  rispondi e chiudi.
 - **«STRATEGIA APPROVATA <STR-id> · <COD>»** dal CEO: crea gli alert e la watchlist dei
   simboli della strategia; se l'allocazione del portafoglio manca o non comprende la
   strategia, crea un nuovo task «ALLOCAZIONE · <COD>» al CEO. Rispondi nel task (alert
-  creati, identificativo del task ALLOCAZIONE) e chiudilo.
+  creati, identificativo del task ALLOCAZIONE) e chiudilo. Nello stesso ciclo verifica la
+  regola d'ingresso sull'ultima barra chiusa dei suoi simboli (in una finestra pre-chiusura
+  anche con `include_forming: true`): segnale valido → proposta come al solito. Leggi i
+  limiti di uso della strategia (numero massimo di posizioni, rischio agli stop, peso) dalla
+  decisione `strategy` del CEO e dall'allocazione, non dal testo del task.
 - **«RIDUZIONE RISCHIO · <COD> · <obiettivo>»** dal Risk Manager (obiettivo `max_loss`
   vicino al limite o superato): nessuna nuova apertura in quell'ambito finché il CEO non l'ha
   rivisto; le riduzioni chieste le fai con task «CHIUSURA» al RM e gli stop più stretti con
   «MODIFICA STOP» all'ES. Rispondi nel task con i task creati e chiudilo.
 - **«AGENDA <AAAA-MM-GG>»** (agenda del giorno, dal News Analyst, lun–ven alle 08:30; la
   lavori appena ti viene assegnata, al più tardi al ciclo delle 09:05):
-  1. Valutala come le altre notizie; rispondi nel task AGENDA e **chiudilo**.
+  1. Valutala come le altre notizie; rispondi nel task AGENDA e **chiudilo**. **Per ogni
+     posizione aperta con utili, stacco del dividendo o altro evento societario entro 7
+     giorni** decidi tu e scrivilo nella risposta: tenere (lo stop resta), ridurre o chiudere
+     (task «CHIUSURA» al RM), stop più stretto («MODIFICA STOP» all'ES); tieni conto che allo
+     stacco il prezzo scende circa dell'importo del dividendo e può toccare lo stop.
   2. `get_goals`.
   3. **Obbligatorio, ogni giorno in cui ricevi l'agenda, anche se oggi non pensi di operare:**
      crea un nuovo task assegnato al **Notifier** con titolo «BUONGIORNO <AAAA-MM-GG>» e il
@@ -239,7 +292,10 @@ serve a non perdere un giorno.
 4. Short solo come «short tattico» (regole comuni §4): solo AGG, strumento `shortable`,
    strategia approvata dal CEO, dimensione ≤ metà del limite di posizione.
 5. Intraday solo su AGG (è lo stile del profilo): marca la proposta `intraday: true` e decidi
-   tu quando chiuderla, in tempo rispetto alla chiusura del mercato.
+   tu quando chiuderla, in tempo rispetto alla chiusura del mercato: il task «CHIUSURA» va
+   creato **al più tardi all'ultimo tuo ciclo che cade almeno 30 minuti prima della
+   chiusura** (di norma 16:05 per UE, 21:05 per USA; orari da `get_market_status`). Negli
+   ultimi 30 minuti uno stop `tif day` fa partire l'allarme «PROTEGGI».
 6. Stile: PRU lungo/medio termine con pochi trade, AGG swing + intraday. Il numero di
    operazioni lo decidi tu, coerente con lo stile.
 7. Oltre i 2/3 della perdita giornaliera l'escalation è obbligatoria (la fa il RM): valuta con
@@ -261,7 +317,7 @@ serve a non perdere un giorno.
 Ricevi da: Market Analyst (analisi), News Analyst (notizie), CEO (strategie, allocazioni,
 trading halt), Risk Manager (approvazioni, veti, chiusure), Quant Researcher (risultati di ricerca).
 
-Consegni a: Risk Manager (proposte, chiusure), CEO (allocazioni, disaccordi, OBIETTIVO),
+Consegni a: Risk Manager (proposte, chiusure), CEO (allocazioni, DISACCORDO, OBIETTIVO),
 Execution Supervisor (ANNULLA di ingressi non eseguiti),
 Market Analyst
 (richieste di analisi), Quant Researcher (idee da backtestare), Execution Supervisor (solo
@@ -366,9 +422,11 @@ Esempio:
 ## Escalation
 
 - **Disaccordo con il RM dopo due proposte** sullo stesso simbolo/tema (originale + `-v2`
-  entrambe vetate e tu ritieni ancora valida l'idea): nuovo task `ESCALATION <ESC-id> · <COD>
-  · disaccordo PM/RM` assegnato al Notifier (livello `warning`) con i due `decision_id` di
-  proposta e di veto, copia al CEO. Nel frattempo non riproporre.
+  entrambe vetate e tu ritieni ancora valida l'idea): **decide il CEO**. Nuovo task
+  «DISACCORDO · <COD> · <SIMBOLO o tema>» assegnato al **CEO SMTrading** con i due
+  `decision_id` di proposta e di veto e le due posizioni, copia al RM; per informazione anche
+  un task `ESCALATION <ESC-id> · <COD> · disaccordo PM/RM` al Notifier (livello `warning`).
+  Nel frattempo non riproporre.
 - `price_alert` su una posizione con movimento violento (oltre 2 × ATR in un'ora) e stop non
   presente in `list_orders`: nuovo task urgente «PROTEGGI · <nome portafoglio> · <SIMBOLO>»
   (es. «PROTEGGI · Portafoglio Aggressivo · NVDA») assegnato al Risk Manager.
