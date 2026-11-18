@@ -17,6 +17,7 @@ from smtrading.agents.service import require_permission
 from smtrading.brokers.models import BrokerLink
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import quantize_money
+from smtrading.goals.plans import grace_until, open_closures
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import JournalType
 from smtrading.marketdata.extended import extended_hours
@@ -130,14 +131,17 @@ async def portfolio_snapshot(ctx: ToolCtx, portfolio_id: str | None) -> dict:
 
 
 async def _positions(ctx: ToolCtx, portfolio_id: str | None) -> list[dict]:
-    valuation = await _valuation(ctx, await _readable_portfolio(ctx, portfolio_id))
+    portfolio = await _readable_portfolio(ctx, portfolio_id)
+    valuation = await _valuation(ctx, portfolio)
+    closing = {r.symbol: r for r in await open_closures(ctx.session, [portfolio.id])}
     symbols = [p.symbol for p in valuation.positions]
     instrs = list(await ctx.session.scalars(
         select(Instrument).where(Instrument.symbol.in_(symbols)))) if symbols else []
     ext = await extended_hours(ctx.router, instrs)  # US positions only: gap risk, info only
     out = []
     for p in valuation.positions:
-        row = {**position_valuation_dto(p), "side": "long" if p.qty > 0 else "short"}
+        row = {**position_valuation_dto(p), "side": "long" if p.qty > 0 else "short",
+               "plan_grace_until": grace_until(closing.get(p.symbol))}
         if p.symbol in ext:
             row["extended"] = ext[p.symbol]
         out.append(row)
@@ -264,7 +268,10 @@ def register(mcp: MCPServer) -> None:
     async def get_positions(portfolio_id: str) -> CallToolResult:
         """Open positions: [{symbol, side ("long"|"short"), qty (signed), avg_price, mark,
         currency, market_value, market_value_eur, unrealized_pnl, unrealized_pnl_eur,
-        stale}]. US positions also have `extended`, as in get_quote: while the regular
+        stale, plan_grace_until}]. `plan_grace_until`: set while the position is in a
+        plan's grace (in loss at the end of the plan's period): it cannot be increased and
+        SMTrading closes it at that time (ISO 8601) if still open; null otherwise. US
+        positions also have `extended`, as in get_quote: while the regular
         session is closed the latest pre-market / after-hours price {session, price,
         change_pct_vs_close, ts} (e.g. the gap risk at the next open), else null. Orari
         estesi: solo informativo; mark, P&L, ordini e stop usano solo la seduta regolare."""
