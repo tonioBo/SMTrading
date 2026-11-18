@@ -32,6 +32,7 @@ class FakeYF:
             "EURUSD=X": fx("fast_info_EURUSD"),
             "SPY": fx("fast_info_AAPL"),
         }
+        self.extended: dict[str, dict] = {}
 
     def fast_info(self, sym):
         self.calls.append(("fast_info", sym))
@@ -40,6 +41,10 @@ class FakeYF:
     def info(self, sym):
         self.calls.append(("info", sym))
         return self.infos.get(sym, {})
+
+    def extended_hours(self, sym):
+        self.calls.append(("extended_hours", sym))
+        return self.extended.get(sym, {})
 
     def history(self, sym, interval, start, end):
         self.calls.append(("history", sym, interval))
@@ -370,3 +375,35 @@ def test_float32_noise_is_normalised():
     assert _dec(354.8800048828125) == Decimal("354.88")
     assert _dec(104523.45) == Decimal("104523.45")  # a real double is kept as is
     assert _dec(0.1) == Decimal("0.1")
+
+
+FRI_CLOSE = 1794517201  # regularMarketTime of the AAPL fixture
+EXT = {"regular_price": 354.88, "regular_time": FRI_CLOSE}
+
+
+async def test_extended_post_market(provider):
+    provider._yf.extended["AAPL"] = {
+        **EXT, "post_price": 354.6, "post_time": FRI_CLOSE + 5000,
+        "pre_price": 356.0, "pre_time": FRI_CLOSE - 30000,  # this morning: before the close
+    }
+    e = await provider.get_extended("AAPL", "AAPL")
+    assert e is not None and e.session == "post" and e.symbol == "AAPL"
+    assert e.price == Decimal("354.6") and e.regular_close == Decimal("354.88")
+    assert e.ts == datetime.fromtimestamp(FRI_CLOSE + 5000, UTC) and e.provider == "yahoo"
+
+
+async def test_extended_pre_market_is_newer_than_last_post(provider):
+    provider._yf.extended["AAPL"] = {
+        **EXT, "post_price": 354.6, "post_time": FRI_CLOSE + 5000,
+        "pre_price": 350.1, "pre_time": FRI_CLOSE + 250000,
+    }
+    e = await provider.get_extended("AAPL", "AAPL")
+    assert e is not None and e.session == "pre" and e.price == Decimal("350.1")
+
+
+async def test_extended_none_without_data_or_only_before_the_close(provider):
+    assert await provider.get_extended("AAPL", "AAPL") is None
+    provider._yf.extended["AAPL"] = {**EXT, "pre_price": 356.0, "pre_time": FRI_CLOSE - 1}
+    assert await provider.get_extended("AAPL", "AAPL") is None
+    provider._yf.extended["AAPL"] = {"post_price": 354.6, "post_time": FRI_CLOSE + 5}
+    assert await provider.get_extended("AAPL", "AAPL") is None  # no regular close to compare

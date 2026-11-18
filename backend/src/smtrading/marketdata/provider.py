@@ -10,6 +10,7 @@ from smtrading.marketdata.types import (
     Bar,
     CalendarEvent,
     Capability,
+    ExtendedQuote,
     Fundamentals,
     InstrumentHit,
     NewsItem,
@@ -50,6 +51,11 @@ class DataProvider:
 
     async def get_quotes(self, items: list[tuple[str, str]]) -> dict[str, Quote]:
         raise self._unsupported("quote")
+
+    async def get_extended(self, symbol: str, provider_symbol: str) -> ExtendedQuote | None:
+        """US equities only: the latest pre-market / after-hours price (information only:
+        orders, stops and valuation use the regular session), None when there is none."""
+        raise self._unsupported("extended hours")
 
     async def get_bars(
         self, symbol: str, provider_symbol: str, timeframe: Timeframe, start: datetime, end: datetime

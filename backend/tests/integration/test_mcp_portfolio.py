@@ -16,6 +16,7 @@ from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType
 from smtrading.events import discard_post_commit
 from smtrading.fees.models import FeeRule, FeeScope, FeeSide
 from smtrading.ledger.models import Account, AccountKind, JournalLine
+from smtrading.marketdata.types import ExtendedQuote
 from smtrading.portfolios.models import Portfolio
 from smtrading.portfolios.service import create_portfolio, deposit, withdraw
 from smtrading.risk.models import EquitySnapshot, SnapshotKind
@@ -156,6 +157,32 @@ async def test_get_positions_long_and_short(mcp_server, mcp_call, book):
     assert by_symbol["AAPL"]["currency"] == "USD"
     assert D(by_symbol["AAPL"]["market_value"]) == D(-2000)
     assert D(by_symbol["AAPL"]["market_value_eur"]) == D(-1600)
+    assert "extended" not in by_symbol["ENI.MI"]  # US positions only
+
+
+async def test_get_positions_extended_hours_for_us(mcp_server, mcp_call, book, monkeypatch):
+    from smtrading.marketdata import extended
+
+    qs = mcp_server.qs
+    qs.set_quote("AAPL", D(200), D(200), D(200))
+    async with _Db(mcp_server.db_url) as s:
+        await _fill(s, qs, mcp_server.demo_id, "AAPL", OrderSide.buy, 10)
+        await s.commit()
+        discard_post_commit(s)
+    ts = datetime(2026, 11, 17, 11, 30, tzinfo=UTC)
+    qs.set_extended("AAPL", ExtendedQuote("AAPL", "pre", D(190), D(200), ts, "x"))
+    monkeypatch.setattr(extended, "_now", lambda: datetime(2026, 11, 17, 12, tzinfo=UTC))
+    is_error, positions = await mcp_call(
+        mcp_server.url, mcp_server.token, "get_positions",
+        {"portfolio_id": str(mcp_server.demo_id)},
+    )
+    assert not is_error, positions
+    by_symbol = {p["symbol"]: p for p in positions}
+    assert by_symbol["AAPL"]["extended"] == {
+        "session": "pre", "price": "190", "change_pct_vs_close": "-5",
+        "ts": "2026-11-17T11:30:00+00:00"}
+    assert D(by_symbol["AAPL"]["mark"]) == D(200)  # valuation stays on the regular session
+    assert "extended" not in by_symbol["ENI.MI"]
 
 
 async def test_transactions_only_portfolio_lines(mcp_server, mcp_call, book):

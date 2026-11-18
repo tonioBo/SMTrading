@@ -20,6 +20,7 @@ from smtrading.marketdata.types import (
     Bar,
     CalendarEvent,
     Capability,
+    ExtendedQuote,
     InstrumentHit,
     NewsItem,
     Quote,
@@ -963,3 +964,47 @@ async def test_crypto_daily_bar_keeps_the_midnight_rule(env, monkeypatch):
     assert [b.ts for b in bars] == days[:1]
     [key] = [k async for k in router._redis.scan_iter("md:bars:*")]
     assert 0 < await router._redis.ttl(key) <= 3600
+
+
+async def _us_quote_priority(sm) -> None:
+    async with sm() as s:
+        s.add(ProviderPriority(asset_class=AssetClass.us_equity, capability=Capability.quote,
+                               providers=["fake_a", "fake_b"]))
+        await s.commit()
+
+
+async def test_extended_quote_us_only_skips_providers_without_it_and_is_cached(
+        env, monkeypatch):
+    router, sm = env
+    await _us_quote_priority(sm)
+    ts = datetime(2026, 11, 17, 22, 30, tzinfo=UTC)
+    calls: list = []
+
+    async def get_extended(self, symbol, provider_symbol):
+        calls.append((self.name, symbol, provider_symbol))
+        return ExtendedQuote(symbol, "post", Decimal("255.4"), Decimal("257.46"), ts, self.name)
+
+    monkeypatch.setattr(FakeB, "get_extended", get_extended, raising=False)
+    e = await router.get_extended_quote("aapl")
+    assert e == ExtendedQuote("AAPL", "post", Decimal("255.4"), Decimal("257.46"), ts, "fake_b")
+    assert await router.get_extended_quote("AAPL") == e  # cached
+    assert calls == [("fake_b", "AAPL", "AAPL")]  # fake_a has no extended hours: not called
+    assert FakeA.calls == []
+    assert await router.get_extended_quote("BTC-USD") is None  # not a US equity
+    assert calls == [("fake_b", "AAPL", "AAPL")]
+
+
+async def test_extended_quote_none_is_cached_and_no_provider_is_an_error(env, monkeypatch):
+    router, sm = env
+    with pytest.raises(SMTError):  # no US quote provider configured with extended hours
+        await router.get_extended_quote("AAPL")
+    await _us_quote_priority(sm)
+    calls: list = []
+
+    async def get_extended(self, symbol, provider_symbol):
+        calls.append(symbol)
+
+    monkeypatch.setattr(FakeB, "get_extended", get_extended, raising=False)
+    assert await router.get_extended_quote("AAPL") is None
+    assert await router.get_extended_quote("AAPL") is None
+    assert calls == ["AAPL"]

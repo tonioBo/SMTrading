@@ -11,6 +11,7 @@ from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.marketdata.types import (
     Bar,
     CalendarEvent,
+    ExtendedQuote,
     Fundamentals,
     InstrumentHit,
     NewsItem,
@@ -102,6 +103,13 @@ class FakeMarketData(FakeQuoteSource):
         self._fundamentals: dict[str, Fundamentals] = {}
         self._hits: list[InstrumentHit] = []
         self._screen: list[dict] = []
+        self._extended: dict[str, ExtendedQuote | None] = {}
+
+    def set_extended(self, symbol: str, e: ExtendedQuote | None) -> None:
+        self._extended[symbol] = e
+
+    async def get_extended_quote(self, symbol: str) -> ExtendedQuote | None:
+        return self._extended.get(symbol)
 
     def set_bars(self, symbol: str, bars: list[Bar]) -> None:
         self._bars[symbol] = sorted(bars, key=lambda b: b.ts)

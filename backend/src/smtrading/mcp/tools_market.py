@@ -25,6 +25,7 @@ from smtrading.instruments.market_hours import (
 )
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.instruments.service import canonical_symbol
+from smtrading.marketdata.extended import extended_hours
 from smtrading.marketdata.forming import forming_bar
 from smtrading.marketdata.indicators_service import (
     IndicatorSpec,
@@ -32,7 +33,14 @@ from smtrading.marketdata.indicators_service import (
     indicators_from_bars,
 )
 from smtrading.marketdata.types import ScreenFilter, Timeframe
-from smtrading.mcp.dto import instrument_dto, parse_decimal, parse_enum, parse_int, parse_ts
+from smtrading.mcp.dto import (
+    instrument_dto,
+    parse_decimal,
+    parse_enum,
+    parse_int,
+    parse_ts,
+    quote_dto,
+)
 from smtrading.mcp.instruments import ensure_instrument
 from smtrading.mcp.runtime import ToolCtx, run_tool
 from smtrading.portfolios.models import live_portfolio_ids
@@ -215,7 +223,19 @@ async def _get_quote(ctx: ToolCtx, symbols: Any) -> dict:
                     return {"error": str(e.code)}
 
             found = dict(zip(todo, await asyncio.gather(*(one(s) for s in todo)), strict=True))
-    return {s: refused[s] if s in refused else found[s] for s in syms}
+    quoted = {canonical_symbol(s) for s in todo if not isinstance(found[s], dict)}
+    instrs = list(await ctx.session.scalars(
+        select(Instrument).where(Instrument.symbol.in_(quoted)))) if quoted else []
+    ext = await extended_hours(router, instrs)
+    out: dict[str, Any] = {}
+    for s in syms:
+        if s in refused:
+            out[s] = refused[s]
+        elif canonical_symbol(s) in ext and not isinstance(found[s], dict):
+            out[s] = {**quote_dto(found[s]), "extended": ext[canonical_symbol(s)]}
+        else:
+            out[s] = found[s]
+    return out
 
 
 async def _get_bars(
@@ -380,7 +400,11 @@ def register(mcp: MCPServer) -> None:
     async def get_quote(symbols: list[str]) -> CallToolResult:
         """Latest quotes for up to 50 symbols: {symbol: {bid, ask, last, ts, provider}} or
         {symbol: {"error": code}} for a symbol that failed. Prices are returned as strings
-        for exact precision."""
+        for exact precision.
+        US equities also have `extended`: while the regular session is closed, the latest
+        pre-market / after-hours price {session: "pre"|"post", price, change_pct_vs_close
+        (percent vs the latest regular close), ts}, else null. Orari estesi: solo
+        informativo, ordini e stop si valutano solo in seduta regolare."""
         return await run_tool("get_quote", {"symbols": symbols},
                               lambda ctx: _get_quote(ctx, symbols))
 

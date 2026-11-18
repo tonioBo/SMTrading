@@ -3,6 +3,7 @@
 import asyncio
 import json
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import ClassVar
 
@@ -302,6 +303,9 @@ async def test_quotes_and_market_status(admin):
     r = await c.get("/api/quotes", params={"symbols": "AAPL,ZZZZ"})  # per-symbol fallback
     assert r.status_code == 200 and r.json()["AAPL"]["last"] == "200.05"
     assert "error" in r.json()["ZZZZ"]
+    assert "extended" in r.json()["AAPL"]  # US equities only
+    r = await c.get("/api/quotes", params={"symbols": "BTC-USD"})
+    assert "extended" not in r.json()["BTC-USD"]
 
     ms = (await c.get("/api/markets/status")).json()
     assert [m["market"] for m in ms] == [
@@ -309,6 +313,24 @@ async def test_quotes_and_market_status(admin):
     assert [m["market"] for m in ms if not m["tradable"]] == ["LSE"]  # hours only
     crypto = next(m for m in ms if m["market"] == "CRYPTO")
     assert crypto["is_open"] is True
+
+
+async def test_quotes_extended_hours(admin, monkeypatch):
+    from smtrading.marketdata import extended
+    from smtrading.marketdata.types import ExtendedQuote
+
+    ts = datetime(2026, 11, 17, 21, 45, tzinfo=UTC)
+    admin.qs.set_extended("AAPL", ExtendedQuote("AAPL", "post", D("198"), D("200.05"), ts, "x"))
+    monkeypatch.setattr(extended, "_now", lambda: datetime(2026, 11, 17, 22, tzinfo=UTC))
+    r = await admin.client.get("/api/quotes", params={"symbols": "AAPL"})
+    assert r.status_code == 200, r.text
+    assert r.json()["AAPL"]["last"] == "200.05"
+    assert r.json()["AAPL"]["extended"] == {
+        "session": "post", "price": "198", "change_pct_vs_close": "-1.02",
+        "ts": "2026-11-17T21:45:00+00:00"}
+    monkeypatch.setattr(extended, "_now", lambda: datetime(2026, 11, 17, 15, tzinfo=UTC))
+    r = await admin.client.get("/api/quotes", params={"symbols": "AAPL"})
+    assert r.json()["AAPL"]["extended"] is None  # regular session open
 
 
 async def test_verify_chain_and_balances(admin):

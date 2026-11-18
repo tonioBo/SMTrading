@@ -26,6 +26,7 @@ from smtrading.instruments.discovery import DAILY_LIMIT, auto_add_enabled, set_a
 from smtrading.instruments.market_hours import MARKETS, all_market_status
 from smtrading.instruments.models import AssetClass, Instrument, InstrumentSource
 from smtrading.instruments.service import canonical_symbol
+from smtrading.marketdata.extended import extended_hours
 from smtrading.marketdata.streaming import (
     STATUS_KEY,
     track,
@@ -267,8 +268,10 @@ async def patch_instrument(
 
 
 @router.get("/quotes")
-async def get_quotes(request: Request, symbols: str) -> dict:
-    """`symbols=A,B` (at most 50): one batch via the router, then per-symbol on failure."""
+async def get_quotes(request: Request, session: DbSession, symbols: str) -> dict:
+    """`symbols=A,B` (at most 50): one batch via the router, then per-symbol on failure.
+    A quoted US equity also has `extended` (marketdata.extended: the latest pre-market /
+    after-hours price while the regular session is closed, else null; information only)."""
     syms = list(dict.fromkeys(canonical_symbol(s) for s in symbols.split(",") if s.strip()))
     if not syms or len(syms) > MAX_QUOTE_SYMBOLS:
         raise _invalid("symbols", f"indicare da 1 a {MAX_QUOTE_SYMBOLS} simboli")
@@ -288,7 +291,19 @@ async def get_quotes(request: Request, symbols: str) -> dict:
 
     if found is None:
         found = dict(zip(syms, await asyncio.gather(*(one(s) for s in syms)), strict=True))
-    return {s: found[s] if isinstance(found[s], dict) else quote_dto(found[s]) for s in found}
+    quoted = [s for s in found if not isinstance(found[s], dict)]
+    instrs = list(await session.scalars(
+        select(Instrument).where(Instrument.symbol.in_(quoted)))) if quoted else []
+    ext = await extended_hours(router_, instrs)
+    out: dict[str, Any] = {}
+    for s, q in found.items():
+        if isinstance(q, dict):
+            out[s] = q
+        else:
+            out[s] = quote_dto(q)
+            if s in ext:
+                out[s]["extended"] = to_jsonable(ext[s])
+    return out
 
 
 @router.get("/markets/status")

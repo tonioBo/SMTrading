@@ -6,6 +6,7 @@ from smtrading.marketdata.types import Quote, Timeframe
 
 CACHE_TTL: dict[str, int] = {
     "quote": 5,
+    "extended": 60,
     "news": 300,
     "fundamentals": 86400,
     "calendar": 21600,

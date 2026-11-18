@@ -236,3 +236,50 @@ async def test_pct_limit_from_the_current_equity_without_a_second_valuation(env,
     out = await open_positions(env.s, env.qs, NOW)
     [t] = [t for t in out["portfolios"] if t["portfolio_id"] == p.id]
     assert t["daily_loss_limit_eur"] == (equity / 10).quantize(D("0.01"))
+
+
+class _ExtRouter:
+    def __init__(self, prices):
+        self.prices = prices
+
+    async def get_extended_quote(self, symbol):
+        from smtrading.marketdata.types import ExtendedQuote
+
+        price = self.prices.get(symbol)
+        if price is None:
+            return None
+        return ExtendedQuote(symbol, "post", D(price), D(100), TUE_POST, "fake")
+
+
+TUE_POST = datetime(2026, 11, 17, 22, 0, tzinfo=UTC)  # NASDAQ closed (after hours)
+
+
+async def test_extended_hours_info_and_gap_below_stop(env):
+    p = await env.portfolio("ZZ Notte")
+    await env.fill(p, "ZZAMZ", OrderSide.buy, "1", 100)
+    await env.order(p, "ZZAMZ", OrderSide.sell, OrderType.stop, stop_price=D(95))
+    await env.fill(p, "ZZMSF", OrderSide.buy, "1", 100)
+    await env.order(p, "ZZMSF", OrderSide.sell, OrderType.stop, stop_price=D(90))
+    await env.fill(p, "ZZSHO", OrderSide.sell, "1", 100)
+    await env.order(p, "ZZSHO", OrderSide.buy, OrderType.stop, stop_price=D(104))
+    await env.fill(p, "ZZQQ", OrderSide.buy, "1", 100)  # no extended-hours price
+    await env.fill(p, "ZZENI.MI", OrderSide.buy, "1", 5)
+    router = _ExtRouter({"ZZAMZ": "94", "ZZMSF": "96", "ZZSHO": "105", "ZZENI.MI": "4"})
+
+    out = await open_positions(env.s, env.qs, TUE_POST, router=router)
+    r = _rows(out)
+    amz = r[("ZZ Notte", "ZZAMZ")]
+    assert amz["extended"] == {"session": "post", "price": D(94),
+                               "change_pct_vs_close": D("-6.00"), "ts": TUE_POST}
+    assert amz["extended_beyond_stop"] is True  # long, below its stop
+    assert amz["last"] == D(100) and amz["distance_to_stop_pct"] == D("5.00")  # regular
+    assert r[("ZZ Notte", "ZZMSF")]["extended_beyond_stop"] is False
+    assert r[("ZZ Notte", "ZZSHO")]["extended_beyond_stop"] is True  # short, above its stop
+    assert r[("ZZ Notte", "ZZQQ")]["extended"] is None
+    eni = r[("ZZ Notte", "ZZENI.MI")]
+    assert eni["extended"] is None and eni["extended_beyond_stop"] is False  # not US
+
+    out = await open_positions(env.s, env.qs, NOW, router=router)  # NASDAQ open
+    assert _rows(out)[("ZZ Notte", "ZZAMZ")]["extended"] is None
+    out = await open_positions(env.s, env.qs, TUE_POST)  # no router: no lookup
+    assert _rows(out)[("ZZ Notte", "ZZAMZ")]["extended"] is None

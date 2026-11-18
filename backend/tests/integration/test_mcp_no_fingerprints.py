@@ -32,7 +32,13 @@ from smtrading.agents import service as agents
 from smtrading.agents.models import Agent
 from smtrading.common.db import make_engine
 from smtrading.common.fingerprints import FINGERPRINT
-from smtrading.marketdata.types import Bar, CalendarEvent, Fundamentals, NewsItem
+from smtrading.marketdata.types import (
+    Bar,
+    CalendarEvent,
+    ExtendedQuote,
+    Fundamentals,
+    NewsItem,
+)
 from smtrading.portfolios.models import Portfolio
 from smtrading.portfolios.service import create_portfolio, deposit
 from smtrading.seed import run_seed
@@ -69,6 +75,10 @@ def _market(qs) -> None:
     qs.set_fundamentals(SYM, Fundamentals(SYM, "Bitcoin", None, None, None, None, None,
                                           None, None, None, "USD"))
     qs.set_calendar([CalendarEvent(SYM, "dividend", date.today(), {"amount": "1"})])
+    qs.set_quote("AAPL", D(257), D(258), D("257.46"))
+    qs._quotes["AAPL"] = dataclasses.replace(qs._quotes["AAPL"], provider="yahoo")
+    qs.set_extended("AAPL", ExtendedQuote("AAPL", "post", D("255.4"), D("257.46"),
+                                          datetime(2026, 11, 17, 21, 45, tzinfo=UTC), "yahoo"))
 
 
 async def _setup(server, flavor: str) -> str:
@@ -384,6 +394,13 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
         ("close_position", {"portfolio_id": pid, "symbol": "ETH-USD"}),
     ]:
         await call(tool, args)
+
+    if flavor != "etoro_source":  # US extended hours (the fake source; info only)
+        from smtrading.marketdata import extended
+
+        monkeypatch.setattr(extended, "_now", lambda: datetime(2026, 11, 17, 22, tzinfo=UTC))
+        _, us = await call("get_quote", {"symbols": ["AAPL"]})
+        assert us["AAPL"]["extended"]["session"] == "post", us
 
     for uri in (f"portfolio://{pid}", "fees://schedule", "markets://hours"):
         res = await _read_resource(mcp_server.url, mcp_server.token, uri)

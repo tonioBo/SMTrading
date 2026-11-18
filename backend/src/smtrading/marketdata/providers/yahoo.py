@@ -15,6 +15,7 @@ from smtrading.marketdata.types import (
     Bar,
     CalendarEvent,
     Capability,
+    ExtendedQuote,
     Fundamentals,
     InstrumentHit,
     NewsItem,
@@ -251,6 +252,19 @@ class _YF:
     def info(self, sym: str) -> dict:
         return _attempt(lambda: self._clean(_ticker(sym).info))
 
+    def extended_hours(self, sym: str) -> dict:
+        """The pre-market / after-hours fields of info: prices and epoch times (None when
+        missing), and the latest regular-session price and time."""
+        info = self.info(sym)
+        return {
+            name: info.get(key)
+            for name, key in (
+                ("pre_price", "preMarketPrice"), ("pre_time", "preMarketTime"),
+                ("post_price", "postMarketPrice"), ("post_time", "postMarketTime"),
+                ("regular_price", "regularMarketPrice"), ("regular_time", "regularMarketTime"),
+            )
+        }
+
     def news(self, sym: str) -> list[dict]:
         return _attempt(lambda: self._clean(_ticker(sym).news))
 
@@ -375,6 +389,30 @@ class YahooProvider(DataProvider):
         if not out and first_error is not None:
             raise first_error
         return out
+
+    async def get_extended(self, symbol: str, provider_symbol: str) -> ExtendedQuote | None:
+        """The latest pre-market or after-hours price traded after the latest regular
+        session (the newer of the two), or None. Information only."""
+        d = await self._call(self._yf.extended_hours, provider_symbol)
+        close = _positive(d.get("regular_price"))
+        rt = d.get("regular_time")
+        best: tuple[float, str, Decimal] | None = None
+        for session in ("pre", "post"):
+            price, t = _positive(d.get(f"{session}_price")), d.get(f"{session}_time")
+            if price is None or isinstance(t, bool) or not isinstance(t, (int, float)):
+                continue
+            if isinstance(rt, (int, float)) and t <= rt:
+                continue  # earlier than the latest regular session: superseded
+            if best is None or t > best[0]:
+                best = (t, session, price)
+        if best is None or close is None:
+            return None
+        t, session, price = best
+        return ExtendedQuote(
+            symbol=symbol, session=session,  # type: ignore[arg-type]
+            price=price, regular_close=close,
+            ts=datetime.fromtimestamp(int(t), UTC), provider=self.name,
+        )
 
     async def get_fx_rate(self, base: str, quote: str) -> Decimal:
         fast = await self._call(self._yf.fast_info, f"{base}{quote}=X")

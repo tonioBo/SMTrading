@@ -51,6 +51,7 @@ from smtrading.marketdata.types import (
     Bar,
     CalendarEvent,
     Capability,
+    ExtendedQuote,
     Fundamentals,
     InstrumentHit,
     NewsItem,
@@ -210,6 +211,10 @@ def _dumps_rows(rows: list[dict]) -> str:
 
 def _loads_rows(s: str) -> list[dict]:
     return json.loads(s, object_hook=_decode_row_hook)
+
+
+def _loads_extended(s: str) -> ExtendedQuote | None:
+    return None if json.loads(s) is None else serialization.loads(s, ExtendedQuote)
 
 
 def _utc(dt: datetime, name: str) -> datetime:
@@ -628,6 +633,29 @@ class MarketDataRouter:
                     Capability.quote, {"asset_class": str(asset_class), "symbols": list(pending)}
                 )
         return result
+
+    @_guard
+    async def get_extended_quote(self, symbol: str) -> ExtendedQuote | None:
+        """US equities: the latest pre-market / after-hours price from the first quote
+        provider that has one (information only: orders, stops, fills, signals and
+        valuation use the regular session). None for other asset classes or when the
+        provider has none; cached CACHE_TTL["extended"] seconds, None included."""
+        instr = (await self._resolve([symbol]))[canonical_symbol(symbol)]
+        if instr.asset_class != AssetClass.us_equity:
+            return None
+
+        def call(p: DataProvider):
+            if type(p).get_extended is DataProvider.get_extended:
+                # raised before the rate limiter: costs the provider no token
+                raise ProviderUnsupported(f"{p.name}: extended hours not supported")
+            ps = p.map_symbol(instr.symbol, instr.asset_class, instr.override(p.name))
+            return p.get_extended(instr.symbol, ps)
+
+        return await self._fetch_one(
+            Capability.quote, instr.asset_class, {"symbol": instr.symbol, "extended": True},
+            CACHE_TTL["extended"], call, serialization.dumps, _loads_extended,
+            {"symbol": instr.symbol},
+        )
 
     # ---------------------------------------------------------------- single symbol
 

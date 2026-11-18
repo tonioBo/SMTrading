@@ -28,6 +28,12 @@ collateral and margin loan plus the positions' values computed here: no second
 valuation), else of the latest snapshot), null when unknown or the profile sets none;
 `risk_pct_of_limit` = risk / limit * 100. Per portfolio `unprotected` and `partial_cover`
 count the "senza stop" and "copre parziale" positions.
+
+With the market data router, a US position has `extended` (marketdata.extended: the latest
+pre-market / after-hours price while the regular session is closed, else null) and
+`extended_beyond_stop`: that price is at or beyond the stop (below it for a long, above
+for a short), the gap risk at the next open. Information only: `last`, the values, the
+distance and the risk at the stop stay on the regular session.
 """
 
 import uuid
@@ -55,6 +61,7 @@ from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.marketdata.cache import read_quote
+from smtrading.marketdata.extended import extended_hours
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.mode import admin_mode_fields, portfolio_links
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
@@ -213,9 +220,11 @@ async def _daily_limit(session, portfolio: Portfolio, now: datetime,
 
 
 async def open_positions(
-    session: AsyncSession, qs: QuoteSource, now: datetime | None = None, *, redis=None
+    session: AsyncSession, qs: QuoteSource, now: datetime | None = None, *, redis=None,
+    router=None,
 ) -> dict[str, Any]:
-    """{as_of, positions: [...], portfolios: [...]} (Python values; see the module doc)."""
+    """{as_of, positions: [...], portfolios: [...]} (Python values; see the module doc).
+    `router` (the MarketDataRouter) adds the US extended-hours prices."""
     now = now or datetime.now(UTC)
     portfolios = list(await session.scalars(
         select(Portfolio).where(Portfolio.status != PortfolioStatus.archived)
@@ -250,6 +259,7 @@ async def open_positions(
             if is_active_exit(o):
                 orders.setdefault((o.portfolio_id, o.symbol), []).append(o)
     quotes, stale = await _quotes(qs, symbols, redis)
+    extended = await extended_hours(router, instruments.values(), now) if router else {}
     fx = _Fx(qs, {"EUR": Decimal(1)})
     open_markets: dict[str, bool] = {}
 
@@ -294,6 +304,9 @@ async def open_positions(
                     risk = max((mark - stop_px) * qty, Decimal(0))
             value_eur, pnl_eur = await fx.eur(value, ccy), await fx.eur(pnl, ccy)
             risk_eur = await fx.eur(risk, ccy)
+            ext = extended.get(sym)
+            beyond = ext is not None and stop_px is not None and (
+                ext["price"] <= stop_px if long else ext["price"] >= stop_px)
             covered = sum((o.qty - (o.filled_qty or Decimal(0)) for o in mine
                            if o.type in STOP_TYPES and o.qty is not None), Decimal(0))
             if stop is None:
@@ -328,6 +341,7 @@ async def open_positions(
                 "target": _leg(target, target.limit_price if target else None),
                 "distance_to_stop_pct": _pct(dist), "risk_at_stop_eur": _money(risk_eur),
                 "protection": protection,
+                "extended": ext, "extended_beyond_stop": beyond,
             })
         if not count:
             continue

@@ -8,7 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.db import make_engine
 from smtrading.instruments.models import AssetClass, Instrument
-from smtrading.marketdata.types import Bar, CalendarEvent, Fundamentals, InstrumentHit, NewsItem
+from smtrading.marketdata.types import (
+    Bar,
+    CalendarEvent,
+    ExtendedQuote,
+    Fundamentals,
+    InstrumentHit,
+    NewsItem,
+)
 from smtrading.seed import run_seed
 
 D = Decimal
@@ -97,6 +104,45 @@ async def test_get_quote_and_isolated_errors(env):
     assert not err
     assert out[SYM]["last"] == "50000"
     assert out["MISSING"]["error"] == "SYMBOL_NOT_FOUND"  # unknown to the providers too
+
+
+async def _add_us(db_url: str, symbol: str = "ZZUS") -> None:
+    engine = make_engine(db_url)
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        s.add(Instrument(symbol=symbol, name="US Co", asset_class=AssetClass.us_equity,
+                         market="NYSE", currency="USD"))
+        await s.commit()
+    await engine.dispose()
+
+
+TUE_POST = datetime(2026, 11, 17, 22, 0, tzinfo=UTC)  # 17:00 New York: after the close
+TUE_OPEN = datetime(2026, 11, 17, 15, 0, tzinfo=UTC)
+
+
+async def test_get_quote_extended_hours_us_only(env, mcp_server, monkeypatch):
+    from smtrading.marketdata import extended
+
+    await _add_us(mcp_server.db_url)
+    qs = env["qs"]
+    qs.set_quote("ZZUS", D("257.4"), D("257.5"), D("257.46"))
+    ts = datetime(2026, 11, 17, 21, 45, tzinfo=UTC)
+    qs.set_extended("ZZUS", ExtendedQuote("ZZUS", "post", D("255.4"), D("257.46"), ts, "x"))
+    monkeypatch.setattr(extended, "_now", lambda: TUE_POST)
+    err, out = await env["call"]("get_quote", {"symbols": ["ZZUS", SYM]})
+    assert not err
+    assert out["ZZUS"]["last"] == "257.46"  # the regular-session quote is unchanged
+    assert out["ZZUS"]["extended"] == {
+        "session": "post", "price": "255.4", "change_pct_vs_close": "-0.8",
+        "ts": "2026-11-17T21:45:00+00:00"}
+    assert "extended" not in out[SYM]  # not a US equity: no field
+    qs.set_extended("ZZUS", ExtendedQuote("ZZUS", "pre", D("259"), D("257.46"), ts, "x"))
+    monkeypatch.setattr(extended, "_now", lambda: TUE_OPEN)
+    err, out = await env["call"]("get_quote", {"symbols": ["ZZUS"]})
+    assert not err and out["ZZUS"]["extended"] is None  # regular session open
+    monkeypatch.setattr(extended, "_now", lambda: TUE_POST)
+    qs.set_extended("ZZUS", None)
+    err, out = await env["call"]("get_quote", {"symbols": ["ZZUS"]})
+    assert not err and out["ZZUS"]["extended"] is None  # no extended-hours price
 
 
 async def test_get_quote_limit_and_validation(env):

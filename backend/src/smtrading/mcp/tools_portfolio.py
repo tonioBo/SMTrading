@@ -17,7 +17,9 @@ from smtrading.agents.service import require_permission
 from smtrading.brokers.models import BrokerLink
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import quantize_money
+from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import JournalType
+from smtrading.marketdata.extended import extended_hours
 from smtrading.mcp.dto import (
     parse_enum,
     parse_int,
@@ -129,10 +131,17 @@ async def portfolio_snapshot(ctx: ToolCtx, portfolio_id: str | None) -> dict:
 
 async def _positions(ctx: ToolCtx, portfolio_id: str | None) -> list[dict]:
     valuation = await _valuation(ctx, await _readable_portfolio(ctx, portfolio_id))
-    return [
-        {**position_valuation_dto(p), "side": "long" if p.qty > 0 else "short"}
-        for p in valuation.positions
-    ]
+    symbols = [p.symbol for p in valuation.positions]
+    instrs = list(await ctx.session.scalars(
+        select(Instrument).where(Instrument.symbol.in_(symbols)))) if symbols else []
+    ext = await extended_hours(ctx.router, instrs)  # US positions only: gap risk, info only
+    out = []
+    for p in valuation.positions:
+        row = {**position_valuation_dto(p), "side": "long" if p.qty > 0 else "short"}
+        if p.symbol in ext:
+            row["extended"] = ext[p.symbol]
+        out.append(row)
+    return out
 
 
 def _parse_types(v: str | list[str] | None) -> list[JournalType] | None:
@@ -255,7 +264,10 @@ def register(mcp: MCPServer) -> None:
     async def get_positions(portfolio_id: str) -> CallToolResult:
         """Open positions: [{symbol, side ("long"|"short"), qty (signed), avg_price, mark,
         currency, market_value, market_value_eur, unrealized_pnl, unrealized_pnl_eur,
-        stale}]."""
+        stale}]. US positions also have `extended`, as in get_quote: while the regular
+        session is closed the latest pre-market / after-hours price {session, price,
+        change_pct_vs_close, ts} (e.g. the gap risk at the next open), else null. Orari
+        estesi: solo informativo; mark, P&L, ordini e stop usano solo la seduta regolare."""
         params = {"portfolio_id": portfolio_id}
         return await run_tool("get_positions", params, lambda ctx: _positions(ctx, portfolio_id))
 

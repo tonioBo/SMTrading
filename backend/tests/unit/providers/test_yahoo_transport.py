@@ -185,3 +185,16 @@ def test_intraday_bars_stay_exact_utc(fake):
     fake.script["history"] = [df]
     [row] = _YF().history("A2A.MI", "60m", START, END)
     assert row["ts"] == "2026-11-13T08:00:00+00:00"
+
+
+def test_extended_hours_returns_plain_pre_post_and_regular_values(fake):
+    fake.script = {"info": [{
+        "preMarketPrice": 101.5, "preMarketTime": 1700000000,
+        "postMarketPrice": float("nan"), "postMarketTime": None,
+        "regularMarketPrice": 100.0, "regularMarketTime": 1699990000,
+        "longName": "ignored",
+    }]}
+    assert _YF().extended_hours("SPY") == {
+        "pre_price": 101.5, "pre_time": 1700000000, "post_price": None, "post_time": None,
+        "regular_price": 100.0, "regular_time": 1699990000,
+    }

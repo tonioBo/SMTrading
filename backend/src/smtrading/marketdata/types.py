@@ -121,3 +121,20 @@ class ScreenFilter:
     min_volume: Decimal | None = None
     max_pe: Decimal | None = None
     limit: int = 25
+
+
+@dataclass(frozen=True)
+class ExtendedQuote:
+    """The latest US pre-market / after-hours trade, for information only: orders, stops,
+    fills, signals and valuation use the regular session. `regular_close` is the close of
+    the latest regular session (what `price` is compared to)."""
+
+    symbol: str
+    session: Literal["pre", "post"]
+    price: Decimal
+    regular_close: Decimal
+    ts: datetime
+    provider: str
+
+    def __post_init__(self) -> None:
+        _normalize_utc(self, "ts")
