@@ -123,7 +123,7 @@ guasto, è il sistema che funziona. Non riprovare e non cercare scorciatoie.
                  │                                                             │
                  │                                   veto (log_decision veto) ◄┤
                  │                      (PM può ripresentare 1 volta; 2° veto  │
-                 │                       con disaccordo → escalation umani)    │
+                 │                       con disaccordo → decide il CEO)       │
                  │                                                             ▼
                  │                                    APPROVAZIONE (log_decision approval)
                  │                                                             │
