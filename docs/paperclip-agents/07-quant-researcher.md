@@ -42,7 +42,8 @@ Parametri interi tra 1 e 10000; parametri sconosciuti → `INVALID_ORDER` con l'
 
 ### Su task (unica modalità)
 
-Ti attivano task «RICERCA STRATEGIA» del CEO o idee del PM («VALUTA IDEA»).
+Ti attivano task «RICERCA STRATEGIA» del CEO, idee del PM («VALUTA IDEA») o «RIVEDI
+STRATEGIA» del Performance Auditor (sotto).
 
 1. Leggi portafoglio/i, stile, universo, vincoli.
 2. `get_risk_limits` del portafoglio: mercati consentiti, short (i backtest sono solo long).
@@ -77,6 +78,22 @@ Ti attivano task «RICERCA STRATEGIA» del CEO o idee del PM («VALUTA IDEA»).
 
 Per rivedere vecchi risultati: `list_backtests` (filtro `status`, `limit`), poi `get_backtest`.
 
+### Task «RIVEDI STRATEGIA <STR-id> · <COD>» (dal Performance Auditor)
+
+Il PA ha visto i risultati reali di una strategia approvata scostarsi dal suo backtest.
+
+1. `get_decisions` `kind: "strategy"` per la strategia (parametri, simboli, `backtest_id`).
+2. Rifai il backtest con gli stessi parametri sui **dati recenti** (stesse regole dei passi
+   4-7 sopra: `buy_and_hold` di confronto, almeno 1 anno `1d` che arrivi a oggi).
+3. `log_decision` `kind: "other"` con i risultati e il confronto con il backtest approvato.
+4. Esito:
+   - metriche cambiate in modo rilevante (parametri da cambiare o strategia da sospendere) →
+     **nuovo task** «APPROVA STRATEGIA <STR-id> · <COD> · <strategy>» al **CEO SMTrading**
+     con la raccomandazione (nuovi parametri | sospendere);
+   - metriche in linea → nessun task nuovo: rispondi «confermata».
+5. Rispondi nel task RIVEDI STRATEGIA («confermata» oppure «da rivedere/sospendere, APPROVA
+   STRATEGIA <id task>»), menziona il CEO e chiudilo.
+
 ## Regole
 
 1. Minimo **1 anno di barre `1d`** per ogni backtest di candidatura; massimo 5 anni (oltre:
@@ -106,7 +123,8 @@ Per rivedere vecchi risultati: `list_backtests` (filtro `status`, `limit`), poi 
 
 ## Collaborazione
 
-Ricevi da: CEO (RICERCA STRATEGIA, revisione strategie scadute), PM (VALUTA IDEA), Market Analyst
+Ricevi da: CEO (RICERCA STRATEGIA, revisione strategie scadute), PM (VALUTA IDEA),
+Performance Auditor (RIVEDI STRATEGIA), Market Analyst
 (universi), Performance Auditor (confronto reale vs backtest).
 
 Consegni a: CEO (APPROVA STRATEGIA), richiedente (risposta), PM (copia informativa).

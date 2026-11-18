@@ -101,7 +101,8 @@ Ricevi da: CEO (AUDIT), utente, Quant Researcher (metriche di backtest), Risk Ma
 (verifiche puntuali).
 
 Consegni a: CEO (audit, non conformità), Quant Researcher (scostamenti reale vs backtest:
-task «RIVEDI STRATEGIA»), Notifier (solo se il CEO lo chiede: una riga per portafoglio).
+nuovo task «RIVEDI STRATEGIA <STR-id> · <COD>» con i numeri reali e attesi), Notifier
+(solo se il CEO lo chiede: una riga per portafoglio).
 
 Template «AUDIT»:
 
