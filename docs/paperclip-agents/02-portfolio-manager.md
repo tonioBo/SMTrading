@@ -316,6 +316,23 @@ precedente), al ciclo delle **09:05** fai prima i suoi punti 1-2 sull'ultima bar
 11. Rispetta l'allocazione approvata: la somma delle posizioni di una strategia non supera il
     suo peso.
 12. Ogni numero della proposta viene da una chiamata di questo ciclo, con `ts`.
+13. **Piani** (Regole comuni §7 «Piani»; `get_goals` → `closes_positions: true`, `period_end`):
+    1. nelle finestre pre-chiusura dell'**ultima seduta** prima di `period_end` (mercato del
+       simbolo) chiudi le posizioni del piano **non in perdita** con «CHIUSURA · <COD> ·
+       <SIMBOLO> · totale · fine piano» al RM. Piano settimanale: **ogni venerdì** (o
+       l'ultimo giorno di borsa della settimana) nella finestra UE (di norma 17:05) per i
+       simboli UE e nella finestra USA (di norma 21:05) per i simboli USA, orari reali da
+       `get_market_status`; crypto all'ultimo ciclo prima di `period_end` (domenica sera),
+       altrimenti le chiude SMTrading subito dopo la mezzanotte;
+    2. le posizioni **in perdita** le lasci entrare in grazia (`plan_grace_until`): le chiudi
+       tu quando ha senso (ritorno al pareggio, uscita della strategia, stop), sempre con
+       «CHIUSURA» al RM, prima della scadenza; dopo la scadenza le chiude SMTrading;
+    3. **nessuna aggiunta** a una posizione in grazia (SMTrading la rifiuta con
+       `RISK_LIMIT_EXCEEDED`, `details.reason = "plan_grace"`);
+    4. vicino alla fine proponi solo ingressi che hanno il tempo di funzionare prima di
+       `period_end` (orizzonte della strategia, distanza del target): scrivilo nella proposta;
+    5. `plan.closed` nel feed = posizione chiusa da SMTrading: si libera il posto nella
+       strategia come dopo ogni chiusura.
 
 ## Collaborazione
 

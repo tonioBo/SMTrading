@@ -112,12 +112,16 @@ Borse dei portafogli tutte chiuse (festività) o weekend → niente AGENDA, nien
 | 41 | Chiusura parziale | RM | ES | «CHIUDI» con stop e target per la qty restante | C | `close_position` + `place_oco_order` sulla qty restante (dopo il fill) | ES risponde con gli id e chiude |
 | 42 | Notizia eccezionale su posizione aperta (#26) | NA | RM | NOTIZIA urgente | C | RM decide: CHIUDI, MODIFICA STOP o nessuna azione, copia PM | RM risponde e chiude |
 | 43 | Halt revocato, kill switch spento, reduce-only finito | SMTrading (feed) | PM | — | C | al ciclo successivo il PM rivaluta gli ingressi di tutte le strategie (gli ingressi annullati non tornano) | — |
+| 44 | Ultima seduta di un piano (`closes_positions: true`) | PM | RM | task «CHIUSURA · <COD> · <SIMBOLO> · totale · fine piano», per ogni posizione non in perdita | C | RM approva nello stesso ciclo, #14 | RM risponde e chiude |
+| 45 | Posizione in grazia (`plan.grace`, `plan_grace_until`) | SMTrading (feed) | PM, RM | — | C | nessuna aggiunta; chiusura quando ha senso con #13 (o RM → «CHIUDI» #14) prima della scadenza | — |
+| 46 | Chiusura automatica di fine piano (`plan.ended`, `plan.closed`) | SMTrading (feed, Telegram agli umani) | PM, RM, CEO | — | **O** a fine periodo | PM rivaluta gli ingressi della strategia; CEO lo riporta nella revisione del venerdì; il NOT non ripete | — |
 ## 5. Decisioni (18/11)
 
 Le decisioni della sera del 18/11 (catalogo degli scenari, [`SCENARIOS.md`](SCENARIOS.md)):
 limiti solo dal profilo di rischio (`null` = decide l'agente, il RM con i suoi cinque
 controlli); team autonomo, umani solo informati, arbitraggio del CEO; short tattico non più
-solo AGG (su PRU solo eccezionale); passaggi #35-#43 sopra.
+solo AGG (su PRU solo eccezionale); passaggi #35-#43 sopra; #44-#46 i piani (obiettivi che
+chiudono le posizioni, `00` §7 «Piani»).
 
 ### Decisioni del mattino del 18/11
 
