@@ -3,6 +3,11 @@ from decimal import Decimal
 import pytest
 
 from smtrading.fees.broker_presets import (
+    _ALPACA_CRYPTO,
+    _ALPACA_STOCKS,
+    _ETORO_CRYPTO,
+    _ETORO_STOCKS,
+    _T212_SOURCE,
     BROKER_KINDS,
     PRESETS,
     preset_for,
@@ -11,7 +16,6 @@ from smtrading.fees.broker_presets import (
 )
 
 D = Decimal
-ETORO_NOTE = "guida giugno 2026; fonti discordanti 0,5–1%, da verificare"
 
 
 def _entries(kind):
@@ -23,23 +27,23 @@ def _entries(kind):
 def test_alpaca_stocks_free_crypto_quarter_percent(kind):
     assert preset_for(kind).broker == "Alpaca"
     assert _entries(kind) == [
-        (None, D(0), D(0), D(0), "listino pubblico, da verificare"),
-        ("crypto", D("0.25"), D(0), D(0), "fonte non ufficiale, da verificare"),
+        (None, D(0), D(0), D(0), _ALPACA_STOCKS),
+        ("crypto", D("0.25"), D(0), D(0), _ALPACA_CRYPTO),
     ]
 
 
 @pytest.mark.parametrize("kind", ["t212_demo", "t212_live"])
 def test_t212_one_rule_fx_015(kind):
     assert preset_for(kind).broker == "Trading 212"
-    assert _entries(kind) == [(None, D(0), D(0), D("0.15"), "più fonti concordi")]
+    assert _entries(kind) == [(None, D(0), D(0), D("0.15"), _T212_SOURCE)]
 
 
 @pytest.mark.parametrize("kind", ["etoro_demo", "etoro_live"])
 def test_etoro_stocks_and_crypto_fx_075(kind):
     assert preset_for(kind).broker == "eToro"
     assert _entries(kind) == [
-        (None, D(0), D(0), D("0.75"), ETORO_NOTE),
-        ("crypto", D(1), D(0), D("0.75"), ETORO_NOTE),
+        (None, D(0), D(0), D("0.75"), _ETORO_STOCKS),
+        ("crypto", D(1), D(0), D("0.75"), _ETORO_CRYPTO),
     ]
 
 
@@ -60,7 +64,18 @@ def test_presets_cover_every_kind_and_carry_the_notes():
     assert etoro["broker"] == "eToro"
     assert [(e["asset_class"], e["pct"], e["fixed"], e["fx_pct"]) for e in etoro["entries"]] == [
         (None, "0", "0", "0.75"), ("crypto", "1", "0", "0.75")]
-    assert all(e["source_note"] == ETORO_NOTE and e["note"] for e in etoro["entries"])
+    assert [e["source_note"] for e in etoro["entries"]] == [_ETORO_STOCKS, _ETORO_CRYPTO]
+    assert all(e["note"] for e in etoro["entries"])
+
+
+def test_every_source_note_names_its_check_date_and_official_source():
+    """Each figure records where and when it was checked; what could not be confirmed on
+    an official page keeps «da verificare» (only the eToro stock commission)."""
+    notes = [e.source_note for p in PRESETS.values() for e in p.entries]
+    assert all("18/11/2026" in n for n in notes)
+    assert all(any(h in n for h in ("alpaca.markets", "trading212.com", "etoro.com"))
+               for n in notes)
+    assert [n for n in notes if "da verificare" in n] == [_ETORO_STOCKS]
 
 
 def test_rule_names_with_and_without_class_fit_the_column():
