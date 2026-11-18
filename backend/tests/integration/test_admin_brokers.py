@@ -555,3 +555,130 @@ async def test_link_demo_account_read_failure_is_redacted(admin):
     assert r.status_code == 400 and r.json()["code"] == "PROVIDER_UNAVAILABLE"
     assert all(v not in r.text for v in ETORO_KEYS.values())
     assert (await c.get(f"/api/portfolios/{pf['id']}")).json()["broker_link_id"] is None
+
+
+# -- «Prova collegamento» (guided test) ----------------------------------------------
+
+
+class FakeAlpacaGuided(FakeAlpaca):
+    placed: ClassVar[list] = []
+    canceled: ClassVar[list] = []
+
+    async def get_account(self):
+        from smtrading.brokers.base import AccountSnapshot
+
+        return AccountSnapshot("PA-ACCOUNT-0042", "cash", "USD", D("100000"), 0, 0,
+                               None, None, {})
+
+    async def place_order(self, order, instrument):
+        from smtrading.brokers.base import BrokerOrder
+
+        type(self).placed.append(order)
+        return BrokerOrder("bo-guided", "accepted", D(0), None, None)
+
+    async def cancel_order(self, broker_order_id):
+        type(self).canceled.append(broker_order_id)
+
+    async def get_order(self, broker_order_id):
+        from smtrading.brokers.base import BrokerOrder
+
+        return BrokerOrder(broker_order_id, "canceled", D(0), None, None)
+
+
+@pytest.fixture
+def guided_alpaca(monkeypatch):
+    FakeAlpacaGuided.fail, FakeAlpacaGuided.placed, FakeAlpacaGuided.canceled = None, [], []
+    monkeypatch.setitem(registry.ADAPTERS, "alpaca_paper", FakeAlpacaGuided)
+    return FakeAlpacaGuided
+
+
+async def _actions(admin, route_part: str) -> list[str]:
+    from smtrading.useractivity.models import UserActivity
+
+    async with admin.sm() as s:
+        return list(await s.scalars(
+            select(UserActivity.action).where(UserActivity.route.contains(route_part),
+                                              UserActivity.provisional.is_(False))
+            .order_by(UserActivity.id)))
+
+
+async def test_guided_test_read_only_steps(admin, guided_alpaca):
+    link = await _link(admin.client)
+    r = await admin.client.post(f"/api/broker-links/{link['id']}/guided-test", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert [s["key"] for s in body["steps"]] == [
+        "auth", "account", "buying_power", "market", "quote"]
+    assert all(s["status"] == "ok" for s in body["steps"])
+    assert guided_alpaca.placed == []  # read-only without the order step
+    assert "PA-ACCOUNT-0042" not in r.text and KEY_ID not in r.text
+    links = (await admin.client.get("/api/broker-links")).json()
+    assert links[0]["status"] == "ok"
+    assert await _actions(admin, "guided-test") == ["brokers.guided_test"]
+
+
+async def test_guided_test_order_needs_the_second_confirmation(admin, guided_alpaca):
+    link = await _link(admin.client)
+    url = f"/api/broker-links/{link['id']}/guided-test"
+    for confirm in (None, "si", "ordine"):
+        r = await admin.client.post(url, json={"order_test": True, "confirm": confirm})
+        assert r.status_code == 400 and r.json()["details"]["field"] == "confirm"
+    assert guided_alpaca.placed == []
+    r = await admin.client.post(url, json={"order_test": True, "confirm": "ORDINE DI PROVA"})
+    assert r.status_code == 200, r.text
+    order = r.json()["steps"][-1]
+    assert order["key"] == "order" and order["status"] == "ok", order
+    (placed,) = guided_alpaca.placed
+    assert placed.type == OrderType.limit and placed.limit_price == D("100.02")
+    assert guided_alpaca.canceled == ["bo-guided"]
+    async with admin.sm() as s:  # nothing local: the test order lives at the broker only
+        assert await s.scalar(select(func.count()).select_from(Order)) == 0
+    assert (await _actions(admin, "guided-test"))[-1] == "brokers.guided_test_order"
+
+
+async def test_guided_test_order_skipped_with_the_kill_switch(admin, guided_alpaca):
+    from smtrading.risk.settings import set_kill_switch
+
+    link = await _link(admin.client)
+    async with admin.sm() as s:
+        await set_kill_switch(s, True)
+        await s.commit()
+    r = await admin.client.post(f"/api/broker-links/{link['id']}/guided-test",
+                                json={"order_test": True, "confirm": "ORDINE DI PROVA"})
+    assert r.status_code == 200
+    assert r.json()["steps"][-1]["status"] == "skipped"
+    assert guided_alpaca.placed == []
+
+
+async def test_guided_test_refused_on_a_real_money_link(admin, guided_alpaca):
+    from smtrading.brokers.models import BrokerLink
+
+    async with admin.sm() as s:
+        live = BrokerLink(name="Reale", kind="alpaca_live", live_state="armed")
+        s.add(live)
+        await s.commit()
+    r = await admin.client.post(f"/api/broker-links/{live.id}/guided-test",
+                                json={"order_test": True, "confirm": "ORDINE DI PROVA"})
+    assert r.status_code == 403 and r.json()["code"] == "FORBIDDEN"
+    assert "denaro reale" in r.json()["message"]
+    assert guided_alpaca.placed == []
+
+
+async def test_guided_test_unknown_symbol(admin, guided_alpaca):
+    link = await _link(admin.client)
+    r = await admin.client.post(f"/api/broker-links/{link['id']}/guided-test",
+                                json={"symbol": "NOPE"})
+    assert r.status_code == 400 and r.json()["details"]["field"] == "symbol"
+
+
+async def test_guided_test_failed_auth_records_the_link_error(admin, guided_alpaca):
+    guided_alpaca.fail = f"HTTP 403: bad key {SECRET}"
+    link = await _link(admin.client)
+    r = await admin.client.post(f"/api/broker-links/{link['id']}/guided-test", json={})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False and body["steps"][0]["status"] == "error"
+    assert SECRET not in r.text
+    links = (await admin.client.get("/api/broker-links")).json()
+    assert links[0]["status"] == "error" and SECRET not in (links[0]["last_error"] or "")
