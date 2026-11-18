@@ -43,6 +43,8 @@ class DecisionKind(enum.StrEnum):
     strategy = "strategy"
     risk_rule = "risk_rule"
     other = "other"
+    lesson = "lesson"  # an error or avoidable loss: what happened, why, next time
+    team_rule = "team_rule"  # a team rule made from lessons (details.status active|retired)
 
 
 _DECISION_KINDS = ",".join(f"'{k.value}'" for k in DecisionKind)
@@ -99,6 +101,7 @@ class Decision(Base):
         ),
         Index("ix_decisions_portfolio_id", "portfolio_id", "id"),
         Index("ix_decisions_agent_id", "agent_id", "id"),
+        Index("ix_decisions_kind", "kind", "id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)

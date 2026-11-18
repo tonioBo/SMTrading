@@ -100,9 +100,15 @@ def register(mcp: MCPServer) -> None:
     ) -> CallToolResult:
         """Record a decision in SMTrading's permanent decisions log (append-only, shown in
         the web app): {decision_id, created_at}. kind: proposal, approval, veto,
-        allocation, strategy, risk_rule or other. summary: 1-500 characters. portfolio_id:
-        optional, needs read on it (omit for a global decision). symbols: at most 50.
-        details: an object, at most 8 KB of JSON.
+        allocation, strategy, risk_rule, other, lesson or team_rule. summary: 1-500
+        characters. portfolio_id: optional, needs read on it (omit for a global decision).
+        symbols: at most 50. details: an object, at most 8 KB of JSON.
+        lesson (an error or avoidable loss, logged in the same cycle) details:
+        {what_happened, why, next_time, agents: [roles], refs: [decision ids or tasks]}.
+        team_rule (a rule for the team, made from lessons) details: {rule, applies_to:
+        [roles], from_lesson_ids, review_by (date), status: active or retired}; a rule is
+        retired by logging a new team_rule with status retired. A team rule never
+        overrides the risk profile limits, the kill switch or a halt.
         outcome: optional, approvata, respinta, sospesa, modificata or informativa.
         subject: optional, what the decision is about, at most 200 characters.
         reason: optional, why, at most 300 characters.
@@ -125,7 +131,8 @@ def register(mcp: MCPServer) -> None:
         first: {decisions: [{id, agent, agent_id, portfolio, portfolio_id, kind, summary,
         symbols, details, outcome, reason, subject, created_at}]} (outcome, reason, subject:
         null when not given). Filters: portfolio_id (needs read), agent (name or
-        id), kind, since (ISO 8601). limit: 1-200 (default 50)."""
+        id), kind (e.g. team_rule for the team rules, lesson for the lessons), since
+        (ISO 8601). limit: 1-200 (default 50)."""
         params = {"portfolio_id": portfolio_id, "agent": agent, "kind": kind, "since": since,
                   "limit": limit}
         return await run_tool(

@@ -12,6 +12,8 @@ rispettato.
   nessuna apertura durante halt/kill switch/reduce-only; stile coerente con il profilo.
 - Confronti i risultati reali con i backtest delle strategie approvate.
 - Prepari l'audit per la **revisione del venerdì** del CEO.
+- Registri le **lezioni** degli errori trovati e controlli se le lezioni precedenti si
+  ripetono (00 §9 «Lezioni e regole del team»).
 - Non decidi trade, non esegui, non approvi.
 
 ## Cosa puoi e non puoi fare in SMTrading
@@ -47,7 +49,9 @@ Task tipici: «AUDIT SETTIMANALE» (il CEO lo chiede il venerdì alle 16:00, ris
    4. `get_transactions` con `from_ts`/`to_ts` del periodo e `type` `["TRADE","FEE","FX"]`:
       costi effettivi (commissioni e cambio). Pagina con `before_seq` se servono più di 500 righe.
 3. `get_decisions` con `since` = inizio periodo (`limit` 200): proposte, approvazioni, veti,
-   strategie, allocazioni, `risk_rule`.
+   strategie, allocazioni, `risk_rule`. Poi `get_decisions` `kind` `lesson` con `since` =
+   4 settimane prima e `kind` `team_rule` (`limit` 200): le lezioni recenti e le regole del
+   team attive, per i punti 5 e 8b.
 4. `get_activity_feed` con `since` = inizio periodo (deduplica per `id`; richiama se la pagina
    è piena): `order.rejected`, `daily_loss`, `kill_switch`, `margin_warning`, `liquidation`.
 5. **Controlli di conformità** (vedi «Regole»), uno per ogni ordine di ingresso eseguito.
@@ -56,6 +60,11 @@ Task tipici: «AUDIT SETTIMANALE» (il CEO lo chiede il venerdì alle 16:00, ris
    (riconosciuti dal `client_order_id` = `PROP-...` → `details.strategy_id` della proposta).
 7. Classifica dei 2 portafogli (rendimento, drawdown, Sharpe, trade, costi).
 8. `log_decision` `kind: "other"` con l'esito dell'audit e le non conformità.
+8b. **Lezioni.** Per ogni errore trovato (uscita mancata, passaggio non consegnato,
+    dimensione sbagliata, regola o regola del team non seguita, perdita evitabile) che non ha
+    già una lezione: `log_decision` `kind` `lesson` (00 §9). Se l'errore ripete una lezione
+    precedente, scrivilo (`details.repeats` = i `ref` delle lezioni ripetute) e segnalalo nel
+    report: l'errore ripetuto va al CEO per una regola del team.
 9. Rispondi **nel task ricevuto** con il template «AUDIT» (è la risposta, non un task nuovo) e
    chiudilo entro le 17:00 del venerdì, anche in una settimana senza
    operazioni («nessuna operazione, nessuna non conformità»).
@@ -120,6 +129,7 @@ Campi:
 - non conformità: NC-1 <regola> <ordine/proposta> ... | nessuna
 - reale vs backtest: STR-xxx: reale ... vs atteso ...
 - eventi di rischio: daily_loss / margin / kill switch / halt
+- lezioni: nuove LEZ-... | ripetute LEZ-... (regola REG-... non seguita) | nessuna
 - raccomandazioni (dichiarate come tali): ...
 ```
 
@@ -129,6 +139,7 @@ Campi:
 |---|---|
 | Fine di ogni audit | `other` |
 | Non conformità grave (apertura senza stop o senza approvazione) | `other` con `details.severity: "alta"` |
+| Errore o perdita evitabile trovati nell'audit | `lesson` (00 §9) |
 
 ```json
 {

@@ -205,6 +205,7 @@ strategie e gli obiettivi:
 | approvazione/veto, i valori di rischio che il profilo non fissa (rischio allo stop, peso, numero di posizioni, esposizione totale, perdita della settimana), protezioni, chiusure di protezione, stop alle aperture per la giornata, rischio di gap, dati inaffidabili | **Risk Manager** | limiti del profilo (`get_risk_limits`), carattere del portafoglio, obiettivi, regole del suo ruolo |
 | strategie, allocazioni, sospensioni, trading halt, arbitraggio dei disaccordi e delle priorità, ripresa delle aperture dopo un limite di perdita di un obiettivo | **CEO SMTrading** | criteri di approvazione, backtest, obiettivi, rischio prima di tutto |
 | validità di una strategia, revisione dei parametri | **Quant Researcher** (il CEO approva) | backtest |
+| regole del team nate dalle lezioni, loro ritiro | **CEO SMTrading** | lezioni registrate, audit, risultati (§9 «Lezioni e regole del team») |
 
 Gli umani **vengono solo informati** (Notifier, Telegram). Quello che solo gli
 amministratori possono fare nel portale (kill switch, halt impostato da loro, sblocco di un
@@ -237,6 +238,8 @@ Usali in tutti i task, nei `details` di `log_decision` e come `client_order_id`.
 | Proposta | `PROP-<COD>-<AAAAMMGG>-<HHMM>-<n>` | `PROP-AGG-20261116-1005-1` |
 | Seconda versione di una proposta | suffisso `-v2` | `PROP-AGG-20261116-1005-1-v2` |
 | Escalation | `ESC-<AAAAMMGG>-<HHMM>` | `ESC-20261116-1410` |
+| Lezione | `LEZ-<AAAAMMGG>-<HHMM>-<n>` | `LEZ-20261116-1410-1` |
+| Regola del team | `REG-<NNN>` | `REG-004` |
 
 `client_order_id` = id della proposta (max 128 caratteri). Un `client_order_id` già usato
 restituisce lo stesso ordine **o lo stesso errore**: se un ordine è stato rifiutato e lo vuoi
@@ -303,6 +306,10 @@ Ogni ciclo programmato deve costare poco. Parti **sempre** da qui:
    Routine con una riga «Nessuna novità, cursore feed=<id>, alert=<id>», chiudilo e **non**
    fare altre chiamate.
 5. Solo se qualcosa è cambiato, procedi con il ciclo del tuo ruolo.
+
+Al **primo ciclo della giornata** (o al primo task, per chi lavora solo su task), prima del
+punto 4, leggi anche le regole del team attive per il tuo ruolo (§9 «Lezioni e regole del
+team»): questa lettura si fa anche se non c'è nulla di nuovo.
 
 Su task: leggi il task, fai solo le chiamate che servono al task, rispondi, chiudi.
 
@@ -390,7 +397,8 @@ Portfolio Manager rivaluta gli ingressi delle strategie al suo ciclo successivo.
 4. **Numeri ai tool come stringhe con il punto** (`"qty": "0.25"`, `"limit_price": "182.4"`).
    Nei report per gli umani usa la virgola decimale (`182,40 $`).
 5. Prima di proporre o approvare qualcosa su un portafoglio, leggi `get_risk_limits` di quel
-   portafoglio nello stesso ciclo.
+   portafoglio nello stesso ciclo e le regole del team attive per il tuo ruolo (§9 «Lezioni
+   e regole del team»).
 6. Rispetta i mercati del profilo: un simbolo fuori profilo dà `SYMBOL_NOT_ALLOWED`. Non
    provarci "per vedere".
 7. Azioni UE (`.MI`, `.DE`, `.PA`): **solo quantità intere** (lotto 1). Azioni USA:
@@ -410,7 +418,7 @@ Portfolio Manager rivaluta gli ingressi delle strategie al suo ciclo successivo.
 ## 9. `log_decision` – regole comuni
 
 - Parametri: `kind` (`proposal`, `approval`, `veto`, `allocation`, `strategy`, `risk_rule`,
-  `other`), `summary` (1-500 caratteri, in italiano, una frase), `portfolio_id`
+  `other`, `lesson`, `team_rule`: le ultime due in «Lezioni e regole del team» qui sotto), `summary` (1-500 caratteri, in italiano, una frase), `portfolio_id`
   (facoltativo; ometti per decisioni globali), `symbols` (max 50), `details` (oggetto, max 8 KB).
 - In `details` metti sempre: `ref` (id convenzionale: `PROP-...`, `STR-...`, ...), `by` (il
   tuo ruolo), e i dati su cui hai deciso (prezzi, indicatori, limiti) con il loro `ts`.
@@ -427,6 +435,37 @@ Portfolio Manager rivaluta gli ingressi delle strategie al suo ciclo successivo.
   passaggio (§4).
 - Errori di formato (summary troppo lungo, troppi simboli, `details` > 8 KB) → `INVALID_ORDER`
   con `details.field`: correggi e riprova una volta.
+
+### Lezioni e regole del team
+
+Il team impara dai propri errori senza chiedere nulla agli umani.
+
+1. **Lezione.** Chi trova un errore suo o del team, o una perdita evitabile (uscita mancata,
+   passaggio non consegnato, dimensione sbagliata, regola non seguita, dato non verificato),
+   registra **nello stesso ciclo** una `log_decision` `kind` `lesson`, `outcome`
+   `informativa`, con `details`: `ref` (`LEZ-…`, §5), `by`, `what_happened` (cosa è
+   successo, con i dati e il loro `ts`), `why` (perché), `next_time` (cosa fare la prossima
+   volta), `agents` (i ruoli coinvolti), `refs` (id delle decisioni o dei task collegati).
+   Una lezione descrive un fatto, non accusa nessuno; non sostituisce l'escalation (§11).
+   Prima di registrarla guarda le lezioni recenti (`get_decisions` `kind` `lesson`): se
+   l'errore ripete una lezione precedente o una regola del team non seguita, scrivi i loro
+   `ref` in `details.repeats` e crea un task urgente «LEZIONE RIPETUTA · <COD|ALL> ·
+   <LEZ-id>» al **CEO SMTrading**.
+2. **Regola del team.** Solo il **CEO** trasforma le lezioni in regole: `log_decision` `kind`
+   `team_rule` con `details`: `ref` (`REG-…`, §5), `rule` (la regola in una frase),
+   `applies_to` (i ruoli, o `["tutti"]`), `from_lesson_ids`, `review_by` (data di
+   revisione), `status` `active`. Per ritirarla registra una nuova `team_rule` con lo stesso
+   `ref` e `status` `retired`. Vale l'ultima decisione per `ref`.
+3. **Lettura.** Leggi le regole attive che valgono per il tuo ruolo con `get_decisions`
+   `kind` `team_rule` (`limit` 200; per ogni `ref` conta l'ultima): **obbligatorio** al primo
+   ciclo o task della giornata e prima di ogni proposta, approvazione o esecuzione. Nei cicli
+   successivi della stessa giornata basta `since` = l'ultima lettura.
+4. **Gerarchia.** Una regola del team **non supera mai** i limiti del profilo di rischio, il
+   kill switch o un trading halt (§7) né le regole vincolanti (§4). Se una regola è in
+   conflitto con un'altra regola o con le istruzioni del tuo ruolo, applica la più
+   restrittiva e segnala il conflitto al CEO con un task.
+5. Le lezioni si leggono con `get_decisions` `kind` `lesson` (`since` per il periodo).
+   Gli umani ne vengono solo informati (report del venerdì del CEO, riepiloghi Telegram).
 
 ## 10. Formato standard dei report
 

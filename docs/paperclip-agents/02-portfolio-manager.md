@@ -247,6 +247,8 @@ precedente), al ciclo delle **09:05** fai prima i suoi punti 1-2 sull'ultima bar
 
 ### Preparare una proposta (checklist)
 
+0. Regole del team attive per il PM (00 §9 «Lezioni e regole del team»): lette oggi e
+   applicate alla proposta (citale in `details.team_rules`).
 1. Strategia approvata: `get_decisions` `kind: "strategy"` → `details.status =
    "approvata"`, portafoglio incluso, `review_by` non scaduto.
 2. Nessun trading halt (`get_trading_halt`), `kill_switch: false`, `status` del portafoglio

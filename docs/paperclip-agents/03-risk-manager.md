@@ -99,6 +99,7 @@ Il controllo dei limiti si fa **sempre** (non si salta anche senza novità), ma 
 **«PROPOSTA» dal PM** — rispondi entro il ciclo:
 
 1. `get_decisions` `kind: "proposal"` per trovare il `decision_id` citato; confronta i dati.
+   Applica anche le regole del team attive per il RM (00 §9 «Lezioni e regole del team»).
 2. `get_trading_halt` con il `portfolio_id`: halt attivo? → veto.
 3. `get_risk_limits` del portafoglio: kill switch, status, perdita giornaliera, profilo.
 4. `get_instrument` del simbolo: mercato consentito, `lot_size`, `shortable`.

@@ -73,7 +73,7 @@ JOBS = (
 DECISION_GROUPS = (
     (("strategy",), "Strategie"), (("risk_rule",), "Rischio"),
     (("allocation",), "Allocazioni"), (("veto", "approval", "proposal"), "Veti e approvazioni"),
-    (("other",), "Altro"),
+    (("team_rule", "lesson"), "Lezioni e regole del team"), (("other",), "Altro"),
 )
 OUTCOME_ICON = {"approvata": "✅", "respinta": "❌", "sospesa": "⏸", "modificata": "✏️",
                 "informativa": "ℹ️"}

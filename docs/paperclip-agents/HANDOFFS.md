@@ -112,6 +112,9 @@ Borse dei portafogli tutte chiuse (festività) o weekend → niente AGENDA, nien
 | 41 | Chiusura parziale | RM | ES | «CHIUDI» con stop e target per la qty restante | C | `close_position` + `place_oco_order` sulla qty restante (dopo il fill) | ES risponde con gli id e chiude |
 | 42 | Notizia eccezionale su posizione aperta (#26) | NA | RM | NOTIZIA urgente | C | RM decide: CHIUDI, MODIFICA STOP o nessuna azione, copia PM | RM risponde e chiude |
 | 43 | Halt revocato, kill switch spento, reduce-only finito | SMTrading (feed) | PM | — | C | al ciclo successivo il PM rivaluta gli ingressi di tutte le strategie (gli ingressi annullati non tornano) | — |
+| 44 | Errore proprio o del team, perdita evitabile (anche trovati nell'audit) | chiunque | — (storico) | `log_decision` `lesson` (`LEZ-…`) nello stesso ciclo | C | il CEO la legge al primo task della giornata o alla revisione del venerdì | — |
+| 45 | Lezione che ripete un errore già visto o una regola del team non seguita | chi registra la lezione (spesso PA) | CEO | task «LEZIONE RIPETUTA · <COD\|ALL> · <LEZ-id>» (urgente) | C, stesso giorno | regola del team, RIVEDI STRATEGIA (#37) o «nessuna azione» con motivo | CEO risponde e chiude |
+| 46 | Lezione trasformata in regola (o regola ritirata) | CEO | agenti di `applies_to` | `log_decision` `team_rule` (`REG-…`, `status` active\|retired) + task «REGOLA DEL TEAM · <REG-id>» | C | leggono le regole attive al primo ciclo della giornata e prima di proposte, approvazioni ed esecuzioni | ognuno risponde e chiude il suo; gli umani lo leggono nella revisione del venerdì (#31) |
 ## 5. Decisioni (18/11)
 
 Le decisioni della sera del 18/11 (catalogo degli scenari, [`SCENARIOS.md`](SCENARIOS.md)):
