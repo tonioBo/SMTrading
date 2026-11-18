@@ -36,6 +36,10 @@ Cosa SMTrading invia già da solo (non ripeterlo):
 - attivazione e revoca del **trading halt** (impostato dal CEO con `set_trading_halt` o dagli
   amministratori);
 - 🟢 ordine eseguito;
+- controllo pre-apertura (lun-ven 08:45: «Pronti per l'apertura», problemi trovati o
+  «Mercati chiusi oggi», con una riga per obiettivo);
+- avvisi sugli obiettivi (in ritardo, oltre il tetto, vicino al limite, limite superato, di
+  nuovo in linea, raggiunto) e sulle posizioni senza protezione valida;
 - riepilogo della notte (07:00), riepilogo giornaliero (18:00), riepilogo settimanale con
   classifica (venerdì 18:30).
 
