@@ -1261,11 +1261,23 @@ export interface SignalSymbol {
   open_entry?: boolean;
   /** in position: the strategy's exit rule on the newest data (null when flat) */
   exit?: SignalExit | null;
+  /** the strategy's entry filters on the newest data (empty without filters) */
+  filters?: SignalFilter[];
+}
+
+/** An entry filter: «Chiusura sopra SMA 200», «ATR 14 al massimo 3% del prezzo». A filter
+ * that does not pass keeps the entry from firing even past its threshold. */
+export interface SignalFilter {
+  rule: string;
+  value: string | null;
+  threshold: string | null;
+  passed: boolean;
 }
 
 /** `distance` > 0: still to go; <= 0 (with `triggered`): the exit fires. */
 export interface SignalExit {
-  /** "RSI 14 sopra 70", "SMA 20 sotto SMA 50", "Chiusura sotto minimo 10" */
+  /** "RSI 14 sopra 70", "SMA 20 sotto SMA 50", "Chiusura sotto minimo 10", "ROC 63 sotto 0",
+   * "Chiusura sotto stop 2 × ATR 14" */
   rule: string;
   value: string;
   threshold: string;

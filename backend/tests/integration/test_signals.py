@@ -414,3 +414,84 @@ async def test_exit_breakout_not_triggered(env):
     flat = await _held(env, "STR-X6", "breakout", params, [10, 10, 10, 10, 10])
     assert flat.exit == {"rule": "Chiusura sotto minimo 2", "value": D(10),
                          "threshold": D(9), "distance": D(1), "triggered": False}
+
+
+async def _closed(env, ref, strategy, params, bars):
+    """A strategy on the closed-market symbol (closed bar only), flat in Prudente."""
+    env.qs.set_bars("ZZENEL.MI", bars)
+    await env.decision(portfolio=env.pru, symbols=["ZZENEL.MI"], ref=ref,
+                       status="approvata", strategy=strategy, timeframe="1d",
+                       params=params)
+    s = _by_ref(await env.run())[ref]
+    assert s.status == "ok" and s.type == strategy
+    [x] = s.symbols
+    assert x.value_now is None and x.triggered_now is x.triggered_closed
+    return x
+
+
+async def test_momentum_entry_is_the_roc_above_the_band(env):
+    x = await _closed(env, "STR-M1", "momentum",
+                      {"lookback": 5, "skip": 2, "enter_above": 2, "exit_below": 0},
+                      _bars(list(range(100, 130))))
+    roc = (D(127) / D(122) - 1) * 100  # the close 2 bars ago over the one 5 before it
+    assert x.indicator == "ROC 5 (salta 2)" and x.direction == "above"
+    assert x.value_closed == roc.quantize(D("1E-8")) and x.threshold == D(2)
+    assert x.distance == D(2) - x.value_closed and x.triggered_closed is True
+    assert x.filters == []
+
+
+async def test_exit_momentum(env):
+    params = {"lookback": 5, "skip": 0, "enter_above": 1, "exit_below": "-0.5"}
+    down = await _held(env, "STR-M2", "momentum", params, list(range(130, 100, -1)))
+    roc = ((D(101) / D(106) - 1) * 100).quantize(D("1E-8"))
+    assert down.indicator == "ROC 5" and down.triggered_closed is False
+    assert down.exit == {"rule": "ROC 5 sotto -0,5", "value": roc, "threshold": D("-0.5"),
+                         "distance": roc + D("0.5"), "triggered": True}
+
+
+async def test_donchian_entry(env):
+    x = await _closed(env, "STR-D1", "donchian", {"entry": 3, "exit": 2},
+                      _bars([10] * 10 + [15]))
+    assert x.indicator == "Chiusura / massimo 3" and x.direction == "above"
+    assert (x.value_closed, x.threshold, x.distance) == (D(15), D(11), D(-4))
+    assert x.triggered_closed is True
+
+
+STOP_CLOSES = [10, 10, 10, 10, 12, 13, 13, 12, 11]  # see test_backtest_more_strategies
+
+
+async def test_exit_donchian_channel(env):
+    held = await _held(env, "STR-D2", "donchian", {"entry": 3, "exit": 5}, STOP_CLOSES)
+    assert held.exit == {"rule": "Chiusura sotto minimo 5", "value": D(11),
+                         "threshold": D(9), "distance": D(2), "triggered": False}
+
+
+async def test_exit_donchian_atr_stop_when_higher_than_the_channel(env):
+    params = {"entry": 3, "exit": 5, "atr_stop": 1, "atr_period": 2}
+    held = await _held(env, "STR-D3", "donchian", params, STOP_CLOSES)
+    # highest high of the last 3 bars 14 - 1 x ATR(2) 2.03125 = 11.96875 > channel low 9
+    assert held.exit == {"rule": "Chiusura sotto stop 1 × ATR 2", "value": D(11),
+                         "threshold": D("11.96875"), "distance": D("-0.96875"),
+                         "triggered": True}
+
+
+async def test_rsi_trend_filter_blocks_the_entry(env):
+    x = await _closed(env, "STR-F1", "rsi_reversion",
+                      {"period": 2, "buy_below": 30, "sell_above": 70, "sma_filter": 5},
+                      _bars([20, 19, 18, 17, 16, 15]))
+    assert x.value_closed == D(0) and x.distance == D(-30)  # the RSI is past the band...
+    assert x.triggered_closed is False  # ...but the close is below SMA 5
+    assert x.filters == [{"rule": "Chiusura sopra SMA 5", "value": D(15),
+                          "threshold": D(17), "passed": False}]
+
+
+async def test_volatility_filter_blocks_the_entry(env):
+    params = {"lookback": 3, "exit_lookback": 2, "max_atr_pct": 10, "atr_period": 2}
+    x = await _closed(env, "STR-F2", "breakout", params, _bars([10] * 10 + [15]))
+    assert x.distance == D(-4) and x.triggered_closed is False
+    # ATR(2) (2 + 6) / 2 = 4 on a close of 15
+    assert x.filters == [{"rule": "ATR 2 al massimo 10% del prezzo",
+                          "value": D("26.66666667"), "threshold": D(10), "passed": False}]
+    passing = await _closed(env, "STR-F3", "breakout", {**params, "max_atr_pct": 30},
+                            _bars([10] * 10 + [15]))
+    assert passing.triggered_closed is True and passing.filters[0]["passed"] is True

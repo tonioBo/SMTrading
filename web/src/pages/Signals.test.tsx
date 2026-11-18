@@ -153,6 +153,54 @@ describe("Signals", () => {
     expect(within(table).queryByText("🟡 vicino")).not.toBeInTheDocument();
   });
 
+  it("labels momentum and donchian, shows the entry filters and the ATR stop exit", async () => {
+    current = {
+      ...signals,
+      portfolios: [{
+        ...signals.portfolios[0],
+        strategies: [
+          {
+            ref: "STR-201", name: "Momentum settori", type: "momentum", params: { lookback: 63, skip: 5, enter_above: "2", exit_below: "0", max_atr_pct: "3", atr_period: 14 }, timeframe: "1d", status: "ok",
+            symbols: [
+              { symbol: "XLE", last: "90", indicator: "ROC 63 (salta 5)", value_closed: "4.5", value_now: null, threshold: "2", direction: "above", distance: "-2.5", triggered_closed: false, triggered_now: false, as_of: "2026-11-16T14:58:00Z",
+                filters: [{ rule: "ATR 14 al massimo 3% del prezzo", value: "4.2", threshold: "3", passed: false }] },
+              { symbol: "XLF", last: "45", indicator: "ROC 63 (salta 5)", value_closed: "1.2", value_now: null, threshold: "2", direction: "above", distance: "0.8", triggered_closed: false, triggered_now: false, as_of: "2026-11-16T14:58:00Z",
+                position: { qty: "2", avg_price: "44" }, exit: { rule: "ROC 63 (salta 5) sotto 0", value: "1.2", threshold: "0", distance: "1.2", triggered: false } },
+            ],
+          },
+          {
+            ref: "STR-202", name: "Donchian", type: "donchian", params: { entry: 20, exit: 10, atr_stop: "2", atr_period: 14 }, timeframe: "1d", status: "ok",
+            symbols: [
+              { symbol: "XLV", last: "140", indicator: "Chiusura / massimo 20", value_closed: "140", value_now: null, threshold: "145", direction: "above", distance: "5", triggered_closed: false, triggered_now: false, as_of: "2026-11-16T14:58:00Z",
+                position: { qty: "1", avg_price: "130" }, exit: { rule: "Chiusura sotto stop 2 × ATR 14", value: "140", threshold: "138", distance: "2", triggered: false } },
+            ],
+          },
+          {
+            ref: "STR-203", name: "RSI con trend", type: "rsi_reversion", params: { period: 2, buy_below: "10", sell_above: "70", sma_filter: 200 }, timeframe: "1d", status: "ok",
+            symbols: [
+              { symbol: "XLU", last: "70", indicator: "RSI 2", value_closed: "5", value_now: null, threshold: "10", direction: "below", distance: "-5", triggered_closed: true, triggered_now: true, as_of: "2026-11-16T14:58:00Z",
+                filters: [{ rule: "Chiusura sopra SMA 200", value: "70", threshold: "66.5", passed: true }] },
+            ],
+          },
+        ],
+      }],
+    };
+    renderApp("/segnali");
+    const mom = await screen.findByRole("table", { name: "Segnali STR-201" });
+    expect(screen.getByText("momentum (ROC)")).toHaveAttribute("title", "momentum");
+    expect(screen.getByText("canale di Donchian")).toBeInTheDocument();
+    const [, xle, xlf] = within(mom).getAllByRole("row");
+    expect(within(xle).getByText("⛔ soglia raggiunta · bloccato dal filtro")).toBeInTheDocument();
+    expect(within(xle).getByText("filtro: ATR 14 al massimo 3% del prezzo · attuale 4,20% · blocca l'ingresso")).toBeInTheDocument();
+    expect(within(xlf).getByText("uscita: ROC 63 (salta 5) sotto 0 · attuale 1,2")).toBeInTheDocument();
+    expect(within(xlf).getByText("🟡 uscita vicina")).toBeInTheDocument(); // 1.2 <= 2 ROC points
+    const don = screen.getByRole("table", { name: "Segnali STR-202" });
+    expect(within(don).getByText("uscita: Chiusura sotto stop 2 × ATR 14 (138,00) · attuale 140,00")).toBeInTheDocument();
+    const rsi = screen.getByRole("table", { name: "Segnali STR-203" });
+    expect(within(rsi).getByText("filtro: Chiusura sopra SMA 200 (66,50) · attuale 70,00 · ok")).toBeInTheDocument();
+    expect(within(rsi).getByText("🟢 scatterebbe ora")).toBeInTheDocument();
+  });
+
   it("renders «—» for a symbol whose data could not be read", async () => {
     current = {
       as_of: "2026-11-16T15:00:00Z",
