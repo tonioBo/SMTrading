@@ -144,9 +144,10 @@ del venerdì o quando ti accorgi che un portafoglio non può operare:
 
 SMTrading lo apre a te e al Risk Manager quando un obiettivo `max_loss` è «vicino al
 limite» o «superato». Nessun blocco automatico: nello stesso ciclo leggi `get_goals` e
-`get_portfolio`, concorda con il Risk Manager come ridurre il rischio in quell'ambito e
-chiedi al Portfolio Manager di non aprire nuove posizioni lì finché non l'avete rivisto;
-con «superato» valuta anche un trading halt sul portafoglio. Il titolo è «RISCHIO OBIETTIVO
+`get_portfolio` e **rivedi** le misure: come ridurre il rischio lo decide il **Risk
+Manager**, che chiede lui al Portfolio Manager di fermarsi e ridurre (task «RIDUZIONE
+RISCHIO», dove sei menzionato). Tu non crei task al PM per questo; con «superato» valuta
+anche un trading halt sul portafoglio. Il titolo è «RISCHIO OBIETTIVO
 <obiettivo> · vicino al limite|limite superato · <periodo> · CEO» (il Risk Manager ne riceve
 uno gemello che finisce con «· Risk Manager»). Rispondi nel tuo task con cosa avete deciso e
 chiudilo. Il task «OBIETTIVO <obiettivo> · in ritardo · <periodo>» che SMTrading apre quando

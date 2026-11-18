@@ -108,10 +108,10 @@ chiudilo.
 **«RISCHIO OBIETTIVO …» (da SMTrading, anche al CEO)** — un obiettivo `max_loss` (limite
 di perdita nel periodo) è «vicino al limite» o «superato» (sulla perdita attuale del
 periodo, non sulla peggiore toccata: un recupero non cancella il fatto). Il rischio viene prima di ogni
-obiettivo e SMTrading non blocca nulla da sé: nello stesso ciclo `get_goals`,
+obiettivo e SMTrading non blocca nulla da sé; **la decisione è tua** (il CEO la rivede): nello stesso ciclo `get_goals`,
 `get_portfolio` e `get_risk_limits`; poi veto sulle nuove aperture in quell'ambito finché
-il CEO non l'ha rivisto, e un nuovo task «RIDUZIONE RISCHIO · <COD|ALL> · <obiettivo>»
-assegnato al Portfolio Manager (copia CEO) su cosa ridurre (chiusure parziali, stop più
+il CEO non l'ha rivisto, e un nuovo task «RIDUZIONE RISCHIO · <COD> · <obiettivo>»
+assegnato al Portfolio Manager (uno per portafoglio coinvolto; copia CEO) su cosa ridurre (chiusure parziali, stop più
 stretti tramite l'ES). Rispondi nel task di SMTrading con le misure prese e
 l'identificativo del task al PM, e chiudilo. Il task arriva una volta per obiettivo, periodo
 e stato: se lo stato peggiora («superato») ne arriva uno nuovo.

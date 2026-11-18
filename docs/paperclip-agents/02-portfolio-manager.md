@@ -116,7 +116,7 @@ serve a non perdere un giorno.
   simboli della strategia; se l'allocazione del portafoglio manca o non comprende la
   strategia, crea un nuovo task «ALLOCAZIONE · <COD>» al CEO. Rispondi nel task (alert
   creati, identificativo del task ALLOCAZIONE) e chiudilo.
-- **«RIDUZIONE RISCHIO · <COD|ALL> · <obiettivo>»** dal Risk Manager (obiettivo `max_loss`
+- **«RIDUZIONE RISCHIO · <COD> · <obiettivo>»** dal Risk Manager (obiettivo `max_loss`
   vicino al limite o superato): nessuna nuova apertura in quell'ambito finché il CEO non l'ha
   rivisto; le riduzioni chieste le fai con task «CHIUSURA» al RM e gli stop più stretti con
   «MODIFICA STOP» all'ES. Rispondi nel task con i task creati e chiudilo.
