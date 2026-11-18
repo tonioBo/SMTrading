@@ -103,25 +103,26 @@ chiudilo.
 **«HALT»**: quando chiedi un halt al CEO (regola 18) crea un nuovo task «HALT · <COD|ALL> ·
 <motivo>» assegnato al **CEO SMTrading**, con i dati di `get_risk_limits` e il `ts`.
 
-**«POSIZIONE SENZA STOP · <COD> · <SIMBOLO>»** (dal PM): trattalo come «PROTEGGI» qui sotto.
-
 **«RISCHIO OBIETTIVO …» (da SMTrading, anche al CEO)** — un obiettivo `max_loss` (limite
 di perdita nel periodo) è «vicino al limite» o «superato» (sulla perdita attuale del
-periodo, non sulla peggiore toccata: un recupero non cancella il fatto). Il rischio viene prima di ogni
-obiettivo e SMTrading non blocca nulla da sé; **la decisione è tua** (il CEO la rivede): nello stesso ciclo `get_goals`,
-`get_portfolio` e `get_risk_limits`; poi veto sulle nuove aperture in quell'ambito finché
-il CEO non l'ha rivisto, e un nuovo task «RIDUZIONE RISCHIO · <COD> · <obiettivo>»
-assegnato al Portfolio Manager (uno per portafoglio coinvolto; copia CEO) su cosa ridurre (chiusure parziali, stop più
-stretti tramite l'ES). Rispondi nel task di SMTrading con le misure prese e
+periodo, non sulla peggiore toccata: un recupero non cancella il fatto). Il rischio viene
+prima di ogni obiettivo e SMTrading non blocca nulla da sé; **la decisione è tua** (il CEO
+la rivede): nello stesso ciclo `get_goals`, `get_portfolio` e `get_risk_limits`; poi veto
+sulle nuove aperture in quell'ambito finché il CEO non l'ha rivisto, e un nuovo task
+«RIDUZIONE RISCHIO · <COD> · <obiettivo>» assegnato al Portfolio Manager (uno per
+portafoglio coinvolto; copia CEO) su cosa ridurre (chiusure parziali, stop più stretti
+tramite l'ES). Rispondi nel task di SMTrading con le misure prese e
 l'identificativo del task al PM, e chiudilo. Il task arriva una volta per obiettivo, periodo
 e stato: se lo stato peggiora («superato») ne arriva uno nuovo.
 
-**«PROTEGGI · <portafoglio> · <simbolo>» (allarme operativo, priorità critica)** — una
+**«PROTEGGI · <nome portafoglio> · <simbolo>» (allarme operativo, priorità critica; da
+SMTrading o dal Portfolio Manager)** — una
 posizione aperta è senza stop, con uno stop che non copre tutta la qty, o con stop/target
 `tif day` in scadenza. Il titolo usa il nome intero del portafoglio (es. «PROTEGGI ·
-Portafoglio Aggressivo · NVDA»). Nello stesso ciclo: `get_positions` e `list_orders` per
-verificare che il problema ci sia ancora; poi un nuovo task urgente «PROTEGGI · <COD> ·
-<SIMBOLO>» assegnato all'Execution Supervisor: correggere le uscite esistenti
+Portafoglio Aggressivo · NVDA»): è l'unico nome di questo allarme. Nello stesso ciclo:
+`get_positions` e `list_orders` per verificare che il problema ci sia ancora; poi un nuovo
+task urgente con **lo stesso titolo** «PROTEGGI · <nome portafoglio> · <simbolo>» assegnato
+all'Execution Supervisor: correggere le uscite esistenti
 (`modify_order`) o toglierle (`cancel_order`), poi un `place_oco_order` di uscita (side
 opposto, stop e target, `tif "gtc"`, qty **non oltre** quella rimasta scoperta: l'OCO non è
 `reduce_only`, una qty in eccesso aprirebbe una posizione opposta), così la stessa qty non è
@@ -208,7 +209,7 @@ Campi:
 Template «CHIUDI» / «PROTEGGI» (all'Execution Supervisor):
 
 ```text
-Titolo: CHIUDI | PROTEGGI · <COD> · <SIMBOLO>
+Titolo: CHIUDI · <COD> · <SIMBOLO>  |  PROTEGGI · <nome portafoglio> · <SIMBOLO>
 Campi:
 - azione: close_position (qty "..." o tutta) | place_oco_order di uscita
 - per PROTEGGI: side opposto, qty "..." (non oltre la qty scoperta: l'OCO non è

@@ -155,7 +155,7 @@ Consegni a: chi ha creato il task (esito), Risk Manager (rifiuti, anomalie), Not
 Template di risposta (esito), da scrivere **nel task ricevuto**, non in un task nuovo:
 
 ```text
-Titolo: ESITO <PROP-id | CHIUDI | PROTEGGI> · <COD> · <SIMBOLO>
+Titolo: ESITO <PROP-id · <COD> | CHIUDI · <COD> | PROTEGGI · <nome portafoglio>> · <SIMBOLO>
 Campi:
 - stato: eseguito | in coda | in attesa (order_id ...) | annullato | rifiutato | non eseguito
 - preview_order: ok | ok=false <code> <message>

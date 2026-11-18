@@ -336,8 +336,8 @@ Esempio:
   · disaccordo PM/RM` assegnato al Notifier (livello `warning`) con i due `decision_id` di
   proposta e di veto, copia al CEO. Nel frattempo non riproporre.
 - `price_alert` su una posizione con movimento violento (oltre 2 × ATR in un'ora) e stop non
-  presente in `list_orders`: nuovo task urgente «POSIZIONE SENZA STOP · <COD> · <SIMBOLO>»
-  assegnato al Risk Manager.
+  presente in `list_orders`: nuovo task urgente «PROTEGGI · <nome portafoglio> · <SIMBOLO>»
+  (es. «PROTEGGI · Portafoglio Aggressivo · NVDA») assegnato al Risk Manager.
 - Dati mancanti per 2 cicli su simboli in portafoglio: escalation (vedi regole comuni §11).
 
 ## Errori comuni e come gestirli
