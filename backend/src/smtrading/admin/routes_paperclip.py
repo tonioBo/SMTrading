@@ -8,7 +8,7 @@ summary masks it by its field name (`board_key`)."""
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -25,6 +25,7 @@ from smtrading.agents.service import write_audit
 from smtrading.common.config import get_settings
 from smtrading.engine.models import Order
 from smtrading.mcp.dto import to_jsonable
+from smtrading.paperclip import budget
 from smtrading.paperclip.client import PaperclipClient, PaperclipError
 from smtrading.paperclip.config import (
     KEY_PREFIX,
@@ -61,6 +62,23 @@ class PaperclipConfigIn(BaseModel):
     board_key: str | None = None
     enabled: bool | None = None
     agent_map: dict[str, str] | None = None
+    # USD; null, "" or 0 = no budget of our own (the Paperclip company's one is used first)
+    monthly_budget_usd: str | int | float | None = None
+
+
+MAX_BUDGET_USD = Decimal(1_000_000)
+
+
+def _monthly_budget(value: str | float | None) -> Decimal | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        d = Decimal(str(value).strip().replace(",", "."))
+    except InvalidOperation:
+        raise _invalid("monthly_budget_usd", "budget mensile non valido") from None
+    if not d.is_finite() or d < 0 or d > MAX_BUDGET_USD:
+        raise _invalid("monthly_budget_usd", "il budget mensile va da 0 a 1.000.000 $")
+    return d or None
 
 
 def _text(field: str, value: str | None) -> str | None:
@@ -177,13 +195,15 @@ async def put_paperclip_config(
         board_key = _board_key(body.board_key) if body.board_key else None
         agent_map = await _agent_map(session, body.agent_map) \
             if body.agent_map is not None else cur.agent_map
+        monthly_budget = _monthly_budget(body.monthly_budget_usd) \
+            if "monthly_budget_usd" in fields else cur.monthly_budget_usd
         enabled = cur.enabled if body.enabled is None else body.enabled
         if enabled and not (base_url and company_id and (board_key or cur.board_key)):
             raise _invalid("enabled", "inserisci URL, id azienda e chiave board prima di "
                                       "attivare la lettura")
         cfg = await save_config(session, base_url=base_url, company_id=company_id,
                                 board_key=board_key, enabled=enabled, agent_map=agent_map,
-                                by=admin.email)
+                                by=admin.email, monthly_budget_usd=monthly_budget)
     return config_dto(cfg)
 
 
@@ -290,7 +310,29 @@ async def get_agent_costs(session: DbSession, period: str = Query("day")) -> dic
         })
     return to_jsonable({"currency": "USD", "from": from_, "to": to,
                         "last_read_at": state["last_ok_at"], "agents": rows,
-                        "unmatched": unmatched})
+                        "unmatched": unmatched,
+                        "month": await _month(session, to, cfg, state, agents)})
+
+
+async def _month(session: AsyncSession, today, cfg, state: dict, agents: list[_SmtAgent]
+                 ) -> dict:
+    """The current month against the budget (whatever the period), with each agent's share
+    of the billed spend (SMTrading agents, then the unmatched Paperclip ones by name)."""
+    spend = await budget.month_spend(session, today)
+    shares: dict[tuple[str | None, str], Decimal] = {}
+    for pid, name, usd in spend:
+        smt = _match(pid, name, agents, cfg.agent_map)
+        key = (str(smt.id), smt.name) if smt else (None, name or pid)
+        shares[key] = shares.get(key, Decimal(0)) + usd
+    total = sum(shares.values(), start=Decimal(0))
+    out = budget.summary(today, total, budget.resolve_budget(
+        state.get("company_budget_cents"), cfg.monthly_budget_usd))
+    out["shares"] = [
+        {"agent_id": aid, "name": name, "usd": usd.quantize(budget.CENT),
+         "pct": budget.pct(usd, total)}
+        for (aid, name), usd in sorted(shares.items(), key=lambda kv: (-kv[1], kv[0][1]))
+        if usd > 0]
+    return out
 
 
 async def _portfolios(session: AsyncSession, agent_id: uuid.UUID, perf_period) -> list[dict]:

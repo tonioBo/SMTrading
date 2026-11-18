@@ -96,6 +96,8 @@ def _mock(router, agents=None, reset_status=200):
     reset endpoint (the real answer: the runtime state with `sessionId` null)."""
     router.get(f"{API}/heartbeat-runs").mock(return_value=httpx.Response(200, json=[]))
     router.get(f"{API}/tools/policies").mock(return_value=httpx.Response(200, json=[]))
+    router.get(API).mock(return_value=httpx.Response(200, json={"id": CID,
+                                                                 "budgetMonthlyCents": 0}))
     router.get(f"{BASE}/api/cli-auth/me").mock(return_value=httpx.Response(200, json={}))
     router.get(f"{API}/agents").mock(return_value=httpx.Response(
         200, json=AGENTS if agents is None else agents))

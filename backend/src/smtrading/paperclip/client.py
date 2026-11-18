@@ -120,6 +120,16 @@ class PaperclipClient:
     def _company_path(self, tail: str) -> str:
         return f"/api/companies/{self._company}/{tail}"
 
+    async def company(self) -> dict:
+        """The company (`GET /api/companies/{id}`): `budgetMonthlyCents`,
+        `spentMonthlyCents` …"""
+        body = await self._get(f"/api/companies/{self._company}")
+        if isinstance(body, dict) and isinstance(body.get("company"), dict):
+            body = body["company"]
+        if not isinstance(body, dict):
+            raise PaperclipError("risposta inattesa")
+        return body
+
     async def heartbeat_runs(self, limit: int = MAX_RUNS) -> list[dict]:
         body = await self._get(self._company_path("heartbeat-runs"), {"limit": limit})
         return [r for r in unwrap_list(body, "runs") if isinstance(r, dict)]

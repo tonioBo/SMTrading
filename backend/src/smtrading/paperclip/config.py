@@ -10,6 +10,7 @@ import binascii
 import copy
 import logging
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -45,6 +46,11 @@ DEFAULT_STATE: dict[str, Any] = {
     "expiry_alerted": None,  # the key_expires_at value already notified
     # "config": the company or URL changed, the next snapshot is the new baseline (notified)
     "rebaseline_reason": None,
+    # the company's monthly budget and spend (cents, USD), from the last successful read
+    "company_budget_cents": None,
+    "company_spent_cents": None,
+    # budget alerts already sent: {"AAAA-MM": ["projection", "spent"]} (current month only)
+    "budget_alerted": {},
 }
 # reset when the company or the URL changes: the old baseline describes another company
 _CONFIG_RESET = {
@@ -52,6 +58,7 @@ _CONFIG_RESET = {
     "changes": {"removed": [], "changed": [], "added": []}, "alerted_signature": None,
     "consecutive_errors": 0, "error_alerted": False, "last_error": None,
     "key_expires_at": None, "expiry_alerted": None, "rebaseline_reason": "config",
+    "company_budget_cents": None, "company_spent_cents": None,
 }
 # reset when the board key changes: the expiry was the old key's
 _KEY_RESET = {"key_expires_at": None, "expiry_alerted": None}
@@ -64,13 +71,15 @@ class PaperclipConfig:
     board_key: str | None = None
     enabled: bool = False
     agent_map: dict[str, str] = field(default_factory=dict)  # paperclip id -> smt agent id
+    # used when the Paperclip company has no budget (budgetMonthlyCents 0); None = none
+    monthly_budget_usd: Decimal | None = None
     unreadable: bool = False  # a stored key could not be decrypted (e.g. new master key)
 
     def __repr__(self) -> str:  # the key never reaches a log through a repr
         key = MASK if self.board_key else None
         return (f"PaperclipConfig(base_url={self.base_url!r}, company_id={self.company_id!r}, "
                 f"board_key={key!r}, enabled={self.enabled!r}, agent_map={self.agent_map!r}, "
-                f"unreadable={self.unreadable!r})")
+                f"unreadable={self.unreadable!r}, monthly_budget_usd={self.monthly_budget_usd!r})")
 
     @property
     def complete(self) -> bool:
@@ -79,6 +88,15 @@ class PaperclipConfig:
 
 def _str_or_none(v: Any) -> str | None:
     return str(v) if v not in (None, "") else None
+
+
+def _budget(v: Any) -> Decimal | None:
+    """A stored budget > 0, else None."""
+    try:
+        d = Decimal(str(v)) if v not in (None, "") else None
+    except InvalidOperation:
+        return None
+    return d if d is not None and d.is_finite() and d > 0 else None
 
 
 async def _raw(session: AsyncSession, key: str) -> Any:
@@ -140,12 +158,13 @@ async def load_config(session: AsyncSession) -> PaperclipConfig:
         enabled=bool(raw.get("enabled")),
         agent_map={str(k): str(v) for k, v in agent_map.items()},
         unreadable=unreadable,
+        monthly_budget_usd=_budget(raw.get("monthly_budget_usd")),
     )
 
 
 async def save_config(session: AsyncSession, *, base_url: str | None, company_id: str | None,
-                      board_key: str | None, enabled: bool, agent_map: dict[str, str], by: str
-                      ) -> PaperclipConfig:
+                      board_key: str | None, enabled: bool, agent_map: dict[str, str], by: str,
+                      monthly_budget_usd: Decimal | None = None) -> PaperclipConfig:
     """`board_key=None` keeps the stored key, but only for the same origin: a `base_url`
     with another scheme, host or port (or one whose origin cannot be parsed) with a
     stored key and no new one is refused (field `board_key`), so the key never reaches a host it was not entered for. Writes the
@@ -184,6 +203,7 @@ async def save_config(session: AsyncSession, *, base_url: str | None, company_id
         "board_key_enc": key_enc,
         "enabled": bool(enabled),
         "agent_map": dict(agent_map),
+        "monthly_budget_usd": str(monthly_budget_usd) if monthly_budget_usd else None,
     }
     stmt = insert(AppSetting).values(key=SETTINGS_KEY, value=value)
     await session.execute(stmt.on_conflict_do_update(index_elements=["key"], set_={"value": value}))
@@ -193,6 +213,7 @@ async def save_config(session: AsyncSession, *, base_url: str | None, company_id
         params={"by": by, "base_url": base_url, "company_id": company_id,
                 "enabled": bool(enabled), "agent_map": dict(agent_map),
                 "board_key_changed": board_key is not None,
+                "monthly_budget_usd": str(monthly_budget_usd) if monthly_budget_usd else None,
                 "baseline_reset": baseline_reset},
         outcome="ok", latency_ms=0,
     )
@@ -206,6 +227,7 @@ def config_dto(cfg: PaperclipConfig) -> dict[str, Any]:
         "enabled": cfg.enabled,
         "board_key_masked": mask_value(cfg.board_key) if cfg.board_key else None,
         "agent_map": cfg.agent_map,
+        "monthly_budget_usd": str(cfg.monthly_budget_usd) if cfg.monthly_budget_usd else None,
         "error": "configurazione illeggibile: reinserisci la chiave board"
                  if cfg.unreadable else None,
     }

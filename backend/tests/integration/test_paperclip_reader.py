@@ -120,8 +120,17 @@ def _runs():
     ]))
 
 
-def _mock(router, *, policies=None, runs=None, agents=None, keys=None, cid=CID):
+def _company(budget_cents=0, spent_cents=0, cid=CID):
+    """The company as Paperclip returns it (GET /api/companies/{id}, the fields used)."""
+    return {"id": cid, "name": "SMTrading", "status": "active",
+            "budgetMonthlyCents": budget_cents, "spentMonthlyCents": spent_cents}
+
+
+def _mock(router, *, policies=None, runs=None, agents=None, keys=None, cid=CID,
+          company=None):
     api = f"{BASE}/api/companies/{cid}"
+    router.get(api).mock(return_value=company if isinstance(company, httpx.Response)
+                         else httpx.Response(200, json=company or _company(cid=cid)))
     router.get(f"{api}/heartbeat-runs").mock(
         return_value=httpx.Response(200, json=runs if runs is not None else _runs()))
     router.get(f"{api}/agents").mock(return_value=httpx.Response(
@@ -510,3 +519,96 @@ async def test_no_activity_rows_written(sm):
         after = await s.scalar(select(func.count()).select_from(Activity))
     assert after == before
 
+
+
+# -- monthly budget ---------------------------------------------------------------------
+
+def _run(rid, day, usd, billing="metered_api", agent="a1"):
+    return {"id": rid, "agentId": agent, "startedAt": f"{day}T09:00:00Z",
+            "usageJson": {"costUsd": usd, "billingType": billing}}
+
+
+async def _budget_texts(sm) -> list[str]:
+    return [a.text for a in await _alerts(sm) if a.text.startswith("🟠 Costi agenti")]
+
+
+async def test_company_budget_stored_and_kept_on_failed_read(sm):
+    await _configure(sm)
+    with _respx() as router:
+        _mock(router, runs=[], company=_company(budget_cents=5000, spent_cents=1234))
+        await _reader(sm).tick()
+    st = await _state(sm)
+    assert (st["company_budget_cents"], st["company_spent_cents"]) == (5000, 1234)
+    with _respx() as router:  # best-effort: the rest of the read goes on
+        _mock(router, runs=[], company=httpx.Response(500))
+        await _reader(sm).tick()
+    st = await _state(sm)
+    assert st["company_budget_cents"] == 5000 and st["last_error"] is None
+    assert st["consecutive_errors"] == 0
+
+
+async def test_budget_alerts_once_per_month_per_threshold(sm):
+    await _configure(sm)
+    # Nov 15: 9 $ billed (the 3 $ included in the subscription do not count)
+    runs = [_run("r1", "2026-11-14", 6), _run("r2", "2026-11-15", 3, "credits", "a2"),
+            _run("r3", "2026-11-15", 3, "subscription_included")]
+    with _respx() as router:
+        _mock(router, runs=runs, company=_company(budget_cents=1000))
+        await _reader(sm).tick()
+    assert await _budget_texts(sm) == [
+        "🟠 Costi agenti: spesi 9,00 $ su 10,00 $ del budget mensile (90%).",
+        ("🟠 Costi agenti: a questo ritmo (0,60 $ al giorno) il mese chiude a 18,00 $, "
+        "oltre il budget di 10,00 $."),
+    ]
+    (alert, _) = [a for a in await _alerts(sm) if a.text.startswith("🟠")]
+    assert (alert.category, alert.level) == ("system", "warning")
+    assert (await _state(sm))["budget_alerted"] == {"2026-11": ["projection", "spent"]}
+    with _respx() as router:  # a new reader (restart): the dedup is in the app setting
+        _mock(router, runs=runs, company=_company(budget_cents=1000))
+        await _reader(sm).tick()
+    assert len(await _budget_texts(sm)) == 2
+    # next month: the thresholds are armed again (projection only from the 3rd day)
+    dec = [_run("r4", "2026-12-02", 9)]
+    with _respx() as router:
+        _mock(router, runs=dec, company=_company(budget_cents=1000))
+        await _reader(sm, now=datetime(2026, 12, 2, 12, 0, tzinfo=UTC)).tick()
+    texts = await _budget_texts(sm)
+    assert len(texts) == 3 and texts[-1].startswith("🟠 Costi agenti: spesi 9,00 $")
+    assert (await _state(sm))["budget_alerted"] == {"2026-12": ["spent"]}
+
+
+async def test_budget_projection_waits_for_the_third_day(sm):
+    await _configure(sm)
+    runs = [_run("r1", "2026-11-01", "1.1")]  # 1,10 $ in 2 days: projection 16,50 $
+    with _respx() as router:
+        _mock(router, runs=runs, company=_company(budget_cents=1000))
+        await _reader(sm, now=datetime(2026, 11, 2, 12, 0, tzinfo=UTC)).tick()
+    assert await _budget_texts(sm) == []
+    with _respx() as router:
+        _mock(router, runs=runs, company=_company(budget_cents=1000))
+        await _reader(sm, now=datetime(2026, 11, 3, 12, 0, tzinfo=UTC)).tick()
+    assert await _budget_texts(sm) == [
+        ("🟠 Costi agenti: a questo ritmo (0,37 $ al giorno) il mese chiude a 11,00 $, "
+        "oltre il budget di 10,00 $.")]
+
+
+async def test_budget_from_settings_when_company_has_none(sm):
+    async with sm() as s:
+        await save_config(s, base_url=BASE, company_id=CID, board_key=KEY, enabled=True,
+                          agent_map={}, by="test", monthly_budget_usd=Decimal(10))
+        await s.commit()
+    with _respx() as router:
+        _mock(router, runs=[_run("r1", "2026-11-15", 8)])
+        await _reader(sm).tick()
+    texts = await _budget_texts(sm)  # 8 $ of 10 $, projection 16 $
+    assert len(texts) == 2
+    assert texts[0].startswith("🟠 Costi agenti: spesi 8,00 $ su 10,00 $")
+    assert texts[1].startswith("🟠 Costi agenti: a questo ritmo")
+
+
+async def test_no_budget_no_alerts(sm):
+    await _configure(sm)
+    with _respx() as router:
+        _mock(router, runs=[_run("r1", "2026-11-15", 500)])
+        await _reader(sm).tick()
+    assert await _budget_texts(sm) == []
