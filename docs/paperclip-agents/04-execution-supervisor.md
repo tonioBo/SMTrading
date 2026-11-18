@@ -216,7 +216,7 @@ CEO, regole comuni §11) quando:
 | `PORTFOLIO_LOCKED` | portafoglio bloccato | Nessun ordine; escalation. |
 | `PROVIDER_UNAVAILABLE` | dati mancanti o valutazione con quotazioni in cache; sull'ordine inviato significa rifiuto del broker (motivo nel messaggio) | Non riprovare subito né reinviare identico; restituisci al Portfolio Manager con il motivo, escalation se ripetuto. |
 | `LIVE_CASH_LIMIT` | contante presso il broker insufficiente | Non eseguire; restituisci al Portfolio Manager per ridimensionare. |
-| `LIVE_NOT_ARMED` | collegamento al broker non operativo | Non eseguire né riprovare; escalation immediata al CEO e al Risk Manager. |
+| `LIVE_NOT_ARMED` | collegamento al broker non operativo | Non eseguire né riprovare; subito un task `ESCALATION <ESC-id> · <COD> · collegamento broker` al Notifier con CEO e Risk Manager menzionati. |
 | `RATE_LIMITED` | troppe richieste | Attendi `details.retry_after_s`. |
 | `FORBIDDEN` | permesso mancante | Escalation (configurazione). |
 | `NOT_FOUND` | ordine/portafoglio inesistente | Verifica l'id con `list_orders`/`list_portfolios`. |

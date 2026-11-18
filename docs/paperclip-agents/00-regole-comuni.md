@@ -405,7 +405,7 @@ Gli errori arrivano come `{"code", "message", "details"}`. Codici reali e reazio
 | `STALE_QUOTE` | quotazione troppo vecchia | Non usare ordini market; riprova al ciclo dopo o usa limit. 2 cicli di fila → escalation. |
 | `PROVIDER_UNAVAILABLE` | dati di mercato non disponibili (anche valutazione con quotazioni in cache); su un **ordine** significa che il broker lo ha rifiutato (motivo nel messaggio) | Dati: riprova al ciclo successivo; 2 cicli di fila → escalation. Ordine rifiutato: non reinviarlo identico; al massimo un nuovo tentativo corretto secondo il motivo al ciclo successivo, poi escalation. |
 | `LIVE_CASH_LIMIT` | contante disponibile presso il broker insufficiente per l'ordine | Come `INSUFFICIENT_BUYING_POWER`: riduci la quantità o rinuncia; non frazionare per aggirarlo. |
-| `LIVE_NOT_ARMED` | collegamento al broker non operativo in questo momento | Non riprovare. Nessuna apertura su quel portafoglio; escalation al CEO e al Risk Manager. |
+| `LIVE_NOT_ARMED` | collegamento al broker non operativo in questo momento | Non riprovare. Nessuna apertura su quel portafoglio; task `ESCALATION` al Notifier (§11) con CEO e Risk Manager menzionati. |
 | `MARKET_CLOSED_QUEUED` | mercato chiuso, ordine messo in coda | Informativo: l'ordine attende l'apertura. |
 | `KILL_SWITCH_ACTIVE` | kill switch globale attivo | Stop aperture su tutto. Solo riduzioni. Informa il CEO. |
 | `TRADING_HALTED` | trading halt attivo (globale o del portafoglio) | Nessuna apertura né aumento finché l'halt non viene revocato (dal CEO, o dagli amministratori se l'hanno attivato loro); chiusure e annullamenti funzionano. |
