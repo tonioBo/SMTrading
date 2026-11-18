@@ -90,7 +90,18 @@ opportunità delle 09:05/15:35, niente finestre pre-chiusura, niente AGENDA).
    ricevuto (uno per simbolo al giorno).
    Il campo `extended` di `get_quote` (pre-market / after-hours USA) è solo un'informazione
    di contesto: segnali e indicatori si calcolano sulla seduta regolare.
-8. Salva i cursori, rispondi nel task della Routine e chiudilo.
+8. **Uscite di strategia — obbligatorio con posizioni aperte** nei cicli delle 09:05 e 15:35,
+   in ogni ciclo delle finestre pre-chiusura e alle 22:15: per **ogni posizione aperta**
+   individua la strategia che l'ha aperta (STR-id della proposta) e verifica la sua **regola
+   d'uscita** con `get_indicators` `1d` (nelle finestre pre-chiusura con
+   `include_forming: true`), per esempio `rsi_reversion` → RSI sopra `sell_above`;
+   `sma_cross` → media veloce sotto la lenta; `breakout` → chiusura sotto il minimo di uscita.
+   Regola soddisfatta → crea **subito** un nuovo task «CHIUSURA · <COD> · <SIMBOLO> · totale»
+   al **Risk Manager** (che lo inoltra all'ES; la chiusura annulla anche le uscite OCO di
+   stop/obiettivo), con il valore dell'indicatore e la soglia. Se decidi di non chiudere,
+   scrivi il motivo nella risposta del ciclo. Il limite di posizioni di una strategia riguarda
+   solo gli **ingressi**: non salta mai il controllo delle uscite.
+9. Salva i cursori, rispondi nel task della Routine e chiudilo.
 
 ### Ciclo «Chiusura USA (serale)» — lun-ven 22:15
 
