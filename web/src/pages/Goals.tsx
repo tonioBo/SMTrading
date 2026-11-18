@@ -83,9 +83,24 @@ const TARGET_LABEL: Record<GoalKind, { label: string; hint: string }> = {
 
 const FORM_FIELDS = ["name", "horizon", "start_date", "end_date", "recurring", "scope", "portfolio_id", "target_pct", "kind", "benchmark", "closes_positions"];
 
-/** Mounted per opening: create (`goal` null, or `template` to prefill) or edit a goal. */
-function GoalDialog({ goal, template, onClose }: { goal: Goal | null; template?: GoalCreate; onClose: () => void }) {
+/** The active piano (other than `exclude`) already covering a goal of `scope`/`portfolioId`:
+ * a total one covers every portfolio, a portfolio one its own (the server's rule). */
+function coveringPlan(goals: Goal[], scope: GoalScope, portfolioId: string | null, exclude?: string): Goal | undefined {
+  return goals.find(
+    (g) =>
+      g.active &&
+      g.closes_positions &&
+      g.id !== exclude &&
+      !(g.scope === "portfolio" && g.portfolio_archived) &&
+      (scope === "total" || g.scope === "total" || g.portfolio_id === portfolioId),
+  );
+}
+
+/** Mounted per opening: create (`goal` null, or `template` to prefill) or edit a goal. A new
+ * goal is a piano by default unless another active piano already covers its portfolios. */
+function GoalDialog({ goal, template, goals, onClose }: { goal: Goal | null; template?: GoalCreate; goals: Goal[]; onClose: () => void }) {
   const [form, setForm] = useState<FormState>(() => initialForm(goal ?? template ?? null));
+  const [planTouched, setPlanTouched] = useState(false);
   const [localErrors, setLocalErrors] = useState<Record<string, string>>({});
   const portfolios = usePortfolios();
   const create = useCreateGoal();
@@ -104,6 +119,8 @@ function GoalDialog({ goal, template, onClose }: { goal: Goal | null; template?:
     });
   const index = form.kind === "beat_index";
   const targetField = TARGET_LABEL[form.kind];
+  const cover = coveringPlan(goals, form.scope, form.scope === "portfolio" ? form.portfolio_id || null : null, goal?.id);
+  const closes = cover ? false : goal || planTouched ? form.closes_positions : true;
   const serverField = errorField(mutation.error);
   const fieldError = (field: string) =>
     localErrors[field] ?? (mutation.error && serverField === field ? errorMessage(mutation.error) : null);
@@ -133,7 +150,7 @@ function GoalDialog({ goal, template, onClose }: { goal: Goal | null; template?:
       target_pct: pct!,
       kind: form.kind,
       benchmark: index ? form.benchmark : null,
-      closes_positions: form.closes_positions,
+      closes_positions: closes,
     };
     const done = {
       onSuccess: () => {
@@ -245,8 +262,12 @@ function GoalDialog({ goal, template, onClose }: { goal: Goal | null; template?:
               <input
                 id="goal-closes-positions"
                 type="checkbox"
-                checked={form.closes_positions}
-                onChange={(e) => set("closes_positions", e.target.checked)}
+                checked={closes}
+                disabled={cover !== undefined}
+                onChange={(e) => {
+                  setPlanTouched(true);
+                  set("closes_positions", e.target.checked);
+                }}
                 className="h-4 w-4 accent-[rgb(var(--accent))]"
                 aria-describedby="goal-closes-positions-help"
               />
@@ -257,6 +278,9 @@ function GoalDialog({ goal, template, onClose }: { goal: Goal | null; template?:
               SMTrading alla prima apertura del mercato, quelle in perdita dopo qualche giorno di mercato di grazia (settimana 1,
               mese 3, trimestre 5, anno 10), senza aggiunte. Al massimo un piano per portafoglio.
             </p>
+            {cover && (
+              <p className="text-xs text-warn">{`Non può essere un piano: «${cover.name}» chiude già le posizioni di questi portafogli.`}</p>
+            )}
             {fieldError("closes_positions") && (
               <p role="alert" className="text-xs text-loss">
                 {fieldError("closes_positions")}
@@ -631,7 +655,9 @@ export default function Goals() {
           }}
         />
       )}
-      {editing !== undefined && <GoalDialog goal={editing} template={editing ? undefined : template} onClose={() => setEditing(undefined)} />}
+      {editing !== undefined && (
+        <GoalDialog goal={editing} template={editing ? undefined : template} goals={data ?? []} onClose={() => setEditing(undefined)} />
+      )}
       {deactivating && <DeactivateDialog goal={deactivating} onClose={() => setDeactivating(null)} />}
     </div>
   );

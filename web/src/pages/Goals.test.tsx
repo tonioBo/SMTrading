@@ -202,7 +202,7 @@ describe("Obiettivi", () => {
         method: "POST", path: "/api/goals",
         body: {
           name: "Natale", horizon: "custom", start_date: "2026-11-20", end_date: "2026-12-24", recurring: false,
-          scope: "portfolio", portfolio_id: "p2", target_pct: "3.5", kind: "cap", benchmark: null, closes_positions: false,
+          scope: "portfolio", portfolio_id: "p2", target_pct: "3.5", kind: "cap", benchmark: null, closes_positions: true,
         },
       },
     ]);
@@ -358,17 +358,39 @@ describe("Obiettivi", () => {
     expect(outcome).toHaveTextContent("ENI.MI · Beta: chiusa dagli agenti");
     expect(within(screen.getByRole("article", { name: "Obiettivo Natale" })).queryByText("Piano")).toBeNull();
 
+    // the weekly piano on the total covers every portfolio: a new goal cannot be one
     await user.click(screen.getByRole("button", { name: "Nuovo obiettivo" }));
     const dialog = await screen.findByRole("dialog");
     const box = within(dialog).getByLabelText("Chiude le posizioni a fine periodo");
     expect(box).not.toBeChecked();
+    expect(box).toBeDisabled();
     expect(box).toHaveAccessibleDescription(/al massimo un piano per portafoglio/i);
+    expect(within(dialog).getByText("Non può essere un piano: «settimanale» chiude già le posizioni di questi portafogli.")).toBeInTheDocument();
     await user.type(within(dialog).getByLabelText("Nome"), "mese");
-    await user.click(box);
-    postError = { field: "closes_positions", message: "c'è già un piano attivo (settimanale)" };
     await user.click(within(dialog).getByRole("button", { name: "Crea" }));
-    expect(await within(dialog).findByText("c'è già un piano attivo (settimanale)")).toBeInTheDocument();
-    expect(calls[0].body).toMatchObject({ name: "mese", closes_positions: true });
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0].body).toMatchObject({ name: "mese", closes_positions: false });
+  });
+
+  it("a new goal is a piano by default; unchecking it and the server error on its field", async () => {
+    reset();
+    const user = userEvent.setup();
+    renderApp("/obiettivi");
+    await user.click(await screen.findByRole("button", { name: "Nuovo obiettivo" }));
+    const dialog = await screen.findByRole("dialog");
+    const box = within(dialog).getByLabelText("Chiude le posizioni a fine periodo");
+    expect(box).toBeChecked();
+    expect(box).toBeEnabled();
+    await user.type(within(dialog).getByLabelText("Nome"), "mese");
+    postError = { field: "closes_positions", message: "c'è già un piano attivo (altro)" };
+    await user.click(within(dialog).getByRole("button", { name: "Crea" }));
+    expect(await within(dialog).findByText("c'è già un piano attivo (altro)")).toBeInTheDocument();
+    expect(calls[0].body).toMatchObject({ closes_positions: true });
+    await user.click(box);
+    postError = null;
+    await user.click(within(dialog).getByRole("button", { name: "Crea" }));
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].body).toMatchObject({ closes_positions: false });
   });
 
   it("edits a goal with its current values", async () => {
