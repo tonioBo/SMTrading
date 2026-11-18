@@ -39,6 +39,17 @@ the lock (startup recovery).
   with a new client reference (broker_attempt + 1); if it filled, the fills stand.
 - bracket exits at the broker are independent orders: when one fills, the cancel of
   its OCO sibling is requested and sent in the same pass.
+- daily renewal: an order the broker takes only as `day` although it is `gtc` here
+  (`adapter.renewed_daily`: Alpaca fractional quantities, resting types) is sent as
+  `day`; when the broker expires it with nothing filled, it stays open here and goes
+  back to `to_send` with a new client reference (broker_attempt + 1), sent at the next
+  session open with every check of a first send (a reduce-only exit passes the kill
+  switch on paper/demo links like any exit; a real-money link keeps its live gate: no
+  send with the kill switch on, the order is then rejected). The expiry is final (no
+  double exit) and the broker read is done before the resend; an OCO sibling filled
+  meanwhile cancels it locally. Recorded as `broker.order_renewed` (activity, info).
+  Expired after a partial fill it is not renewed (the fills stand): it expires and
+  `broker.renewal_failed` is notified (the protection alarm then sees the gap).
 - valid_until (plan 16): an order is never sent once its `expires_at` (the earlier of
   the day expiry and valid_until) has passed; one at the broker is canceled through
   `cancel_requested` (the processor asks for it) and a cancel confirmed once
@@ -1335,16 +1346,54 @@ class BrokerSync:
             ))
         await self._closed(session, order)
 
+    def _resubmit(self, order: Order) -> None:
+        """The broker order is final with nothing filled: send again (new client ref)."""
+        order.broker_order_id = None
+        order.broker_replicated = False
+        order.broker_sent_at = None
+        order.broker_attempt = (order.broker_attempt or 0) + 1
+        order.broker_status = BrokerState.TO_SEND
+        order.updated_at = datetime.now(UTC)
+
+    async def _renewable(self, session: AsyncSession, order: Order) -> bool:
+        """A `gtc` order the broker took only as `day` (`renewed_daily`), not being
+        canceled, its valid_until (if any) not passed."""
+        if order.broker_status == BrokerState.CANCEL_REQUESTED:
+            return False
+        if order.valid_until is not None and order.valid_until <= self._clock():
+            return False
+        instrument = await session.get(Instrument, order.symbol)
+        adapter = await self._adapter(session, order.broker_link_id)
+        return instrument is not None and adapter.renewed_daily(order, instrument)
+
+    async def _renew(self, session: AsyncSession, order: Order, bo: BrokerOrder) -> None:
+        expired_id = bo.broker_order_id
+        self._resubmit(order)
+        record_activity(session, ActivityDraft(
+            "broker.order_renewed", ActivityLevel.info, False,
+            f"Ordine {order.symbol} valido per la giornata al broker (quantità frazionaria):"
+            " scaduto a fine seduta, sarà inviato di nuovo all'apertura",
+            {"order_id": order.id, "symbol": order.symbol, "role": order.role,
+             "expired_broker_order_id": expired_id, "attempt": order.broker_attempt},
+        ), portfolio_id=order.portfolio_id, agent_id=order.agent_id)
+        log.info("order %s: day order %s expired at the broker; renewed (attempt %s)",
+                 order.id, expired_id, order.broker_attempt)
+
     async def _finish(self, session: AsyncSession, order: Order, bo: BrokerOrder) -> None:
         replacing = order.broker_status == BrokerState.REPLACE_REQUESTED
         if replacing and bo.status == "canceled" and order.filled_qty == 0:
-            order.broker_order_id = None
-            order.broker_replicated = False
-            order.broker_sent_at = None
-            order.broker_attempt = (order.broker_attempt or 0) + 1
-            order.broker_status = BrokerState.TO_SEND
-            order.updated_at = datetime.now(UTC)
+            self._resubmit(order)
             return
+        if bo.status == "expired" and await self._renewable(session, order):
+            if order.filled_qty == 0:
+                await self._renew(session, order, bo)
+                return
+            await notify(
+                session, portfolio_id=order.portfolio_id, agent_id=order.agent_id,
+                kind="broker.renewal_failed",
+                payload={"order_id": order.id, "symbol": order.symbol,
+                         "filled_qty": order.filled_qty, "qty": order.qty},
+            )
         order.broker_status = bo.status
         if bo.status == "rejected":
             await self._reject(

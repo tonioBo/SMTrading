@@ -1695,3 +1695,155 @@ async def test_valid_until_filled_at_the_broker_before_the_cancel_stands(maker, 
     await _sync(maker, redis, qs, now=VALID_UNTIL).tick()
     o = await _order(maker, oid)
     assert o.status == OrderStatus.filled and o.filled_qty == 10
+
+
+# -- daily renewal (Alpaca fractional quantities: day orders only) ---------------------
+
+TUESDAY_CLOSE = datetime(2026, 11, 10, 21, 5, tzinfo=UTC)  # after the NASDAQ close
+WEDNESDAY_OPEN = datetime(2026, 11, 11, 14, 31, tzinfo=UTC)
+HALF = D("10.5")
+_RESTING = {OrderType.limit, OrderType.stop, OrderType.stop_limit}
+
+
+@registry.register
+class FakeDailyAdapter(FakeBrokerAdapter):
+    """Like Alpaca: a fractional gtc resting order is taken only as a day order."""
+
+    kind: ClassVar[str] = "fake_daily_test"
+
+    def renewed_daily(self, order, instrument) -> bool:
+        return (order.tif == "gtc" and order.type in _RESTING and order.qty is not None
+                and order.qty != order.qty.to_integral_value())
+
+
+async def _renewal_types(maker, oid) -> list[str]:
+    from smtrading.activity.models import Activity
+
+    async with maker() as s:
+        return list(await s.scalars(
+            select(Activity.type).where(Activity.data["order_id"].astext == str(oid),
+                                        Activity.type == "broker.order_renewed")))
+
+
+async def _fractional_bracket(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker, kind="fake_daily_test")
+    async with maker() as s:
+        entry, tp, sl = await place_bracket_order(
+            s, qs, PlaceOrderRequest(
+                portfolio_id=pid, symbol="AAPL", side=OrderSide.buy,
+                type=OrderType.market, qty=HALF,
+            ), take_profit=D("110"), stop_loss=D("90"), now=OPEN,
+        )
+        await s.commit()
+    sync = _sync(maker, redis, qs)
+    await sync.tick()
+    BROKER.set("b1", "filled", HALF, "100")
+    await sync.tick()
+    await sync.tick()  # exits sent
+    tp, sl = await _order(maker, tp.id), await _order(maker, sl.id)
+    assert tp.tif == "gtc" and sl.tif == "gtc"
+    assert {tp.broker_order_id, sl.broker_order_id} == {"b2", "b3"}
+    return pid, entry.id, tp, sl
+
+
+async def test_fractional_day_exit_is_renewed_at_the_next_open(maker, redis, qs):
+    pid, _entry, tp, sl = await _fractional_bracket(maker, redis, qs)
+    # the broker expires both day exits at the close
+    BROKER.set(tp.broker_order_id, "expired", 0, None)
+    BROKER.set(sl.broker_order_id, "expired", 0, None)
+    await _sync(maker, redis, qs, now=TUESDAY_CLOSE).tick()
+    for o in (await _order(maker, tp.id), await _order(maker, sl.id)):
+        assert o.status == OrderStatus.pending  # still open here: gtc
+        assert o.broker_status == BrokerState.TO_SEND and o.broker_order_id is None
+        assert o.broker_attempt == 1 and o.broker_sent_at is None
+        assert await _renewal_types(maker, o.id) == ["broker.order_renewed"]
+    assert len(BROKER.placed) == 3  # nothing sent while the market is closed
+    await _sync(maker, redis, qs, now=TUESDAY_CLOSE).tick()
+    assert len(BROKER.placed) == 3
+
+    await _sync(maker, redis, qs, now=WEDNESDAY_OPEN).tick()
+    refs = sorted(ref for _, ref, _ in BROKER.placed[3:])
+    assert refs == sorted([f"{tp.id}-1", f"{sl.id}-1"])  # new client references, once
+    assert [q for *_, q in BROKER.placed[3:]] == [HALF, HALF]
+    await _sync(maker, redis, qs, now=WEDNESDAY_OPEN).tick()
+    assert len(BROKER.placed) == 5  # idempotent: never sent twice
+    tp, sl = await _order(maker, tp.id), await _order(maker, sl.id)
+    assert {tp.broker_order_id, sl.broker_order_id} == {"b4", "b5"}
+
+    # OCO semantics kept on the renewed orders
+    BROKER.set(tp.broker_order_id, "filled", HALF, "110")
+    await _sync(maker, redis, qs, now=WEDNESDAY_OPEN).tick()
+    assert BROKER.canceled == [sl.broker_order_id]
+    assert (await _order(maker, sl.id)).status == OrderStatus.canceled
+    assert (await _order(maker, tp.id)).status == OrderStatus.filled
+    assert await _notes(maker, pid, "order.rejected") == []
+
+
+async def test_oco_sibling_fill_cancels_a_pending_renewal_locally(maker, redis, qs):
+    _pid, _entry, tp, sl = await _fractional_bracket(maker, redis, qs)
+    BROKER.set(sl.broker_order_id, "expired", 0, None)
+    await _sync(maker, redis, qs, now=TUESDAY_CLOSE).tick()
+    assert (await _order(maker, sl.id)).broker_status == BrokerState.TO_SEND
+    BROKER.set(tp.broker_order_id, "filled", HALF, "110")  # e.g. in the closing auction
+    await _sync(maker, redis, qs, now=TUESDAY_CLOSE).tick()
+    assert (await _order(maker, sl.id)).status == OrderStatus.canceled
+    await _sync(maker, redis, qs, now=WEDNESDAY_OPEN).tick()
+    assert len(BROKER.placed) == 3  # the stop is never sent again
+
+
+async def test_renewal_passes_the_kill_switch_as_a_reduce_only_exit(maker, redis, qs):
+    _pid, _entry, _tp, sl = await _fractional_bracket(maker, redis, qs)
+    BROKER.set(sl.broker_order_id, "expired", 0, None)
+    await _sync(maker, redis, qs, now=TUESDAY_CLOSE).tick()
+    async with maker() as s:
+        await set_kill_switch(s, True)
+        await s.commit()
+    await _sync(maker, redis, qs, now=WEDNESDAY_OPEN).tick()
+    sl = await _order(maker, sl.id)
+    assert sl.status == OrderStatus.pending and sl.broker_order_id is not None
+    assert (f"{sl.id}-1") in [ref for _, ref, _ in BROKER.placed]
+
+
+async def test_whole_or_day_orders_are_not_renewed(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker, kind="fake_daily_test")
+    whole = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"),
+                         tif="gtc")
+    day = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"),
+                       qty=HALF, tif="day")
+    await _sync(maker, redis, qs).tick()
+    BROKER.set("b1", "expired", 0, None)
+    BROKER.set("b2", "expired", 0, None)
+    await _sync(maker, redis, qs, now=TUESDAY_CLOSE).tick()
+    for oid in (whole, day):
+        assert (await _order(maker, oid)).status == OrderStatus.expired
+        assert await _renewal_types(maker, oid) == []
+
+
+async def test_partly_filled_day_order_is_not_renewed_and_notifies(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker, kind="fake_daily_test")
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"),
+                       qty=HALF, tif="gtc")
+    await _sync(maker, redis, qs).tick()
+    BROKER.set("b1", "expired", 3, "95")
+    await _sync(maker, redis, qs, now=TUESDAY_CLOSE).tick()
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.expired and o.filled_qty == 3
+    assert len(await _notes(maker, pid, "broker.renewal_failed")) == 1
+    await _sync(maker, redis, qs, now=WEDNESDAY_OPEN).tick()
+    assert len(BROKER.placed) == 1
+
+
+async def test_canceled_day_order_is_not_renewed(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker, kind="fake_daily_test")
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"),
+                       qty=HALF, tif="gtc")
+    sync = _sync(maker, redis, qs)
+    await sync.tick()
+    async with maker() as s:
+        await cancel_order(s, oid, by="agent")
+        await s.commit()
+    BROKER.set("b1", "expired", 0, None)  # expired while the cancel was in flight
+    await sync.tick()
+    assert (await _order(maker, oid)).status == OrderStatus.expired
+    await _sync(maker, redis, qs, now=WEDNESDAY_OPEN).tick()
+    assert len(BROKER.placed) == 1

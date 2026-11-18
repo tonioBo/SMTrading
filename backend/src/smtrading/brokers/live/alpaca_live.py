@@ -2,7 +2,8 @@
 live gate. The URL is this class constant, never configuration.
 
 Docs: https://docs.alpaca.markets/reference (orders, positions, account) and
-https://docs.alpaca.markets/docs/fractional-trading (fractional/notional: day orders).
+https://docs.alpaca.markets/docs/fractional-trading (fractional/notional: day orders;
+a gtc fractional order is sent as day and renewed, alpaca_core).
 """
 
 from typing import ClassVar
@@ -39,7 +40,6 @@ class AlpacaLiveAdapter(_AlpacaProtocol):
             return self.crypto_enabled
         if order.notional is not None:  # notional: market day orders only
             return order.type is OrderType.market and order.tif is TimeInForce.day
-        fractional = order.qty is not None and order.qty != order.qty.to_integral_value()
-        if fractional:  # fractional shares: day orders, never a trailing stop
-            return order.tif is TimeInForce.day and order.type is not OrderType.trailing_stop
+        # fractional shares (no trailing stop: the protocol): sent as day, a gtc resting
+        # one renewed every session by BrokerSync (alpaca_core docstring)
         return True
