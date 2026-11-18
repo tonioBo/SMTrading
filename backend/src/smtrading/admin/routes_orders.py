@@ -50,6 +50,8 @@ class OrderIn(BaseModel):
     stop_price: Decimal | None = None
     trail_pct: Decimal | None = None
     trail_amount: Decimal | None = None
+    # plan 16: an ISO datetime with offset or "close" (checked by the engine)
+    valid_until: str | None = None
     totp: str | None = None
 
 
@@ -61,7 +63,7 @@ def _request(portfolio_id: UUID, body: OrderIn) -> PlaceOrderRequest:
         tif=parse_enum(TimeInForce, body.tif, "tif"),  # type: ignore[arg-type]
         qty=body.qty, notional=body.notional, limit_price=body.limit_price,
         stop_price=body.stop_price, trail_pct=body.trail_pct, trail_amount=body.trail_amount,
-        agent_id=None, source="admin",
+        agent_id=None, source="admin", valid_until=body.valid_until,
     )
 
 
@@ -83,7 +85,7 @@ async def _audit(session: AsyncSession, req: PlaceOrderRequest, order: Order, *,
         session, agent_id=None, method="admin:order.place",
         params={"portfolio_id": req.portfolio_id, "symbol": order.symbol,
                 "side": req.side, "type": req.type, "qty": req.qty, "notional": req.notional,
-                "real": real, "order_id": order.id, "status": order.status, "by": by},
+                "valid_until": order.valid_until, "real": real, "order_id": order.id, "status": order.status, "by": by},
         outcome=outcome, latency_ms=0,
     )
 
