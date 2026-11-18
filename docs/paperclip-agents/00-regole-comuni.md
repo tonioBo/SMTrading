@@ -130,6 +130,29 @@ Regole del flusso:
    annulla tu l'ordine d'ingresso non eseguito al ciclo successivo. `day` solo per le
    posizioni intraday da chiudere in giornata.
 
+### Passaggi tra agenti (come si consegna un lavoro)
+
+Quando le istruzioni dicono «task <TITOLO> a <agente>» si intende sempre questo:
+
+1. **Crea un nuovo task** in Paperclip, **assegnato a un solo agente** con il suo nome esatto
+   (tabella §3), con il titolo del template del tuo ruolo (parola chiave in MAIUSCOLO, campi
+   separati da « · », date `AAAA-MM-GG`). **Scriverlo solo nel commento del tuo task non è un
+   passaggio**: il destinatario non lo vede e la catena si ferma.
+2. **«copia a X»** (o «copia X»): nel nuovo task, in un commento, menziona X con il suo nome
+   esatto. X legge e agisce solo se le sue istruzioni lo prevedono; **non** chiude il task: lo
+   chiude l'assegnatario.
+3. Annota nel tuo report (o nel task della Routine) l'identificativo del task creato.
+4. **Chi riceve** risponde **nel task ricevuto** (formato §10; i template «ESITO …», «ANALISI
+   …», «AUDIT …» sono la prima riga della risposta, non un nuovo task) e **lo chiude**
+   quando ha finito, anche se l'esito è «non eseguito» o «nessuna azione». Un nuovo task lo
+   crea solo se le sue istruzioni chiedono di passare il lavoro a un altro agente.
+5. **Se il task non si crea** (errore di Paperclip, agente non trovato con quel nome):
+   riprova una volta; se fallisce ancora scrivilo nel tuo report e crea un task al CEO
+   (se il destinatario era il CEO: `ESCALATION <ESC-id> · ALL · configurazione` al Notifier, §11).
+6. **Se il destinatario non risponde** entro la scadenza del task (per i task urgenti: entro
+   il tuo ciclo successivo) aggiungi un commento di sollecito che lo menziona; al secondo
+   sollecito senza risposta crea un task al CEO con l'identificativo del task fermo.
+
 ### Regole vincolanti e autonomia
 
 Le regole **vincolanti** (decise dall'utente) sono poche e non si discutono:
@@ -188,8 +211,8 @@ qualcuno chiama `get_triggered_alerts`. Per questo esistono le sentinelle.
 
 | Agente | Ciclo programmato (Europe/Rome) | Altrimenti |
 |---|---|---|
-| Portfolio Manager | ogni ora, lun-ven 09:00-22:00 (sentinella: alert, posizioni, opportunità) | su task |
-| Risk Manager | ogni ora, lun-ven 09:00-22:00 (sentinella: limiti, perdita giornaliera, ordini aperti) | su task |
+| Portfolio Manager | lun-ven ogni ora al minuto 05, 09:05-21:05, più 15:35 (sentinella: alert, posizioni, opportunità); lun-ven 22:15 «Chiusura USA (serale)»; sabato e domenica 10:05, 13:05, 16:05, 19:05, 22:05 (sentinella, solo crypto) | su task |
+| Risk Manager | lun-ven ogni ora al minuto 00, 09:00-22:00 (sentinella: limiti, perdita giornaliera, ordini aperti); sabato e domenica 10:00, 13:00, 16:00, 19:00, 22:00 (sentinella, solo crypto) | su task |
 | News Analyst | lun-ven 08:30 (pre-mercato) e poi ogni 2 ore 10:00-22:00 | su task |
 | CEO SMTrading | venerdì 16:00 (chiede l'audit) e 17:00 (revisione settimanale) | su task |
 | Execution Supervisor, Market Analyst, Quant Researcher, Performance Auditor, Notifier | nessuno | **solo su task** |
@@ -197,8 +220,12 @@ qualcuno chiama `get_triggered_alerts`. Per questo esistono le sentinelle.
 - La finestra 09:00-22:00 copre la sessione UE (~09:00-17:30) e quella USA (~15:30-22:00);
   gli orari esatti cambiano con l'ora legale: usa sempre `get_market_status`. Le crypto si
   controllano negli stessi cicli.
-- **Fuori orario** (notte, weekend) nessuno gira: le posizioni aperte sono protette dai loro
-  stop (bracket). Gli alert scattati di notte vengono letti dal primo ciclo del PM.
+- **Fuori orario** (notte; nel weekend tutto tranne le sentinelle crypto di PM e RM) nessuno
+  gira: le posizioni aperte sono protette dai loro stop (bracket). Gli alert scattati di
+  notte vengono letti dal primo ciclo del PM.
+- Ogni Routine apre un task assegnato a te: **rispondi lì e chiudilo sempre**, anche con
+  «Nessuna novità». Un task della Routine lasciato aperto fa saltare i cicli successivi (la
+  sovrapposizione è disattivata).
 - Gli alert di prezzo arrivano **solo all'agente che li ha creati**. Gli alert su cui bisogna
   reagire li crea quindi il **Portfolio Manager** (livelli di opportunità) o il **Risk
   Manager** (livelli di rischio), cioè le sentinelle. Gli altri agenti propongono i livelli
@@ -215,8 +242,9 @@ Ogni ciclo programmato deve costare poco. Parti **sempre** da qui:
 2. `get_triggered_alerts` con `after_id` = il tuo ultimo cursore degli alert.
 3. Controlla i task Paperclip assegnati a te.
 4. Se **non** c'è nulla di nuovo (nessun elemento nel feed rilevante per il tuo ruolo, nessun
-   alert, nessun task) e il ruolo non prevede un controllo fisso → chiudi il ciclo con una riga
-   «Nessuna novità, cursore feed=<id>, alert=<id>» e **non** fare altre chiamate.
+   alert, nessun task) e il ruolo non prevede un controllo fisso → rispondi nel task della
+   Routine con una riga «Nessuna novità, cursore feed=<id>, alert=<id>», chiudilo e **non**
+   fare altre chiamate.
 5. Solo se qualcosa è cambiato, procedi con il ciclo del tuo ruolo.
 
 Su task: leggi il task, fai solo le chiamate che servono al task, rispondi, chiudi.
@@ -282,7 +310,7 @@ Distingui l'halt da:
 9. Un ordine su un mercato chiuso resta in attesa (stato `queued`/`pending`) fino
    all'apertura: non è un errore, ma va tenuto presente nei report.
 10. Non usare mai `send_telegram` se non sei il Notifier. Per parlare con gli umani crea un
-    task per il Notifier.
+    nuovo task assegnato al Notifier («NOTIFICA · <tipo> · <COD|ALL>» o «ESCALATION …», §11).
 11. Non riportare mai token, ID interni non necessari o dati personali nei messaggi.
 12. Massimo **25 strumenti nuovi al giorno per agente** vengono aggiunti al catalogo in
     automatico: non usare simboli a caso; cerca prima con `search_instruments`.
@@ -303,8 +331,10 @@ Distingui l'halt da:
     10/30 su SPY, QQQ e DIA»). L'id convenzionale (`STR-001`, `PROP-…`) **non** va qui:
     resta in `details.ref`, il riepilogo lo mostra accanto;
   - `reason`: il perché in una frase, max 300 caratteri.
-- `log_decision` **non** manda messaggi Telegram. Se la decisione va comunicata agli umani,
-  crea poi un task per il Notifier con un riassunto di una riga.
+- `log_decision` **non** manda messaggi Telegram e non avvisa nessun agente. Se la decisione
+  va comunicata agli umani, crea poi un nuovo task «NOTIFICA · <tipo> · <COD|ALL>» assegnato
+  al Notifier con un riassunto di una riga; se serve a un altro agente, crea il task del
+  passaggio (§4).
 - Errori di formato (summary troppo lungo, troppi simboli, `details` > 8 KB) → `INVALID_ORDER`
   con `details.field`: correggi e riprova una volta.
 
@@ -330,7 +360,8 @@ RISCHI
 
 ## 11. Escalation agli umani (via Notifier)
 
-Crea un task `ESCALATION` per il Notifier (e mettine in copia il CEO) quando (condizioni vincolanti):
+Crea **un nuovo task** `ESCALATION` **assegnato al Notifier**, con il titolo qui sotto, e
+**mettine in copia il CEO** (menzione nel task, §4) quando (condizioni vincolanti):
 
 1. `daily_loss.current_eur` ≥ **2/3 di `daily_loss.limit_eur`** su un portafoglio (lo rileva
    soprattutto il Risk Manager; chiunque lo veda lo segnala).
@@ -352,6 +383,10 @@ Dati: <valori SMTrading con ts>
 Richiesta agli umani: <cosa serve, sì/no>
 Già fatto dagli agenti: ...
 ```
+
+Un task `ESCALATION` per ogni `ESC-id`. Lo chiude il Notifier dopo l'invio (o con «già
+inviato da SMTrading»); il CEO, in copia, verifica e risponde con un commento nello stesso
+task.
 
 ## 12. Errori SMTrading – gestione comune
 
