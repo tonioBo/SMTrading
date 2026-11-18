@@ -562,7 +562,7 @@ async def test_invalid_filter_messages_list_values(admin):
     r = await admin.client.get("/api/decisions?kind=loud")
     assert r.status_code == 400
     assert r.json()["message"].endswith(
-        "proposal, approval, veto, allocation, strategy, risk_rule, other")
+        "proposal, approval, veto, allocation, strategy, risk_rule, other, lesson, team_rule")
     assert "<" not in r.json()["message"] and "Kind" not in r.json()["message"]
 
 

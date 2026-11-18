@@ -554,3 +554,40 @@ async def test_0033_order_valid_until_round_trip(fresh_db):
     assert await query(column) == [] and await query(index) == [(None,)]
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
     assert await query(index) == [("ix_orders_open_valid_until",)]
+
+
+async def test_0034_decision_lessons_round_trip(fresh_db):
+    """0034: the decision kinds lesson and team_rule with ix_decisions_kind; the downgrade
+    keeps their rows as other (details.former_kind) and the upgrade allows them again."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    async def query(sql: str, **params):
+        engine = make_engine(fresh_db)
+        async with engine.begin() as conn:
+            result = await conn.execute(text(sql), params)
+            rows = result.all() if result.returns_rows else []
+        await engine.dispose()
+        return rows
+
+    agent = ("insert into agents (id, name, token_prefix, token_hash)"
+             " values (gen_random_uuid(), 'lessons', 'lessons0', 'x') returning id")
+    insert = ("insert into decisions (agent_id, kind, summary, details, symbols)"
+              " values (:a, :k, 'x', '{\"rule\": \"r\"}', '[]')")
+    index = "select to_regclass('ix_decisions_kind')::text"
+    (agent_id,), = await query(agent)
+    for k in ("lesson", "team_rule", "veto"):
+        await query(insert, a=agent_id, k=k)
+    assert await query(index) == [("ix_decisions_kind",)]
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0033")
+    assert await query(index) == [(None,)]
+    assert await query("select kind, details from decisions order by id") == [
+        ("other", {"rule": "r", "former_kind": "lesson"}),
+        ("other", {"rule": "r", "former_kind": "team_rule"}),
+        ("veto", {"rule": "r"})]
+    with pytest.raises(DBAPIError, match="ck_decisions_kind"):
+        await query(insert, a=agent_id, k="lesson")
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    assert await query(index) == [("ix_decisions_kind",)]
+    await query(insert, a=agent_id, k="team_rule")

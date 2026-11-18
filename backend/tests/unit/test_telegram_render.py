@@ -185,7 +185,7 @@ def test_decision_groups():
     assert DECISION_GROUPS == (
         (("strategy",), "Strategie"), (("risk_rule",), "Rischio"),
         (("allocation",), "Allocazioni"), (("veto", "approval", "proposal"), "Veti e approvazioni"),
-        (("other",), "Altro"))
+        (("team_rule", "lesson"), "Lezioni e regole del team"), (("other",), "Altro"))
 
 
 def test_render_fill_details_after_summary():

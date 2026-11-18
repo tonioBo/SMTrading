@@ -101,6 +101,36 @@ async def test_log_decision_and_get_decisions(env):
     assert err and res["details"]["field"] == "summary"
 
 
+async def test_lessons_and_team_rules(env):
+    """lesson and team_rule are decision kinds: logged with their structured details and
+    read back with the kind filter (since and limit too)."""
+    call = env["call"]
+    lesson = {"what_happened": "Uscita mancata su NVDA", "why": "Stop non aggiornato",
+              "next_time": "Aggiornare lo stop a ogni ciclo", "agents": ["pm", "es"],
+              "refs": [12, "TASK-7"]}
+    err, l1 = await call("log_decision", {"kind": "lesson", "summary": "Uscita mancata",
+                                          "details": lesson})
+    assert not err, l1
+    rule = {"rule": "Stop aggiornato a ogni ciclo", "applies_to": ["pm", "es"],
+            "from_lesson_ids": [l1["decision_id"]], "review_by": "2026-12-04",
+            "status": "active"}
+    err, r1 = await call("log_decision", {"kind": "team_rule", "summary": "Regola stop",
+                                          "details": rule, "outcome": "informativa"})
+    assert not err, r1
+    err, other = await call("log_decision", {"kind": "veto", "summary": "No leva"})
+    assert not err, other
+
+    err, res = await call("get_decisions", {"kind": "team_rule"})
+    assert not err, res
+    assert [(d["id"], d["kind"], d["details"]) for d in res["decisions"]] == [
+        (r1["decision_id"], "team_rule", rule)]
+    err, res = await call("get_decisions", {"kind": "lesson", "since": "2000-01-01T00:00:00Z",
+                                            "limit": 1})
+    assert not err and [d["details"] for d in res["decisions"]] == [lesson]
+    err, res = await call("get_decisions", {"kind": "lesson", "since": "2999-01-01T00:00:00Z"})
+    assert not err and res["decisions"] == []
+
+
 async def test_mcp_get_decisions_exposes_fields(env):
     call = env["call"]
     err, plain = await call("log_decision", {"kind": "veto", "summary": "No leva"})
