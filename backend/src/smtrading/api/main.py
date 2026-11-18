@@ -16,6 +16,7 @@ import smtrading.models  # noqa: F401  (complete mapper registry before any sess
 from smtrading.admin.errors import install_error_handlers
 from smtrading.admin.routes_activity_log import router as activity_log_router
 from smtrading.admin.routes_agent_docs import router as agent_docs_router
+from smtrading.admin.routes_agent_results import router as agent_results_router
 from smtrading.admin.routes_agents import router as agents_router
 from smtrading.admin.routes_auth import router as auth_router
 from smtrading.admin.routes_brokers import router as brokers_router
@@ -212,6 +213,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(signals_router)
     app.include_router(positions_router)
     app.include_router(strategies_router)
+    app.include_router(agent_results_router)
     app.include_router(watch_router)
     app.include_router(telegram_router)
     app.include_router(paperclip_router)

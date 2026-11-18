@@ -4,6 +4,7 @@ import { RouteError } from "@/components/RouteError";
 import ActivityLog from "@/pages/ActivityLog";
 import AgentDetail from "@/pages/AgentDetail";
 import AgentCosts from "@/pages/AgentCosts";
+import AgentResults from "@/pages/AgentResults";
 import AgentDocs from "@/pages/AgentDocs";
 import Agents from "@/pages/Agents";
 import Brokers from "@/pages/Brokers";
@@ -46,6 +47,7 @@ export const routes: RouteObject[] = [
           { path: "agenti", element: <Agents /> },
           { path: "agenti/:id", element: <AgentDetail /> },
           { path: "costi-agenti", element: <AgentCosts /> },
+          { path: "risultati-agenti", element: <AgentResults /> },
           { path: "istruzioni-agenti", element: <AgentDocs /> },
           { path: "commissioni", element: <Fees /> },
           { path: "rischio", element: <Risk /> },

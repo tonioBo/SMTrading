@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatClock, formatDateTime, formatMoney, formatPct, formatQty, formatSignedMoney, signTone } from "./format";
+import { formatClock, formatDateTime, formatHolding, formatMoney, formatPct, formatQty, formatSignedMoney, signTone } from "./format";
 
 describe("formatMoney", () => {
   it("formats EUR in it-IT with grouping and 2 decimals", () => {
@@ -100,5 +100,17 @@ describe("formatClock", () => {
     expect(formatClock("2026-11-17T21:45:00Z", now)).toBe("22:45");
     expect(formatClock("2026-11-14T00:30:00Z", now)).toBe("14/11 01:30");
     expect(formatClock("nope", now)).toBe("nope");
+  });
+});
+
+describe("formatHolding", () => {
+  it("shows days and hours, hours and minutes, or minutes", () => {
+    expect(formatHolding(null)).toBe("—");
+    expect(formatHolding(30)).toBe("< 1 min");
+    expect(formatHolding(45 * 60)).toBe("45 min");
+    expect(formatHolding(5400)).toBe("1 h 30 min");
+    expect(formatHolding(7200)).toBe("2 h");
+    expect(formatHolding(2 * 86400 + 7 * 3600 + 120)).toBe("2 g 7 h");
+    expect(formatHolding(86400)).toBe("1 g");
   });
 });

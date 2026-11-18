@@ -9,6 +9,7 @@ import base64
 import binascii
 import copy
 import logging
+import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -19,6 +20,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.admin.common import MASK, _invalid, mask_value
+from smtrading.agents.models import Agent
 from smtrading.agents.service import write_audit
 from smtrading.common.config import get_settings
 from smtrading.common.crypto import decrypt_json, encrypt_json
@@ -254,3 +256,27 @@ async def save_state(session: AsyncSession, state: dict[str, Any]) -> None:
     stmt = insert(AppSetting).values(key=STATE_KEY, value=value)
     await session.execute(stmt.on_conflict_do_update(index_elements=["key"], set_={"value": value}))
     await session.flush()
+
+
+# --- SMTrading agent of a Paperclip agent (the «Costi agenti» and «Risultati agenti» pages)
+
+@dataclass(frozen=True)
+class SmtAgent:
+    id: uuid.UUID
+    name: str
+
+
+def match_agent(pid: str, name: str | None, agents: list[SmtAgent], agent_map: dict[str, str]
+                ) -> SmtAgent | None:
+    """The SMTrading agent of a Paperclip agent: `agent_map`, else the same name (case
+    insensitive)."""
+    if pid in agent_map:
+        return next((a for a in agents if str(a.id) == agent_map[pid]), None)
+    low = (name or "").casefold()
+    return next((a for a in agents if low and a.name.casefold() == low), None)
+
+
+async def smt_agents(session: AsyncSession) -> list[SmtAgent]:
+    """Plain values (they outlive the session's transaction), by name."""
+    rows = await session.execute(select(Agent.id, Agent.name).order_by(Agent.name))
+    return [SmtAgent(i, n) for i, n in rows.all()]

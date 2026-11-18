@@ -554,6 +554,13 @@ modificabile).
 - **Costi** (pagina *Costi agenti*): costo per agente e per giorno, settimana e mese, in
   **dollari** come in Paperclip, distinguendo «a consumo API» da «incluso
   nell'abbonamento», accanto a ordini e rendimento dei portafogli dell'agente.
+- **Risultati** (pagina *Risultati agenti*, sola lettura, mai visibile agli agenti): per
+  settimana in corso, 1 mese, 3 mesi o tutto, il riepilogo del team (risultato netto delle
+  operazioni chiuse, ordini eseguiti, veti, lezioni, regole attive, costo agenti e
+  risultato per 1 $ di costo), per agente decisioni per tipo, proposte approvate e
+  respinte, lezioni scritte e che lo riguardano (anche ripetute), chiamate MCP ed errori,
+  ordini eseguiti e costo, per strategia operazioni, vincenti, risultato netto, durata
+  media e posizioni aperte.
 - **Isolamento:** le regole di isolamento degli strumenti di Paperclip sono confrontate con
   quelle attese, fotografate al primo avvio e riconfermate dall'admin con un pulsante
   (dopo aver controllato le modifiche in Paperclip). Regole rimosse, disattivate o

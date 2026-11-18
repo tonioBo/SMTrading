@@ -135,3 +135,16 @@ export function formatBytes(n: number): string {
   if (n < 1024 * 1024) return `${formatQty((Math.round((n / 1024) * 10) / 10).toString())} KB`;
   return `${formatQty((Math.round((n / 1024 / 1024) * 10) / 10).toString())} MB`;
 }
+
+/** A duration in seconds: 5400 → "1 h 30 min"; 200000 → "2 g 7 h"; under a minute "< 1 min". */
+export function formatHolding(seconds: number | null): string {
+  if (seconds == null) return "—";
+  const min = Math.floor(seconds / 60);
+  if (min < 1) return "< 1 min";
+  const days = Math.floor(min / 1440);
+  const hours = Math.floor((min % 1440) / 60);
+  const mins = min % 60;
+  if (days > 0) return hours ? `${days} g ${hours} h` : `${days} g`;
+  if (hours > 0) return mins ? `${hours} h ${mins} min` : `${hours} h`;
+  return `${mins} min`;
+}
