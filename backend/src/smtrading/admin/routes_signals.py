@@ -5,7 +5,8 @@ Read-only (a viewer can read it).
 [{ref, name, type, params, timeframe, status, symbols: [{symbol, last, indicator,
 value_closed, value_now, threshold, direction, distance, triggered_closed, triggered_now,
 as_of, position: {qty, avg_price}|null, open_entry, exit: {rule, value, threshold,
-distance, triggered}|null (only in position)}]}]}]}: numbers as strings, value_now null
+distance, triggered}|null (only in position), filters: [{rule, value, threshold,
+passed}] (the entry filters; empty without)}]}]}]}: numbers as strings, value_now null
 without a forming bar (market closed,
 stale quote...). Portfolios by name (a strategy without portfolio last, portfolio_id
 null). The answer is cached CACHE_TTL_S in redis: open tabs refreshing every minute
@@ -28,7 +29,7 @@ from smtrading.signals.service import StrategySignal, strategy_signals
 log = logging.getLogger("smtrading.admin.signals")
 router = APIRouter(prefix="/api", tags=["signals"], dependencies=[Depends(require_access)])
 
-CACHE_KEY = "signals:v2"  # v2: `exit`
+CACHE_KEY = "signals:v3"  # v2: `exit`; v3: `filters`
 CACHE_TTL_S = 60
 
 

@@ -22,6 +22,12 @@ Nothing is guessed: a missing field lists the strategy as "dati incompleti" (no 
 without any portfolio, under portfolio None). Types without a long entry rule here
 (buy_and_hold, unknown ones) are "non supportata".
 
+Entry rules (the backtester's, `backtest.strategies`): rsi_reversion RSI below buy_below
+(«below»); sma_cross the fast average crossing above the slow one («cross_up»);
+breakout / donchian the close above the highest high of the previous lookback / entry
+bars («above»); momentum the ROC (close `skip` bars ago over the one `lookback` before
+it, in percent) above enter_above («above»).
+
 Per symbol, `threshold`, `distance` and `triggered_now` refer to the newest data: the
 forming bar when there is one (`value_now` set), else the closed bar (`value_now` None,
 `triggered_now` = `triggered_closed`). `distance` is how far the value still has to go
@@ -40,9 +46,18 @@ strategy already in the market, or waiting for its fill, is not a new signal.
 With a position, `exit` is the strategy's exit rule on the same newest data ({rule,
 value, threshold, distance, triggered}; null when flat or without data), the
 backtester's sell rules: rsi_reversion RSI above sell_above; sma_cross the fast average
-below the slow one (it was above when it entered); breakout the close below the lowest
-low of the previous exit_lookback bars. `distance` is how far the value still has to go
-(> 0: not yet; <= 0: the exit fires).
+below the slow one (it was above when it entered); breakout / donchian the close below
+the lowest low of the previous exit_lookback / exit bars; momentum the ROC below
+exit_below. donchian with atr_stop: the higher of its channel low and its ATR stop
+(highest high of the last `entry` bars minus atr_stop × ATR) is the exit shown, the one
+that fires first. `distance` is how far the value still has to go (> 0: not yet; <= 0:
+the exit fires).
+
+`filters` are the entry filters of the strategy on the same newest data ({rule, value,
+threshold, passed}; empty without filters): rsi_reversion's sma_filter (the close above
+SMA n) and max_atr_pct (ATR as a share of the close at most max_atr_pct). A filter that
+does not pass keeps `triggered_*` false even when the entry rule's value is past its
+threshold (`distance` <= 0): the backtester would not enter either.
 """
 
 import asyncio
@@ -57,7 +72,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.activity.models import Decision, DecisionKind
 from smtrading.backtest.models import Backtest
-from smtrading.backtest.strategies import min_bars, signals, validate_params
+from smtrading.backtest.strategies import (
+    atr_pct,
+    atr_stop_line,
+    min_bars,
+    roc,
+    signals,
+    validate_params,
+    volatility_ok,
+)
 from smtrading.common.errors import SMTError
 from smtrading.engine.models import FILLABLE_STATUSES, Order, OrderSide
 from smtrading.instruments.models import Instrument
@@ -78,7 +101,7 @@ MODIFIED = "modificata"
 APPROVALS = frozenset({APPROVED, MODIFIED})
 # the statuses that replace the previous decision of a ref (informativa etc. do not)
 STATUS_DECISIONS = APPROVALS | {"respinta", "sospesa", "revocata"}
-SIGNAL_TYPES = ("rsi_reversion", "sma_cross", "breakout")
+SIGNAL_TYPES = ("rsi_reversion", "sma_cross", "breakout", "momentum", "donchian")
 MIN_FETCH_BARS = 250  # RSI is Wilder-smoothed: a long warm-up keeps it near the backtest's
 MAX_CONCURRENCY = 4
 
@@ -99,6 +122,7 @@ class SymbolSignal:
     position: dict | None = None  # {qty, avg_price} in the strategy's portfolio
     open_entry: bool = False  # a resting buy entry of the symbol in that portfolio
     exit: dict | None = None  # the exit rule's state while in position
+    filters: list[dict] = field(default_factory=list)  # entry filters on the newest data
 
 
 @dataclass
@@ -268,12 +292,22 @@ def _fast_name(p: dict) -> str:
     return "Chiusura" if p["fast"] == 1 else f"SMA {p['fast']}"  # SMA 1 is the close
 
 
+def _roc_name(p: dict) -> str:
+    return f"ROC {p['lookback']}" + (f" (salta {p['skip']})" if p["skip"] else "")
+
+
+def _entry_window(kind: str, p: dict) -> int:
+    return p["entry"] if kind == "donchian" else p["lookback"]
+
+
 def _label(kind: str, p: dict) -> tuple[str, str]:
     if kind == "rsi_reversion":
         return f"RSI {p['period']}", "below"
     if kind == "sma_cross":
         return f"{_fast_name(p)} / SMA {p['slow']}", "cross_up"
-    return f"Chiusura / massimo {p['lookback']}", "above"
+    if kind == "momentum":
+        return _roc_name(p), "above"
+    return f"Chiusura / massimo {_entry_window(kind, p)}", "above"
 
 
 def _it(d: Decimal) -> str:
@@ -293,11 +327,20 @@ def _exit(kind: str, p: dict, bars: list[Bar]) -> dict | None:
             rule = f"{_fast_name(p)} sotto SMA {p['slow']}"
             value = indicators.sma(closes, p["fast"])[-1]
             threshold = indicators.sma(closes, p["slow"])[-1]
+        elif kind == "momentum":
+            rule = f"{_roc_name(p)} sotto {_it(p['exit_below'])}"
+            value = roc(closes, p["lookback"], p["skip"])[-1]
+            threshold = p["exit_below"]
         else:
-            n = p["exit_lookback"]
+            n = p["exit"] if kind == "donchian" else p["exit_lookback"]
             rule = f"Chiusura sotto minimo {n}"
             value = bars[-1].close
             threshold = min(b.low for b in bars[-1 - n:-1]) if len(bars) > n else None
+            k = p.get("atr_stop") if kind == "donchian" else None
+            stop = atr_stop_line(bars, p["entry"], k, p["atr_period"])[-1] if k else None
+            if stop is not None and (threshold is None or stop > threshold):
+                rule = f"Chiusura sotto stop {_it(k)} × ATR {p['atr_period']}"
+                threshold = stop
         distance = None if value is None or threshold is None else value - threshold
     if distance is None:
         return None
@@ -314,11 +357,29 @@ def _evaluate(kind: str, p: dict, bars: list[Bar]) -> tuple[Decimal | None, Deci
     elif kind == "sma_cross":
         value = indicators.sma(closes, p["fast"])[-1]
         threshold = indicators.sma(closes, p["slow"])[-1]
+    elif kind == "momentum":
+        value, threshold = roc(closes, p["lookback"], p["skip"])[-1], p["enter_above"]
     else:
-        n = p["lookback"]
+        n = _entry_window(kind, p)
         value = bars[-1].close
         threshold = max(b.high for b in bars[-1 - n:-1]) if len(bars) > n else None
     return value, threshold, signals(bars, kind, p)[-1] == "buy"
+
+
+def _filters(kind: str, p: dict, bars: list[Bar]) -> list[dict]:
+    """The strategy's entry filters on the last bar (see the module docstring)."""
+    out = []
+    n = p.get("sma_filter") if kind == "rsi_reversion" else None
+    if n:
+        close, sma = bars[-1].close, indicators.sma([b.close for b in bars], n)[-1]
+        out.append({"rule": f"Chiusura sopra SMA {n}", "value": close, "threshold": sma,
+                    "passed": sma is not None and close > sma})
+    limit = p.get("max_atr_pct")
+    if limit:
+        value = atr_pct(bars, p["atr_period"])[-1]
+        out.append({"rule": f"ATR {p['atr_period']} al massimo {_it(limit)}% del prezzo",
+                    "value": value, "threshold": limit, "passed": volatility_ok(value, p)})
+    return out
 
 
 def _distance(direction: str, value: Decimal | None, threshold: Decimal | None):
@@ -352,7 +413,9 @@ async def _symbol(router: Any, kind: str, p: dict, tf: Timeframe, sym: str,
             kind, p, [*bars, forming.bar])
         out.as_of = forming.quote_ts
     current = out.value_now if forming.bar is not None else value
-    out.exit = _exit(kind, p, [*bars, forming.bar] if forming.bar is not None else bars)
+    newest = [*bars, forming.bar] if forming.bar is not None else bars
+    out.exit = _exit(kind, p, newest)
+    out.filters = _filters(kind, p, newest)
     out.distance = _distance(direction, current, out.threshold)
     return out, value is not None and out.threshold is not None
 

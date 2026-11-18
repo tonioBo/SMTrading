@@ -126,8 +126,10 @@ async def test_shape_and_cache(admin):
     [x] = st["symbols"]
     assert set(x) == {"symbol", "last", "indicator", "value_closed", "value_now",
                       "threshold", "direction", "distance", "triggered_closed",
-                      "triggered_now", "as_of", "position", "open_entry", "exit"}
+                      "triggered_now", "as_of", "position", "open_entry", "exit",
+                      "filters"}
     assert x["position"] is None and x["open_entry"] is False and x["exit"] is None
+    assert x["filters"] == []
     assert x["symbol"] == "BTC-USD" and x["last"] == "100" and x["direction"] == "below"
     assert D(x["value_closed"]) == 100 and x["triggered_closed"] is False
     assert D(x["value_now"]) < 10 and x["triggered_now"] is True
@@ -138,7 +140,7 @@ async def test_shape_and_cache(admin):
     admin.qs.set_quote("BTC-USD", D(199), D(201), None)
     again = (await admin.client.get("/api/signals")).json()
     assert again == body
-    assert 0 < await admin.redis.ttl("signals:v2") <= 60
+    assert 0 < await admin.redis.ttl("signals:v3") <= 60
 
 
 async def test_signals_show_the_position(admin):
