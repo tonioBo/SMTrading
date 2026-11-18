@@ -1546,3 +1546,152 @@ async def test_etoro_rejection_text_is_agent_safe(maker, redis, qs, etoro):
     assert seen["reject_message"] == BROKER_REJECTED_MESSAGE
     note = (await _notes(maker, pid, "order.rejected"))[0]
     assert agent_view(to_jsonable(note.payload))["message"] == BROKER_REJECTED_MESSAGE
+
+
+# -- plan 16 Task A: valid_until at the broker -------------------------------------------
+
+VALID_UNTIL = datetime(2026, 11, 10, 18, 0, tzinfo=UTC)
+
+
+async def _event_types(maker, oid) -> list[str]:
+    from smtrading.activity.models import Activity
+
+    async with maker() as s:
+        return list(await s.scalars(
+            select(Activity.type).where(Activity.data["order_id"].astext == str(oid))
+            .order_by(Activity.id)))
+
+
+async def test_valid_until_sent_order_is_canceled_by_smtrading_and_expires(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"),
+                       valid_until=VALID_UNTIL)
+    await _sync(maker, redis, qs).tick()
+    assert (await _order(maker, oid)).broker_order_id == "b1"
+
+    early = OrderProcessor(maker, redis, qs, clock=Clock(VALID_UNTIL - timedelta(seconds=1)))
+    await early.sweep()
+    assert (await _order(maker, oid)).broker_status == "accepted"
+
+    proc = OrderProcessor(maker, redis, qs, clock=Clock(VALID_UNTIL))
+    await proc.sweep()
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.pending and o.broker_status == BrokerState.CANCEL_REQUESTED
+    await proc.sweep()  # asked once
+    assert (await _event_types(maker, oid)).count("order.expired") == 0
+
+    await _sync(maker, redis, qs, now=VALID_UNTIL + timedelta(seconds=2)).tick()
+    assert BROKER.canceled == ["b1"] and BROKER.placed == [("b1", str(oid), TEN)]
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.expired and o.broker_status == "canceled"
+    assert "order.expired" in await _event_types(maker, oid)
+
+
+async def test_valid_until_partly_filled_entry_keeps_exits_for_the_filled_qty(
+    maker, redis, qs,
+):
+    pid, _ = await _linked_portfolio(maker)
+    async with maker() as s:
+        entry, tp, sl = await place_bracket_order(
+            s, qs, PlaceOrderRequest(
+                portfolio_id=pid, symbol="AAPL", side=OrderSide.buy, type=OrderType.limit,
+                qty=TEN, limit_price=D("95"), valid_until=VALID_UNTIL,
+            ), take_profit=D("110"), stop_loss=D("90"), now=OPEN,
+        )
+        await s.commit()
+    later = VALID_UNTIL + timedelta(seconds=2)
+    await _sync(maker, redis, qs).tick()
+    BROKER.set("b1", "partially_filled", 3, "95")
+    await _sync(maker, redis, qs).tick()
+    assert (await _order(maker, entry.id)).filled_qty == 3
+
+    await OrderProcessor(maker, redis, qs, clock=Clock(VALID_UNTIL)).sweep()
+    for child in (tp, sl):  # only the entry is canceled
+        assert (await _order(maker, child.id)).status == OrderStatus.held
+    await _sync(maker, redis, qs, now=later).tick()
+    e = await _order(maker, entry.id)
+    assert e.status == OrderStatus.expired and e.filled_qty == 3
+    for child in (tp, sl):
+        o = await _order(maker, child.id)
+        assert o.status == OrderStatus.pending and o.qty == 3 and o.valid_until is None
+    await _sync(maker, redis, qs, now=later).tick()  # the exits go to the broker
+    assert [q for _, _, q in BROKER.placed[1:]] == [3, 3]
+
+
+async def test_valid_until_unfilled_entry_at_the_broker_cancels_its_exits(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    async with maker() as s:
+        entry, tp, sl = await place_bracket_order(
+            s, qs, PlaceOrderRequest(
+                portfolio_id=pid, symbol="AAPL", side=OrderSide.buy, type=OrderType.limit,
+                qty=TEN, limit_price=D("95"), valid_until=VALID_UNTIL,
+            ), take_profit=D("110"), stop_loss=D("90"), now=OPEN,
+        )
+        await s.commit()
+    await _sync(maker, redis, qs).tick()
+    await OrderProcessor(maker, redis, qs, clock=Clock(VALID_UNTIL)).sweep()
+    await _sync(maker, redis, qs, now=VALID_UNTIL).tick()
+    assert (await _order(maker, entry.id)).status == OrderStatus.expired
+    for child in (tp, sl):
+        assert (await _order(maker, child.id)).status == OrderStatus.canceled
+    assert len(BROKER.placed) == 1
+
+
+async def test_valid_until_unsent_order_expires_locally_never_sent(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, now=SATURDAY,  # queued: market closed
+                       valid_until=MONDAY_OPEN - timedelta(minutes=30))
+    assert (await _order(maker, oid)).broker_status == BrokerState.TO_SEND
+    await OrderProcessor(maker, redis, qs, clock=Clock(MONDAY_OPEN)).sweep()
+    await _sync(maker, redis, qs, now=MONDAY_OPEN).tick()
+    assert (await _order(maker, oid)).status == OrderStatus.expired
+    assert BROKER.placed == [] and BROKER.canceled == []
+
+
+async def test_valid_until_passed_is_never_sent(maker, redis, qs):
+    """BrokerSync itself refuses to send past valid_until (the processor may lag)."""
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"),
+                       valid_until=VALID_UNTIL)
+    await _sync(maker, redis, qs, now=VALID_UNTIL).tick()
+    assert (await _order(maker, oid)).status == OrderStatus.expired
+    assert BROKER.placed == []
+
+
+async def test_valid_until_cancel_with_the_kill_switch_on(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"),
+                       valid_until=VALID_UNTIL)
+    await _sync(maker, redis, qs).tick()
+    async with maker() as s:
+        await set_kill_switch(s, True)
+        await s.commit()
+    await OrderProcessor(maker, redis, qs, clock=Clock(VALID_UNTIL)).sweep()
+    await _sync(maker, redis, qs, now=VALID_UNTIL).tick()
+    assert BROKER.canceled == ["b1"]
+    assert (await _order(maker, oid)).status == OrderStatus.expired
+
+
+async def test_cancel_confirmed_before_valid_until_stays_canceled(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"),
+                       valid_until=VALID_UNTIL)
+    sync = _sync(maker, redis, qs)
+    await sync.tick()
+    async with maker() as s:
+        await cancel_order(s, oid, by="agent")
+        await s.commit()
+    await sync.tick()
+    assert (await _order(maker, oid)).status == OrderStatus.canceled
+
+
+async def test_valid_until_filled_at_the_broker_before_the_cancel_stands(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"),
+                       valid_until=VALID_UNTIL)
+    await _sync(maker, redis, qs).tick()
+    await OrderProcessor(maker, redis, qs, clock=Clock(VALID_UNTIL)).sweep()
+    BROKER.set("b1", "filled", 10, "95")  # filled while the cancel was on its way
+    await _sync(maker, redis, qs, now=VALID_UNTIL).tick()
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.filled and o.filled_qty == 10

@@ -39,6 +39,11 @@ the lock (startup recovery).
   with a new client reference (broker_attempt + 1); if it filled, the fills stand.
 - bracket exits at the broker are independent orders: when one fills, the cancel of
   its OCO sibling is requested and sent in the same pass.
+- valid_until (plan 16): an order is never sent once its `expires_at` (the earlier of
+  the day expiry and valid_until) has passed; one at the broker is canceled through
+  `cancel_requested` (the processor asks for it) and a cancel confirmed once
+  valid_until has passed is recorded as `expired` (`order.expired`, live note
+  «scaduto»), the fills before it standing.
 
 Real money (plan 8: an adapter with `live`, a LIVE_KINDS link). BrokerSync builds the
 link's LiveClient itself (every request through the live gate, on this sessionmaker) and
@@ -544,6 +549,12 @@ class BrokerSync:
         await self._live_note(session, order, "canceled",
                               message="scaduto" if status == OrderStatus.expired else None)
 
+    def _canceled(self, order: Order) -> OrderStatus:
+        """The final state of a canceled order: `expired` once its valid_until passed."""
+        if order.valid_until is not None and order.valid_until <= self._clock():
+            return OrderStatus.expired
+        return OrderStatus.canceled
+
     async def _closed(self, session: AsyncSession, order: Order) -> None:
         await order_closed(session, order)
 
@@ -602,7 +613,7 @@ class BrokerSync:
 
     async def _cancel_unsent(self, session: AsyncSession, order: Order) -> None:
         if order.broker_order_id is None and order.broker_sent_at is None:
-            await self._set_final(session, order, OrderStatus.canceled)
+            await self._set_final(session, order, self._canceled(order))
             await cancel_held_children(session, order, by="system")
             await self._closed(session, order)
 
@@ -1177,7 +1188,7 @@ class BrokerSync:
             await trip_reduce_only(session, order.portfolio_id, cause="order_unknown",
                                    details={"order_id": order.id, "symbol": order.symbol})
         if order.broker_status == BrokerState.CANCEL_REQUESTED:
-            await self._set_final(session, order, OrderStatus.canceled)
+            await self._set_final(session, order, self._canceled(order))
             await cancel_held_children(session, order, by="system")
             await self._closed(session, order)
             return
@@ -1349,7 +1360,9 @@ class BrokerSync:
                 payload={"order_id": order.id, "symbol": order.symbol,
                          "filled_qty": order.filled_qty},
             )
-        await self._set_final(session, order, _FINAL[bo.status])
+        final = _FINAL[bo.status]
+        await self._set_final(
+            session, order, self._canceled(order) if final == OrderStatus.canceled else final)
         if order.filled_qty > 0:  # a partly filled entry: its exits cover what filled
             for child in await session.scalars(
                 select(Order).where(Order.parent_id == order.id,

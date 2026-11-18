@@ -33,7 +33,13 @@ with that code; a reduce_only order with nothing left to reduce is canceled ther
 
 Broker-managed orders (broker_link_id set) are never filled or triggered here: BrokerSync
 applies the broker's fills. Only one never sent (`to_send`, no send attempted) can expire
-locally; the others expire at the broker. Ruling R10 (a): a simulated trigger (trailing
+locally; the others expire at the broker, except at `valid_until` (plan 16): the sweep
+then asks for their cancel through the normal cancel path (`cancel_orders`, only the
+order itself: a partly filled entry keeps its exits) and BrokerSync records the
+confirmed cancel as `expired`. A cancel is allowed with the kill switch on.
+
+An expired entry that filled in part (possible at the broker only) releases its held
+exits for the filled quantity, like BrokerSync's final states. Ruling R10 (a): a simulated trigger (trailing
 stop) on a broker-linked portfolio is handed to the broker as a market order instead of
 filled here.
 
@@ -54,7 +60,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.engine.execution import execute_fill, hand_to_broker
+from smtrading.engine.execution import activate_linked, broker_live, execute_fill, hand_to_broker
 from smtrading.engine.models import (
     FILLABLE_STATUSES,
     OPEN_STATUSES,
@@ -66,7 +72,7 @@ from smtrading.engine.models import (
 )
 from smtrading.engine.pricing import QuoteView, effective_bid_ask
 from smtrading.engine.quotesource import QuoteSource
-from smtrading.engine.service import cancel_held_children
+from smtrading.engine.service import cancel_held_children, cancel_orders
 from smtrading.engine.triggers import OrderView, TriggerAction, TriggerResult, evaluate
 from smtrading.events import (
     discard_post_commit,
@@ -99,6 +105,8 @@ REJECTING_CODES = frozenset({
 # resting orders the processor acts on (`new` only exists inside a placement transaction)
 _ACTIVE = tuple(s for s in OrderStatus if s in FILLABLE_STATUSES - {OrderStatus.new})
 _MARKET_ONCE_TRIGGERED = (OrderType.stop, OrderType.trailing_stop)
+# open orders a broker may hold (a held bracket exit is not sent yet)
+_AT_BROKER = tuple(s for s in OrderStatus if s in OPEN_STATUSES - {OrderStatus.held})
 
 
 @dataclass(frozen=True)
@@ -327,6 +335,7 @@ class OrderProcessor:
     async def sweep(self) -> None:
         ctx = _Pass(self._clock())
         await self._expire(ctx.now)
+        await self._cancel_valid_until(ctx.now)
         await self._refresh_margin()
         candidates = await self._candidates()
         self._active = {c.symbol for c in candidates}
@@ -606,7 +615,51 @@ class OrderProcessor:
                 "order_id": order.id, "portfolio_id": order.portfolio_id,
                 "agent_id": order.agent_id, "symbol": order.symbol,
             })
-            await cancel_held_children(session, order, by="system")
+            if order.filled_qty > 0:  # the exits cover what filled
+                for child in await session.scalars(
+                    select(Order).where(Order.parent_id == order.id,
+                                        Order.status == OrderStatus.held)
+                ):
+                    child.qty = order.filled_qty
+                await activate_linked(session, order)
+            else:
+                await cancel_held_children(session, order, by="system")
             await _untrack_if_idle(session, order.symbol)
             await session.commit()
             await dispatch_post_commit(session, self._redis)
+
+    # -- valid_until at the broker (plan 16) ------------------------------------------
+
+    async def _cancel_valid_until(self, now: datetime) -> None:
+        """Broker orders past valid_until that are (or may be) at the broker: cancel
+        requested (a never-sent one is expired by `_expire`)."""
+        async with self._sm() as session:
+            ids = list(await session.scalars(
+                select(Order.id)
+                .where(
+                    Order.valid_until <= now, Order.status.in_(_AT_BROKER),
+                    Order.broker_link_id.is_not(None),
+                    Order.broker_status.is_distinct_from(BrokerState.CANCEL_REQUESTED),
+                )
+                .order_by(Order.valid_until, Order.id)
+            ))
+        for order_id in ids:
+            try:
+                await self._cancel_valid_until_one(order_id, now)
+            except Exception:
+                log.exception("canceling order %s at valid_until failed", order_id)
+
+    async def _cancel_valid_until_one(self, order_id: UUID, now: datetime) -> None:
+        async with self._sm() as session:
+            order = await _lock_order(session, order_id)
+            if (
+                order is None or order.status not in _AT_BROKER
+                or order.valid_until is None or order.valid_until > now
+                or order.broker_status == BrokerState.CANCEL_REQUESTED
+                or not broker_live(order)  # never sent: `_expire`
+            ):
+                return
+            await cancel_orders(session, [order], by="system")
+            await session.commit()
+            await dispatch_post_commit(session, self._redis)
+        log.info("order %s: valid_until passed, cancel requested at the broker", order_id)
