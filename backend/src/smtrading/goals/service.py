@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.goals.models import BENCHMARKS, HORIZONS, KINDS, MAX_NAME_LEN, SCOPES, Goal
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
+from smtrading.risk.models import RiskProfile
 
 MAX_PCT = Decimal(1000)
 MAX_CUSTOM_DAYS = 3 * 366
@@ -237,30 +238,74 @@ def _same(kind: str, horizon: str, scope: str, portfolio_id, target, benchmark,
             Decimal(str(target)), benchmark, bool(recurring))
 
 
+# a portfolio whose daily-loss breaker is at least this wide gets the «dynamic» values
+_DYNAMIC_LOSS_PCT = Decimal(7)
+
+
+def _dynamic(loss_pct: Decimal | None) -> bool:
+    """Dynamic (larger targets and risk) when the profile's daily-loss breaker is wide
+    (≥ 7%) or absent; prudent otherwise."""
+    return loss_pct is None or loss_pct >= _DYNAMIC_LOSS_PCT
+
+
 async def goal_templates(session: AsyncSession, *, today: date) -> list[dict[str, Any]]:
     """The «Modelli» of the Obiettivi page: [{key, label, body, exists}], `body` a create
-    body to prefill the dialog (the admin confirms); the per-portfolio ones once per live
-    portfolio, by name; `exists` when an active goal already is the same (kind, horizon,
+    body to prefill the dialog (the admin confirms); week to year on the total, the
+    per-portfolio ones once per live portfolio, by name, with prudent or dynamic values
+    from its profile's daily-loss breaker (`_dynamic`); `exists` when an active goal already is the same (kind, horizon,
     scope, portfolio, target, benchmark, recurring; the name aside)."""
     portfolios = list(await session.execute(
-        select(Portfolio.id, Portfolio.name)
+        select(Portfolio.id, Portfolio.name, RiskProfile.max_daily_loss_pct)
+        .outerjoin(RiskProfile, RiskProfile.id == Portfolio.risk_profile_id)
         .where(Portfolio.status != PortfolioStatus.archived).order_by(Portfolio.name)))
     out = [
         {"key": "weekly_total", "label": "Settimanale +2% totale",
          "body": _body("settimanale", "week", "2", today=today)},
+        {"key": "risk_weekly_total", "label": "Rischio settimanale −3% totale",
+         "body": _body("rischio settimanale", "week", "3", kind="max_loss", today=today)},
         {"key": "monthly_total", "label": "Mensile +5% totale",
          "body": _body("mensile", "month", "5", today=today)},
+        {"key": "quarterly_total", "label": "Trimestrale +10% totale",
+         "body": _body("trimestrale", "quarter", "10", today=today)},
+        {"key": "yearly_total", "label": "Annuale +20% totale",
+         "body": _body("annuale", "year", "20", today=today)},
     ]
-    out += [{"key": f"quarterly_portfolio:{pid}", "label": f"Trimestrale +10% · {name}",
-             "body": _body("trimestrale", "quarter", "10", portfolio_id=pid, today=today)}
-            for pid, name in portfolios]
-    out += [{"key": f"risk_monthly:{pid}", "label": f"Rischio mensile −5% · {name}",
+    for pid, name, loss_pct in portfolios:
+        dyn = _dynamic(loss_pct)
+        month, year, risk_year = ("8", "30", "20") if dyn else ("3", "10", "10")
+        out += [
+            {"key": f"monthly_portfolio:{pid}", "label": f"Mensile +{month}% · {name}",
+             "body": _body("mensile", "month", month, portfolio_id=pid, today=today)},
+            {"key": f"quarterly_portfolio:{pid}", "label": f"Trimestrale +10% · {name}",
+             "body": _body("trimestrale", "quarter", "10", portfolio_id=pid, today=today)},
+            {"key": f"yearly_portfolio:{pid}", "label": f"Annuale +{year}% · {name}",
+             "body": _body("annuale", "year", year, portfolio_id=pid, today=today)},
+            {"key": f"risk_monthly:{pid}", "label": f"Rischio mensile −5% · {name}",
              "body": _body("rischio mensile", "month", "5", kind="max_loss",
-                           portfolio_id=pid, today=today)}
-            for pid, name in portfolios]
-    out.append({"key": "beat_vwce_quarter", "label": "Battere VWCE nel trimestre (totale)",
-                "body": _body("battere VWCE", "quarter", "0", kind="beat_index",
-                              benchmark="VWCE.DE", today=today)})
+                           portfolio_id=pid, today=today)},
+            {"key": f"risk_quarterly:{pid}", "label": f"Rischio trimestrale −8% · {name}",
+             "body": _body("rischio trimestrale", "quarter", "8", kind="max_loss",
+                           portfolio_id=pid, today=today)},
+            {"key": f"risk_yearly:{pid}", "label": f"Rischio annuale −{risk_year}% · {name}",
+             "body": _body("rischio annuale", "year", risk_year, kind="max_loss",
+                           portfolio_id=pid, today=today)},
+        ]
+        if dyn:
+            out.append({"key": f"beat_qqq_quarter:{pid}",
+                        "label": f"Battere QQQ nel trimestre · {name}",
+                        "body": _body("battere QQQ", "quarter", "0", kind="beat_index",
+                                      portfolio_id=pid, benchmark="QQQ", today=today)})
+    out += [
+        {"key": "beat_vwce_quarter", "label": "Battere VWCE nel trimestre (totale)",
+         "body": _body("battere VWCE", "quarter", "0", kind="beat_index",
+                       benchmark="VWCE.DE", today=today)},
+        {"key": "beat_spy_year", "label": "Battere SPY nell'anno (totale)",
+         "body": _body("battere SPY", "year", "0", kind="beat_index", benchmark="SPY",
+                       today=today)},
+        {"key": "beat_vwce_year", "label": "Battere VWCE nell'anno (totale)",
+         "body": _body("battere VWCE", "year", "0", kind="beat_index",
+                       benchmark="VWCE.DE", today=today)},
+    ]
     existing = {_same(g.kind, g.horizon, g.scope, g.portfolio_id, g.target_pct, g.benchmark,
                       g.recurring)
                 for g in await session.scalars(select(Goal).where(Goal.active.is_(True)))}

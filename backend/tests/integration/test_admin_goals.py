@@ -15,7 +15,7 @@ from smtrading.events import discard_post_commit
 from smtrading.goals.models import BenchmarkSnapshot
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
-from smtrading.risk.models import EquitySnapshot, SnapshotKind
+from smtrading.risk.models import EquitySnapshot, RiskProfile, SnapshotKind
 
 D = Decimal
 ROME = ZoneInfo("Europe/Rome")
@@ -344,8 +344,13 @@ async def test_templates_prefill_valid_goals(env, monkeypatch):
     viewer = await env.client(email)
     rows = (await viewer.get("/api/goals/templates")).json()
     by = {t["key"]: t for t in rows}
-    assert {"weekly_total", "monthly_total", f"quarterly_portfolio:{a}", f"risk_monthly:{a}",
-            "beat_vwce_quarter"} <= set(by)
+    assert {"weekly_total", "risk_weekly_total", "monthly_total", "quarterly_total",
+            "yearly_total", f"monthly_portfolio:{a}", f"quarterly_portfolio:{a}",
+            f"yearly_portfolio:{a}", f"risk_monthly:{a}", f"risk_quarterly:{a}",
+            f"risk_yearly:{a}", "beat_vwce_quarter", "beat_spy_year",
+            "beat_vwce_year"} <= set(by)
+    assert by["yearly_total"]["body"]["horizon"] == "year"
+    assert by["yearly_total"]["body"]["target_pct"] == "20"
     assert f"risk_monthly:{z}" not in by
     assert by[f"risk_monthly:{a}"]["label"] == "Rischio mensile −5% · Modelli A"
     assert by[f"risk_monthly:{a}"]["body"] == {
@@ -363,3 +368,32 @@ async def test_templates_prefill_valid_goals(env, monkeypatch):
         assert r.status_code == 200, (t["key"], r.text)
     rows = (await viewer.get("/api/goals/templates")).json()
     assert all(t["exists"] for t in rows)
+
+
+async def test_templates_prudent_or_dynamic_by_profile(env, monkeypatch):
+    """Per-portfolio «Modelli» take prudent values when the profile's daily-loss breaker
+    is narrow (< 7%), dynamic ones (and «Battere QQQ») when wide or absent."""
+    _clock(monkeypatch, rome(WED, 10))
+    c = await _admin(env)
+    pru = await _portfolio(env.sm, "Modelli PRU")
+    dyn = await _portfolio(env.sm, "Modelli DYN")
+    async with env.sm() as s:
+        narrow = RiskProfile(name="Stretto prova", max_daily_loss_pct=D("5"))
+        wide = RiskProfile(name="Largo prova", max_daily_loss_pct=D("10"))
+        s.add_all([narrow, wide])
+        await s.flush()
+        await s.execute(update(Portfolio).where(Portfolio.id == pru)
+                        .values(risk_profile_id=narrow.id))
+        await s.execute(update(Portfolio).where(Portfolio.id == dyn)
+                        .values(risk_profile_id=wide.id))
+        await s.commit()
+    by = {t["key"]: t for t in (await c.get("/api/goals/templates")).json()}
+    assert by[f"monthly_portfolio:{pru}"]["body"]["target_pct"] == "3"
+    assert by[f"yearly_portfolio:{pru}"]["body"]["target_pct"] == "10"
+    assert by[f"risk_yearly:{pru}"]["body"]["target_pct"] == "10"
+    assert f"beat_qqq_quarter:{pru}" not in by
+    assert by[f"monthly_portfolio:{dyn}"]["body"]["target_pct"] == "8"
+    assert by[f"yearly_portfolio:{dyn}"]["label"] == "Annuale +30% · Modelli DYN"
+    assert by[f"risk_yearly:{dyn}"]["body"]["target_pct"] == "20"
+    qqq = by[f"beat_qqq_quarter:{dyn}"]["body"]
+    assert (qqq["kind"], qqq["benchmark"], qqq["scope"]) == ("beat_index", "QQQ", "portfolio")
