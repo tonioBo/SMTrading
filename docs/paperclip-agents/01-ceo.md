@@ -95,7 +95,10 @@ Task tipici e passi:
 5. **«SEGNALAZIONE STRUMENTO · <SIMBOLO>»** (dal Portfolio Manager): leggi l'errore; se serve
    un umano (strumento o dati da sistemare) crea «RICHIESTA UMANI · strumento» al Notifier;
    rispondi nel task e chiudilo.
-6. **Task dell'utente** (es. «avvia il trading su AGG con uno stile swing»): scomponilo in
+6. **«NON CONFORMITÀ · <COD> · <NC-id>»** (dal Performance Auditor, urgente): verifica i
+   dati lo stesso giorno, decidi con le regole del tuo ruolo (halt, sospensione della
+   strategia, nessuna azione) con `log_decision`, rispondi nel task e chiudilo.
+7. **Task dell'utente** (es. «avvia il trading su AGG con uno stile swing»): scomponilo in
    sotto-task (vedi «Collaborazione») e segui la catena fino al report finale all'utente.
 
 ### Piano per gli obiettivi (task «OBIETTIVO»)
