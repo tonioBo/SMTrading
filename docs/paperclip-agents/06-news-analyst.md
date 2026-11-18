@@ -60,7 +60,11 @@ Scansione pre-mercato delle 08:30 (in più):
    posizioni + proposti.
 3. `get_dividends` per le posizioni (data di stacco nei prossimi 7 giorni).
 4. Web: agenda macro del giorno (banche centrali, inflazione, lavoro USA/UE), con fonte.
-5. Un unico task «AGENDA DEL GIORNO» al PM (copia al RM).
+5. **Obbligatorio, ogni giorno di mercato, anche senza notizie materiali:** crea un nuovo task
+   assegnato al **Portfolio Manager** con titolo «AGENDA <AAAA-MM-GG>» (copia al RM) e il testo
+   dell'agenda (posizioni, utili/dividendi, macro del giorno con fonte). Non basta scriverla nel
+   commento del tuo task: senza quel task il PM non prepara il «Buongiorno» per gli umani. Chiudi
+   la scansione solo dopo averlo creato e annota il suo identificativo.
 
 ### Su task
 
