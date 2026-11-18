@@ -19,9 +19,11 @@ messages (now), digest entries (quiet hours, non-critical) or `skipped`.
 - Fill notifications (`order.filled`, `live.order.filled`/`partial`) add the fill details
   of `telegram.details.fill_lines` (strategy, stop and target, risk at stop in EUR);
   details that cannot be read are left out, never block the message. The FX rates of the
-  risk at stop are fetched before the planning transaction (the currencies of the
-  pending fill rows, kept FX_TTL in memory): inside it only those cached rates are used,
-  so no network call ever runs with the activity rows locked.
+  risk at stop (->EUR, kept FX_TTL_S in memory) never come from the network inside the
+  planning transaction: when the locked batch holds fill rows whose currencies are not
+  cached (or are older than FX_TTL_S), the transaction is rolled back, the rates are
+  fetched with no transaction open and the batch is planned again (once; a rate that
+  cannot be fetched only drops the figure). An idle tick runs no FX query at all.
 - Each row is planned in its own savepoint: a row that cannot be planned is marked
   `failed` (and logged) instead of blocking the batch forever.
 """
@@ -34,7 +36,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import Text, cast, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.activity.models import Activity, ActivityLevel, TelegramState
@@ -123,6 +125,14 @@ class _CachedFx:
         return hit[0]
 
 
+class _NeedFx(Exception):
+    """Raised inside the planning transaction (rolling it back) to fetch FX rates."""
+
+    def __init__(self, ccys: set[str]) -> None:
+        super().__init__(sorted(ccys))
+        self.ccys = ccys
+
+
 class TelegramPlanner:
     def __init__(self, sessionmaker: async_sessionmaker, *,
                  clock: Callable[[], datetime] = _utcnow, tz: str | None = None,
@@ -140,33 +150,46 @@ class TelegramPlanner:
             if await self.tick() < BATCH:
                 await asyncio.sleep(self._interval_s)
 
-    async def _warm_fx(self) -> None:
-        """Fetches (no transaction open) the missing or old ->EUR rates of the pending
-        fill rows' currencies."""
-        async with self._sm() as session:
-            fills = (Activity.telegram == TelegramState.pending,
-                     Activity.type.in_(FILL_TYPES))
-            ccys = set(await session.scalars(
-                select(Activity.data["currency"].astext).where(*fills)))
+    def _stale_fx(self, ccys: set[str]) -> set[str]:
+        now = time.monotonic()
+        return {c for c in ccys
+                if (hit := self._fx.get(c)) is None or now - hit[1] >= FX_TTL_S}
+
+    async def _fill_currencies(self, session: AsyncSession, rows: list[Activity]) -> set[str]:
+        """The non-EUR currencies of the batch's fill rows (the row's `currency` and its
+        order's instrument currency): read inside the transaction, no network."""
+        fills = [a for a in rows if a.type in FILL_TYPES]
+        if not fills:
+            return set()
+        ccys = {str(c) for a in fills if isinstance(a.data, dict)
+                and (c := a.data.get("currency"))}
+        order_ids = {oid for a in fills if (oid := _order_uuid(a)) is not None}
+        if order_ids:
             ccys |= set(await session.scalars(
                 select(Instrument.currency)
                 .join(Order, Order.symbol == Instrument.symbol)
-                .join(Activity, Activity.data["order_id"].astext == cast(Order.id, Text))
-                .where(*fills)))
+                .where(Order.id.in_(order_ids))))
+        return {c.upper() for c in ccys if c and c.upper() != EUR}
+
+    async def _warm_fx(self, ccys: set[str]) -> None:
+        """Fetches (no transaction open) the ->EUR rates of `ccys`."""
         now = time.monotonic()
-        for ccy in sorted(c.upper() for c in ccys if c and c.upper() != EUR):
-            hit = self._fx.get(ccy)
-            if hit is not None and now - hit[1] < FX_TTL_S:
-                continue
+        for ccy in sorted(ccys):
             try:
                 self._fx[ccy] = (await self._qs.get_fx_rate(ccy, EUR), now)
             except Exception as e:  # noqa: BLE001 - a missing rate only drops the figure
                 log.info("telegram planner: no %s->EUR rate (%s)", ccy, e)
 
     async def tick(self) -> int:
-        """Plans up to BATCH pending rows (oldest first) in one transaction."""
-        if self._qs is not None:
-            await self._warm_fx()
+        """Plans up to BATCH pending rows (oldest first) in one transaction; when the batch
+        needs FX rates that are not cached, fetches them outside it and plans again."""
+        try:
+            return await self._tick(check_fx=self._qs is not None)
+        except _NeedFx as need:  # rolled back: nothing planned, no lock held
+            await self._warm_fx(need.ccys)
+        return await self._tick(check_fx=False)
+
+    async def _tick(self, *, check_fx: bool) -> int:
         async with self._sm() as session, session.begin():
             cfg = await load_config(session)
             # disabled (or no group) wins over unreadable: skip, never send weeks later
@@ -179,6 +202,9 @@ class TelegramPlanner:
             ))
             if not rows:
                 return 0
+            if check_fx and (missing := self._stale_fx(
+                    await self._fill_currencies(session, rows))):
+                raise _NeedFx(missing)
             ready = is_ready(cfg)
             quiet = is_quiet(self._clock(), self._tz)
             # ts comes from the database clock: compare it with the same clock

@@ -176,6 +176,67 @@ async def test_fill_fx_is_read_with_no_transaction_open(maker, qs):
     assert seen and set(seen) == {0}
 
 
+async def test_fill_fx_cached_and_idle_ticks_read_nothing(maker, qs):
+    """FX only when the batch holds a fill whose currency is not cached: an idle tick
+    runs only the planning query (no FX query, no rate fetch) and a second fill within
+    FX_TTL_S reuses the cached rate."""
+    from sqlalchemy import event
+
+    calls: list[tuple[str, str]] = []
+    real = qs.get_fx_rate
+
+    async def spy(base, quote):
+        calls.append((base, quote))
+        return await real(base, quote)
+
+    pid = await _portfolio(maker)
+    await _proposal(maker, pid)
+    await _bracket(maker, qs, pid)
+    qs.get_fx_rate = spy
+    planner = TelegramPlanner(maker, clock=Clock(NOW), tz=TZ, qs=qs)
+    await planner.tick()
+    assert calls == [("USD", "EUR")]
+    assert "Rischio allo stop: 16,16 €" in (await _texts(maker))[0]
+
+    statements: list[str] = []
+
+    def count(conn, cursor, statement, *args):
+        statements.append(statement)
+
+    sync_engine = maker.kw["bind"].sync_engine
+    event.listen(sync_engine, "before_cursor_execute", count)
+    try:
+        assert await planner.tick() == 0
+    finally:
+        event.remove(sync_engine, "before_cursor_execute", count)
+    assert not [q for q in statements if "instruments" in q or "currency" in q]
+    assert calls == [("USD", "EUR")]
+
+    qs.get_fx_rate = real  # the order placement's own calls
+    await _bracket(maker, qs, pid, coid="manual-2")
+    qs.get_fx_rate = spy
+    await planner.tick()
+    assert calls == [("USD", "EUR")]  # cached
+    assert all("Rischio allo stop: 16,16 €" in t for t in await _texts(maker))
+
+
+async def test_fill_fx_unavailable_still_plans_once(maker, qs):
+    pid = await _portfolio(maker)
+    await _proposal(maker, pid)
+    await _bracket(maker, qs, pid)
+    fetched: list[str] = []
+
+    async def broken(base, quote):
+        fetched.append(base)
+        raise LookupError("no rate")
+
+    qs.get_fx_rate = broken
+    assert await TelegramPlanner(maker, clock=Clock(NOW), tz=TZ, qs=qs).tick() > 0
+    [text] = await _texts(maker)
+    assert fetched == ["USD"]
+    assert "Rischio allo stop: 20,20 USD" in text
+
+
 async def test_fill_risk_in_instrument_currency_without_fx(maker, qs):
     pid = await _portfolio(maker)
     await _bracket(maker, qs, pid, coid="manual-1")
