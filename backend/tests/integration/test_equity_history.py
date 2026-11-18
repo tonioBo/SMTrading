@@ -136,6 +136,70 @@ async def test_1w_intraday_with_the_weekly_goal(env, monkeypatch):
     assert (D(pb["goal"]["base_eur"]), D(pb["goal"]["target_eur"])) == (D(400), D(408))
 
 
+async def test_wtd_starts_on_monday_and_matches_the_weekly_goal(env, monkeypatch):
+    """«Settimana in corso»: from the local Monday 00:00, each series opening on its
+    Monday day_open (the goal's start), so the «Totale» Σ last / Σ first − 1 is the
+    weekly total goal's pct (`goals.progress`) for the same snapshots."""
+    from smtrading.goals.progress import goal_progress
+
+    _clock(monkeypatch)
+    a = await _portfolio(env.sm, "Sett A")
+    b = await _portfolio(env.sm, "Sett B")  # created on Wednesday: no Monday day_open
+    await _snap(env.sm, a, rome(7, 23, 55), "590")  # Sunday: before the week
+    await _snap(env.sm, a, rome(MON, 0), "595")  # before the day_open: left out
+    await _snap(env.sm, a, rome(MON, 0, 1), "600", SnapshotKind.day_open)
+    await _snap(env.sm, a, rome(MON, 12), "610")
+    await _snap(env.sm, a, rome(FRI, 17), "603.37")
+    await _snap(env.sm, b, rome(WED, 11), "400")
+    await _snap(env.sm, b, rome(FRI, 17, 30), "411.13")
+
+    body = (await _get(env, range="wtd")).json()
+    assert body["range"] == "wtd"
+    assert datetime.fromisoformat(body["start"]) == rome(MON, 0)
+    assert D(body["goal_pct"]) == D(2)
+    by_name = {p["name"]: p for p in body["portfolios"]}
+    pa, pb = by_name["Sett A"], by_name["Sett B"]
+    assert [v for _, v in _points(pa)] == [D(600), D(610), D("603.37")]
+    assert [v for _, v in _points(pb)] == [D(400), D("411.13")]
+    assert D(pa["change_pct"]) == D("0.56")
+    assert (D(pa["goal"]["base_eur"]), D(pa["goal"]["target_eur"])) == (D(600), D(612))
+    (week,) = [g for g in body["goals"] if g["horizon"] == "week" and g["scope"] == "total"]
+    assert datetime.fromisoformat(week["period_start"]) == rome(MON, 0)
+
+    firsts = sum(_points(p)[0][1] for p in (pa, pb))
+    lasts = sum(_points(p)[-1][1] for p in (pa, pb))
+    total_pct = ((lasts / firsts - 1) * 100).quantize(D("0.01"))
+    async with env.sm() as s:
+        goal = await s.get(Goal, week["goal_id"])
+        progress = await goal_progress(s, goal, NOW, ROME)
+    assert progress["pct"] == total_pct == D("1.45")  # (1014.50 / 1000 − 1) × 100
+    assert D(week["base_eur"]) == progress["start_eur"] == firsts
+
+
+async def test_wtd_series_downsampled_keeps_the_goal_start(env, monkeypatch):
+    """A full week of 5-minute snapshots is thinned to MAX_SERIES_POINTS keeping the first
+    point (the Monday day_open, the client's % base) and the last."""
+    from smtrading.performance.service import MAX_SERIES_POINTS
+
+    _clock(monkeypatch)
+    a = await _portfolio(env.sm, "Fitto")
+    t0 = rome(MON, 0, 1)
+    async with env.sm() as s:
+        s.add(EquitySnapshot(portfolio_id=a, ts=t0, kind=SnapshotKind.day_open,
+                             equity_eur=D(1000), cash_eur=D(1000), exposure_eur=D(0),
+                             margin_used_eur=D(0), local_date=t0.astimezone(ROME).date()))
+        for i in range(1, 1200):
+            s.add(EquitySnapshot(portfolio_id=a, ts=t0 + timedelta(minutes=5 * i),
+                                 kind=SnapshotKind.periodic, equity_eur=D(1000 + i),
+                                 cash_eur=D(0), exposure_eur=D(0), margin_used_eur=D(0)))
+        await s.commit()
+    (item,) = (await _get(env, range="wtd")).json()["portfolios"]
+    points = _points(item)
+    assert len(points) <= MAX_SERIES_POINTS
+    assert (points[0][1], points[-1][1]) == (D(1000), D(2199))
+    assert D(item["first_eur"]) == D(1000)
+
+
 async def test_1w_without_the_goal_when_it_is_off(env, monkeypatch):
     _clock(monkeypatch)
     a = await _portfolio(env.sm, "Goal off")

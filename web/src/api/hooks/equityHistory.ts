@@ -2,7 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
 import type { EquityPoint, GoalBenchmark, GoalHorizon, GoalKind, GoalScope } from "@/api/types";
 
-export type EquityHistoryRange = "2h" | "6h" | "12h" | "1d" | "1w" | "1m" | "3m" | "all";
+/** `wtd` («Settimana in corso»): from this week's local Monday 00:00, the weekly goal's
+ * period start, so its «Totale» % is the weekly total goal's %. */
+export type EquityHistoryRange = "2h" | "6h" | "12h" | "1d" | "wtd" | "1w" | "1m" | "3m" | "all";
 
 /** Ranges drawn with hours on the x axis (the rest: dates). */
 export const HOURLY_RANGES: ReadonlySet<EquityHistoryRange> = new Set(["2h", "6h", "12h", "1d"]);
@@ -12,13 +14,14 @@ export const EQUITY_HISTORY_RANGES: { label: string; value: EquityHistoryRange }
   { label: "6h", value: "6h" },
   { label: "12h", value: "12h" },
   { label: "1g", value: "1d" },
+  { label: "Sett.", value: "wtd" },
   { label: "1s", value: "1w" },
   { label: "1m", value: "1m" },
   { label: "3m", value: "3m" },
   { label: "tutto", value: "all" },
 ];
 
-/** The weekly goal of a portfolio («1s» only, while the goal is on). */
+/** The weekly goal of a portfolio («Sett.» and «1s» only, while the goal is on). */
 export interface EquityHistoryGoal {
   week_start: string;
   base_eur: string;

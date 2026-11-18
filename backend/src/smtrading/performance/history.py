@@ -3,14 +3,20 @@
 so nothing is valued on read).
 
 - `1d`, `1w`: the intraday points (every snapshot with ts in [now - span, now]);
+- `wtd` («Settimana in corso»): the intraday points from the local Monday 00:00 (the
+  weekly goal's period start, `start` of the response) to now, each series opening on
+  the portfolio's Monday `day_open` when it has one (else its first snapshot of the
+  week): the start of `goals.progress.portfolio_periods`, so the «Totale» of the chart
+  (Σ last / Σ first − 1) is the weekly total goal's `pct`;
 - `1m`, `3m`, `all`: one point per day (the `day_open` rows of the range) closed by the
   portfolio's latest snapshot, so the curve reaches today; a portfolio with no `day_open`
   in the range (just created) gets every snapshot instead.
-Every series is capped to `MAX_SERIES_POINTS` (`downsample`). `change_pct` is the change
+Every series is capped to `MAX_SERIES_POINTS` (`downsample`, keeping its first point:
+the client computes the % from it). `change_pct` is the change
 from the first to the last point (None without a positive first value): the dashboard
 compares portfolios of different sizes in percent.
 
-For `1w` each portfolio carries «the weekly goal» while it is active
+For `1w` and `wtd` each portfolio carries «the weekly goal» while it is active
 (`goals.service.weekly_goal`, the compatibility of the former setting): from the local
 Monday 00:00, base = its Monday open (or its first snapshot of the week, see
 `telegram.weekly_goal.portfolio_weeks`), target = base grown by the goal percent.
@@ -29,7 +35,7 @@ per symbol: when listed goals on the same index have different periods, the one 
 period starts latest gives it (the client rebases each series to the range start).
 Admin-only data: never reaches the agents."""
 
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 from uuid import UUID
@@ -49,7 +55,7 @@ from smtrading.goals.progress import (
     portfolio_periods,
     visible_goals,
 )
-from smtrading.performance.service import downsample
+from smtrading.performance.service import MAX_SERIES_POINTS, downsample
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.risk.models import EquitySnapshot, SnapshotKind
 from smtrading.telegram.weekly_goal import (
@@ -59,13 +65,15 @@ from smtrading.telegram.weekly_goal import (
     week_monday,
 )
 
-RANGES: tuple[str, ...] = ("2h", "6h", "12h", "1d", "1w", "1m", "3m", "all")
+RANGES: tuple[str, ...] = ("2h", "6h", "12h", "1d", "wtd", "1w", "1m", "3m", "all")
+WTD = "wtd"  # the current week: from the local Monday 00:00, the span is computed
 SPANS: dict[str, timedelta | None] = {
     "2h": timedelta(hours=2), "6h": timedelta(hours=6), "12h": timedelta(hours=12),
-    "1d": timedelta(days=1), "1w": timedelta(weeks=1), "1m": timedelta(days=30),
+    "1d": timedelta(days=1), WTD: None, "1w": timedelta(weeks=1), "1m": timedelta(days=30),
     "3m": timedelta(days=90), "all": None,
 }
-INTRADAY = frozenset({"2h", "6h", "12h", "1d", "1w"})
+INTRADAY = frozenset({"2h", "6h", "12h", "1d", WTD, "1w"})
+WEEKLY_GOAL_RANGES = frozenset({WTD, "1w"})
 _Q2 = Decimal("0.01")
 
 Point = tuple[datetime, Decimal]
@@ -116,6 +124,36 @@ async def _latest(session: AsyncSession, ids: list[UUID], start: datetime | None
     if start is not None:
         stmt = stmt.where(EquitySnapshot.ts >= start)
     return {pid: (ts, eq) for pid, ts, eq in (await session.execute(stmt)).all()}
+
+
+async def _week_series(session: AsyncSession, ids: list[UUID], start: datetime,
+                       now: datetime, monday: date) -> dict[UUID, list[Point]]:
+    """The week's points, each series opening on its Monday `day_open` (the goal's start):
+    the points ordered before it are left out, a `day_open` stamped before the Monday
+    00:00 (never in practice) is put first."""
+    out: dict[UUID, list[Point]] = {}
+    rows = (await session.execute(
+        select(EquitySnapshot.portfolio_id, EquitySnapshot.ts, EquitySnapshot.equity_eur,
+               EquitySnapshot.kind, EquitySnapshot.local_date)
+        .where(EquitySnapshot.portfolio_id.in_(ids), EquitySnapshot.ts >= start,
+               EquitySnapshot.ts <= now)
+        .order_by(EquitySnapshot.portfolio_id, EquitySnapshot.ts, EquitySnapshot.id))).all()
+    opened: set[UUID] = set()
+    for pid, ts, equity, kind, local_date in rows:
+        points = out.setdefault(pid, [])
+        if kind == SnapshotKind.day_open and local_date == monday and pid not in opened:
+            points.clear()
+            opened.add(pid)
+        points.append((ts, equity))
+    early = (await session.execute(
+        select(EquitySnapshot.portfolio_id, EquitySnapshot.ts, EquitySnapshot.equity_eur)
+        .where(EquitySnapshot.portfolio_id.in_([i for i in ids if i not in opened]),
+               EquitySnapshot.kind == SnapshotKind.day_open,
+               EquitySnapshot.local_date == monday, EquitySnapshot.ts < start,
+               EquitySnapshot.ts <= now))).all() if len(opened) < len(ids) else []
+    for pid, ts, equity in early:
+        out.setdefault(pid, []).insert(0, (ts, equity))
+    return out
 
 
 async def _series(session: AsyncSession, ids: list[UUID], range_: str,
@@ -190,6 +228,13 @@ async def _goal_lines(session: AsyncSession, portfolios: list[Portfolio], single
     return out, benchmarks
 
 
+def _thin(points: list[Point]) -> list[Point]:
+    """`downsample` keeping the first point too (the base of the client's %)."""
+    if len(points) <= MAX_SERIES_POINTS:
+        return points
+    return [points[0], *downsample(points[1:], MAX_SERIES_POINTS - 1)]
+
+
 def _item(p: Portfolio, points: list[Point], goal: dict[str, Any] | None) -> dict[str, Any]:
     first = points[0][1] if points else None
     last = points[-1][1] if points else None
@@ -198,7 +243,7 @@ def _item(p: Portfolio, points: list[Point], goal: dict[str, Any] | None) -> dic
         change_pct = ((last / first - 1) * 100).quantize(_Q2, rounding=ROUND_HALF_EVEN)
     return {
         "id": p.id, "name": p.name,
-        "series": [{"ts": ts, "equity_eur": _eur(eq)} for ts, eq in downsample(points)],
+        "series": [{"ts": ts, "equity_eur": _eur(eq)} for ts, eq in _thin(points)],
         "first_eur": _eur(first), "last_eur": _eur(last),
         "change_eur": None if first is None else _eur(last - first),
         "change_pct": change_pct,
@@ -215,10 +260,19 @@ async def equity_history(session: AsyncSession, range_: str, *, now: datetime,
         )
     span = SPANS[range_]
     start = None if span is None else now - span
+    monday = week_monday(now, zone)
+    if range_ == WTD:
+        start = local_midnight(monday, zone)
     portfolios = await _portfolios(session, portfolio_id)
     ids = [p.id for p in portfolios]
-    series = await _series(session, ids, range_, start, now) if ids else {}
-    goal_pct, goals = (await _goals(session, now, zone)) if range_ == "1w" else (None, {})
+    if not ids:
+        series: dict[UUID, list[Point]] = {}
+    elif range_ == WTD:
+        series = await _week_series(session, ids, start, now, monday)
+    else:
+        series = await _series(session, ids, range_, start, now)
+    goal_pct, goals = ((await _goals(session, now, zone)) if range_ in WEEKLY_GOAL_RANGES
+                       else (None, {}))
     lines, benchmarks = await _goal_lines(session, portfolios, portfolio_id is not None,
                                           start, now, zone)
     return {

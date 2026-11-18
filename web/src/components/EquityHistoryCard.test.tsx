@@ -4,19 +4,21 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import type { EquityHistory, EquityHistoryGoalLine } from "@/api/hooks/equityHistory";
+import { HOURLY_RANGES, type EquityHistory, type EquityHistoryGoalLine } from "@/api/hooks/equityHistory";
 import { EquityHistoryCard } from "@/components/EquityHistoryCard";
 import { historyLines, totalChange, totalPoints } from "@/lib/equityHistory";
 import { createQueryClient } from "@/queryClient";
 
 const requests: URLSearchParams[] = [];
 
+const weekly = (range: string) => range === "1w" || range === "wtd";
+
 function history(range = "1w"): EquityHistory {
   return {
     range: range as EquityHistory["range"],
     start: "2026-11-09T12:00:00Z",
     end: "2026-11-16T12:00:00Z",
-    goal_pct: range === "1w" ? "2.0" : null,
+    goal_pct: weekly(range) ? "2.0" : null,
     portfolios: [
       {
         id: "p1",
@@ -29,7 +31,7 @@ function history(range = "1w"): EquityHistory {
         last_eur: "255.00",
         change_eur: "5.00",
         change_pct: "2.00",
-        goal: range === "1w" ? { week_start: "2026-11-15T23:00:00Z", base_eur: "254.00", target_eur: "259.08" } : null,
+        goal: weekly(range) ? { week_start: "2026-11-15T23:00:00Z", base_eur: "254.00", target_eur: "259.08" } : null,
       },
       {
         id: "p2",
@@ -102,6 +104,13 @@ describe("historyLines", () => {
     expect(goal.points[0].t).toBe(Date.parse("2026-11-15T23:00:00Z"));
     expect(goal.points[1].t).toBe(Date.parse("2026-11-16T12:00:00Z"));
     expect(goal.points[0].v).toBeCloseTo(3.632, 3); // 259.08 / 250 - 1
+  });
+  it("wtd: the «Totale» ends on Σ last / Σ first − 1 (the weekly total goal's %)", () => {
+    const lines = historyLines(withGoals("wtd"), "pct", false);
+    const total = lines.find((l) => l.key === "total")!;
+    expect(total.points.at(-1)!.v).toBeCloseTo((255 + 990) / (250 + 1000) * 100 - 100, 10);
+    expect(totalChange(withGoals("wtd"))?.change_pct).toBe("-0.40");
+    expect(lines.map((l) => l.key)).toContain("goal-g1");
   });
   it("keeps euros", () => {
     const lines = historyLines(history(), "eur", true);
@@ -324,6 +333,18 @@ describe("EquityHistoryCard", () => {
     expect(screen.getByTestId("line-total")).toHaveAttribute("stroke-width", "3");
     fireEvent.pointerMove(screen.getByTestId("line-chart-plot"), { clientX: 10 });
     expect(within(screen.getByRole("tooltip")).getByText("-0,40%")).toBeInTheDocument();
+  });
+
+  it("«Sett.»: after «1g», asks for the current week, dates on the axis, the weekly goal drawn", async () => {
+    renderCard("p1");
+    await screen.findByRole("list", { name: "Legenda" });
+    const labels = within(screen.getByRole("group", { name: "Periodo" })).getAllByRole("button").map((b) => b.textContent);
+    expect(labels.slice(labels.indexOf("1g"), labels.indexOf("1g") + 3)).toEqual(["1g", "Sett.", "1s"]);
+    await userEvent.click(screen.getByRole("button", { name: "Sett." }));
+    await screen.findByRole("button", { name: "Sett.", pressed: true });
+    expect(requests.at(-1)?.get("range")).toBe("wtd");
+    expect(await screen.findByText("Obiettivo settimanale +2%", {}, { timeout: 5000 })).toBeInTheDocument();
+    expect(HOURLY_RANGES.has("wtd")).toBe(false);
   });
 
   it("portfolio detail: that portfolio in €, no unit toggle", async () => {
