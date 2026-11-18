@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiDownload, apiFetch, saveBlob } from "@/api/client";
 import { appSettingsKey } from "@/api/hooks/risk";
-import type { AppSettings, BackupFile, PreopenCheck, VerifyBalancesResult, VerifyChainResult, WeeklyGoal } from "@/api/types";
+import type { AppSettings, BackupFile, HandoffWatchdog, PreopenCheck, VerifyBalancesResult, VerifyChainResult, WeeklyGoal } from "@/api/types";
 
 export function useBackups() {
   return useQuery({ queryKey: ["backups"], queryFn: () => apiFetch<BackupFile[]>("/api/system/backups") });
@@ -37,11 +37,15 @@ export function useSaveMcpHideMode() {
   });
 }
 
-/** The Telegram extras: weekly goal and pre-open check (partial updates). */
+/** The Telegram extras: weekly goal, pre-open check and hand-off watchdog (partial updates). */
 export function useSaveTelegramExtras() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { weekly_goal?: Partial<WeeklyGoal>; preopen_check?: Partial<PreopenCheck> }) =>
+    mutationFn: (body: {
+      weekly_goal?: Partial<WeeklyGoal>;
+      preopen_check?: Partial<PreopenCheck>;
+      handoff_watchdog?: Partial<HandoffWatchdog>;
+    }) =>
       apiFetch<AppSettings>("/api/settings/app", { method: "PUT", body }),
     onSuccess: (data) => {
       qc.setQueryData(appSettingsKey, data);

@@ -20,7 +20,11 @@ let meCalls = 0;
 let pwForbidden = false;
 let tzPuts: unknown[] = [];
 let meRole: "admin" | "viewer" = "admin";
-const extras = () => ({ weekly_goal: { on: true, pct: "2.0" }, preopen_check: { on: true, at: "08:45" } });
+const extras = () => ({
+  weekly_goal: { on: true, pct: "2.0" },
+  preopen_check: { on: true, at: "08:45" },
+  handoff_watchdog: { on: true },
+});
 let stored: Record<string, unknown> = extras();
 const server = setupServer(
   ...commonHandlers,
@@ -49,7 +53,7 @@ const server = setupServer(
   http.put("*/api/settings/app", async ({ request }) => {
     const body = (await request.json()) as Record<string, unknown>;
     tzPuts.push(body);
-    for (const key of ["weekly_goal", "preopen_check"]) {
+    for (const key of ["weekly_goal", "preopen_check", "handoff_watchdog"]) {
       if (body[key]) stored = { ...stored, [key]: { ...(stored[key] as object), ...(body[key] as object) } };
     }
     return HttpResponse.json({ stale_quote_s: {}, default_spread_bps: {}, ...body, ...stored });
@@ -171,6 +175,12 @@ describe("Settings", () => {
     await user.click(screen.getByLabelText(/Invia il controllo pre-apertura/));
     await waitFor(() => expect(tzPuts[2]).toEqual({ preopen_check: { on: false } }));
     await waitFor(() => expect(screen.getByLabelText(/Invia il controllo pre-apertura/)).not.toBeChecked());
+
+    const watchdog = screen.getByLabelText(/Avvisa su Telegram quando un passaggio/);
+    expect(watchdog).toBeChecked();
+    await user.click(watchdog);
+    await waitFor(() => expect(tzPuts[3]).toEqual({ handoff_watchdog: { on: false } }));
+    await waitFor(() => expect(screen.getByLabelText(/Avvisa su Telegram quando un passaggio/)).not.toBeChecked());
   });
 
   it("shows the Telegram extras read-only to a viewer", async () => {
@@ -179,6 +189,7 @@ describe("Settings", () => {
     const goalBox = await screen.findByLabelText(/Mostra l'obiettivo nel riepilogo/);
     await waitFor(() => expect(goalBox).toBeDisabled());
     expect(screen.getByLabelText(/Invia il controllo pre-apertura/)).toBeDisabled();
+    expect(screen.getByLabelText(/Avvisa su Telegram quando un passaggio/)).toBeDisabled();
     expect(screen.getByText("Obiettivo: +2,0% a settimana")).toBeInTheDocument();
     expect(screen.getByText("Orario: 08:45")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Salva obiettivo" })).not.toBeInTheDocument();
