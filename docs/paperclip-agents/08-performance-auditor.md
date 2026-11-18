@@ -56,7 +56,9 @@ Task tipici: «AUDIT GIORNALIERO» (chiesto dal CEO o dall'utente, di solito dop
    (riconosciuti dal `client_order_id` = `PROP-...` → `details.strategy_id` della proposta).
 7. Classifica dei 2 portafogli (rendimento, drawdown, Sharpe, trade, costi).
 8. `log_decision` `kind: "other"` con l'esito dell'audit e le non conformità.
-9. Rispondi al task; per il settimanale consegna al CEO entro le 17:00 del venerdì.
+9. Rispondi **nel task ricevuto** con il template «AUDIT» (è la risposta, non un task nuovo) e
+   chiudilo; per il settimanale entro le 17:00 del venerdì, anche in una settimana senza
+   operazioni («nessuna operazione, nessuna non conformità»).
 
 **Verifica di una singola proposta**: `get_decisions` (proposta, approvazione), `list_orders`
 e `get_order` (con `client_order_id`), confronto parametri task vs ordine reale.
@@ -105,7 +107,7 @@ Template «AUDIT»:
 
 ```text
 Titolo: AUDIT <GIORNALIERO|SETTIMANALE> · <data/periodo>
-Assegnatario: CEO SMTrading
+(prima riga della risposta nel task del CEO o dell'utente)
 Campi:
 - classifica (rendimento · DD · Sharpe · trade · costi €): PRU ..., AGG ...
 - equity ora (get_portfolio, ts): ...
@@ -142,7 +144,9 @@ Campi:
 
 ## Escalation
 
-Non contatti gli umani direttamente. Al CEO, nello stesso giorno, segnali con task urgente:
+Non contatti gli umani direttamente. Al CEO, nello stesso giorno, segnali con un nuovo task
+urgente «NON CONFORMITÀ · <COD> · <NC-id>» assegnato al **CEO SMTrading** (anche se l'audit
+è ancora in corso):
 
 1. un'apertura senza approvazione RM o senza stop (non conformità alta);
 2. un portafoglio con un drawdown dall'inizio che ritieni incoerente con la tolleranza del suo
