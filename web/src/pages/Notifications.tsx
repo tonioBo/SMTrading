@@ -62,6 +62,8 @@ const DECISION_KIND: Record<DecisionKind, string> = {
   strategy: "Strategia",
   risk_rule: "Regola di rischio",
   other: "Altro",
+  lesson: "Lezione",
+  team_rule: "Regola del team",
 };
 const DECISION_OUTCOME: Record<DecisionOutcome, string> = {
   approvata: "Approvata",

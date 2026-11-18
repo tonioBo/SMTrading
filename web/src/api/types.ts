@@ -917,7 +917,7 @@ export interface OutboxItem {
   sent_at: string | null;
 }
 
-export type DecisionKind = "proposal" | "approval" | "veto" | "allocation" | "strategy" | "risk_rule" | "other";
+export type DecisionKind = "proposal" | "approval" | "veto" | "allocation" | "strategy" | "risk_rule" | "other" | "lesson" | "team_rule";
 
 export type DecisionOutcome = "approvata" | "respinta" | "sospesa" | "modificata" | "informativa";
 

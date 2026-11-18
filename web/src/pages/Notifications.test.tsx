@@ -430,6 +430,28 @@ describe("Notifiche", () => {
     expect(within(table).getByText("Veto su TSLA")).toBeInTheDocument();
   });
 
+  it("decisions show lessons and team rules", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("*/api/decisions", ({ request }) => {
+        decisionUrls.push(request.url);
+        const kind = new URL(request.url).searchParams.get("kind");
+        const items = [
+          decision({ id: 30, kind: "lesson", summary: "Uscita mancata su NVDA" }),
+          decision({ id: 31, kind: "team_rule", summary: "Stop sempre prima dell'ingresso" }),
+        ];
+        return HttpResponse.json({ items: kind ? items.filter((d) => d.kind === kind) : items });
+      }),
+    );
+    renderApp("/notifiche");
+    const table = await screen.findByRole("table", { name: "Decisioni" });
+    expect(await within(table).findByText("Lezione")).toBeInTheDocument();
+    expect(within(table).getByText("Regola del team")).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Tipo"), "team_rule");
+    await waitFor(() => expect(within(table).queryByText("Uscita mancata su NVDA")).not.toBeInTheDocument());
+    expect(decisionUrls.at(-1)).toContain("kind=team_rule");
+  });
+
   it("decisions show outcome, subject and reason", async () => {
     server.use(
       http.get("*/api/decisions", () =>
