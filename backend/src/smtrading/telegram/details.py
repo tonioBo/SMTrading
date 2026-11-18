@@ -45,10 +45,12 @@ def _grouped(q: Decimal) -> str:
 
 
 def money(value: Decimal, ccy: str | None, *, sign: bool = False) -> str:
-    """Italian money: `1.234,50 €`, `242,20 USD`, `+0,35 €` with `sign`; prices below 1
-    keep their significant decimals (`0,000123 USD`)."""
-    if abs(value) >= 1 or value == 0:
-        text = _grouped(value.quantize(_Q2, rounding=ROUND_HALF_EVEN))
+    """Italian money: `1.234,50 €`, `242,20 USD`, `+0,35 €` with `sign`; euro amounts are
+    always rounded to cents; other prices below 1 keep their significant decimals
+    (`0,000123 USD`)."""
+    if abs(value) >= 1 or value == 0 or ccy == EUR:  # euro amounts: always cents
+        value = value.quantize(_Q2, rounding=ROUND_HALF_EVEN) + 0  # no «-0,00»
+        text = _grouped(value)
     else:
         text = decimal_to_str(value).replace(".", ",")
     if sign and value > 0:

@@ -123,7 +123,7 @@ def test_formatting():
     assert money(D("1234.5"), "EUR") == "1.234,50 €"
     assert money(D("242.2"), "USD") == "242,20 USD"
     assert money(D("0.35"), "EUR", sign=True) == "+0,35 €"
-    assert money(D("-0.354"), "EUR") == "-0,354 €"
+    assert money(D("-0.354"), "EUR") == "-0,35 €"
     assert money(D("0.000123"), "USD") == "0,000123 USD"
     assert qty_text(D("0.510000")) == "0,51"
     assert pct_text(D("-0.2654")) == "-0,27%"
