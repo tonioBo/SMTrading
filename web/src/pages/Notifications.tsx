@@ -436,7 +436,7 @@ function OutboxSection() {
 
 const NO_FILTERS: DecisionFilters = { agent_id: "", portfolio_id: "", kind: "" };
 
-function DecisionsSection() {
+export function DecisionsSection() {
   const [filters, setFilters] = useState(NO_FILTERS);
   const agents = useAgents();
   const portfolios = usePortfolios({ includeArchived: true });

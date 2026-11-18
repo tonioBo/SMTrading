@@ -15,6 +15,7 @@ import LiveAudit from "@/pages/LiveAudit";
 import Login from "@/pages/Login";
 import Markets from "@/pages/Markets";
 import McpLog from "@/pages/McpLog";
+import Decisions from "@/pages/Decisions";
 import Notifications from "@/pages/Notifications";
 import PortfolioDetail from "@/pages/PortfolioDetail";
 import Portfolios from "@/pages/Portfolios";
@@ -52,6 +53,7 @@ export const routes: RouteObject[] = [
           { path: "broker", element: <Brokers /> },
           { path: "registro-denaro-reale", element: <LiveAudit /> },
           { path: "notifiche", element: <Notifications /> },
+          { path: "decisioni", element: <Decisions /> },
           { path: "mercati", element: <Markets /> },
           { path: "log-mcp", element: <McpLog /> },
           { path: "registro-attivita", element: <ActivityLog /> },
