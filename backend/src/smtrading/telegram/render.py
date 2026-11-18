@@ -32,6 +32,8 @@ TITLES = {
     "broker.order_unknown": "Ordine sconosciuto al broker",
     "broker.liquidation_waiting": "Liquidazione in attesa del broker",
     "broker.fill_price_missing": "Prezzo di esecuzione mancante",
+    "broker.renewal_failed": "Ordine non rinnovato al broker",
+    "broker.order_renewed": "Ordine rinnovato al broker",
     "broker.reconciliation_diff": "Riconciliazione broker",
     "order.replace_failed": "Modifica dell'ordine non riuscita",
     "price_alert": "Alert di prezzo",

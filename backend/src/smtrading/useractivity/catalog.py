@@ -93,6 +93,8 @@ LABELS: dict[str, str] = {
     "brokers.link_create": "Creazione collegamento broker",
     "brokers.link_update": "Modifica collegamento broker",
     "brokers.link_test": "Test collegamento broker",
+    "brokers.guided_test": "Prova guidata del collegamento broker",
+    "brokers.guided_test_order": "Prova guidata del collegamento broker con ordine di prova",
     "brokers.reconcile": "Riconciliazione con il broker",
     # live
     "live.link_create": "Creazione collegamento denaro reale",
@@ -190,6 +192,7 @@ ROUTE_ACTIONS: dict[tuple[str, str], str] = {
     ("POST", "/api/broker-links"): "brokers.link_create",
     ("PATCH", "/api/broker-links/{link_id}"): "brokers.link_update",
     ("POST", "/api/broker-links/{link_id}/test"): "brokers.link_test",
+    ("POST", "/api/broker-links/{link_id}/guided-test"): "brokers.guided_test",
     ("POST", "/api/broker-links/{link_id}/reconcile"): "brokers.reconcile",
     ("POST", "/api/live-links"): "live.link_create",
     ("PUT", "/api/live-links/{link_id}/keys"): "live.keys",

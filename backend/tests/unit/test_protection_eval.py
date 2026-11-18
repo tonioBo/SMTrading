@@ -245,3 +245,25 @@ async def test_issues_client_finds_an_open_issue_by_title():
     async with PaperclipIssues(CFG, transport=httpx.MockTransport(handler)) as client:
         assert await client.open_issue_with_title("PROTEGGI · A · X") == "u3"
         assert await client.open_issue_with_title("PROTEGGI · A · Z") is None
+
+
+def test_stop_waiting_for_its_broker_send_protects_only_briefly_after_the_open():
+    """A fractional Alpaca exit renewed by BrokerSync: to_send overnight, sent at the open."""
+    from smtrading.positions.protection import SEND_GRACE, unsent_too_long
+
+    p = pos(opened=OPEN - timedelta(days=3))
+    renewed = order(unsent_since=OPEN - timedelta(hours=17))  # renewed at the last close
+    night = OPEN - timedelta(hours=2)
+    assert not unsent_too_long(renewed, "NASDAQ", night)
+    assert kinds(p, [renewed], now=night) == []
+    assert kinds(p, [renewed], now=OPEN + SEND_GRACE - timedelta(minutes=1)) == []
+    late = OPEN + SEND_GRACE + timedelta(minutes=1)
+    assert kinds(p, [renewed], now=late) == [NO_STOP]
+    (problem,) = evaluate(p, [renewed], late, ROME)
+    assert "non ancora inviato al broker" in problem.text
+    # with a sent stop covering half: short
+    sent = order(remaining="5")
+    assert kinds(p, [sent, order(remaining="5", unsent_since=night)], now=late) == [SHORT_STOP]
+    # a stop that became to_send during the session gets its own grace
+    fresh = order(unsent_since=NOW - timedelta(minutes=5))
+    assert kinds(p, [fresh]) == []

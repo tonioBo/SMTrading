@@ -16,6 +16,11 @@ position (`<portfolio_id>:<symbol>:<kind>`):
   session close, manual closures included; midnight for CRYPTO and FX), else the market's
   next close, else (CRYPTO, FX) 00:00 UTC.
 
+A stop of a broker-linked portfolio not at the broker yet (`to_send`: e.g. a fractional
+Alpaca exit renewed every session by BrokerSync, sent again at the open) protects while
+the market is closed and for SEND_GRACE of an open session; still unsent after that it
+no longer counts (`no_stop` / `short_stop`, the text says it waits to be sent).
+
 A position changed in the last GRACE, or one of whose exit-side orders changed in the last
 GRACE, is left to the next run (the agent may be placing or replacing its exits right
 now); its open problems are kept as they are, not cleared. A stop being modified
@@ -50,6 +55,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.common.config import get_settings
+from smtrading.common.errors import SMTError
 from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import (
     FILLABLE_STATUSES,
@@ -77,6 +83,7 @@ STATE_KEY = "protection_alarm"
 INTERVAL_S = 300
 GRACE = timedelta(minutes=5)
 DAY_TIF_MARGIN = timedelta(minutes=30)
+SEND_GRACE = timedelta(minutes=15)
 ISSUE_ATTEMPTS = 3
 STOP_TYPES = frozenset({OrderType.stop, OrderType.stop_limit, OrderType.trailing_stop})
 NO_STOP, SHORT_STOP, DAY_TIF = "no_stop", "short_stop", "day_tif"
@@ -115,6 +122,8 @@ class OrderView:
     reduce_only: bool
     canceling: bool = False  # a cancel is in progress at the broker (a replace is not)
     parent_partial: bool = False  # held child of a partially filled bracket entry
+    # waiting to be sent to the linked broker since (to_send, no broker order yet)
+    unsent_since: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -161,24 +170,49 @@ def day_window(order: OrderView, market: str, now: datetime) -> tuple[datetime, 
     return start, end
 
 
+def unsent_too_long(order: OrderView, market: str, now: datetime) -> bool:
+    """A stop still waiting to be sent to the broker beyond SEND_GRACE of an open
+    session (while the market is closed it waits for the open)."""
+    if order.unsent_since is None:
+        return False
+    try:
+        if not market_status(market, now).is_open:
+            return False
+    except SMTError:  # an unknown market: judged on the wait alone
+        pass
+    since = order.unsent_since
+    if market in CALENDARS:
+        try:
+            session = session_on(market, local_date(market, now))
+        except ValueError:
+            session = None
+        if session is not None:
+            since = max(since, session[0])
+    return now - since > SEND_GRACE
+
+
 def evaluate(pos: PositionView, orders: list[OrderView], now: datetime,
              zone: ZoneInfo) -> list[Problem]:
     """The problems of one position, given its open orders (pure)."""
     exit_side = OrderSide.sell if pos.qty > 0 else OrderSide.buy
     exits = [o for o in orders if o.side == exit_side and o.type in STOP_TYPES]
     stops = [o for o in exits if o.status in FILLABLE_STATUSES and not o.canceling]
+    unsent = [o for o in stops if unsent_too_long(o, pos.market, now)]
+    stops = [o for o in stops if o not in unsent]
     held = [o for o in exits if o.status == OrderStatus.held and o.parent_partial]
     size = abs(pos.qty)
     problems: list[Problem] = []
+    waiting = " (stop non ancora inviato al broker a seduta aperta)" if unsent else ""
     if not stops:
-        text = "nessuno stop di uscita attivo"
+        text = "nessuno stop di uscita attivo" + waiting
         if held:
             text += " (stop in attesa: l'ingresso è eseguito solo in parte)"
         problems.append(Problem(NO_STOP, text))
         return problems
     covered = sum((o.remaining or Decimal(0)) for o in stops)
     if covered < size:
-        problems.append(Problem(SHORT_STOP, f"lo stop copre {num(covered)} su {num(size)}"))
+        problems.append(Problem(SHORT_STOP, f"lo stop copre {num(covered)} su {num(size)}"
+                                            + waiting))
     # day stops matter only when the gtc ones alone do not cover the position
     lasting = [o for o in stops if o.tif != TimeInForce.day]
     if sum((o.remaining or Decimal(0)) for o in lasting) >= size:
@@ -269,6 +303,9 @@ def _view(o: Order, partial_parents: set[uuid.UUID]) -> OrderView:
         oco_group_id=o.oco_group_id, role=o.role, reduce_only=bool(o.reduce_only),
         canceling=o.broker_status == BrokerState.CANCEL_REQUESTED,
         parent_partial=o.parent_id in partial_parents,
+        unsent_since=(o.updated_at if o.broker_link_id is not None
+                      and o.broker_order_id is None
+                      and o.broker_status == BrokerState.TO_SEND else None),
     )
 
 

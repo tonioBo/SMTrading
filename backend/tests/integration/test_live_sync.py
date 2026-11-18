@@ -6,6 +6,7 @@ session socket guard of conftest."""
 
 import asyncio
 import contextlib
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -881,3 +882,43 @@ async def test_valid_until_live_order_canceled_through_the_gate_and_expired(make
     acts = await _activities(maker, oid)
     assert [a.type for a in acts] == ["live.order.sent", "live.order.canceled"]
     assert acts[-1].data["message"] == "scaduto"
+
+
+async def test_alpaca_live_fractional_gtc_is_sent_as_day_and_renewed(maker, redis, qs):
+    """A fractional gtc limit: sent as day through the gate; expired by Alpaca at the
+    close, renewed at the next open with a new client reference, its own live audit."""
+    close = datetime(2026, 11, 10, 21, 5, tzinfo=UTC)
+    wednesday = datetime(2026, 11, 11, 14, 31, tzinfo=UTC)
+    pid, _ = await _live(maker)
+    async with maker() as s:
+        order = await place_order(s, qs, PlaceOrderRequest(
+            portfolio_id=pid, symbol="AAPL", side=OrderSide.buy, type=OrderType.limit,
+            qty=D("0.5"), limit_price=D("95"), tif="gtc", agent_id="agent-1"), now=OPEN)
+        await s.commit()
+        oid = order.id
+    with _mock() as mock:
+        post = mock.post(f"{ALPACA}/v2/orders").mock(return_value=httpx.Response(
+            200, json={**_alpaca_order(), "qty": "0.5"}))
+        await _sync(maker, redis, qs).tick()
+    assert json.loads(post.calls.last.request.content)["time_in_force"] == "day"
+    with _mock() as mock:
+        mock.get(f"{ALPACA}/v2/orders/bo-1").mock(return_value=httpx.Response(
+            200, json=_alpaca_order(status="expired")))
+        await _sync(maker, redis, qs, Clock(close)).tick()
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.pending and o.broker_status == BrokerState.TO_SEND
+    assert o.broker_attempt == 1 and o.broker_order_id is None
+    with _mock() as mock:
+        mock.get(f"{ALPACA}/v2/account").mock(return_value=httpx.Response(200, json={
+            "id": "acct-1", "cash": "5000", "buying_power": "5000", "currency": "USD",
+            "multiplier": "1"}))
+        mock.get(f"{ALPACA}/v2/positions").mock(return_value=httpx.Response(200, json=[]))
+        mock.get(f"{ALPACA}/v2/orders").mock(return_value=httpx.Response(200, json=[]))
+        post = mock.post(f"{ALPACA}/v2/orders").mock(return_value=httpx.Response(
+            200, json={**_alpaca_order(), "id": "bo-2", "qty": "0.5"}))
+        await _sync(maker, redis, qs, Clock(wednesday)).tick()
+    body = json.loads(post.calls.last.request.content)
+    assert body["client_order_id"] == f"{oid}-1" and body["time_in_force"] == "day"
+    o = await _order(maker, oid)
+    assert o.broker_order_id == "bo-2" and o.status == OrderStatus.pending
+    assert [a.action for a in await _audit(maker, oid)] == ["order_sent", "order_sent"]

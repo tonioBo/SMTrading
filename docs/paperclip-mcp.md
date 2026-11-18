@@ -303,7 +303,8 @@ Tipi: `order.accepted`, `order.filled`, `order.partially_filled`, `order.rejecte
 `order.canceled`, `order.expired`, `kill_switch`, `portfolio.reset`, `portfolio.cash`, gli
 avvisi di rischio e del broker (`liquidation`, `daily_loss`, `margin_warning`,
 `broker.order_unknown`, `broker.liquidation_waiting`, `broker.fill_price_missing`,
-`broker.reconciliation_diff`, `order.replace_failed`), `price_alert`, `instrument.added`,
+`broker.reconciliation_diff`, `order.replace_failed`, `broker.renewal_failed`,
+`broker.order_renewed`), `price_alert`, `instrument.added`,
 `split_orders_canceled`, `decision.<kind>` e ogni altro tipo di notifica (livello `info`).
 Livelli: `critical`, `warning`, `executed`, `info`. Ogni elemento:
 `{id, ts, type, level, agent, agent_id, portfolio, portfolio_id, summary, data, already_sent}`.

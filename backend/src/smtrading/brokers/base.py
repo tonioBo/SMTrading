@@ -88,6 +88,13 @@ class BrokerAdapter:
         it needs data only `prepare` loads; BrokerSync checks `supports` before sending."""
         return self.supports(order, instrument)
 
+    def renewed_daily(self, order: Order, instrument: Instrument) -> bool:
+        """The broker takes this `gtc` order only as a `day` order (Alpaca: fractional
+        quantities): it is sent as `day` and, when the broker expires it unfilled at the
+        session end, BrokerSync sends it again at the next session (`_renew`), keeping
+        it open locally as `gtc`. No network I/O."""
+        return False
+
     def unsupported_reason(self, order: Order, instrument: Instrument) -> str | None:
         """Why `routable` refuses the order, in a text for the user (None: the generic
         «not supported» message). No network I/O."""

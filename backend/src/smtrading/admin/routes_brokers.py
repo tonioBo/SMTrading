@@ -1,5 +1,6 @@
 """Admin API: broker links (paper/demo accounts only), connection test, portfolio link,
-reconciliations and broker positions.
+reconciliations and broker positions, and the guided test «Prova collegamento»
+(paper/demo links only: brokers.guided_test).
 
 Real-money links (LIVE_KINDS) are created, changed and linked only through the
 «denaro reale» routes (admin.routes_live): here they are listed (masked, with their
@@ -48,6 +49,7 @@ from smtrading.admin.routes_live import (
 from smtrading.admin.routes_portfolios import portfolio_dto
 from smtrading.brokers.alpaca_paper import PAPER_URL
 from smtrading.brokers.etoro_core import ETORO_URL
+from smtrading.brokers.guided_test import LIVE_REFUSED, ORDER_CONFIRM, run_guided_test
 from smtrading.brokers.live import LIVE_KINDS
 from smtrading.brokers.live.account import LIVE_FIELDS, key_masked, live_secrets
 from smtrading.brokers.live.reconcile import reconcile_live
@@ -66,8 +68,11 @@ from smtrading.brokers.service import (
 from smtrading.brokers.sync import reconcile
 from smtrading.brokers.t212_demo import DEMO_URL
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.instruments.models import Instrument
 from smtrading.mcp.dto import parse_int, to_jsonable
 from smtrading.portfolios.models import Portfolio
+from smtrading.risk.settings import is_kill_switch_on
+from smtrading.useractivity import context as activity
 
 router = APIRouter(prefix="/api", tags=["brokers"], dependencies=[Depends(require_access)])
 
@@ -100,6 +105,12 @@ class BrokerLinkPatchIn(BaseModel):
     name: str | None = None
     enabled: bool | None = None
     config: dict[str, Any] | None = None
+
+
+class GuidedTestIn(BaseModel):
+    symbol: str = "AAPL"  # the sample instrument (market status, quote, test order)
+    order_test: bool = False  # also a tiny order + immediate cancel on the paper account
+    confirm: str | None = None  # the second confirmation of the order: ORDER_CONFIRM
 
 
 class PortfolioLinkIn(BaseModel):
@@ -295,6 +306,49 @@ async def test_link(
             error = _error_text(e, secrets)
         await _record(session, redis, link_id, error)
         return {"ok": error is None, "error": error, "checked_at": datetime.now(UTC).isoformat()}
+
+    return await idem.run(run)
+
+
+@router.post("/broker-links/{link_id}/guided-test")
+async def guided_test(
+    link_id: UUID, body: GuidedTestIn, admin: CurrentAdmin, session: DbSession,
+    redis: RedisClient, qs: Quotes, idem: BrokerIdem,
+):
+    """«Prova collegamento» (admin only): the read-only checks of brokers.guided_test and,
+    with `order_test` and `confirm` = ORDER_CONFIRM, a tiny order canceled at once. Only
+    for paper/demo links: a real-money link is refused (FORBIDDEN) before any adapter
+    exists. Every step's outcome is answered in Italian; the link status records the
+    authentication; the activity log records the request (`brokers.guided_test`, or
+    `brokers.guided_test_order` when the order step ran)."""
+
+    async def run() -> dict:
+        link = await _link(session, link_id)
+        if link.kind in LIVE_KINDS or link.live_state is not None:
+            raise SMTError(ErrorCode.FORBIDDEN, LIVE_REFUSED, {"field": "kind"})
+        if body.order_test and (body.confirm or "").strip().upper() != ORDER_CONFIRM:
+            raise _invalid("confirm", f"per l'ordine di prova scrivi «{ORDER_CONFIRM}»")
+        symbol = body.symbol.strip().upper()
+        instrument = await session.get(Instrument, symbol) if symbol else None
+        if instrument is None:
+            raise _invalid("symbol", f"strumento {symbol or '—'} non trovato")
+        secrets = await _secrets(session, link)
+        kill = await is_kill_switch_on(session)
+        async with httpx.AsyncClient() as http, \
+                open_adapter(session, link_id, http) as adapter:
+            await session.commit()  # no transaction across the network calls
+            steps = await asyncio.wait_for(run_guided_test(
+                adapter, instrument, qs, now=datetime.now(UTC),
+                order_test=body.order_test, kill_switch_on=kill,
+                error_text=lambda e: _error_text(e, secrets)), 2 * LIVE_TIMEOUT_S)
+        auth = next(s for s in steps if s.key == "auth")
+        await _record(session, redis, link_id,
+                      None if auth.status == "ok" else auth.detail)
+        if body.order_test:
+            activity.set_action("brokers.guided_test_order")
+        return {"ok": all(s.status != "error" for s in steps),
+                "steps": [s.dto() for s in steps],
+                "checked_at": datetime.now(UTC).isoformat()}
 
     return await idem.run(run)
 

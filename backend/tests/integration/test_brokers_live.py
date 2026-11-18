@@ -172,11 +172,15 @@ def test_alpaca_live_notional_market_day_only():
     assert not a.supports(_order(**notional, tif=TimeInForce.gtc), inst)
     assert not a.supports(_order(**notional, type=OrderType.limit,
                                  limit_price=Decimal(1)), inst)
-    # fractional quantities: day only, never a trailing stop
+    # fractional quantities: sent as day (gtc resting ones renewed every session by
+    # BrokerSync), never a trailing stop
     assert a.supports(_order(qty=Decimal("0.5")), inst)
     assert a.supports(_order(qty=Decimal("0.5"), type=OrderType.limit,
                              limit_price=Decimal(1)), inst)
-    assert not a.supports(_order(qty=Decimal("0.5"), tif=TimeInForce.gtc), inst)
+    gtc_stop = _order(qty=Decimal("0.5"), tif=TimeInForce.gtc, type=OrderType.stop,
+                      stop_price=Decimal(1))
+    assert a.supports(gtc_stop, inst) and a.renewed_daily(gtc_stop, inst)
+    assert a.supports(_order(qty=Decimal("0.5"), tif=TimeInForce.gtc), inst)  # market
     assert not a.supports(_order(qty=Decimal("0.5"), type=OrderType.trailing_stop,
                                  trail_pct=Decimal(1)), inst)
     # whole shares: gtc allowed

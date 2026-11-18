@@ -403,6 +403,12 @@ Portfolio Manager rivaluta gli ingressi delle strategie al suo ciclo successivo.
    provarci "per vedere".
 7. Azioni UE (`.MI`, `.DE`, `.PA`): **solo quantità intere** (lotto 1). Azioni USA:
    frazionarie consentite. Crypto: frazionarie. Verifica `lot_size` con `get_instrument`.
+   Su Alpaca un ordine con quantità frazionaria vale al broker solo per la giornata: uno
+   stop, un target o un limit `gtc` frazionario resta aperto da noi e viene rinviato in
+   automatico all'apertura successiva (attività `broker.order_renewed`, nessuna azione
+   richiesta; non piazzarlo di nuovo, copriresti due volte la stessa qty). Se scade dopo
+   un'esecuzione parziale non viene rinviato (`broker.renewal_failed`): ripristina la
+   protezione della qty rimasta.
 8. Gli ordini a mercato su quotazioni vecchie sono rifiutati (`STALE_QUOTE`). Per le azioni
    UE preferisci ordini limit.
 9. Un ordine su un mercato chiuso resta in attesa (stato `queued`/`pending`) fino

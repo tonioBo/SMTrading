@@ -115,7 +115,8 @@ def activity_for_event(type: str, payload: dict) -> ActivityDraft | None:
 
 _CRITICAL = {"liquidation", "daily_loss", "broker.order_unknown"}
 _WARNING = {"margin_warning", "order.rejected", "broker.liquidation_waiting",
-            "broker.fill_price_missing", "order.replace_failed"}
+            "broker.fill_price_missing", "order.replace_failed",
+            "broker.renewal_failed"}
 
 _NOTIFICATIONS: dict[str, Callable[[dict], str]] = {
     "liquidation": lambda p: (
@@ -137,6 +138,10 @@ _NOTIFICATIONS: dict[str, Callable[[dict], str]] = {
     ),
     "broker.fill_price_missing": lambda p: (
         f"Prezzo di esecuzione di {_v(p, 'symbol')} non fornito dal broker"
+    ),
+    "broker.renewal_failed": lambda p: (
+        f"Ordine {_v(p, 'symbol')} scaduto al broker dopo un'esecuzione parziale"
+        f" ({_v(p, 'filled_qty')} su {_v(p, 'qty')}): non rinnovato, verifica la protezione"
     ),
     "order.replace_failed": lambda p: (
         f"Modifica dell'ordine {_v(p, 'symbol')} non riuscita: l'ordine è stato eseguito"

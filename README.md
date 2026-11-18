@@ -146,6 +146,55 @@ Funzionamento:
 - *Riconciliazione* (*Riconcilia ora*, e periodica): confronta le posizioni del broker con
   le nostre e registra le differenze; non corregge nulla.
 
+- **Quantità frazionarie su Alpaca** (paper e reale): Alpaca accetta un ordine frazionario
+  solo «per la giornata». Uno stop, un target o un limit `gtc` frazionario viene inviato
+  come ordine della giornata e, quando Alpaca lo fa scadere alla chiusura senza
+  esecuzioni, BrokerSync lo rinvia all'apertura successiva con un nuovo riferimento (mai due
+  volte; l'OCO resta valido: se l'altra gamba si esegue, il rinnovo è annullato). Il
+  rinnovo è annotato nel registro attività (`broker.order_renewed`). Se scade dopo
+  un'esecuzione parziale non viene rinviato: notifica `broker.renewal_failed` e l'allarme
+  di protezione segnala la parte scoperta. L'allarme considera protetto uno stop in attesa
+  di rinvio finché il mercato è chiuso e nei primi 15 minuti di seduta. Su un conto reale
+  con il kill switch attivo il cancello live blocca anche il rinnovo (l'ordine è rifiutato
+  e l'allarme lo segnala).
+
+#### Prova collegamento (solo paper/demo)
+
+Sulla scheda di un collegamento paper/demo, *Prova collegamento* (solo amministratori)
+esegue in ordine: accesso (chiavi), lettura del conto, potere d'acquisto, stato del
+mercato e una quotazione dello strumento di esempio (AAPL di default), con l'esito di ogni
+passo in italiano. Facoltativo, con una seconda conferma scritta («ORDINE DI PROVA»): un
+acquisto limite di 1 unità a metà prezzo (non può essere eseguito) inviato al conto di
+prova e annullato subito, poi riletto. Non è disponibile dove il broker accetta solo ordini
+a mercato (eToro) né con il kill switch attivo. L'ordine di prova esiste solo presso il
+broker (nessun ordine o movimento in SMTrading). Rifiutata sui collegamenti a denaro reale,
+che hanno il loro test in sola lettura. Ogni prova è nel *Registro attività*
+(«Prova guidata del collegamento broker», con o senza ordine di prova).
+
+#### Avviare una campagna di prova su un broker (paper/demo)
+
+1. **Conto di prova**: apri o azzera il conto paper/demo presso il broker (Alpaca Paper,
+   Trading 212 Demo, eToro Demo: per eToro un conto virtuale vuoto e la chiave *Demo*).
+   Annota il saldo iniziale.
+2. **Collegamento**: *Broker → Nuovo collegamento*, tipo paper/demo, chiavi del conto.
+3. **Prova collegamento**: lancia la prova guidata; tutti i passi devono essere *OK*
+   (una quotazione mancante va sistemata nei *Connettori*). Se il broker accetta ordini
+   limite, ripetila con l'ordine di prova e controlla nell'app del broker che l'ordine
+   risulti annullato.
+4. **Portafoglio dedicato**: crea un portafoglio nuovo (o azzerane uno senza posizioni) con
+   liquidità iniziale non superiore al saldo del conto di prova, poi collegalo al broker.
+   Accetta le **commissioni del broker** proposte (o applicale da *Commissioni*): ogni
+   preset riporta fonte e data della verifica; quelle marcate «da verificare» vanno
+   controllate sul listino del proprio paese.
+5. **Primo ordine piccolo**: un ordine manuale di poche unità (o frazionario su Alpaca) e
+   la verifica che stato, esecuzione e commissione coincidano con l'app del broker.
+6. **Riconciliazione**: *Riconcilia ora* dopo il primo fill; nessuna differenza attesa.
+7. **Agenti**: assegna il portafoglio agli agenti come un qualsiasi portafoglio; segui i
+   primi giorni da *Attività* (rifiuti, rinnovi giornalieri, riconciliazioni) e
+   dall'allarme di protezione.
+8. **Chiusura della campagna**: chiudi le posizioni, annulla gli ordini, scollega il
+   portafoglio e confronta il risultato con il conto di prova.
+
 ### eToro (demo e reale)
 
 eToro si collega in due modi: **eToro Demo** (`etoro_demo`, denaro virtuale, pagina

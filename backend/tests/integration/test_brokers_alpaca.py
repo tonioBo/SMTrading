@@ -206,6 +206,46 @@ def test_supports():
     assert not a.supports(_order(type=OrderType.limit, qty=None, notional=Decimal(5)), _inst())
 
 
+def test_fractional_rules_shared_by_paper():
+    """Alpaca (paper and live): fractional shares never as a trailing stop; a gtc resting
+    fractional order is renewed every session (sent as day)."""
+    a = AlpacaPaperAdapter(CFG, None)
+    inst, half = _inst(), Decimal("0.5")
+    assert not a.supports(_order(qty=half, type=OrderType.trailing_stop,
+                                 trail_pct=Decimal(1)), inst)
+    gtc_stop = _order(qty=half, type=OrderType.stop, stop_price=Decimal(90),
+                      tif=TimeInForce.gtc, side=OrderSide.sell)
+    assert a.supports(gtc_stop, inst) and a.renewed_daily(gtc_stop, inst)
+    for kind in (OrderType.limit, OrderType.stop_limit):
+        o = _order(qty=half, type=kind, limit_price=Decimal(1), stop_price=Decimal(1),
+                   tif=TimeInForce.gtc)
+        assert a.renewed_daily(o, inst)
+    # never renewed: whole shares, day orders, market orders, crypto (gtc at Alpaca)
+    assert not a.renewed_daily(_order(qty=Decimal(2), type=OrderType.stop,
+                                      stop_price=Decimal(9), tif=TimeInForce.gtc), inst)
+    assert not a.renewed_daily(_order(qty=half, type=OrderType.stop, stop_price=Decimal(9)),
+                               inst)
+    assert not a.renewed_daily(_order(qty=half, tif=TimeInForce.gtc), inst)
+    btc = _inst("BTC-USD", AssetClass.crypto)
+    assert not a.renewed_daily(_order(symbol="BTC-USD", qty=Decimal("0.01"),
+                                      type=OrderType.limit, limit_price=Decimal(1),
+                                      tif=TimeInForce.gtc), btc)
+
+
+@respx.mock
+@pytest.mark.parametrize("qty,tif,sent", [
+    ("0.5", TimeInForce.gtc, "day"), ("0.5", TimeInForce.day, "day"),
+    ("2", TimeInForce.gtc, "gtc"), ("2.000", TimeInForce.gtc, "gtc"),
+])
+async def test_fractional_gtc_is_sent_as_day(http, qty, tif, sent):
+    route = respx.post(f"{PAPER_URL}/v2/orders").mock(
+        return_value=httpx.Response(200, json={"id": "b9", "status": "new"}))
+    o = _order(qty=Decimal(qty), tif=tif, type=OrderType.stop, stop_price=Decimal(90),
+               side=OrderSide.sell)
+    await AlpacaPaperAdapter(CFG, http).place_order(o, _inst())
+    assert json.loads(route.calls[0].request.content)["time_in_force"] == sent
+
+
 async def test_service_links(db_session, portfolio, http):
     link = await create_link(db_session, "paper1", "alpaca_paper", CFG)
     assert link.config_encrypted and b"SEC-SECRET" not in link.config_encrypted

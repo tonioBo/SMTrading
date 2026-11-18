@@ -2,6 +2,13 @@
 
 Official docs: https://docs.alpaca.markets/reference (orders, positions, account).
 The base URL is a ClassVar constant of the concrete class, never configuration.
+
+Fractional quantities and notional orders (equities): Alpaca takes them only as `day`
+orders and never as a trailing stop (https://docs.alpaca.markets/docs/fractional-trading;
+the paper API applies the same rules). A `gtc` one is sent as `day`; a resting one
+(limit, stop, stop limit) is renewed by BrokerSync at the next session after the broker
+expires it (`renewed_daily`), so a fractional bracket exit stays protected. A market
+order fills at once: it is sent as `day` and never renewed.
 """
 
 import json
@@ -12,7 +19,7 @@ import httpx
 
 from smtrading.brokers.base import AccountSnapshot, BrokerAdapter, BrokerOrder, BrokerStatus
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.engine.models import Order, OrderType
+from smtrading.engine.models import Order, OrderType, TimeInForce
 from smtrading.instruments.models import AssetClass, Instrument
 
 _CRYPTO_QUOTES = ("USDT", "USDC", "USD")
@@ -40,6 +47,8 @@ _REJECT_HTTP = {403, 422}
 _AUTH_WORDS = ("forbidden", "unauthorized", "access key")
 _DUP_WORDS = ("client_order_id", "unique", "duplicate")
 _OPEN_ORDERS_LIMIT = 500  # the API maximum
+# resting order types BrokerSync renews every session when Alpaca takes them only as day
+_RENEWED_TYPES = frozenset({OrderType.limit, OrderType.stop, OrderType.stop_limit})
 
 
 def _dec(v: object) -> Decimal | None:
@@ -54,6 +63,10 @@ def _dec(v: object) -> Decimal | None:
 
 def _num(v: Decimal) -> str:
     return format(v.normalize(), "f")
+
+
+def _fractional(order: Order) -> bool:
+    return order.qty is not None and order.qty != order.qty.to_integral_value()
 
 
 def to_alpaca_symbol(canonical: str, asset_class: AssetClass) -> str:
@@ -108,7 +121,24 @@ class _AlpacaProtocol(BrokerAdapter):
             return order.type in {OrderType.market, OrderType.limit, OrderType.stop_limit}
         if order.notional is not None:  # notional only for market orders
             return order.type is OrderType.market
+        if _fractional(order):  # fractional shares: never a trailing stop
+            return order.type is not OrderType.trailing_stop
         return True
+
+    @staticmethod
+    def _day_only(order: Order, instrument: Instrument) -> bool:
+        """Alpaca takes the order only as `day` (fractional or notional equity)."""
+        return instrument.asset_class is not AssetClass.crypto and (
+            order.notional is not None or _fractional(order))
+
+    def renewed_daily(self, order: Order, instrument: Instrument) -> bool:
+        return (order.tif is TimeInForce.gtc and order.type in _RENEWED_TYPES
+                and self._day_only(order, instrument))
+
+    def _tif(self, order: Order, instrument: Instrument) -> str:
+        if instrument.asset_class is AssetClass.crypto:
+            return "gtc"
+        return "day" if self._day_only(order, instrument) else str(order.tif)
 
     async def _request(
         self,
@@ -155,12 +185,11 @@ class _AlpacaProtocol(BrokerAdapter):
         )
 
     def _payload(self, order: Order, instrument: Instrument) -> dict:
-        crypto = instrument.asset_class is AssetClass.crypto
         body: dict = {
             "symbol": to_alpaca_symbol(order.symbol, instrument.asset_class),
             "side": str(order.side),
             "type": "stop_limit" if order.type is OrderType.stop_limit else str(order.type),
-            "time_in_force": "gtc" if crypto else str(order.tif),
+            "time_in_force": self._tif(order, instrument),
             "client_order_id": self.client_ref(order),
         }
         if order.qty is not None:

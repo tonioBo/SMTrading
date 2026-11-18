@@ -52,25 +52,51 @@ class BrokerFeePreset:
 
 
 _Z = Decimal(0)
-_ETORO_SOURCE = "guida giugno 2026; fonti discordanti 0,5–1%, da verificare"
+
+# Sources, checked 2026-11-18 (official pages only; the UI shows `source_note`):
+# - Alpaca stocks/ETF: https://alpaca.markets/support/commission-clearing-fees («no
+#   commission charges for Alpaca self-directed individual cash brokerage accounts»
+#   trading US listed securities through an API; SEC/FINRA fees on sells may apply).
+# - Alpaca crypto: https://docs.alpaca.markets/docs/crypto-fees (tier 1, 30-day volume
+#   0-100k USD: maker 0.15%, taker 0.25%; the preset takes the taker fee).
+# - Trading 212: https://helpcentre.trading212.com/hc/en-us/articles/11669719976093
+#   (FX fee 0.15%; none when trading in the asset's currency) and zero commission.
+# - eToro: https://www.etoro.com/trading/fees/ (ETF zero commission; stocks «a
+#   commission fee of $1 or $2 may apply» by country and exchange, no figures in the
+#   table: left at 0, the real fee comes from the fills; crypto flat 1% for
+#   Bronze/Silver/Gold) and https://www.etoro.com/trading/fees/conversion/ («Local
+#   currency account <> USD 0.75%» on trades, Club discounts apart).
+_CHECKED = "verificato 18/11/2026"
+_ALPACA_STOCKS = (f"listino ufficiale Alpaca, {_CHECKED}: "
+                  "alpaca.markets/support/commission-clearing-fees")
+_ALPACA_CRYPTO = (f"listino ufficiale Alpaca (livello base, taker), {_CHECKED}: "
+                  "docs.alpaca.markets/docs/crypto-fees")
+_T212_SOURCE = (f"centro assistenza Trading 212, {_CHECKED}: helpcentre.trading212.com "
+                "(multi-currency account)")
+_ETORO_STOCKS = (f"listino ufficiale eToro, {_CHECKED}: etoro.com/trading/fees; cambio "
+                 "0,75% confermato (etoro.com/trading/fees/conversion); commissione azioni "
+                 "1-2 $ secondo paese e borsa, da verificare")
+_ETORO_CRYPTO = (f"listino ufficiale eToro (livelli Bronze-Gold), {_CHECKED}: "
+                 "etoro.com/trading/fees e /conversion")
 
 PRESETS: dict[str, BrokerFeePreset] = {
     "alpaca": BrokerFeePreset("Alpaca", (
-        PresetEntry(None, _Z, _Z, _Z, "azioni ed ETF: commissione 0; conto in USD, nessun "
-                    "costo di cambio", "listino pubblico, da verificare"),
+        PresetEntry(None, _Z, _Z, _Z, "azioni ed ETF: commissione 0 (sulle vendite "
+                    "possibili piccole tasse SEC/FINRA); conto in USD, nessun costo di "
+                    "cambio", _ALPACA_STOCKS),
         PresetEntry("crypto", Decimal("0.25"), _Z, _Z, "crypto: commissione 0,25%",
-                    "fonte non ufficiale, da verificare"),
+                    _ALPACA_CRYPTO),
     )),
     "t212": BrokerFeePreset("Trading 212", (
         PresetEntry(None, _Z, _Z, Decimal("0.15"), "commissione 0; cambio valuta 0,15%",
-                    "più fonti concordi"),
+                    _T212_SOURCE),
     )),
     "etoro": BrokerFeePreset("eToro", (
         PresetEntry(None, _Z, _Z, Decimal("0.75"), "azioni ed ETF: commissione 0 (la "
                     "commissione reale arriva dalle esecuzioni); cambio valuta 0,75%",
-                    _ETORO_SOURCE),
+                    _ETORO_STOCKS),
         PresetEntry("crypto", Decimal(1), _Z, Decimal("0.75"),
-                    "crypto: commissione 1%; cambio valuta 0,75%", _ETORO_SOURCE),
+                    "crypto: commissione 1%; cambio valuta 0,75%", _ETORO_CRYPTO),
     )),
 }
 
