@@ -7,7 +7,8 @@ name, market, currency, side, qty, avg_price, opened_at, last, stale, value_eur,
 pnl_pct, stop: {order_id, price, tif}|null, target: {...}|null, distance_to_stop_pct,
 risk_at_stop_eur, protection: "ok"|"senza stop"|"copre parziale"|"scade oggi",
 extended: {session: "pre"|"post", price, change_pct_vs_close, ts}|null (US, regular
-session closed; information only), extended_beyond_stop}],
+session closed; information only), extended_beyond_stop, plan_state (pending | grace |
+closing | null: closing at the end of a «piano»), plan_grace_until}],
 portfolios: [{portfolio_id, portfolio_name, mode..., positions, value_eur, pnl_eur,
 risk_at_stop_eur, risk_unknown, unprotected, partial_cover, expiring_today,
 daily_loss_limit_eur, risk_pct_of_limit}]}:
