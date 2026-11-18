@@ -101,6 +101,9 @@ opportunità delle 09:05/15:35, niente finestre pre-chiusura, niente AGENDA).
    stop/obiettivo), con il valore dell'indicatore e la soglia. Se decidi di non chiudere,
    scrivi il motivo nella risposta del ciclo. Il limite di posizioni di una strategia riguarda
    solo gli **ingressi**: non salta mai il controllo delle uscite.
+   Dopo **ogni chiusura** di una posizione (uscita di strategia, stop, obiettivo) si libera un
+   posto nella strategia: **nello stesso ciclo** rivaluta subito gli ingressi di quella
+   strategia (stessa checklist; nelle finestre pre-chiusura con `include_forming: true`).
 9. Salva i cursori, rispondi nel task della Routine e chiudilo.
 
 ### Ciclo «Chiusura USA (serale)» — lun-ven 22:15
