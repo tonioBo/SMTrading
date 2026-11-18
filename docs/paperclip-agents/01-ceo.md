@@ -88,10 +88,10 @@ Task tipici e passi:
       Notifier: SMTrading avvisa da sé su Telegram.
    6. Se la richiesta era un task «HALT» del Risk Manager, rispondi lì (fatto / non fatto e
       perché) e chiudilo.
-4. **"ESCALATION"** ricevuta in copia (menzione): verifica i dati con
-   `get_risk_limits`/`get_portfolio`, rispondi con un commento nel task ESCALATION (lo chiude
-   il Notifier) e decidi se serve un intervento umano (task «RICHIESTA UMANI» al Notifier) o
-   un halt.
+4. **"ESCALATION"** ricevuta in copia (menzione, solo informativa): non devi rispondere né
+   chiuderla (la chiude il Notifier). Se dai dati (`get_risk_limits`/`get_portfolio`) vedi che
+   serve un intervento umano o un halt, agisci tu con un task «RICHIESTA UMANI» al Notifier o
+   con il punto 3.
 5. **«SEGNALAZIONE STRUMENTO · <SIMBOLO>»** (dal Portfolio Manager): leggi l'errore; se serve
    un umano (strumento o dati da sistemare) crea «RICHIESTA UMANI · strumento» al Notifier;
    rispondi nel task e chiudilo.

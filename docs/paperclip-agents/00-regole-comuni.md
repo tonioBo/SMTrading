@@ -138,9 +138,10 @@ Quando le istruzioni dicono «task <TITOLO> a <agente>» si intende sempre quest
    (tabella §3), con il titolo del template del tuo ruolo (parola chiave in MAIUSCOLO, campi
    separati da « · », date `AAAA-MM-GG`). **Scriverlo solo nel commento del tuo task non è un
    passaggio**: il destinatario non lo vede e la catena si ferma.
-2. **«copia a X»** (o «copia X»): nel nuovo task, in un commento, menziona X con il suo nome
-   esatto. X legge e agisce solo se le sue istruzioni lo prevedono; **non** chiude il task: lo
-   chiude l'assegnatario.
+2. **«copia a X»** (o «copia X») è **solo informativa**: nel nuovo task, in un commento,
+   menziona X con il suo nome esatto. X legge, non deve rispondere e **non** chiude il task: lo
+   chiude l'assegnatario. **Quando X deve fare qualcosa, la copia non basta: crea un task
+   separato assegnato a X.**
 3. Annota nel tuo report (o nel task della Routine) l'identificativo del task creato.
 4. **Chi riceve** risponde **nel task ricevuto** (formato §10; i template «ESITO …», «ANALISI
    …», «AUDIT …» sono la prima riga della risposta, non un nuovo task) e **lo chiude**
@@ -385,8 +386,7 @@ Già fatto dagli agenti: ...
 ```
 
 Un task `ESCALATION` per ogni `ESC-id`. Lo chiude il Notifier dopo l'invio (o con «già
-inviato da SMTrading»); il CEO, in copia, verifica e risponde con un commento nello stesso
-task.
+inviato da SMTrading»); il CEO è in copia solo per informazione.
 
 ## 12. Errori SMTrading – gestione comune
 
