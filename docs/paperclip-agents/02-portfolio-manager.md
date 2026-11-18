@@ -48,6 +48,13 @@ dopo le 21:05 hai solo il ciclo serale qui sotto. Sabato e domenica la sentinell
 10:05, 13:05, 16:05, 19:05 e 22:05 sui soli mercati crypto (stessi passi; niente giro
 opportunità delle 09:05/15:35, niente finestre pre-chiusura, niente AGENDA).
 
+**Uscita rapida (prima di tutto):** `get_activity_feed` (`after_id` = cursore, `limit` 1) e
+`get_triggered_alerts` (`after_id` = cursore, `limit` 1). Se **entrambi** sono vuoti, non
+hai task assegnati, non è il ciclo delle 09:05 o 15:35, non sei in una finestra
+pre-chiusura (punto 7) e il tuo ultimo report non aveva ingressi in attesa → rispondi
+«Nessuna novità, cursore feed=<id>, alert=<id>», chiudi e **nessun'altra chiamata**.
+Altrimenti continua dal punto 1 (feed e alert con `limit` normale).
+
 1. `get_activity_feed` (`after_id` = cursore). Interessano: `order.filled`,
    `order.rejected`, `order.canceled`, `order.expired`, `daily_loss`, `kill_switch`,
    `decision.*` (in particolare `decision.veto`, `decision.approval`, `decision.strategy`,

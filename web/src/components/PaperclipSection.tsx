@@ -12,7 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
-import { expiryText, hostChanged, isolationInactive } from "@/lib/paperclip";
+import { expiryText, formatUsd, hostChanged, isolationInactive } from "@/lib/paperclip";
 
 /**
  * «Ultima lettura: …», the last reader error (also a successful read without isolation rules),
@@ -131,6 +131,7 @@ function EditForm({ config, status, statusError }: { config: PaperclipConfig; st
   const [companyId, setCompanyId] = useState(config.company_id ?? "");
   const [key, setKey] = useState("");
   const [enabled, setEnabled] = useState(config.enabled);
+  const [budget, setBudget] = useState(config.monthly_budget_usd ?? "");
   // only the matches changed in the «Verifica» table ("" = back to the name match)
   const [mapDraft, setMapDraft] = useState<Record<string, string>>({});
 
@@ -143,7 +144,7 @@ function EditForm({ config, status, statusError }: { config: PaperclipConfig; st
   const field = errorField(saveError);
   const message = saveError ? errorMessage(saveError) : null;
   const fieldError = (name: string) => (field === name ? message : null);
-  const otherError = saveError && !["base_url", "company_id", "board_key"].includes(field ?? "") ? message : null;
+  const otherError = saveError && !["base_url", "company_id", "board_key", "monthly_budget_usd"].includes(field ?? "") ? message : null;
 
   function submit() {
     const patch: PaperclipConfigPatch = {};
@@ -152,6 +153,7 @@ function EditForm({ config, status, statusError }: { config: PaperclipConfig; st
     const cleanKey = key.replace(/\s+/g, "");
     if (cleanKey) patch.board_key = cleanKey;
     if (enabled !== config.enabled) patch.enabled = enabled;
+    if (budget.trim() !== (config.monthly_budget_usd ?? "")) patch.monthly_budget_usd = budget.trim() || null;
     if (Object.keys(mapDraft).length > 0) {
       const map = { ...config.agent_map };
       for (const [pid, sid] of Object.entries(mapDraft)) {
@@ -210,6 +212,9 @@ function EditForm({ config, status, statusError }: { config: PaperclipConfig; st
           onChange={(e) => setKey(e.target.value)}
         />
       </FormField>
+      <FormField label="Budget mensile ($)" error={fieldError("monthly_budget_usd")} hint="Usato solo se l'azienda in Paperclip non ha un budget; vuoto = nessun budget">
+        <Input inputMode="decimal" autoComplete="off" placeholder="es. 300" value={budget} onChange={(e) => setBudget(e.target.value)} />
+      </FormField>
       <label className="flex items-center gap-2 text-sm">
         <Switch checked={enabled} onCheckedChange={setEnabled} aria-label="Lettura attiva" />
         Lettura attiva
@@ -257,6 +262,8 @@ function ReadOnlyView({ config, status, statusError }: { config: PaperclipConfig
         <dd className="font-mono">{config.board_key_masked ?? "—"}</dd>
         <dt className="text-muted">Lettura attiva</dt>
         <dd>{config.enabled ? "Sì" : "No"}</dd>
+        <dt className="text-muted">Budget mensile</dt>
+        <dd>{config.monthly_budget_usd ? formatUsd(config.monthly_budget_usd) : "—"}</dd>
       </dl>
       <StatusLine status={status} isError={statusError} />
     </div>

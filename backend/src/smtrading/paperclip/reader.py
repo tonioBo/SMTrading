@@ -8,6 +8,8 @@
 3. Errors: one critical message at the third consecutive failed read, none after it until
    a read succeeds.
 4. Board key expiry: one notice 7 days before `expiresAt` (none when there is no expiry).
+4b. Monthly budget: the company's `budgetMonthlyCents` (best-effort: a failed read keeps
+   the stored value) and one Telegram alert per month per threshold (`paperclip.budget`).
 5. Agent sessions: after an MCP tool catalog change the idle agents' sessions are reset
    (`smtrading.paperclip.sessions`, the only write to Paperclip).
 
@@ -21,6 +23,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -29,9 +32,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.common.config import get_settings
 from smtrading.mcp.catalog import tool_catalog_fingerprint
+from smtrading.paperclip import budget
 from smtrading.paperclip.client import MAX_RUNS, PaperclipClient, PaperclipError
 from smtrading.paperclip.config import PaperclipConfig, load_config, load_state, save_state
-from smtrading.paperclip.costs import daily_costs
+from smtrading.paperclip.costs import _amount, daily_costs
 from smtrading.paperclip.models import AgentCostDay
 from smtrading.paperclip.sessions import SessionClientFactory, SessionRefresher
 from smtrading.telegram.outbox import enqueue
@@ -211,6 +215,7 @@ class PaperclipReader:
         except PaperclipError as e:
             await self._record_error(e.message)
             return
+        fetched["budget_usd"] = cfg.monthly_budget_usd
         await self._record(fetched)
 
     async def _fetch(self, cfg: PaperclipConfig) -> dict[str, Any]:
@@ -226,8 +231,12 @@ class PaperclipReader:
             except PaperclipError:
                 names = {}  # the id stands for the name
             expiry_known, expires_at = await _key_expiry(client)
+            try:
+                company: dict | None = await client.company()
+            except PaperclipError:
+                company = None  # the stored budget is kept
         return {"runs": runs, "policies": isolation_policies(policies), "names": names,
-                "expiry_known": expiry_known, "expires_at": expires_at}
+                "expiry_known": expiry_known, "expires_at": expires_at, "company": company}
 
     async def _record_error(self, message: str) -> None:
         async with self._sm() as session, session.begin():
@@ -255,6 +264,11 @@ class PaperclipReader:
             if fetched["expiry_known"]:
                 state["key_expires_at"] = fetched["expires_at"]
             await self._check_expiry(session, state, now)
+            if fetched.get("company") is not None:
+                state["company_budget_cents"] = _cents(fetched["company"].get("budgetMonthlyCents"))
+                state["company_spent_cents"] = _cents(fetched["company"].get("spentMonthlyCents"))
+            await self._check_budget(session, state, cfg_budget=fetched.get("budget_usd"),
+                                     now=now)
             await save_state(session, state)
 
     async def _check_isolation(self, session: AsyncSession, state: dict,
@@ -283,6 +297,21 @@ class PaperclipReader:
                           text=isolation_text(changes))
             state["alerted_signature"] = signature
 
+    async def _check_budget(self, session: AsyncSession, state: dict, *, cfg_budget: Any,
+                            now: datetime) -> None:
+        today = now.astimezone(ZoneInfo(get_settings().tz)).date()
+        resolved = budget.resolve_budget(state.get("company_budget_cents"), cfg_budget)
+        if resolved.usd is None:
+            return
+        spent = sum((usd for _, _, usd in await budget.month_spend(session, today)),
+                    start=Decimal(0))
+        s = budget.summary(today, spent, resolved)
+        for threshold, text in budget.due_alerts(s, state.get("budget_alerted")):
+            await enqueue(session, source="system", category="system", level="warning",
+                          text=text)
+            state["budget_alerted"] = budget.mark_alerted(state.get("budget_alerted"),
+                                                          s["month"], threshold)
+
     async def _check_expiry(self, session: AsyncSession, state: dict, now: datetime) -> None:
         expires_at = state.get("key_expires_at")
         if not key_expiring(state, now) or state.get("expiry_alerted") == expires_at:
@@ -293,6 +322,11 @@ class PaperclipReader:
         await enqueue(session, source="system", category="system", level="warning",
                       text=expiry_text(expires))
         state["expiry_alerted"] = expires_at
+
+
+def _cents(value: Any) -> float | None:
+    amount = _amount(value)
+    return float(amount) if amount is not None else None
 
 
 async def _upsert_costs(session: AsyncSession, runs: list[dict], names: dict[str, str]) -> None:

@@ -17,7 +17,7 @@ from test_admin_telegram import admin  # noqa: F401  (the fixture)
 from smtrading.agents.models import Agent, AgentPortfolio, McpAuditLog
 from smtrading.common.config import get_settings
 from smtrading.engine.models import Order, OrderSide, OrderType
-from smtrading.paperclip.config import load_config, load_state
+from smtrading.paperclip.config import load_config, load_state, save_state
 from smtrading.paperclip.models import AgentCostDay
 from smtrading.paperclip.reader import PaperclipReader
 from smtrading.useractivity.models import UserActivity
@@ -41,6 +41,8 @@ def _respx():
 
 
 def _mock(router, policies=None, agents=None):
+    router.get(API).mock(return_value=httpx.Response(200, json={"id": CID,
+                                                                 "budgetMonthlyCents": 0}))
     router.get(f"{API}/agents").mock(return_value=httpx.Response(200, json=agents or [
         {"id": "pa1", "name": "TRADER"}, {"id": "pa2", "name": "Ghost"},
         {"id": "pa3", "name": "renamed-in-paperclip"}]))
@@ -276,3 +278,65 @@ async def test_agent_costs_period_and_unmatched(admin):
     assert Decimal(row["api_usd"]) == Decimal("13.5")
     r = await admin.client.get("/api/agent-costs", params={"period": "year"})
     assert r.status_code == 400
+
+
+async def test_config_monthly_budget(admin):
+    await _configure(admin)
+    r = await _put(admin, monthly_budget_usd="25.5")
+    assert r.status_code == 200, r.text
+    assert r.json()["monthly_budget_usd"] == "25.5"
+    assert (await admin.client.get("/api/paperclip/config")).json()["monthly_budget_usd"] == "25.5"
+    r = await _put(admin, enabled=False)  # absent: kept
+    assert r.json()["monthly_budget_usd"] == "25.5"
+    for bad in ("-1", "abc", "1000001"):
+        r = await _put(admin, monthly_budget_usd=bad)
+        assert r.status_code == 400, (bad, r.text)
+        assert r.json()["details"]["field"] == "monthly_budget_usd"
+    r = await _put(admin, monthly_budget_usd=None)  # null: no budget
+    assert r.status_code == 200 and r.json()["monthly_budget_usd"] is None
+
+
+async def test_agent_costs_month_block(admin):
+    trader = await _agent(admin.sm, "Trader")
+    await _configure(admin)
+    today = datetime.now(ZoneInfo(get_settings().tz)).date()
+    last_month = today.replace(day=1) - timedelta(days=1)
+    async with admin.sm() as s:
+        for day, agent, name, api, other in ((today, "pa1", "trader", "4", "1"),
+                                             (today, "pa9", "Ghost", "4", "0"),
+                                             (last_month, "pa1", "trader", "100", "0")):
+            # «incluso nell'abbonamento» never counts against the budget
+            s.add(AgentCostDay(day=day, paperclip_agent_id=agent, paperclip_agent_name=name,
+                               api_usd=Decimal(api), subscription_usd=Decimal(7),
+                               other_usd=Decimal(other), runs=1))
+        state = await load_state(s, for_update=True)
+        state["company_budget_cents"] = 2000
+        await save_state(s, state)
+        await s.commit()
+    body = (await admin.client.get("/api/agent-costs", params={"period": "day"})).json()
+    month = body["month"]
+    assert month["month"] == f"{today.year:04d}-{today.month:02d}"
+    assert month["days_elapsed"] == today.day
+    assert Decimal(month["spent_usd"]) == Decimal(9)
+    assert Decimal(month["daily_avg_usd"]) == (Decimal(9) / today.day).quantize(Decimal("0.01"))
+    assert (Decimal(month["budget_usd"]), month["budget_source"]) == (Decimal(20), "paperclip")
+    assert Decimal(month["spent_pct"]) == Decimal("45.0")
+    assert [(x["agent_id"], x["name"], Decimal(x["usd"]), Decimal(x["pct"]))
+            for x in month["shares"]] == [
+        (str(trader.id), "Trader", Decimal(5), Decimal("55.6")),
+        (None, "Ghost", Decimal(4), Decimal("44.4")),
+    ]
+    # no company budget: the settings' one; none at all: no percentages
+    async with admin.sm() as s:
+        state = await load_state(s, for_update=True)
+        state["company_budget_cents"] = 0
+        await save_state(s, state)
+        await s.commit()
+    await _put(admin, monthly_budget_usd="30")
+    month = (await admin.client.get("/api/agent-costs")).json()["month"]
+    assert (Decimal(month["budget_usd"]), month["budget_source"]) == (Decimal(30), "settings")
+    assert Decimal(month["spent_pct"]) == Decimal("30.0")
+    await _put(admin, monthly_budget_usd=None)
+    month = (await admin.client.get("/api/agent-costs")).json()["month"]
+    assert month["budget_usd"] is None and month["spent_pct"] is None
+    assert month["projected_pct"] is None
