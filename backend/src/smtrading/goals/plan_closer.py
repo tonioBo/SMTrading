@@ -14,7 +14,15 @@ Each run:
 3. each `grace` row, from DEADLINE_MARGIN before its deadline (the session's close) while
    the market is open, with a fresh quote → closed the same way;
 4. a `closing` row is `closed` once the position is flat (its order not filled by the
-   end: back to pending or grace, tried again).
+   end: back to pending or grace, tried again, counted in `attempts` like a refusal).
+A row is never closed while another order closing the position is in flight (a market
+order or a triggered stop on the closing side, e.g. the agents' CHIUDI queued for the
+open or still at the broker): a second full-size close at the broker could sell twice
+(BrokerSync clamps a reduce-only order to the position, not to the other open sells);
+the row waits for the next run. With the close, the symbol's other resting orders on the
+closing side that are not reduce-only (a PROTEGGI OCO, a stop placed alone) are canceled
+too (`close_position` cancels the bracket exits only): once flat they would open the
+opposite position, and at the broker they hold the quantity the close needs.
 A position flat (or reopened: another `opened_at`) before SMTrading acts is `closed` by
 the agents, with no message. A closed market waits for the open; a missing or stale quote
 skips the row until the next run (never closed blind). A refused close is rolled back
@@ -43,9 +51,17 @@ from smtrading.activity.models import ActivityLevel
 from smtrading.activity.service import record_activity
 from smtrading.common.config import get_settings
 from smtrading.common.errors import SMTError
-from smtrading.engine.models import OPEN_STATUSES, Order
+from smtrading.engine.models import (
+    FILLABLE_STATUSES,
+    OPEN_STATUSES,
+    BrokerState,
+    Order,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+)
 from smtrading.engine.quotesource import QuoteSource
-from smtrading.engine.service import close_position
+from smtrading.engine.service import cancel_orders, close_position
 from smtrading.events import discard_post_commit, dispatch_post_commit
 from smtrading.goals.models import Goal, PlanClosure
 from smtrading.goals.plans import (
@@ -60,6 +76,7 @@ from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
 from smtrading.jobs.runs import run_job_once
 from smtrading.marketdata.types import Quote
+from smtrading.portfolios.locks import lock_live_portfolio
 from smtrading.portfolios.models import Portfolio, live_portfolio_ids
 from smtrading.positions.models import Position
 from smtrading.risk.settings import get_stale_threshold
@@ -265,6 +282,9 @@ class PlanCloser:
                 order = await session.get(Order, row.order_id) if row.order_id else None
                 if order is None or order.status not in OPEN_STATUSES:
                     row.state, row.order_id = ("grace" if row.deadline else "pending"), None
+                    status = order.status if order is not None else "missing"
+                    await self._failed(session, row, goal,
+                                       f"close order {status}, position still open")
                 return
             if instrument is None or not market_status(instrument.market, now).is_open:
                 return
@@ -338,17 +358,50 @@ class PlanCloser:
             if loaded is None:
                 return
             row, goal, _, _ = loaded
-            row.last_error = error[:300]
             if not notify:
+                row.last_error = error[:300]
                 return
-            row.attempts = (row.attempts or 0) + 1
-            if row.attempts == FAIL_NOTICE_AT:
-                name = await session.scalar(select(Portfolio.name)
-                                            .where(Portfolio.id == row.portfolio_id))
-                await enqueue(session, source="system", category=CATEGORY, level="warning",
-                              text=(f"⚠️ Piano «{goal.name}»: chiusura di {row.symbol} · "
-                                    f"{name} non riuscita ({error[:120]}); nuovo tentativo "
-                                    f"a ogni passaggio"))
+            await self._failed(session, row, goal, error)
+
+    async def _failed(self, session: AsyncSession, row: PlanClosure, goal: Goal,
+                      error: str) -> None:
+        """A close that did not happen: counted, the owner told once at FAIL_NOTICE_AT."""
+        row.last_error = error[:300]
+        row.attempts = (row.attempts or 0) + 1
+        if row.attempts == FAIL_NOTICE_AT:
+            name = await session.scalar(select(Portfolio.name)
+                                        .where(Portfolio.id == row.portfolio_id))
+            await enqueue(session, source="system", category=CATEGORY, level="warning",
+                          text=(f"⚠️ Piano «{goal.name}»: chiusura di {row.symbol} · "
+                                f"{name} non riuscita ({error[:120]}); nuovo tentativo "
+                                f"a ogni passaggio"))
+
+    async def _close_in_flight(self, session: AsyncSession, row: PlanClosure,
+                               held: Decimal) -> bool:
+        """Another order closing the position is in flight (module docstring)."""
+        side = OrderSide.sell if held > 0 else OrderSide.buy
+        return await session.scalar(
+            select(Order.id).where(
+                Order.portfolio_id == row.portfolio_id, Order.symbol == row.symbol,
+                Order.side == side, Order.status.in_(FILLABLE_STATUSES),
+                (Order.type == OrderType.market)
+                | Order.status.in_((OrderStatus.triggered, OrderStatus.partially_filled)))
+            .limit(1)) is not None
+
+    async def _cancel_resting(self, session: AsyncSession, row: PlanClosure,
+                              close: Order) -> None:
+        """The symbol's open resting orders on the close's side, not reduce-only, other
+        than the close (module docstring)."""
+        resting = list(await session.scalars(
+            select(Order).where(
+                Order.portfolio_id == row.portfolio_id, Order.symbol == row.symbol,
+                Order.side == close.side, Order.id != close.id,
+                Order.status.in_(FILLABLE_STATUSES), Order.reduce_only.is_not(True))
+            .order_by(Order.created_at, Order.id)
+            .with_for_update(of=Order).execution_options(populate_existing=True)))
+        await cancel_orders(session, [o for o in resting
+                                      if o.broker_status != BrokerState.CANCEL_REQUESTED],
+                            by="system")
 
     async def _close(self, row_id: int, now: datetime) -> None:
         async with self._sm() as session:
@@ -359,9 +412,18 @@ class PlanCloser:
                         return
                     row, goal, _, _ = loaded
                     grace = row.state == "grace"
+                    await lock_live_portfolio(session, row.portfolio_id)
+                    held = await session.get(Position, (row.portfolio_id, row.symbol),
+                                             populate_existing=True)
+                    if held is None or held.qty == 0:
+                        return  # flat meanwhile: the next run marks it closed
+                    if await self._close_in_flight(session, row, held.qty):
+                        row.last_error = "another close order is in flight"
+                        return
                     order = await close_position(
                         session, self._qs, row.portfolio_id, row.symbol, source="system",
                         now=now, redis=self._redis)
+                    await self._cancel_resting(session, row, order)
                     row.state, row.order_id, row.last_error = "closing", order.id, None
                     position = await session.get(Position, (row.portfolio_id, row.symbol),
                                                  populate_existing=True)

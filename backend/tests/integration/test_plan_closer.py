@@ -18,9 +18,15 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from smtrading.activity.models import Activity
 from smtrading.common.db import make_engine
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.engine.models import Order, OrderSide, OrderType
+from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType
 from smtrading.engine.quotesource import FakeQuoteSource
-from smtrading.engine.service import PlaceOrderRequest, close_position, place_order
+from smtrading.engine.service import (
+    PlaceOrderRequest,
+    close_position,
+    modify_order,
+    place_oco_order,
+    place_order,
+)
 from smtrading.events import discard_post_commit
 from smtrading.goals.models import Goal, PlanClosure
 from smtrading.goals.plan_closer import FAIL_NOTICE_AT, PlanCloser, plan_states
@@ -310,3 +316,117 @@ async def test_piano_since_mid_week_handles_the_current_week(sm, qs):
     await _plan(sm, plan_since=datetime(2027, 1, 13, 10, 0, tzinfo=UTC))
     await _job(sm, qs, Clock(SUNDAY_NIGHT)).tick()
     assert (await _rows(sm))["AAPL"].state == "pending"
+
+
+async def test_no_second_close_while_the_agents_close_is_in_flight(sm, qs):
+    """The agents' CHIUDI queued on the holiday is still open at Tuesday's open: the job
+    places no second full-size close (at the broker it could sell twice)."""
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, "AAPL", 10)
+    await _plan(sm)
+    qs.set_quote("AAPL", D("210.00"), D("210.10"), D("210.05"))  # in profit
+    await _job(sm, qs, Clock(SUNDAY_NIGHT)).tick()
+    async with sm() as s:  # market closed: the close waits in the queue
+        agent_close = await close_position(s, qs, pid, "AAPL", now=HOLIDAY)
+        discard_post_commit(s)
+        await s.commit()
+    assert agent_close.status == OrderStatus.queued
+    await _job(sm, qs, Clock(TUESDAY)).tick()
+    row = (await _rows(sm))["AAPL"]
+    assert (row.state, row.last_error) == ("pending", "another close order is in flight")
+    async with sm() as s:
+        assert await s.scalar(select(Order).where(Order.source == "system")) is None
+
+
+async def test_the_close_cancels_the_standalone_oco(sm, qs):
+    """A PROTEGGI OCO (not reduce-only) is canceled with the plan's close: flat, its stop
+    would open a short."""
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, "BTC-USD", "0.1")
+    async with sm() as s:
+        legs = await place_oco_order(
+            s, qs,
+            PlaceOrderRequest(portfolio_id=pid, symbol="BTC-USD", side=OrderSide.sell,
+                              type=OrderType.limit, qty=D("0.1"), limit_price=D(60000)),
+            PlaceOrderRequest(portfolio_id=pid, symbol="BTC-USD", side=OrderSide.sell,
+                              type=OrderType.stop, qty=D("0.1"), stop_price=D(45000)),
+            now=BOUGHT)
+        discard_post_commit(s)
+        await s.commit()
+    await _plan(sm)
+    qs.set_quote("BTC-USD", D(51000), D(51010), D(51005))
+    await _job(sm, qs, Clock(SUNDAY_NIGHT)).tick()
+    assert (await _rows(sm))["BTC-USD"].state == "closed"
+    async with sm() as s:
+        statuses = {o.status for o in await s.scalars(
+            select(Order).where(Order.id.in_([o.id for o in legs])))}
+    assert statuses == {OrderStatus.canceled}
+
+
+async def test_a_piano_turned_on_again_leaves_its_earlier_rows_alone(sm, qs):
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, "AAPL", 10)
+    qs.set_quote("AAPL", D("190.00"), D("190.10"), D("190.05"))
+    gid = await _plan(sm)
+    await _job(sm, qs, Clock(SUNDAY_NIGHT)).tick()
+    await _job(sm, qs, Clock(TUESDAY)).tick()
+    assert (await _rows(sm))["AAPL"].state == "grace"
+    async with sm() as s:  # off, then on again after the end (plan_since moves on)
+        await s.execute(update(Goal).where(Goal.id == gid).values(
+            active=True, plan_since=TUESDAY + timedelta(hours=1)))
+        await s.commit()
+    clock = Clock(DEADLINE - timedelta(minutes=5))
+    await _job(sm, qs, clock).tick()
+    assert (await _rows(sm))["AAPL"].state == "grace"  # untouched
+    assert await _qty(sm, pid, "AAPL") == 10
+    await _buy(sm, qs, pid, "AAPL", 1, now=TUESDAY)  # no longer blocks additions
+    assert await _qty(sm, pid, "AAPL") == 11
+
+
+async def test_a_close_order_ended_unfilled_counts_as_a_failure(sm, qs):
+    """The system's close ended without a fill (e.g. rejected by the broker): back to
+    grace, counted, the owner told once."""
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, "AAPL", 10)
+    qs.set_quote("AAPL", D("190.00"), D("190.10"), D("190.05"))
+    await _plan(sm)
+    await _job(sm, qs, Clock(SUNDAY_NIGHT)).tick()
+    await _job(sm, qs, Clock(TUESDAY)).tick()
+    async with sm() as s:
+        filled = await s.scalar(select(Order.id).where(Order.portfolio_id == pid))
+    for _ in range(FAIL_NOTICE_AT):
+        async with sm() as s:
+            await s.execute(update(PlanClosure).values(state="closing", order_id=filled))
+            await s.commit()
+        await _job(sm, qs, Clock(TUESDAY)).tick()
+    row = (await _rows(sm))["AAPL"]
+    assert (row.state, row.order_id, row.attempts) == ("grace", None, FAIL_NOTICE_AT)
+    assert "close order filled" in row.last_error
+    assert sum("non riuscita" in t for t in await _outbox(sm)) == 1
+
+
+async def test_protection_and_stop_changes_pass_in_grace(sm, qs):
+    """No additions in grace, but a PROTEGGI OCO and moving its stop are reductions."""
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, "AAPL", 10)
+    qs.set_quote("AAPL", D("190.00"), D("190.10"), D("190.05"))
+    await _plan(sm)
+    await _job(sm, qs, Clock(SUNDAY_NIGHT)).tick()
+    await _job(sm, qs, Clock(TUESDAY)).tick()
+    assert (await _rows(sm))["AAPL"].state == "grace"
+    async with sm() as s:
+        legs = await place_oco_order(
+            s, qs,
+            PlaceOrderRequest(portfolio_id=pid, symbol="AAPL", side=OrderSide.sell,
+                              type=OrderType.limit, qty=D(10), limit_price=D(220)),
+            PlaceOrderRequest(portfolio_id=pid, symbol="AAPL", side=OrderSide.sell,
+                              type=OrderType.stop, qty=D(10), stop_price=D(180)),
+            now=TUESDAY)
+        discard_post_commit(s)
+        await s.commit()
+    stop = next(o for o in legs if o.type == OrderType.stop)
+    async with sm() as s:
+        moved = await modify_order(s, qs, stop.id, stop_price=D(185), now=TUESDAY)
+        discard_post_commit(s)
+        await s.commit()
+    assert moved.stop_price == D(185) and moved.status != OrderStatus.rejected

@@ -97,12 +97,15 @@ def grace_deadline(market: str, after: datetime, n: int) -> datetime:
 
 
 def plan_rows():
-    """The open rows of active piani in portfolios not archived."""
+    """The open rows of active piani in portfolios not archived, of periods ended after
+    the goal last became a piano (`plan_since`): a piano turned off and on again leaves
+    the rows of its earlier periods alone (never closed, no longer blocking additions)."""
     return (select(PlanClosure)
             .join(Goal, Goal.id == PlanClosure.goal_id)
             .join(Portfolio, Portfolio.id == PlanClosure.portfolio_id)
             .where(PlanClosure.state.in_(OPEN_STATES), Goal.active.is_(True),
-                   Goal.closes_positions.is_(True),
+                   Goal.closes_positions.is_(True), Goal.plan_since.is_not(None),
+                   PlanClosure.ended_at > Goal.plan_since,
                    Portfolio.status != PortfolioStatus.archived))
 
 

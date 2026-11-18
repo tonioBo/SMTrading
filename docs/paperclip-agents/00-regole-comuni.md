@@ -415,7 +415,11 @@ Portfolio Manager rivaluta gli ingressi delle strategie al suo ciclo successivo.
 7. Vicino alla fine il PM apre solo ingressi che hanno il tempo di funzionare prima di
    `period_end`; il periodo successivo di un piano che si ripete parte normalmente.
 8. SMTrading non chiude mai senza una quotazione fresca e a mercato chiuso aspetta
-   l'apertura; le chiusure passano anche con kill switch e halt (riducono).
+   l'apertura; le chiusure passano anche con kill switch e halt (riducono). Non chiude se
+   c'è già una chiusura in corso del simbolo (un `CHIUDI` in coda o al broker): aspetta il
+   suo esito. Con la sua chiusura annulla anche gli ordini di uscita non reduce-only del
+   simbolo (l'OCO del `PROTEGGI`, uno stop da solo): a posizione chiusa aprirebbero
+   quella opposta.
 9. Nel feed: `plan.ended` (riepilogo dei simboli), `plan.grace` (simbolo, scadenza),
    `plan.closed` (chiusa da SMTrading). SMTrading avvisa da sé gli umani su Telegram: il
    Notifier non lo ripete.
