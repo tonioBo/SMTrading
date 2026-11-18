@@ -741,3 +741,144 @@ async def test_kill_switch_allows_closing_only(db_session, qs, p):
     order = await close_position(db_session, qs, p.id, "AAPL", now=OPEN)
     assert (order.qty, order.status) == (D(6), OrderStatus.filled)
     assert await _position(db_session, p.id, "AAPL") == 0
+
+
+# -- plan 16 Task A: valid_until (good-till-time entries) ---------------------------------
+
+BEFORE_OPEN_TUE = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)  # NASDAQ opens 14:30 UTC
+AFTER_CLOSE_TUE = datetime(2026, 11, 10, 21, 30, tzinfo=UTC)
+
+
+async def _orders_count(session) -> int:
+    return await session.scalar(select(func.count()).select_from(Order))
+
+
+def _limit(p, **kw):
+    return _req(p, type=OrderType.limit, limit_price=D("190.00"), **kw)
+
+
+async def test_valid_until_iso_sets_the_expiry_of_a_gtc_order(db_session, qs, p):
+    order = await place_order(
+        db_session, qs, _limit(p, valid_until="2026-11-10T19:00:00+01:00"), now=OPEN)
+    at = datetime(2026, 11, 10, 18, 0, tzinfo=UTC)
+    assert order.status == OrderStatus.pending and order.tif == TimeInForce.gtc
+    assert order.valid_until == at and order.expires_at == at
+
+
+async def test_valid_until_accepts_a_datetime_and_a_z_suffix(db_session, qs, p):
+    at = datetime(2026, 11, 10, 18, 0, tzinfo=UTC)
+    a = await place_order(db_session, qs, _limit(p, valid_until=at), now=OPEN)
+    b = await place_order(db_session, qs, _limit(p, valid_until="2026-11-10T18:00:00Z"), now=OPEN)
+    assert a.valid_until == b.valid_until == at
+
+
+@pytest.mark.parametrize("now", [OPEN, BEFORE_OPEN_TUE])
+async def test_valid_until_close_is_today_s_regular_close(db_session, qs, p, now):
+    order = await place_order(db_session, qs, _limit(p, valid_until="close"), now=now)
+    assert order.valid_until == NASDAQ_CLOSE_TUE == order.expires_at
+
+
+async def test_valid_until_close_with_day_tif_keeps_the_earlier_end(db_session, qs, p):
+    at = datetime(2026, 11, 10, 17, 0, tzinfo=UTC)
+    early = await place_order(
+        db_session, qs, _limit(p, tif=TimeInForce.day, valid_until=at), now=OPEN)
+    assert (early.valid_until, early.expires_at) == (at, at)
+    late = await place_order(  # after the session close: the day expiry comes first
+        db_session, qs,
+        _limit(p, tif=TimeInForce.day, valid_until=datetime(2026, 11, 12, 17, 0, tzinfo=UTC)),
+        now=OPEN)
+    assert late.expires_at == NASDAQ_CLOSE_TUE
+
+
+@pytest.mark.parametrize(("symbol", "now", "valid_until"), [
+    ("BTC-USD", OPEN, "close"),  # crypto: no session close
+    ("AAPL", SATURDAY, "close"),  # no session today
+    ("AAPL", AFTER_CLOSE_TUE, "close"),  # today's session already closed
+    ("AAPL", OPEN, "2026-11-10T14:00:00Z"),  # in the past
+    ("AAPL", OPEN, OPEN),  # at placement
+    ("AAPL", OPEN, "2026-11-10T18:00:00"),  # no timezone
+    ("AAPL", OPEN, "domani"),
+    ("AAPL", OPEN, ""),
+    ("AAPL", OPEN, 42),
+])
+async def test_invalid_valid_until_is_refused_with_its_field(
+    db_session, qs, p, symbol, now, valid_until,
+):
+    qty = D("0.1") if symbol == "BTC-USD" else D(10)
+    price = D("40000.00") if symbol == "BTC-USD" else D("190.00")
+    req = _req(p, symbol, type=OrderType.limit, qty=qty, limit_price=price,
+               valid_until=valid_until)
+    with pytest.raises(SMTError) as exc:
+        await place_order(db_session, qs, req, now=now)
+    assert exc.value.code == ErrorCode.INVALID_ORDER
+    assert exc.value.details["field"] == "valid_until"
+    assert await _orders_count(db_session) == 0
+    result = await preview_order(db_session, qs, req, now=now)
+    assert not result.ok and result.code == ErrorCode.INVALID_ORDER
+
+
+async def test_valid_until_iso_is_allowed_on_crypto(db_session, qs, p):
+    at = OPEN + timedelta(hours=3)
+    order = await place_order(
+        db_session, qs,
+        _req(p, "BTC-USD", type=OrderType.limit, qty=D("0.1"), limit_price=D("40000.00"),
+             valid_until=at.isoformat()),
+        now=OPEN)
+    assert order.valid_until == order.expires_at == at
+
+
+async def test_bracket_valid_until_is_for_the_entry_only(db_session, qs, p):
+    entry, tp, sl = await place_bracket_order(
+        db_session, qs, _req(p, type=OrderType.limit, limit_price=D("195.00"),
+                             valid_until="close"),
+        take_profit=D("210.00"), stop_loss=D("190.00"), now=OPEN,
+    )
+    assert entry.valid_until == entry.expires_at == NASDAQ_CLOSE_TUE
+    for child in (tp, sl):  # gtc exits: no end of their own
+        assert child.valid_until is None and child.expires_at is None
+        assert child.tif == TimeInForce.gtc and child.status == OrderStatus.held
+
+
+async def test_bracket_valid_until_day_exits_keep_the_day_expiry(db_session, qs, p):
+    at = datetime(2026, 11, 10, 17, 0, tzinfo=UTC)
+    entry, tp, sl = await place_bracket_order(
+        db_session, qs, _req(p, type=OrderType.limit, limit_price=D("195.00"),
+                             tif=TimeInForce.day, valid_until=at),
+        take_profit=D("210.00"), stop_loss=D("190.00"), now=OPEN,
+    )
+    assert entry.expires_at == at
+    assert tp.expires_at == sl.expires_at == NASDAQ_CLOSE_TUE
+    assert tp.valid_until is None and sl.valid_until is None
+
+
+async def test_bracket_invalid_valid_until_stores_nothing(db_session, qs, p):
+    with pytest.raises(SMTError) as exc:
+        await place_bracket_order(
+            db_session, qs, _req(p, type=OrderType.limit, limit_price=D("195.00"),
+                                 valid_until="close"),
+            take_profit=D("210.00"), stop_loss=D("190.00"), now=AFTER_CLOSE_TUE,
+        )
+    assert exc.value.details["field"] == "valid_until"
+    assert await _orders_count(db_session) == 0
+
+
+async def test_valid_until_replay_and_reuse(db_session, qs, p):
+    first = await place_order(
+        db_session, qs, _limit(p, valid_until="close", client_order_id="vu-1"), now=OPEN)
+    again = await place_order(
+        db_session, qs, _limit(p, valid_until="close", client_order_id="vu-1"), now=OPEN)
+    assert again.id == first.id
+    late = await place_order(  # a replay after the close still returns the order
+        db_session, qs, _limit(p, valid_until="close", client_order_id="vu-1"),
+        now=AFTER_CLOSE_TUE)
+    assert late.id == first.id
+    for other in (None, "2026-11-10T20:00:00Z"):
+        with pytest.raises(SMTError) as exc:
+            await place_order(
+                db_session, qs, _limit(p, valid_until=other, client_order_id="vu-1"), now=OPEN)
+        assert "client_order_id reused" in exc.value.message
+    plain = await place_order(db_session, qs, _limit(p, client_order_id="vu-2"), now=OPEN)
+    with pytest.raises(SMTError):
+        await place_order(
+            db_session, qs, _limit(p, valid_until="close", client_order_id="vu-2"), now=OPEN)
+    assert plain.valid_until is None and plain.expires_at is None

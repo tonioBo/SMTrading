@@ -850,3 +850,34 @@ async def test_no_fx_buy_waits_then_expires_sell_sent(maker, redis, qs):
     assert o.status == OrderStatus.rejected and o.reject_code == ErrorCode.PROVIDER_UNAVAILABLE
     assert "30 minuti" in o.reject_message
     assert post.call_count == 1
+
+
+async def test_valid_until_live_order_canceled_through_the_gate_and_expired(maker, redis, qs):
+    """plan 16: at valid_until the processor asks for the cancel; BrokerSync sends it
+    through the live gate (the adapter's normal cancel, no other endpoint)."""
+    from smtrading.engine.processor import OrderProcessor
+
+    valid_until = OPEN + timedelta(hours=1)
+    pid, _ = await _live(maker)
+    async with maker() as s:
+        order = await place_order(s, qs, PlaceOrderRequest(
+            portfolio_id=pid, symbol="AAPL", side=OrderSide.buy, type=OrderType.limit,
+            qty=TEN, limit_price=D("95"), agent_id="agent-1", valid_until=valid_until),
+            now=OPEN)
+        await s.commit()
+        oid = order.id
+    with _mock() as mock:
+        mock.post(f"{ALPACA}/v2/orders").mock(
+            return_value=httpx.Response(200, json=_alpaca_order()))
+        delete = mock.delete(f"{ALPACA}/v2/orders/bo-1").mock(
+            return_value=httpx.Response(204))
+        mock.get(f"{ALPACA}/v2/orders/bo-1").mock(
+            return_value=httpx.Response(200, json=_alpaca_order("canceled")))
+        await _sync(maker, redis, qs).tick()
+        await OrderProcessor(maker, redis, qs, clock=Clock(valid_until)).sweep()
+        await _sync(maker, redis, qs, Clock(valid_until)).tick()
+    assert delete.call_count == 1
+    assert (await _order(maker, oid)).status == OrderStatus.expired
+    acts = await _activities(maker, oid)
+    assert [a.type for a in acts] == ["live.order.sent", "live.order.canceled"]
+    assert acts[-1].data["message"] == "scaduto"

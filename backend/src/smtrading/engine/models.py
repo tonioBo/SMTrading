@@ -85,6 +85,7 @@ class Order(Base):
         Index("ix_orders_portfolio_status", "portfolio_id", "status"),
         Index("ix_orders_open_expires_at", "expires_at", postgresql_where=_OPEN_WHERE),
         Index("ix_orders_open_created_at", "created_at", postgresql_where=_OPEN_WHERE),
+        Index("ix_orders_open_valid_until", "valid_until", postgresql_where=_OPEN_WHERE),
         Index("ix_orders_broker_link_id", "broker_link_id"),
         # one local order per broker order (C1: never adopt another order's fill)
         Index(
@@ -115,6 +116,9 @@ class Order(Base):
     oco_group_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     role: Mapped[str | None] = mapped_column(String(16))  # entry | take_profit | stop_loss
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # plan 16: the entry's good-till-time (expires_at is the earlier of it and the day
+    # expiry); at the broker the processor cancels it then (engine.service docstring)
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reject_code: Mapped[str | None] = mapped_column(String(64))
     reject_message: Mapped[str | None] = mapped_column(String(512))
     source: Mapped[str] = mapped_column(String(16), default="agent")  # agent | admin | system

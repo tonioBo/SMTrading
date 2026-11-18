@@ -39,7 +39,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BROKER_STATUS_LABELS } from "@/lib/broker";
 import { subtractDecimal } from "@/lib/decimal";
 import { errorMessage } from "@/lib/errors";
-import { formatDateTime, formatDecimal, formatMoney, formatQty } from "@/lib/format";
+import { formatClock, formatDateTime, formatDecimal, formatMoney, formatQty } from "@/lib/format";
 import { LIVE_BADGE, LIVE_STATE_LABELS, TRAILING_NOTE, isLiveReason, reduceOnlyReasonLabel } from "@/lib/live";
 import { Movements } from "@/pages/PortfolioDetailMovements";
 import { Operations } from "@/pages/PortfolioDetailOperations";
@@ -289,6 +289,7 @@ function Orders({ portfolio, readOnly }: { portfolio: Portfolio; readOnly: boole
       cell: (o) => (
         <span title={o.reject_message ?? undefined}>
           <Badge variant={o.status === "rejected" ? "destructive" : "secondary"}>{ORDER_STATUS_LABELS[o.status] ?? o.status}</Badge>
+          {o.valid_until && OPEN_ORDER_STATUSES.has(o.status) && <span className="ml-1 text-xs text-muted">fino alle {formatClock(o.valid_until)}</span>}
         </span>
       ),
     },

@@ -282,3 +282,44 @@ async def test_close_position(env):
     assert o["status"] == "filled" and D(o["qty"]) == D("0.06")
     _, positions = await env["call"]("get_positions", {"portfolio_id": env["pid"]})
     assert positions == []
+
+
+async def test_place_order_valid_until(env):
+    from datetime import UTC, datetime, timedelta
+
+    at = (datetime.now(UTC) + timedelta(hours=2)).replace(microsecond=0)
+    is_error, o = await _buy(env, type="limit", limit_price="40000",
+                             valid_until=at.isoformat())
+    assert not is_error, o
+    assert o["status"] == "pending"
+    assert datetime.fromisoformat(o["valid_until"]) == at
+    assert datetime.fromisoformat(o["expires_at"]) == at
+    _, g = await env["call"]("get_order", {"order_id": o["id"]})
+    assert datetime.fromisoformat(g["valid_until"]) == at
+    _, plain = await _buy(env, type="limit", limit_price="40000")
+    assert plain["valid_until"] is None
+
+
+@pytest.mark.parametrize("value", ["close", "2020-01-01T00:00:00+00:00", "soon"])
+async def test_place_order_invalid_valid_until(env, value):
+    is_error, err = await _buy(env, type="limit", limit_price="40000", valid_until=value)
+    assert is_error
+    assert err["code"] == "INVALID_ORDER" and err["details"]["field"] == "valid_until"
+    _, orders = await env["call"]("list_orders", {"portfolio_id": env["pid"]})
+    assert orders == []
+
+
+async def test_bracket_valid_until_is_for_the_entry(env):
+    from datetime import UTC, datetime, timedelta
+
+    at = (datetime.now(UTC) + timedelta(hours=2)).replace(microsecond=0)
+    is_error, orders = await env["call"]("place_bracket_order", {
+        "portfolio_id": env["pid"], "symbol": SYM, "side": "buy", "qty": "0.1",
+        "type": "limit", "limit_price": "40000", "take_profit": "60000",
+        "stop_loss": "35000", "valid_until": at.isoformat(),
+    })
+    assert not is_error, orders
+    entry, tp, sl = orders
+    assert datetime.fromisoformat(entry["valid_until"]) == at
+    assert tp["valid_until"] is None and sl["valid_until"] is None
+    assert tp["expires_at"] is None and sl["expires_at"] is None

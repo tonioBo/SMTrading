@@ -658,3 +658,115 @@ async def test_reduce_only_order_with_nothing_to_reduce_is_canceled_by_processor
     order = await _order(maker, order.id)
     assert order.status == OrderStatus.canceled and order.reject_message == "nothing_to_reduce"
     assert await _fills(maker, order.id) == []
+
+
+# -- plan 16 Task A: valid_until --------------------------------------------------------
+
+VALID_UNTIL = datetime(2026, 11, 10, 18, 0, tzinfo=UTC)
+
+
+async def _bracket(maker, redis, qs, pid, **kw):
+    async with maker() as s:
+        orders = await place_bracket_order(
+            s, qs, PlaceOrderRequest(
+                portfolio_id=pid, symbol="AAPL", side=OrderSide.buy, type=OrderType.limit,
+                qty=TEN, limit_price=D("95.00"), **kw,
+            ), take_profit=D("110.00"), stop_loss=D("90.00"), now=OPEN,
+        )
+        await s.commit()
+        await dispatch_post_commit(s, redis)
+    return [o.id for o in orders]
+
+
+async def _activity_types(maker, order_id) -> list[str]:
+    from smtrading.activity.models import Activity
+
+    async with maker() as s:
+        return list(await s.scalars(
+            select(Activity.type).where(Activity.data["order_id"].astext == str(order_id))
+            .order_by(Activity.id)))
+
+
+async def test_valid_until_expires_an_unfilled_order(maker, redis, qs):
+    pid = await _portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("90.00"),
+                       valid_until=VALID_UNTIL.isoformat())
+    clock = Clock(VALID_UNTIL - timedelta(seconds=1))
+    proc = _proc(maker, redis, qs, clock)
+    await proc.sweep()
+    assert (await _order(maker, oid)).status == OrderStatus.pending
+    clock.advance(2)
+    # a tick past valid_until never fills it, the sweep expires it
+    assert await proc.on_tick("AAPL", _tick(qs, "89.00", "89.10", clock.now)) == 0
+    await proc.sweep()
+    assert (await _order(maker, oid)).status == OrderStatus.expired
+    assert await _fills(maker, oid) == []
+    assert "order.expired" in await _activity_types(maker, oid)
+
+
+async def test_valid_until_expired_entry_cancels_its_held_exits(maker, redis, qs):
+    pid = await _portfolio(maker)
+    entry, tp, sl = await _bracket(maker, redis, qs, pid, valid_until=VALID_UNTIL)
+    await _proc(maker, redis, qs, Clock(VALID_UNTIL)).sweep()
+    assert (await _order(maker, entry)).status == OrderStatus.expired
+    assert (await _order(maker, tp)).status == OrderStatus.canceled
+    assert (await _order(maker, sl)).status == OrderStatus.canceled
+    assert not await redis.sismember(f"{TRACKED_KEY}:orders", "AAPL")
+
+
+async def test_valid_until_does_not_touch_the_exits_of_a_filled_entry(maker, redis, qs):
+    pid = await _portfolio(maker)
+    entry, tp, sl = await _bracket(maker, redis, qs, pid, valid_until=VALID_UNTIL)
+    clock = Clock(OPEN + timedelta(minutes=5))
+    proc = _proc(maker, redis, qs, clock)
+    assert await proc.on_tick("AAPL", _tick(qs, "94.90", "95.00", clock.now)) == 1
+    clock.now = VALID_UNTIL + timedelta(hours=1)
+    qs.set_quote("AAPL", D("99.90"), D("100.00"), None, ts=clock.now)
+    await proc.sweep()
+    assert (await _order(maker, entry)).status == OrderStatus.filled
+    for child in (tp, sl):  # gtc exits keep protecting the position
+        o = await _order(maker, child)
+        assert o.status == OrderStatus.pending and o.expires_at is None
+
+
+async def test_valid_until_partially_filled_entry_keeps_exits_for_the_filled_qty(
+    maker, redis, qs,
+):
+    """Simulated fills are whole, so a partly filled local entry should not exist; if one
+    does, its remainder expires and its exits are released for the filled quantity (as
+    BrokerSync does for a broker entry), never canceled."""
+    pid = await _portfolio(maker)
+    entry, tp, sl = await _bracket(maker, redis, qs, pid, valid_until=VALID_UNTIL)
+    async with maker() as s:
+        await s.execute(update(Order).where(Order.id == entry).values(
+            status=OrderStatus.partially_filled, filled_qty=D(4)))
+        await s.commit()
+    await _proc(maker, redis, qs, Clock(VALID_UNTIL)).sweep()
+    e = await _order(maker, entry)
+    assert e.status == OrderStatus.expired and e.filled_qty == 4
+    for child in (tp, sl):
+        o = await _order(maker, child)
+        assert o.status == OrderStatus.pending and o.qty == 4
+
+
+async def test_valid_until_expires_with_the_kill_switch_on(maker, redis, qs):
+    pid = await _portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("90.00"),
+                       valid_until=VALID_UNTIL)
+    async with maker() as s:
+        await set_kill_switch(s, True)
+        await s.commit()
+    await _proc(maker, redis, qs, Clock(VALID_UNTIL)).sweep()
+    assert (await _order(maker, oid)).status == OrderStatus.expired
+
+
+async def test_valid_until_queued_market_order_expires_before_the_open(maker, redis, qs):
+    pid = await _portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, now=SATURDAY,
+                       valid_until=MONDAY_OPEN - timedelta(minutes=30))
+    assert (await _order(maker, oid)).status == OrderStatus.queued
+    clock = Clock(MONDAY_OPEN + timedelta(minutes=1))
+    qs.set_quote("AAPL", D("99.90"), D("100.00"), None, ts=clock.now)
+    await _proc(maker, redis, qs, clock).sweep()
+    assert (await _order(maker, oid)).status == OrderStatus.expired
+    assert await _fills(maker, oid) == []

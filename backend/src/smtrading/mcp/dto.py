@@ -33,8 +33,8 @@ ORDER_FIELDS = (
     "id", "portfolio_id", "agent_id", "client_order_id", "symbol", "side", "type", "tif",
     "qty", "notional", "limit_price", "stop_price", "trail_pct", "trail_amount",
     "trail_ref_price", "filled_qty", "avg_fill_price", "status", "parent_id", "oco_group_id",
-    "role", "reduce_only", "expires_at", "reject_code", "reject_message", "source",
-    "created_at", "updated_at",
+    "role", "reduce_only", "expires_at", "valid_until", "reject_code", "reject_message",
+    "source", "created_at", "updated_at",
 )
 FILL_FIELDS = (
     "id", "order_id", "portfolio_id", "symbol", "side", "qty", "price", "fee_amount",

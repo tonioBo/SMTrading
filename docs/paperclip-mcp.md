@@ -143,6 +143,14 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
   disponibile su questo broker: solo ordini a mercato» (il trailing stop resta ammesso: e'
   seguito da SMTrading e al trigger diventa un ordine a mercato).
 - `place_bracket_order`: ingresso piu' take profit e stop loss in un gruppo OCO.
+- Campo facoltativo `valid_until` di `place_order` e `place_bracket_order`: data e ora ISO con fuso
+  (es. `2026-11-18T21:55:00+01:00`) o `"close"` (chiusura regolare di oggi del mercato dello
+  strumento; non per crypto e FX). Solo per l'ingresso: se a quell'ora non e' eseguito,
+  SMTrading lo annulla (anche presso il broker, con l'annullamento normale) e l'ordine
+  risulta `expired` (`order.expired`), con le uscite bracket annullate; la parte gia'
+  eseguita resta, con stop e target sulla qty eseguita. Il valore e' nel campo
+  `valid_until` degli ordini. Un valore non valido (passato, senza fuso, mercato gia' chiuso
+  oggi) e' `INVALID_ORDER` con `field: valid_until`.
 - `place_oco_order`: due ordini a riposo collegati: quando uno si esegue l'altro viene annullato.
 - `modify_order`: modifica quantita' o prezzi di un ordine aperto, con nuovi controlli di rischio.
 - `cancel_order`: annulla un ordine aperto.

@@ -73,7 +73,7 @@ def _request(
     ctx: ToolCtx, pid: UUID, symbol: Any, side: Any, type: Any, *, qty: Num = None,
     notional: Num = None, limit_price: Num = None, stop_price: Num = None,
     trail_pct: Num = None, trail_amount: Num = None, tif: Any = "gtc",
-    client_order_id: Any = None,
+    client_order_id: Any = None, valid_until: Any = None,
 ) -> PlaceOrderRequest:
     return PlaceOrderRequest(
         portfolio_id=pid,
@@ -90,6 +90,7 @@ def _request(
         client_order_id=_str(client_order_id, "client_order_id"),
         agent_id=str(ctx.agent_id),
         source=SOURCE,
+        valid_until=valid_until,  # checked by the engine (INVALID_ORDER, field valid_until)
     )
 
 
@@ -166,19 +167,23 @@ def register(mcp: MCPServer) -> None:
         portfolio_id: str, symbol: str, side: str, type: str, qty: Num = None,
         notional: Num = None, limit_price: Num = None, stop_price: Num = None,
         trail_pct: Num = None, trail_amount: Num = None, tif: str = "gtc",
-        client_order_id: str | None = None,
+        client_order_id: str | None = None, valid_until: str | None = None,
     ) -> CallToolResult:
         """Place an order; returns the order. side: buy|sell; type: market|limit|stop|
         stop_limit|trailing_stop; tif: gtc|day. Give qty, or notional for a market order;
         limit_price for limit/stop_limit, stop_price for stop/stop_limit, trail_pct or
         trail_amount for trailing_stop. A refused order is stored as rejected and returned
         as an error with its code (e.g. INSUFFICIENT_BUYING_POWER). Re-sending a
-        client_order_id returns the same order (or the same error). Needs trade."""
+        client_order_id returns the same order (or the same error). Needs trade.
+        valid_until (optional): an ISO 8601 datetime with an offset (e.g.
+        2026-11-18T21:55:00+01:00) or "close" (today's regular session close of the
+        market; not for crypto). Still unfilled then, the order is canceled and becomes
+        expired; a part already filled stands."""
         params = {
             "portfolio_id": portfolio_id, "symbol": symbol, "side": side, "type": type,
             "qty": qty, "notional": notional, "limit_price": limit_price,
             "stop_price": stop_price, "trail_pct": trail_pct, "trail_amount": trail_amount,
-            "tif": tif, "client_order_id": client_order_id,
+            "tif": tif, "client_order_id": client_order_id, "valid_until": valid_until,
         }
 
         async def fn(ctx: ToolCtx) -> Any:
@@ -187,6 +192,7 @@ def register(mcp: MCPServer) -> None:
                 ctx, pid, symbol, side, type, qty=qty, notional=notional,
                 limit_price=limit_price, stop_price=stop_price, trail_pct=trail_pct,
                 trail_amount=trail_amount, tif=tif, client_order_id=client_order_id,
+                valid_until=valid_until,
             )
             await ensure_instrument(ctx, req.symbol)
             order = await engine.place_order(ctx.session, ctx.qs, req, redis=ctx.redis)
@@ -198,16 +204,20 @@ def register(mcp: MCPServer) -> None:
     async def place_bracket_order(
         portfolio_id: str, symbol: str, side: str, qty: Num = None, take_profit: Num = None,
         stop_loss: Num = None, type: str = "market", limit_price: Num = None, tif: str = "gtc",
-        client_order_id: str | None = None,
+        client_order_id: str | None = None, valid_until: str | None = None,
     ) -> CallToolResult:
         """Entry (market or limit) plus a take_profit limit and a stop_loss stop exit, in one
         OCO group, both reduce_only and held until the entry fills. Returns
         [entry, take_profit, stop_loss]. For a buy: take_profit > entry > stop_loss.
-        Needs trade."""
+        Needs trade. valid_until (optional, the entry only): an ISO 8601 datetime with an
+        offset or "close" (today's regular session close of the market; not for crypto).
+        An entry still unfilled then is canceled and becomes expired, with its exits; if
+        part of it filled, the exits keep protecting that part with their own tif."""
         params = {
             "portfolio_id": portfolio_id, "symbol": symbol, "side": side, "qty": qty,
             "take_profit": take_profit, "stop_loss": stop_loss, "type": type,
             "limit_price": limit_price, "tif": tif, "client_order_id": client_order_id,
+            "valid_until": valid_until,
         }
 
         async def fn(ctx: ToolCtx) -> Any:
@@ -215,6 +225,7 @@ def register(mcp: MCPServer) -> None:
             req = _request(
                 ctx, pid, symbol, side, type, qty=_required(qty, "qty"),
                 limit_price=limit_price, tif=tif, client_order_id=client_order_id,
+                valid_until=valid_until,
             )
             tp = _required(parse_decimal(take_profit, "take_profit"), "take_profit")
             sl = _required(parse_decimal(stop_loss, "stop_loss"), "stop_loss")

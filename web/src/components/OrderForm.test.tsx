@@ -27,6 +27,8 @@ const aapl: Instrument = {
   added_by: null,
 };
 
+const btc: Instrument = { ...aapl, symbol: "BTC-USD", name: "Bitcoin", asset_class: "crypto", market: "CRYPTO" };
+
 const okPreview: OrderPreview = {
   ok: true,
   code: null,
@@ -51,7 +53,7 @@ const server = setupServer(
   http.get("*/api/instruments", ({ request }) => {
     const q = new URL(request.url).searchParams.get("query") ?? "";
     searches.push(q);
-    const items = "AAPL".startsWith(q.toUpperCase()) ? [aapl] : [];
+    const items = "AAPL".startsWith(q.toUpperCase()) ? [aapl] : "BTC-USD".startsWith(q.toUpperCase()) ? [btc] : [];
     return HttpResponse.json({ items, total: items.length, offset: 0, limit: 10 });
   }),
   http.post("*/api/portfolios/p1/orders/preview", async ({ request }) => {
@@ -338,5 +340,55 @@ describe("OrderForm", () => {
     expect(screen.getByRole("dialog", { name: "Nuovo ordine" })).toBeInTheDocument();
     release();
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  it("valid until today's close is sent as close and shown in the real confirm", async () => {
+    preview = { ...okPreview, real: true };
+    const { user, dialog } = setup();
+    await pickAapl(user, dialog);
+    await user.type(within(dialog).getByLabelText("Quantità"), "2");
+    await user.selectOptions(within(dialog).getByLabelText("Valido fino a"), "close");
+    await user.click(within(dialog).getByRole("button", { name: "Anteprima" }));
+    await within(dialog).findByLabelText("Anteprima dell'ordine");
+    expect(previews).toEqual([{ symbol: "AAPL", side: "buy", type: "market", tif: "gtc", qty: "2", valid_until: "close" }]);
+    await user.click(within(dialog).getByRole("button", { name: "Invia" }));
+    const confirm = await screen.findByRole("dialog", { name: "🔴 Ordine con denaro reale" });
+    expect(within(confirm).getByLabelText("Riepilogo dell'ordine")).toHaveTextContent("Valido fino aChiusura di oggi");
+  });
+
+  it("valid until a date and time: future only, sent as ISO", async () => {
+    const { user, dialog } = setup();
+    await pickAapl(user, dialog);
+    await user.type(within(dialog).getByLabelText("Quantità"), "1");
+    await user.selectOptions(within(dialog).getByLabelText("Valido fino a"), "at");
+    const at = within(dialog).getByLabelText("Data e ora di scadenza");
+    await user.click(within(dialog).getByRole("button", { name: "Anteprima" }));
+    expect(at).toHaveAccessibleDescription("Inserisci data e ora");
+    await user.type(at, "2020-01-01T10:00");
+    await user.click(within(dialog).getByRole("button", { name: "Anteprima" }));
+    expect(at).toHaveAccessibleDescription("Scegli un momento futuro");
+    expect(previews).toEqual([]);
+    await user.clear(at);
+    await user.type(at, "2099-01-02T21:55");
+    await user.click(within(dialog).getByRole("button", { name: "Anteprima" }));
+    await waitFor(() => expect(previews).toHaveLength(1));
+    expect(previews[0]).toMatchObject({ valid_until: new Date("2099-01-02T21:55").toISOString() });
+  });
+
+  it("today's close is not offered for crypto and a server error shows under the field", async () => {
+    preview = () => HttpResponse.json({ code: "INVALID_ORDER", message: "valid_until must be in the future", details: { field: "valid_until" } }, { status: 400 });
+    const { user, dialog } = setup();
+    await pickAapl(user, dialog);
+    await user.selectOptions(within(dialog).getByLabelText("Valido fino a"), "close");
+    await user.type(within(dialog).getByLabelText("Quantità"), "1");
+    await user.click(within(dialog).getByRole("button", { name: "Anteprima" }));
+    await waitFor(() => expect(within(dialog).getByLabelText("Valido fino a")).toHaveAccessibleDescription("valid_until must be in the future"));
+
+    await user.clear(within(dialog).getByLabelText("Simbolo"));
+    await user.type(within(dialog).getByLabelText("Simbolo"), "btc");
+    await user.click(await within(dialog).findByRole("button", { name: /BTC-USD/ }));
+    const select = within(dialog).getByLabelText("Valido fino a");
+    expect(select).toHaveValue("none");
+    expect(within(select).queryByRole("option", { name: "Chiusura di oggi" })).not.toBeInTheDocument();
   });
 });

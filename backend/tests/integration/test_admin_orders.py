@@ -458,3 +458,33 @@ async def test_manual_order_activity_rows_mask_the_totp(admin):
     assert place.target == {"portfolio_id": pid}
     assert place.summary["totp"] == "••••" and place.summary["symbol"] == "AAPL"
     assert code not in str(place.summary)
+
+
+# -- valid_until (plan 16) ---------------------------------------------------------------
+
+async def test_admin_order_valid_until(admin):
+    from datetime import UTC, datetime, timedelta
+
+    c = admin.client
+    pid = await _portfolio(c)
+    at = (datetime.now(UTC) + timedelta(hours=3)).replace(microsecond=0)
+    body = _btc(type="limit", limit_price="40000", valid_until=at.isoformat())
+    r = await c.post(f"/api/portfolios/{pid}/orders/preview", json=body)
+    assert r.status_code == 200 and r.json()["ok"] is True, r.text
+    r = await c.post(f"/api/portfolios/{pid}/orders", json=body,
+                     headers={"Idempotency-Key": "vu-1"})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["status"] == "pending"
+    assert datetime.fromisoformat(out["valid_until"]) == at
+    (audit,) = await _audits(admin.sm, "admin:order.place")
+    assert datetime.fromisoformat(audit.params["valid_until"]) == at
+
+    bad = _btc(type="limit", limit_price="40000", valid_until="close")  # crypto: no close
+    r = await c.post(f"/api/portfolios/{pid}/orders/preview", json=bad)
+    assert r.json()["ok"] is False and r.json()["code"] == "INVALID_ORDER"
+    r = await c.post(f"/api/portfolios/{pid}/orders", json=bad,
+                     headers={"Idempotency-Key": "vu-2"})
+    assert r.status_code == 400, r.text
+    assert r.json()["details"]["field"] == "valid_until"
+    assert len(await _orders(admin.sm, pid)) == 1

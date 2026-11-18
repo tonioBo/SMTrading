@@ -41,6 +41,18 @@ Market closed: market orders are `queued` (the processor executes them at the op
 other types rest as `pending` and are only evaluated once the market is open, because a
 queued order is executed at market. While the market is closed the quote age is not
 checked at placement; it is checked again at execution.
+
+Valid until (plan 16, good-till-time): `valid_until` is an aware ISO datetime or
+"close" (today's session close of the instrument's market, early and manual closes
+applied; refused for CRYPTO and FX, and when there is no session left today). It must be
+after the placement; a malformed one is INVALID_ORDER with `field: valid_until`, nothing
+stored. It applies to the order itself (a bracket's entry, never its exits: they keep
+their own tif): `expires_at` becomes the earlier of it and the day expiry, so the
+processor expires an unfilled order locally (never sent to a broker included). An order
+at the broker is canceled by the processor through the normal cancel path when
+`valid_until` passes (`cancel_requested`), and BrokerSync records the confirmed cancel
+as `expired`. A replay of a client_order_id is looked up before "close" is resolved; a
+reuse with valid_until given or left out differently is refused.
 """
 
 import dataclasses
@@ -77,7 +89,12 @@ from smtrading.engine.pricing import QuoteView, effective_bid_ask
 from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.engine.triggers import OrderView, TriggerAction, evaluate
 from smtrading.events import POST_COMMIT_KEY, notify, queue_event, queue_track, queue_untrack
-from smtrading.instruments.market_hours import MarketStatus, market_status
+from smtrading.instruments.market_hours import (
+    MarketStatus,
+    local_date,
+    market_status,
+    session_on,
+)
 from smtrading.instruments.models import Instrument
 from smtrading.instruments.service import get_instrument, validate_price, validate_quantity
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
@@ -127,6 +144,14 @@ class PlaceOrderRequest:
     reduce_only: bool = False
     # R8.2: a reduce-only market order of "Chiudi tutte le posizioni reali" (passes the kill switch)
     live_flatten: bool = False
+    # plan 16: an aware datetime (normalized to UTC), "close", or None (no end)
+    valid_until: datetime | str | None = None
+
+
+VALID_UNTIL_CLOSE = "close"
+_NO_CLOSE_MARKETS = ("CRYPTO", "FX")  # no daily session close: "close" is refused
+_VALID_UNTIL_FORMAT = (
+    'valid_until must be an ISO 8601 datetime with a timezone offset or "close"')
 
 
 def _invalid(message: str, **details) -> SMTError:
@@ -170,7 +195,55 @@ def _validate_request(req: PlaceOrderRequest) -> PlaceOrderRequest:
             raise _invalid("trail_pct must be below 100", trail_pct=req.trail_pct)
     elif req.trail_pct is not None or req.trail_amount is not None:
         raise _invalid(f"trail parameters are not allowed for a {req.type} order")
-    return req
+    return dataclasses.replace(req, valid_until=_parse_valid_until(req.valid_until))
+
+
+def _bad_valid_until(message: str, value) -> SMTError:
+    return SMTError(ErrorCode.INVALID_ORDER, message,
+                    {"field": "valid_until", "valid_until": str(value)})
+
+
+def _parse_valid_until(value) -> datetime | str | None:
+    """None, VALID_UNTIL_CLOSE, or an aware datetime in UTC (INVALID_ORDER otherwise)."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.lower() == VALID_UNTIL_CLOSE:
+            return VALID_UNTIL_CLOSE
+        try:
+            value = datetime.fromisoformat(text)
+        except ValueError:
+            raise _bad_valid_until(_VALID_UNTIL_FORMAT, value) from None
+    if not isinstance(value, datetime):
+        raise _bad_valid_until(_VALID_UNTIL_FORMAT, value)
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise _bad_valid_until(
+            "valid_until needs a timezone offset (e.g. 2026-11-18T21:55:00+01:00)", value)
+    return value.astimezone(UTC)
+
+
+def _resolve_valid_until(value: datetime | str | None, instrument: Instrument,
+                         now: datetime) -> datetime | None:
+    """The end of a parsed valid_until: "close" is today's session close of the
+    instrument's market (on its local date). It must be after `now`."""
+    if value is None:
+        return None
+    if value == VALID_UNTIL_CLOSE:
+        if instrument.market in _NO_CLOSE_MARKETS:
+            raise _bad_valid_until(
+                f'"close" is not available for {instrument.market}: give a datetime', value)
+        session = session_on(instrument.market, local_date(instrument.market, now))
+        if session is None:
+            raise _bad_valid_until(
+                f"{instrument.market} has no session today: give a datetime", value)
+        value = session[1]
+    assert isinstance(value, datetime)
+    if value <= now:
+        raise _bad_valid_until(
+            "valid_until must be in the future (the market may already be closed today)",
+            value)
+    return value
 
 
 async def _memo(
@@ -227,11 +300,19 @@ def _day_expiry(
     return None
 
 
+def _same_valid_until(order: Order, value: datetime | str | None) -> bool:
+    """"close" matches any stored end (it resolved on the day of the first placement)."""
+    if value == VALID_UNTIL_CLOSE:
+        return order.valid_until is not None
+    return order.valid_until == value
+
+
 def _same_params(order: Order, req: PlaceOrderRequest, symbol: str) -> bool:
     return (
         order.symbol == symbol and order.side == req.side and order.type == req.type
         and order.tif == req.tif and order.reduce_only == req.reduce_only
         and all(getattr(order, name) == getattr(req, name) for name in _PARAMS)
+        and _same_valid_until(order, req.valid_until)
     )
 
 
@@ -294,6 +375,8 @@ async def _admit(
                 )
             adm.existing = existing
             return adm
+    adm.req = dataclasses.replace(
+        req, valid_until=_resolve_valid_until(req.valid_until, instrument, now))
     if check:
         await _check_admission(session, adm)
     return adm
@@ -313,6 +396,13 @@ def _reject(order: Order, code: ErrorCode | str, message: str | None) -> None:
     order.updated_at = datetime.now(UTC)
 
 
+def _tif_expiry(adm: _Admission) -> datetime | None:
+    """The end of a DAY order (None for GTC), valid_until left out."""
+    if adm.req.tif != TimeInForce.day:
+        return None
+    return _day_expiry(adm.instrument, adm.portfolio, adm.market, adm.now)
+
+
 async def _persist(session: AsyncSession, adm: _Admission, **extra) -> Order:
     req, check = adm.req, adm.check
     order = Order(
@@ -322,12 +412,13 @@ async def _persist(session: AsyncSession, adm: _Admission, **extra) -> Order:
         limit_price=req.limit_price, stop_price=req.stop_price, trail_pct=req.trail_pct,
         trail_amount=req.trail_amount, filled_qty=Decimal(0), status=OrderStatus.new,
         source=req.source, reduce_only=req.reduce_only, live_flatten=req.live_flatten,
-        **extra,
+        valid_until=req.valid_until, **extra,
     )
     if check is not None and not check.ok:
         _reject(order, check.code, check.message)
-    elif req.tif == TimeInForce.day:
-        order.expires_at = _day_expiry(adm.instrument, adm.portfolio, adm.market, adm.now)
+    else:
+        ends = [t for t in (_tif_expiry(adm), req.valid_until) if t is not None]
+        order.expires_at = min(ends) if ends else None
     session.add(order)
     await session.flush()
     return order
@@ -526,6 +617,7 @@ async def preview_order(
             raise SMTError(ErrorCode.NOT_FOUND, "portfolio not found")
         ensure_not_archived(portfolio)
         instrument = await get_instrument(session, req.symbol)
+        _resolve_valid_until(req.valid_until, instrument, now)
         market = market_status(instrument.market, now)
         return await _run_check(session, qs, req, portfolio, instrument, market, redis,
                                 now=now, live_effects=False)
@@ -619,7 +711,8 @@ async def place_bracket_order(
             symbol=entry.symbol, side=exit_side, type=type, tif=entry.tif, qty=entry.qty,
             limit_price=limit, stop_price=stop, filled_qty=Decimal(0),
             status=OrderStatus.held, parent_id=entry.id, oco_group_id=group, role=role,
-            expires_at=entry.expires_at, source=entry.source, reduce_only=True,
+            # the exits keep their own tif: the entry's valid_until is not theirs
+            expires_at=_tif_expiry(adm), source=entry.source, reduce_only=True,
         )
         for role, type, limit, stop in (
             ("take_profit", OrderType.limit, take_profit, None),
