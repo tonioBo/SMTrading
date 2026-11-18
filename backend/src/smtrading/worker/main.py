@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import logging
 import signal
+import time
 from collections.abc import Awaitable, Callable
 
 import httpx
@@ -25,6 +26,7 @@ from smtrading.jobs.scheduler import JobScheduler
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.marketdata.streaming import StreamManager
 from smtrading.paperclip.reader import PaperclipReader
+from smtrading.paperclip.watchdog import HandoffWatchdog
 from smtrading.positions.protection import ProtectionAlarm
 from smtrading.telegram.planner import TelegramPlanner
 from smtrading.telegram.preopen import PreopenCheck
@@ -38,6 +40,14 @@ HEARTBEAT_INTERVAL_S = 10
 RESTART_DELAY_S = 5
 HEALTH_FIRST_DELAY_S = 30
 HEALTH_INTERVAL_S = 300
+# the alerting jobs (protection alarm, goal alerts, pre-open check, hand-off watchdog) wait
+# STARTUP_DELAY_S after the worker start and until the api health endpoint answers, so a
+# deploy restart fires nothing; after STARTUP_MAX_WAIT_S they start anyway (fail open)
+STARTUP_DELAY_S = 180
+STARTUP_POLL_S = 10
+STARTUP_MAX_WAIT_S = 900
+STARTUP_HEALTH_TIMEOUT_S = 5
+API_HEALTH_URL = "http://api:8000/health"
 
 
 async def heartbeat(redis) -> None:
@@ -62,6 +72,57 @@ async def health_checks(router) -> None:
             log.warning("connector health check failed; retrying in %ss", HEALTH_INTERVAL_S,
                         exc_info=True)
         await asyncio.sleep(HEALTH_INTERVAL_S)
+
+
+class StartupGate:
+    """Opens once, for every job behind it: STARTUP_DELAY_S after its creation (the worker
+    start) and once `url` answers (any HTTP status: the api is up; a 503 only says it is
+    degraded). A job restarted by `supervise` later does not wait again. Never past
+    `max_wait_s`: the alarms protect money, they are held back, never silenced."""
+
+    def __init__(self, http: httpx.AsyncClient, url: str, *, delay_s: float = STARTUP_DELAY_S,
+                 poll_s: float = STARTUP_POLL_S, max_wait_s: float = STARTUP_MAX_WAIT_S,
+                 clock: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+        self._http, self._url = http, url
+        self._delay_s, self._poll_s, self._max_wait_s = delay_s, poll_s, max_wait_s
+        self._clock, self._sleep = clock, sleep
+        self._started = clock()
+        self._open = False
+        self._lock = asyncio.Lock()
+
+    def _elapsed(self) -> float:
+        return self._clock() - self._started
+
+    async def _api_answers(self) -> bool:
+        try:
+            await self._http.get(self._url, timeout=STARTUP_HEALTH_TIMEOUT_S)
+        except httpx.HTTPError:
+            return False
+        return True
+
+    async def wait(self) -> None:
+        if self._open:
+            return
+        async with self._lock:
+            if self._open:
+                return
+            if (remaining := self._delay_s - self._elapsed()) > 0:
+                await self._sleep(remaining)
+            while not await self._api_answers():
+                if self._elapsed() >= self._max_wait_s:
+                    log.warning("api health not answering after %ss: alerting jobs start "
+                                "anyway", self._max_wait_s)
+                    break
+                await self._sleep(min(self._poll_s,
+                                      max(self._max_wait_s - self._elapsed(), 0)))
+            self._open = True
+            log.info("startup gate open: alerting jobs start")
+
+
+async def gated(gate: StartupGate, factory: Callable[[], Awaitable[None]]) -> None:
+    await gate.wait()
+    await factory()
 
 
 async def supervise(name: str, factory: Callable[[], Awaitable[None]]) -> None:
@@ -110,6 +171,7 @@ async def run() -> None:
         await warn_if_fake_broker(sessionmaker, process="worker")
         async with httpx.AsyncClient() as http:
             router = MarketDataRouter(sessionmaker, redis, http)
+            gate = StartupGate(http, getattr(settings, "api_health_url", API_HEALTH_URL))
             async with asyncio.TaskGroup() as tg:
                 jobs = [
                     tg.create_task(heartbeat(redis)),
@@ -157,14 +219,14 @@ async def run() -> None:
                                                                       redis=redis).run())),
                     tg.create_task(supervise("paperclip reader",
                                              lambda: PaperclipReader(sessionmaker).run())),
-                    tg.create_task(supervise("protection alarm",
-                                             lambda: ProtectionAlarm(sessionmaker).run())),
-                    tg.create_task(supervise("goal alerts",
-                                             lambda: GoalAlerts(sessionmaker, router).run())),
-                    tg.create_task(
-                        supervise("pre-open check",
-                                  lambda: PreopenCheck(sessionmaker, router, redis).run())
-                    ),
+                    tg.create_task(supervise("protection alarm", lambda: gated(
+                        gate, lambda: ProtectionAlarm(sessionmaker).run()))),
+                    tg.create_task(supervise("goal alerts", lambda: gated(
+                        gate, lambda: GoalAlerts(sessionmaker, router).run()))),
+                    tg.create_task(supervise("pre-open check", lambda: gated(
+                        gate, lambda: PreopenCheck(sessionmaker, router, redis).run()))),
+                    tg.create_task(supervise("hand-off watchdog", lambda: gated(
+                        gate, lambda: HandoffWatchdog(sessionmaker).run()))),
                 ]
                 await stop.wait()
                 log.info("shutdown requested")

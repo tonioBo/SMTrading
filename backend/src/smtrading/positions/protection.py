@@ -1,4 +1,5 @@
-"""Protection alarm (worker job, at start and every 5 minutes): every open position of a
+"""Protection alarm (worker job, every 5 minutes; the first run once the worker's startup
+gate opens, at least 3 minutes after the worker start): every open position of a
 non-archived portfolio must have active exit stops covering its quantity, valid beyond
 the current session.
 
@@ -371,7 +372,7 @@ class ProtectionAlarm:
         self._interval_s = interval_s
 
     async def run(self) -> None:
-        while True:  # the first check at once: a restart near the close is covered
+        while True:  # the first check at once (after the worker's startup gate)
             try:
                 await self.tick()
             except Exception:

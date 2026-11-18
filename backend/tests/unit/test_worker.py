@@ -8,6 +8,8 @@ import pytest
 
 from smtrading.worker import main as worker
 
+REAL_GATE = worker.StartupGate  # the autouse fixture replaces it with an open one
+
 
 class _FlakyRedis:
     def __init__(self) -> None:
@@ -107,6 +109,18 @@ def _idle_telegram_loops(monkeypatch):
     monkeypatch.setattr(worker, "ProtectionAlarm", _IdleProcessor)
     monkeypatch.setattr(worker, "GoalAlerts", _IdleProcessor)
     monkeypatch.setattr(worker, "register_live_secrets", _no_live_keys)
+    monkeypatch.setattr(worker, "HandoffWatchdog", _IdleProcessor)
+    monkeypatch.setattr(worker, "StartupGate", _OpenGate)
+
+
+class _OpenGate:
+    """The startup gate already open: the run() tests start every job at once."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def wait(self):
+        return None
 
 
 async def _no_live_keys(session) -> int:
@@ -487,3 +501,128 @@ async def test_run_supervises_protection_alarm(monkeypatch):
     await asyncio.wait_for(worker.run(), 2)
     assert started.is_set()
     assert seen["sessionmaker"] is not None and seen["kwargs"] == {}
+
+
+# -- startup gate ------------------------------------------------------------------------
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def _gate(clock, sleeps, answers, requests, **kw):
+    """A real StartupGate on a fake clock; `answers` pops one item per health request:
+    an exception class to raise or a status code."""
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock.t += seconds
+
+    def handler(request):
+        requests.append(str(request.url))
+        item = answers.pop(0)
+        if isinstance(item, type):
+            raise item("down", request=request)
+        return worker.httpx.Response(item)
+
+    http = worker.httpx.AsyncClient(transport=worker.httpx.MockTransport(handler))
+    return REAL_GATE(http, "http://api:8000/health", clock=clock, sleep=fake_sleep,
+                              **kw), http
+
+
+async def test_startup_gate_waits_the_delay_then_the_api_health():
+    clock, sleeps, requests = _Clock(), [], []
+    answers = [worker.httpx.ConnectError, worker.httpx.ConnectError, 503]
+    gate, http = _gate(clock, sleeps, answers, requests)
+    clock.t += 20  # the worker started 20 s ago
+    async with http:
+        await gate.wait()
+        assert sleeps == [worker.STARTUP_DELAY_S - 20, worker.STARTUP_POLL_S,
+                          worker.STARTUP_POLL_S]
+        assert worker.STARTUP_DELAY_S >= 180
+        assert requests == ["http://api:8000/health"] * 3  # a 503 is an answer
+        await gate.wait()  # open for good: a job restarted later does not wait again
+    assert len(sleeps) == 3 and len(requests) == 3
+
+
+async def test_startup_gate_opens_after_the_max_wait_without_the_api(caplog):
+    clock, sleeps, requests = _Clock(), [], []
+    answers = [worker.httpx.ConnectError] * 1000
+    gate, http = _gate(clock, sleeps, answers, requests, max_wait_s=300, poll_s=60)
+    with caplog.at_level(logging.WARNING, logger="smtrading.worker"):
+        async with http:
+            await gate.wait()
+    assert sum(sleeps) == 300 and sleeps[0] == worker.STARTUP_DELAY_S
+    assert any("api health" in r.getMessage() for r in caplog.records)
+
+
+async def test_startup_gate_waiters_share_one_wait():
+    clock, sleeps, requests = _Clock(), [], []
+    gate, http = _gate(clock, sleeps, [200], requests)
+    async with http:
+        await asyncio.gather(gate.wait(), gate.wait(), gate.wait())
+    assert sleeps == [worker.STARTUP_DELAY_S] and len(requests) == 1
+
+
+async def test_run_holds_the_alerting_jobs_behind_the_gate(monkeypatch):
+    """Protection alarm, goal alerts, pre-open check and hand-off watchdog start only once
+    the startup gate opens; the other jobs start at once."""
+    waits: list[int] = []
+    before: list = []
+    release = asyncio.Event()
+    started: list[str] = []
+
+    class HeldGate:
+        def __init__(self, http, url, **kwargs):
+            assert url == worker.API_HEALTH_URL
+
+        async def wait(self):
+            waits.append(1)
+            await release.wait()
+
+    def job(name):
+        class Job:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def run(self):
+                started.append(name)
+                await asyncio.sleep(3600)
+        return Job
+
+    class Manager:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run(self):
+            for _ in range(20):
+                await asyncio.sleep(0)
+            before.extend([list(started), len(waits)])
+            release.set()
+            for _ in range(20):
+                await asyncio.sleep(0)
+            signal.raise_signal(signal.SIGTERM)
+            await asyncio.sleep(3600)
+
+    monkeypatch.setattr(
+        worker, "get_settings",
+        lambda: SimpleNamespace(redis_url="redis://unused:6379/0", database_url="x"),
+    )
+    monkeypatch.setattr(worker.Redis, "from_url", staticmethod(lambda url: _FlakyRedis()))
+    monkeypatch.setattr(worker, "make_engine", lambda url: _FakeEngine())
+    for name in ("OrderProcessor", "AlertEvaluator", "JobScheduler", "PaperclipReader",
+                 "ClosureRefresher", "BacktestRunner", "BrokerSync"):
+        monkeypatch.setattr(worker, name, _IdleProcessor)
+    monkeypatch.setattr(worker, "health_checks", lambda router: asyncio.sleep(3600))
+    monkeypatch.setattr(worker, "StreamManager", Manager)
+    monkeypatch.setattr(worker, "StartupGate", HeldGate)
+    for name in ("ProtectionAlarm", "GoalAlerts", "PreopenCheck", "HandoffWatchdog"):
+        monkeypatch.setattr(worker, name, job(name))
+    await asyncio.wait_for(worker.run(), 2)
+    assert before == [[], 4]
+    assert sorted(started) == ["GoalAlerts", "HandoffWatchdog", "PreopenCheck",
+                               "ProtectionAlarm"]
