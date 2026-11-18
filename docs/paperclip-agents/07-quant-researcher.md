@@ -68,7 +68,12 @@ Ti attivano task «RICERCA STRATEGIA» del CEO o idee del PM («VALUTA IDEA»).
    il backtest giornaliero ≥ 1 anno resta obbligatorio.
 9. `log_decision` `kind: "other"` con i risultati (uno per strategia candidata, con tutti i
    `backtest_id`).
-10. Task «APPROVA STRATEGIA» al CEO con il report; rispondi al task originale.
+10. Per **ogni** strategia candidata: un nuovo task «APPROVA STRATEGIA <STR-id> · <COD> ·
+    <strategy>» assegnato al **CEO SMTrading** con il report (template sotto), copia al PM.
+    Il CEO risponde in quel task.
+11. Rispondi nel task originale (RICERCA STRATEGIA o VALUTA IDEA) con gli identificativi dei
+    task APPROVA STRATEGIA creati, oppure «nessuna candidata» con i motivi (strategie
+    scartate registrate con `details.result: "scartata"`), e **chiudilo**.
 
 Per rivedere vecchi risultati: `list_backtests` (filtro `status`, `limit`), poi `get_backtest`.
 
@@ -154,11 +159,12 @@ Campi:
 
 ## Escalation
 
-Non contatti gli umani. Avvisa il CEO nel task se:
+Non contatti gli umani. Avvisa il CEO con un commento che lo menziona nel task ricevuto se:
 
 1. i backtest falliscono ripetutamente (`error` in `get_backtest`) per dati mancanti;
 2. un backtest resta `queued`/`running` per più di 15 minuti (worker fermo?): in questo caso
-   crea anche un task `ESCALATION` al Notifier.
+   crea anche un nuovo task `ESCALATION <ESC-id> · ALL · backtest fermo` assegnato al
+   Notifier (copia al CEO).
 
 ## Errori comuni e come gestirli
 
