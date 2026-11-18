@@ -124,14 +124,17 @@ SMTrading non può svegliare gli agenti: gli alert di prezzo restano in attesa f
 chiama `get_triggered_alerts`. Per questo solo 4 agenti hanno una Routine; gli altri lavorano
 solo su task. Fuso orario delle Routine: **Europe/Rome**.
 
-| Agente | Routine | Cron (Europe/Rome) | Prompt della Routine |
+| Agente | Routine (titolo) | Cron (Europe/Rome) | Prompt della Routine |
 |---|---|---|---|
-| Risk Manager | ogni ora, lun-ven, 09:00-22:00 | `0 9-22 * * 1-5` | «Esegui il ciclo programmato (sentinella rischio) delle tue istruzioni.» |
-| Portfolio Manager | ogni ora, lun-ven, 09:05-21:05 | `5 9-21 * * 1-5` | «Esegui il ciclo programmato (sentinella) delle tue istruzioni.» |
-| News Analyst | pre-mercato 08:30 | `30 8 * * 1-5` | «Esegui la scansione pre-mercato delle 08:30.» |
-| News Analyst | ogni 2 ore 10:00-22:00 | `0 10-22/2 * * 1-5` | «Esegui la scansione rapida.» |
-| CEO SMTrading | venerdì 16:00 | `0 16 * * 5` | «Crea il task AUDIT SETTIMANALE per il Performance Auditor.» |
-| CEO SMTrading | venerdì 17:00 | `0 17 * * 5` | «Esegui la revisione settimanale.» |
+| Risk Manager | «Sentinella rischio (oraria)»: ogni ora, lun-ven, 09:00-22:00 | `0 9-22 * * 1-5` | «Esegui il ciclo programmato (sentinella rischio) delle tue istruzioni.» |
+| Risk Manager | «Sentinella rischio (weekend, crypto)»: sab-dom 10, 13, 16, 19, 22 | `0 10-22/3 * * 0,6` | «Esegui il ciclo programmato (sentinella rischio) delle tue istruzioni. È fine settimana: sono aperti solo i mercati crypto.» |
+| Portfolio Manager | «Sentinella portafogli (oraria)»: ogni ora, lun-ven, 09:05-21:05, più 15:35 | `5 9-21 * * 1-5` e `35 15 * * 1-5` | «Esegui il ciclo programmato (sentinella) delle tue istruzioni.» |
+| Portfolio Manager | «Sentinella portafogli (weekend, crypto)»: sab-dom 10:05, 13:05, 16:05, 19:05, 22:05 | `5 10-22/3 * * 0,6` | «Esegui il ciclo programmato (sentinella) delle tue istruzioni. È fine settimana: sono aperti solo i mercati crypto.» |
+| Portfolio Manager | «Chiusura USA (serale)»: lun-ven 22:15 | `15 22 * * 1-5` | «Esegui il ciclo «Chiusura USA (serale)» delle tue istruzioni.» |
+| News Analyst | «Scansione pre-mercato 08:30» | `30 8 * * 1-5` | «Esegui la scansione pre-mercato delle 08:30.» |
+| News Analyst | «Scansione notizie (ogni 2 ore)»: 10:00-22:00 | `0 10-22/2 * * 1-5` | «Esegui la scansione rapida.» |
+| CEO SMTrading | «Richiesta audit settimanale»: venerdì 16:00 | `0 16 * * 5` | «Crea il task AUDIT SETTIMANALE per il Performance Auditor.» |
+| CEO SMTrading | «Revisione settimanale»: venerdì 17:00 | `0 17 * * 5` | «Esegui la revisione settimanale.» |
 
 Consigli:
 
@@ -140,7 +143,11 @@ Consigli:
 - il RM gira al minuto 00 e il PM al minuto 05: il PM trova lo stato di rischio aggiornato;
 - il venerdì alle 16:00 il CEO chiede l'audit al Performance Auditor, così alle 17:00 lo trova pronto;
 - ogni ciclo parte dal feed e dagli alert e si ferma subito se non è cambiato nulla, quindi il
-  costo di un'ora tranquilla è di poche chiamate.
+  costo di un'ora tranquilla è di poche chiamate;
+- ogni Routine apre un task all'agente: l'agente lo chiude a fine ciclo (anche «Nessuna
+  novità»); un task rimasto aperto fa saltare i cicli successivi;
+- chi passa il lavoro a chi, con quale task e titolo: [`HANDOFFS.md`](HANDOFFS.md) (non va
+  incollato negli agenti).
 
 ## 4. Come parte la catena da un task dell'utente
 
@@ -165,11 +172,13 @@ Cosa succede dopo (senza altri interventi):
 1. il CEO crea 2 task «RICERCA STRATEGIA» per il Quant Researcher (uno per portafoglio);
 2. il Quant esegue `run_backtest`, registra i risultati con `log_decision` e crea i task
    «APPROVA STRATEGIA» per il CEO;
-3. il CEO approva o respinge (`log_decision` `strategy`) e informa il PM;
+3. il CEO approva o respinge (`log_decision` `strategy`) e, se approva, crea «STRATEGIA
+   APPROVATA» per il PM;
 4. il PM propone le allocazioni (task «ALLOCAZIONE»), il CEO le approva (`allocation`);
 5. dalla Routine oraria il PM trova i segnali (o chiede un'«ANALISI» al Market Analyst), crea
    le «PROPOSTE» per il RM;
-6. il RM approva (`approval`) e crea «ESEGUI» per l'Execution Supervisor, oppure mette il veto;
+6. il RM approva (`approval`) e crea «ESEGUI» per l'Execution Supervisor, oppure mette il veto
+   e crea «VETO» per il PM;
 7. l'ES fa `preview_order` e `place_bracket_order`, risponde con l'esito;
 8. SMTrading invia da sé su Telegram ordini eseguiti/rifiutati e i riepiloghi delle 18:00 e del
    venerdì 18:30; il Notifier interviene solo per escalation e decisioni da comunicare.
@@ -203,7 +212,8 @@ Altri task utili da creare a mano:
   portafoglio) non sono nelle istruzioni: si fissano nella pagina «Obiettivi» di SMTrading e
   gli agenti li leggono con `get_goals` (ognuno vede quelli sul totale e quelli dei suoi
   portafogli). Il CEO li divide in tappe settimanali.
-- I riepiloghi automatici (07:00, 18:00, venerdì 18:30) e gli avvisi su ordini eseguiti/
-  rifiutati e rischi critici li invia SMTrading: il Notifier non li ripete.
+- I riepiloghi automatici (07:00, 18:00, venerdì 18:30), il controllo pre-apertura (lun-ven
+  08:45), gli avvisi sugli obiettivi e sulle posizioni senza protezione e gli avvisi su ordini
+  eseguiti/rifiutati e rischi critici li invia SMTrading: il Notifier non li ripete.
 - Lo storico di tutte le decisioni (`log_decision`) è visibile nella web app di SMTrading,
   pagina *Notifiche*.
