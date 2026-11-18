@@ -24,6 +24,12 @@ benchmark's data): «avanti» once diff ≥ target, «indietro» while diff < ta
 the floor start × (1 − limit) for max_loss, start × (1 + benchmark + margin) for
 beat_index; `gap_eur` = target_eur − current_eur.
 
+`parts` (admin only: `get_goals` leaves it out) is each counted portfolio's share, by
+name: `change_eur` = its current − its start, `contribution_pct` = that change over the
+goal's whole start × 100 (the points it adds to `pct`; None when `pct` is). Rounded to
+cents by largest remainder, so they add up exactly to current_eur − start_eur and to
+`pct`; empty without data.
+
 Every figure leaves `goal_progress` as a Decimal rounded to cents (None without data); the
 routes turn them into strings."""
 
@@ -126,6 +132,40 @@ def round_cents(value: Decimal | None) -> Decimal | None:
     return None if value is None else value.quantize(_Q2, rounding=ROUND_HALF_EVEN)
 
 
+def apportion(values: list[Decimal], total: Decimal) -> list[Decimal]:
+    """`values` rounded to cents so that they add up to `total` (itself in cents and
+    close to their sum): the leftover cents go, one each, to the values the rounding
+    moved furthest the other way (largest remainder)."""
+    rounded = [v.quantize(_Q2, rounding=ROUND_HALF_EVEN) for v in values]
+    cents = int((total - sum(rounded, Decimal(0))) / _Q2)
+    if not cents or not values:
+        return [r if r else abs(r) for r in rounded]
+    sign = 1 if cents > 0 else -1
+    order = sorted(range(len(values)), key=lambda i: sign * (values[i] - rounded[i]),
+                   reverse=True)
+    for k in range(abs(cents)):
+        rounded[order[k % len(order)]] += sign * _Q2
+    return [r if r else abs(r) for r in rounded]  # no «-0.00»
+
+
+def goal_parts(weeks: list["PortfolioPeriod"], names: dict[UUID, str],
+               pct: Decimal | None) -> list[dict[str, Any]]:
+    """The `parts` of a progress (see the module docstring), `pct` = its rounded pct."""
+    if not weeks:
+        return []
+    start = sum((w.start for w in weeks), Decimal(0))
+    current = sum((w.current for w in weeks), Decimal(0))
+    changes = apportion([w.current - w.start for w in weeks],
+                        round_cents(current) - round_cents(start))
+    shares: list[Decimal | None] = [None] * len(weeks)
+    if pct is not None and start > 0:
+        shares = apportion([(w.current - w.start) / start * 100 for w in weeks], pct)
+    parts = [{"portfolio_id": w.portfolio_id, "name": names.get(w.portfolio_id, ""),
+              "change_eur": c, "contribution_pct": s}
+             for w, c, s in zip(weeks, changes, shares, strict=True)]
+    return sorted(parts, key=lambda p: (p["name"].casefold(), str(p["portfolio_id"])))
+
+
 # -- snapshots -------------------------------------------------------------------------
 
 
@@ -195,6 +235,8 @@ async def period_progress(session: AsyncSession, goal: Goal, period: Period, now
     target_eur = kind_target(goal.kind, target, start, bench) if weeks else None
     elapsed = elapsed_pct(period, local)
     pct_r, bench_r = round_cents(pct), round_cents(bench)
+    labels = await portfolio_labels(session, {w.portfolio_id for w in weeks})
+    names = {pid: name for pid, (name, _) in labels.items()}
     return {
         "goal_id": goal.id, "name": goal.name, "horizon": goal.horizon, "scope": goal.scope,
         "portfolio_id": goal.portfolio_id, "portfolio_name": portfolio_name,
@@ -210,6 +252,7 @@ async def period_progress(session: AsyncSession, goal: Goal, period: Period, now
         "benchmark": goal.benchmark, "benchmark_pct": bench_r,
         "diff_pp": pct_r - bench_r if pct_r is not None and bench_r is not None else None,
         "loss_pct": loss_of(pct_r) if goal.kind == "max_loss" else None,
+        "parts": goal_parts(weeks, names, pct_r),
     }
 
 

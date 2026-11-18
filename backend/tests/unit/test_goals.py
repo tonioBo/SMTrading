@@ -16,7 +16,16 @@ from smtrading.goals.periods import (
     is_business_day,
     previous_period,
 )
-from smtrading.goals.progress import end_line, progress_line, status_of
+from smtrading.goals.progress import (
+    PortfolioPeriod,
+    apportion,
+    end_line,
+    goal_change_pct,
+    goal_parts,
+    progress_line,
+    round_cents,
+    status_of,
+)
 from smtrading.instruments.market_hours import set_closures
 
 D = Decimal
@@ -207,3 +216,39 @@ def test_lines_max_loss_and_beat_index():
                                                              "(+2,10% contro +1,50%)")
     assert end_line({**beat, "benchmark_pct": None}) == (
         "🏁 Obiettivo indice: nessun dato del periodo (VWCE.DE)")
+
+
+def test_apportion_adds_up_to_the_total():
+    assert apportion([D("1.005"), D("2.005")], D("3.02")) == [D("1.01"), D("2.01")]
+    assert apportion([D("1.004"), D("1.004"), D("1.004")], D("3.01")) == [
+        D("1.01"), D("1.00"), D("1.00")]
+    out = apportion([D("0.336"), D("0.336"), D("-0.002")], D("0.67"))
+    assert out == [D("0.33"), D("0.34"), D("0.00")] and str(out[2]) == "0.00"
+    assert apportion([], D(0)) == []
+
+
+def _week(pid, start, current):
+    return PortfolioPeriod(pid, D(start), D(current), datetime(2027, 3, 10))
+
+
+def test_goal_parts_add_up_to_change_and_pct():
+    a, b, c = uuid4(), uuid4(), uuid4()
+    weeks = [_week(a, "333.333", "336.668"), _week(b, "333.333", "334.999"),
+             _week(c, "333.334", "333.334")]
+    start = sum((w.start for w in weeks), D(0))
+    current = sum((w.current for w in weeks), D(0))
+    pct = round_cents(goal_change_pct(start, current))
+    parts = goal_parts(weeks, {a: "PRU", b: "AGG", c: "bil"}, pct)
+    assert [p["name"] for p in parts] == ["AGG", "bil", "PRU"]
+    assert sum(p["change_eur"] for p in parts) == round_cents(current) - round_cents(start)
+    assert sum(p["contribution_pct"] for p in parts) == pct == D("0.50")
+    by = {p["name"]: p for p in parts}
+    # 3,335 and 1,666 round to 5,01: the cent comes off the one rounded up the most
+    assert (by["PRU"]["change_eur"], by["AGG"]["change_eur"]) == (D("3.33"), D("1.67"))
+    assert (by["bil"]["change_eur"], by["bil"]["contribution_pct"]) == (D("0.00"), D("0.00"))
+    assert by["AGG"]["portfolio_id"] == b
+    assert goal_parts([], {}, None) == []
+    # no positive start: no contribution in points
+    zero = goal_parts([_week(a, "0", "5")], {a: "PRU"}, None)
+    assert zero == [{"portfolio_id": a, "name": "PRU", "change_eur": D("5.00"),
+                     "contribution_pct": None}]

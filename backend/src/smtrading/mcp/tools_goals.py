@@ -3,8 +3,9 @@
 Open to every agent with at least one portfolio (`read` or `trade`; FORBIDDEN without
 any): the active total goals plus the active goals of the agent's own live portfolios,
 never another agent's, and not the goals that do not recur once their period is over.
-Each item is the Progress of `goals.progress` without the internal goal id
-(`portfolio_id` is kept: the agent knows its portfolios). A total goal sums every live
+Each item is the Progress of `goals.progress` without the internal goal id and the
+per-portfolio `parts` (admin only; `portfolio_id` is kept: the agent knows its
+portfolios). A total goal sums every live
 portfolio: unless the agent holds all of them, its EUR figures (`TOTAL_EUR_FIELDS`) are
 null, so they never reveal the equity of portfolios it cannot read (the percentages,
 status and elapsed share stay).
@@ -43,7 +44,7 @@ async def _get_goals(ctx: ToolCtx) -> dict[str, Any]:
     for p in await active_progress(ctx.session, now, zone, portfolio_ids=set(pids)):
         if p["period_end"] < today:  # a goal that does not recur, over
             continue
-        item = {k: v for k, v in p.items() if k != "goal_id"}
+        item = {k: v for k, v in p.items() if k not in ("goal_id", "parts")}
         if item["scope"] == "total" and not sees_all:
             item.update(dict.fromkeys(TOTAL_EUR_FIELDS))
         out.append(item)

@@ -178,7 +178,11 @@ async def test_progress_total_portfolio_and_archived(env, monkeypatch):
                          "portfolio_name", "kind", "period_start", "period_end", "start_eur",
                          "current_eur", "target_eur", "pct", "target_pct", "gap_eur",
                          "elapsed_pct", "status", "as_of", "benchmark", "benchmark_pct",
-                         "diff_pp", "loss_pct"}
+                         "diff_pp", "loss_pct", "parts"}
+    # each portfolio's share: adds up to the total change and to pct
+    assert [(p["portfolio_id"], p["name"], D(p["change_eur"]), D(p["contribution_pct"]))
+            for p in week["parts"]] == [(str(a), "Goal A", D(3), D("0.3")),
+                                        (str(b), "Goal B", D("1.2"), D("0.12"))]
     assert (week["period_start"], week["period_end"], week["scope"]) == (
         "2027-03-08", "2027-03-14", "total")
     assert (D(week["start_eur"]), D(week["current_eur"]), D(week["target_eur"]),
@@ -196,6 +200,8 @@ async def test_progress_total_portfolio_and_archived(env, monkeypatch):
     april = by["Aprile"]
     assert april["status"] == "non iniziato" and april["start_eur"] is None
     assert april["pct"] is None and april["as_of"] is None and D(april["elapsed_pct"]) == 0
+    assert april["parts"] == []
+    assert [p["name"] for p in month["parts"]] == ["Goal B"]
 
 
 async def test_weekly_goal_compat_follows_the_goal(env, monkeypatch):
