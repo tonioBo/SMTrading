@@ -276,6 +276,8 @@ export interface Order {
   avg_fill_price: string | null;
   status: OrderStatus;
   reduce_only: boolean;
+  /** good-till-time of the order (ISO): unfilled then, it is canceled and becomes expired */
+  valid_until?: string | null;
   reject_code: string | null;
   reject_message: string | null;
   source: string;
@@ -306,6 +308,8 @@ export interface OrderInput {
   stop_price?: string;
   trail_pct?: string;
   trail_amount?: string;
+  /** an ISO datetime with offset, or "close" (today's session close; not for crypto/FX) */
+  valid_until?: string;
   /** only for placing on a real-money portfolio */
   totp?: string;
 }

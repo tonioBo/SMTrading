@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { AMBIGUOUS_AMOUNT_MESSAGE, amountError, multiplyDecimal, normalizeAmount } from "@/lib/decimal";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatMoney } from "@/lib/format";
-import { ORDER_TYPE_LABELS, TIF_LABELS } from "@/lib/labels";
+import { ORDER_TYPE_LABELS, TIF_LABELS, VALID_UNTIL_LABELS } from "@/lib/labels";
 import { isTotpMissing } from "@/lib/live";
 
 const ORDER_TYPES: OrderType[] = ["market", "limit", "stop", "stop_limit", "trailing_stop"];
@@ -21,11 +21,14 @@ const TIFS: TimeInForce[] = ["gtc", "day"];
 const NOW_REAL_MESSAGE = "Il portafoglio ora è collegato al denaro reale: rifai l'anteprima";
 const NEEDS_LIMIT: ReadonlySet<OrderType> = new Set(["limit", "stop_limit"]);
 const NEEDS_STOP: ReadonlySet<OrderType> = new Set(["stop", "stop_limit"]);
+/** markets without a daily session close: «Chiusura di oggi» is not offered */
+const NO_CLOSE_MARKETS: ReadonlySet<string> = new Set(["CRYPTO", "FX"]);
+type ValidUntil = keyof typeof VALID_UNTIL_LABELS;
 
-type Field = "symbol" | "qty" | "notional" | "limit_price" | "stop_price" | "trail_pct" | "trail_amount";
+type Field = "symbol" | "qty" | "notional" | "limit_price" | "stop_price" | "trail_pct" | "trail_amount" | "valid_until";
 type FieldErrors = Partial<Record<Field, string>>;
 /** the fields with an input in the form: a server error about another one is shown above the buttons */
-const FIELDS: ReadonlySet<string> = new Set<Field>(["symbol", "qty", "notional", "limit_price", "stop_price", "trail_pct", "trail_amount"]);
+const FIELDS: ReadonlySet<string> = new Set<Field>(["symbol", "qty", "notional", "limit_price", "stop_price", "trail_pct", "trail_amount", "valid_until"]);
 
 interface Draft {
   instrument: Instrument | null;
@@ -39,6 +42,9 @@ interface Draft {
   trailBy: "pct" | "amount";
   trail: string;
   tif: TimeInForce;
+  validUntil: ValidUntil;
+  /** `datetime-local` value (the browser's time zone) for validUntil "at" */
+  validUntilAt: string;
 }
 
 const EMPTY: Draft = {
@@ -52,7 +58,12 @@ const EMPTY: Draft = {
   trailBy: "pct",
   trail: "",
   tif: "gtc",
+  validUntil: "none",
+  validUntilAt: "",
 };
+
+/** «Chiusura di oggi» is offered for the instrument (not for crypto and FX). */
+const closeAllowed = (i: Instrument | null) => !i || !NO_CLOSE_MARKETS.has(i.market);
 
 /** A positive decimal for the API, else the message for its field. */
 function positive(input: string): { value: string } | { error: string } {
@@ -75,6 +86,13 @@ function buildOrder(d: Draft): { body: OrderInput; errors: null } | { body: null
   if (NEEDS_LIMIT.has(d.type)) set("limit_price", d.limitPrice);
   if (NEEDS_STOP.has(d.type)) set("stop_price", d.stopPrice);
   if (d.type === "trailing_stop") set(d.trailBy === "pct" ? "trail_pct" : "trail_amount", d.trail);
+  if (d.validUntil === "close") body.valid_until = "close";
+  if (d.validUntil === "at") {
+    const at = d.validUntilAt ? new Date(d.validUntilAt) : null;
+    if (!at || Number.isNaN(at.getTime())) errors.valid_until = "Inserisci data e ora";
+    else if (at.getTime() <= Date.now()) errors.valid_until = "Scegli un momento futuro";
+    else body.valid_until = at.toISOString();
+  }
   return Object.keys(errors).length ? { body: null, errors } : { body, errors: null };
 }
 
@@ -200,6 +218,7 @@ export function OrderForm({ portfolio, onClose }: { portfolio: Portfolio; onClos
       const next = { ...d, ...patch };
       if (next.type !== "market") next.by = "qty";
       if (next.by !== d.by) next.amount = ""; // a controvalore is not a quantity
+      if (next.validUntil === "close" && !closeAllowed(next.instrument)) next.validUntil = "none";
       return next;
     });
     setErrors({});
@@ -267,6 +286,7 @@ export function OrderForm({ portfolio, onClose }: { portfolio: Portfolio; onClos
           trail_percent: b.trail_pct,
           trail_amount: b.trail_amount,
           tif: b.tif,
+          valid_until: b.valid_until,
           currency: previewed.currency,
         }}
         amount={estimatedAmount(previewed)}
@@ -368,6 +388,26 @@ export function OrderForm({ portfolio, onClose }: { portfolio: Portfolio; onClos
               ))}
             </select>
           </FormField>
+          <FormField
+            label="Valido fino a"
+            error={draft.validUntil === "at" ? undefined : fieldError("valid_until")}
+            hint="Se non è eseguito entro allora, l'ordine viene annullato e risulta scaduto"
+          >
+            <select className={selectClass} value={draft.validUntil} onChange={(e) => edit({ validUntil: e.target.value as ValidUntil })}>
+              {(Object.keys(VALID_UNTIL_LABELS) as ValidUntil[])
+                .filter((v) => v !== "close" || closeAllowed(draft.instrument))
+                .map((v) => (
+                  <option key={v} value={v}>
+                    {VALID_UNTIL_LABELS[v]}
+                  </option>
+                ))}
+            </select>
+          </FormField>
+          {draft.validUntil === "at" && (
+            <FormField label="Data e ora di scadenza" error={fieldError("valid_until")}>
+              <Input type="datetime-local" value={draft.validUntilAt} onChange={(e) => edit({ validUntilAt: e.target.value })} />
+            </FormField>
+          )}
           {previewed && <PreviewSummary result={previewed.result} currency={previewed.currency} />}
           {generalError && (
             <p role="alert" className="text-sm text-loss">

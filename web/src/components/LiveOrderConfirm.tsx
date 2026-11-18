@@ -2,9 +2,9 @@ import { useState } from "react";
 import { ApiError } from "@/api/client";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { TotpErrors, TotpField } from "@/components/LiveTotpDialog";
-import { formatMoney, formatQty } from "@/lib/format";
+import { formatDateTime, formatMoney, formatQty } from "@/lib/format";
 import { TOTP_RE, TRAILING_NOTE } from "@/lib/live";
-import { ORDER_TYPE_LABELS, TIF_LABELS } from "@/lib/labels";
+import { ORDER_TYPE_LABELS, TIF_LABELS, VALID_UNTIL_LABELS } from "@/lib/labels";
 
 export interface LiveOrderSummary {
   symbol: string;
@@ -17,6 +17,8 @@ export interface LiveOrderSummary {
   trail_percent?: string | null;
   trail_amount?: string | null;
   tif?: string | null;
+  /** "close" or an ISO datetime */
+  valid_until?: string | null;
   /** the instrument's currency: notional and prices are shown in it */
   currency?: string | null;
 }
@@ -64,6 +66,9 @@ export function LiveOrderConfirm({ portfolioName, order, amount, pending = false
   if (order.trail_percent) rows.push(["Trailing", `${formatQty(order.trail_percent)}%`]);
   if (order.trail_amount) rows.push(["Trailing", price(order.trail_amount)]);
   if (order.tif) rows.push(["Durata", TIF_LABELS[order.tif] ?? order.tif]);
+  if (order.valid_until) {
+    rows.push(["Valido fino a", order.valid_until === "close" ? VALID_UNTIL_LABELS.close : formatDateTime(order.valid_until)]);
+  }
   return (
     <ConfirmDialog
       open

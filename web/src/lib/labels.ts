@@ -23,6 +23,8 @@ export const ORDER_TYPE_LABELS: Record<string, string> = {
 
 /** Italian names of the order durations (engine TimeInForce). */
 export const TIF_LABELS: Record<string, string> = { gtc: "Fino a revoca (gtc)", day: "Giornaliero (day)" };
+/** «Valido fino a» of a manual order: no end, today's session close, or a date and time. */
+export const VALID_UNTIL_LABELS = { none: "Nessun limite", close: "Chiusura di oggi", at: "Data e ora" } as const;
 
 /** Portal user roles («Impostazioni → Utenti»). */
 export const ROLE_LABELS: Record<UserRole, string> = { admin: "Amministratore", viewer: "Sola lettura" };
