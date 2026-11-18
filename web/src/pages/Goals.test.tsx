@@ -71,7 +71,12 @@ const server = setupServer(
   // before commonHandlers (they answer the progress with an empty list)
   http.get("*/api/goals/progress", () =>
     HttpResponse.json([
-      progress(weekly),
+      progress(weekly, {
+        parts: [
+          { portfolio_id: "p1", name: "Alfa", change_eur: "7.50", contribution_pct: "0.75" },
+          { portfolio_id: "p2", name: "Beta", change_eur: "2.50", contribution_pct: "0.25" },
+        ],
+      }),
       progress(xmas, {
         period_start: "2026-11-01", period_end: "2026-12-24", start_eur: "600", current_eur: "636", target_eur: "630",
         pct: "6", gap_eur: "-6", elapsed_pct: "30", status: "oltre il tetto", portfolio_name: "Alfa",
@@ -157,6 +162,7 @@ describe("Obiettivi", () => {
     expect(within(w).getByText("+1,00%")).toBeInTheDocument();
     expect(within(w).getByText(/mancano 10,00 €/)).toBeInTheDocument();
     expect(within(w).getByRole("progressbar", { name: "Avanzamento settimanale" })).toHaveAttribute("aria-valuenow", "50");
+    expect(within(w).getByTestId("goal-parts-settimanale")).toHaveTextContent("Alfa +7,50 € (+0,75 pt)· Beta +2,50 € (+0,25 pt)");
 
     const x = screen.getByRole("article", { name: "Obiettivo Natale" });
     expect(within(x).getByText("oltre il tetto")).toBeInTheDocument();

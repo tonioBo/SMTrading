@@ -1559,6 +1559,15 @@ export interface GoalTemplate {
 }
 
 /** The current period of an active goal (EUR strings; null without data). */
+/** A portfolio's share of a goal's progress: they add up to current − start and to pct. */
+export interface GoalPart {
+  portfolio_id: string;
+  name: string;
+  change_eur: string;
+  /** the points it adds to pct (null when pct is) */
+  contribution_pct: string | null;
+}
+
 export interface GoalProgress {
   goal_id: string;
   name: string;
@@ -1584,4 +1593,6 @@ export interface GoalProgress {
   diff_pp?: string | null;
   /** max_loss: max(0, −pct) */
   loss_pct?: string | null;
+  /** each counted portfolio's share, by name (absent from older servers) */
+  parts?: GoalPart[];
 }

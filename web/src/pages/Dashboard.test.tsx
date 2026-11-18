@@ -105,7 +105,13 @@ describe("Dashboard", () => {
       gap_eur: "10", elapsed_pct: "40", as_of: "2026-11-17T09:00:00Z",
     };
     const goals: GoalProgress[] = [
-      { ...base, goal_id: "g1", name: "settimanale", horizon: "week", scope: "total", portfolio_id: null, portfolio_name: null, kind: "min", pct: "1", target_pct: "2", status: "in linea" },
+      {
+        ...base, goal_id: "g1", name: "settimanale", horizon: "week", scope: "total", portfolio_id: null, portfolio_name: null, kind: "min", pct: "1", target_pct: "2", status: "in linea",
+        parts: [
+          { portfolio_id: "p1", name: "Alfa", change_eur: "10.00", contribution_pct: "1.00" },
+          { portfolio_id: "p2", name: "Beta", change_eur: "0.00", contribution_pct: "0.00" },
+        ],
+      },
       {
         ...base, goal_id: "g2", name: "Natale", horizon: "custom", scope: "portfolio", portfolio_id: "p1", portfolio_name: "Alfa", kind: "cap",
         period_start: "2026-11-01", period_end: "2026-12-24", pct: "6", target_pct: "5", status: "oltre il tetto",
@@ -124,6 +130,9 @@ describe("Dashboard", () => {
     expect(within(rows[0]).getByText("+1,00%")).toBeInTheDocument();
     expect(within(rows[0]).getByText(/Totale · 16\/11 – 22\/11/)).toBeInTheDocument();
     expect(within(rows[0]).getByRole("progressbar", { name: "Avanzamento settimanale" })).toHaveAttribute("aria-valuenow", "50");
+    // the total goal's share of each portfolio, under the bar
+    expect(within(rows[0]).getByTestId("goal-parts-settimanale")).toHaveTextContent("Alfa +10,00 € (+1,00 pt)· Beta 0,00 €");
+    expect(within(rows[1]).queryByTestId("goal-parts-Natale")).toBeNull();
     expect(within(rows[1]).getByText("tetto +5%")).toBeInTheDocument();
     expect(within(rows[1]).getByText("oltre il tetto")).toBeInTheDocument();
     expect(within(rows[1]).getByText(/Alfa · 01\/11 – 24\/12/)).toBeInTheDocument();

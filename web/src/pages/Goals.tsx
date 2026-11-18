@@ -9,6 +9,7 @@ import { AdminOnly } from "@/components/AdminOnly";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FormField, selectClass } from "@/components/FormField";
 import { GoalBar } from "@/components/GoalBar";
+import { GoalParts } from "@/components/GoalParts";
 import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
 import { Pct } from "@/components/Pct";
@@ -393,6 +394,7 @@ function GoalCard({ goal, progress, onEdit, onDeactivate }: { goal: Goal; progre
               <Pct value={p.pct} tone />
             </div>
             <GoalFigures goal={goal} p={p} />
+            <GoalParts goal={p} />
           </div>
         )}
         {admin && (

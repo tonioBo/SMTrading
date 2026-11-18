@@ -7,6 +7,7 @@ import { useSignals } from "@/api/hooks/signals";
 import type { Dashboard as DashboardData, DashboardConnector, GoalProgress, MarginAlert } from "@/api/types";
 import { EquityHistoryCard } from "@/components/EquityHistoryCard";
 import { GoalBar } from "@/components/GoalBar";
+import { GoalParts } from "@/components/GoalParts";
 import { HaltBanner } from "@/components/HaltBanner";
 import { KillSwitchButton } from "@/components/KillSwitchButton";
 import { Money } from "@/components/Money";
@@ -182,6 +183,7 @@ function GoalsCard({ goals }: { goals: GoalProgress[] }) {
                 </span>
               </div>
               <GoalsCardFigures g={g} />
+              <GoalParts goal={g} />
             </li>
           ))}
         </ul>
