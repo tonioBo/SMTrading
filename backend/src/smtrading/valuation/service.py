@@ -91,12 +91,23 @@ class PortfolioValuation:
         return "ok"
 
 
+# a quote whose spread is wider than this share of its mid (after hours, thin books) is not
+# a fair mark: its mid can sit far from any real trade (e.g. NVDA bid 145.6 / ask 178.29)
+MAX_MARK_SPREAD = Decimal("0.01")
+
+
 def mark_price(quote: Quote) -> Decimal:
-    """Mid when both bid and ask are present, else last; PROVIDER_UNAVAILABLE if neither."""
+    """Mid when both bid and ask are present and the spread is at most MAX_MARK_SPREAD of
+    the mid; with a wider spread the last trade (when there is one); else last;
+    PROVIDER_UNAVAILABLE if neither."""
     if quote.bid is not None and quote.ask is not None:
         with localcontext() as ctx:
             ctx.prec = _PREC
-            return (quote.bid + quote.ask) / 2
+            mid = (quote.bid + quote.ask) / 2
+            wide = mid <= 0 or (quote.ask - quote.bid) > mid * MAX_MARK_SPREAD
+        if not wide or quote.last is None:
+            return mid
+        return quote.last
     if quote.last is not None:
         return quote.last
     raise SMTError(
