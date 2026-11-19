@@ -332,6 +332,41 @@ def _dynamic(loss_pct: Decimal | None) -> bool:
     return loss_pct is None or loss_pct >= _DYNAMIC_LOSS_PCT
 
 
+def portfolio_templates(key: str, portfolio_id: UUID | None, name: str,
+                        loss_pct: Decimal | None, *, today: date) -> list[dict[str, Any]]:
+    """The per-portfolio «Modelli» of one portfolio (`key` in the template keys; the
+    body's portfolio_id is `portfolio_id`, None for a portfolio not created yet, e.g. in
+    the campaign wizard), prudent or dynamic from its profile's daily-loss breaker."""
+    dyn = _dynamic(loss_pct)
+    month, year, risk_year = ("8", "30", "20") if dyn else ("3", "10", "10")
+
+    def body(*args, **kwargs) -> dict[str, Any]:
+        b = _body(*args, portfolio_id=portfolio_id, today=today, **kwargs)
+        b["scope"] = "portfolio"
+        return b
+
+    out = [
+        {"key": f"monthly_portfolio:{key}", "label": f"Mensile +{month}% · {name}",
+         "body": body("mensile", "month", month)},
+        {"key": f"quarterly_portfolio:{key}", "label": f"Trimestrale +10% · {name}",
+         "body": body("trimestrale", "quarter", "10")},
+        {"key": f"yearly_portfolio:{key}", "label": f"Annuale +{year}% · {name}",
+         "body": body("annuale", "year", year)},
+        {"key": f"risk_monthly:{key}", "label": f"Rischio mensile −5% · {name}",
+         "body": body("rischio mensile", "month", "5", kind="max_loss")},
+        {"key": f"risk_quarterly:{key}", "label": f"Rischio trimestrale −8% · {name}",
+         "body": body("rischio trimestrale", "quarter", "8", kind="max_loss")},
+        {"key": f"risk_yearly:{key}", "label": f"Rischio annuale −{risk_year}% · {name}",
+         "body": body("rischio annuale", "year", risk_year, kind="max_loss")},
+    ]
+    if dyn:
+        out.append({"key": f"beat_qqq_quarter:{key}",
+                    "label": f"Battere QQQ nel trimestre · {name}",
+                    "body": body("battere QQQ", "quarter", "0", kind="beat_index",
+                                 benchmark="QQQ")})
+    return out
+
+
 async def goal_templates(session: AsyncSession, *, today: date) -> list[dict[str, Any]]:
     """The «Modelli» of the Obiettivi page: [{key, label, body, exists}], `body` a create
     body to prefill the dialog (the admin confirms; `closes_positions` true unless an
@@ -356,30 +391,7 @@ async def goal_templates(session: AsyncSession, *, today: date) -> list[dict[str
          "body": _body("annuale", "year", "20", today=today)},
     ]
     for pid, name, loss_pct in portfolios:
-        dyn = _dynamic(loss_pct)
-        month, year, risk_year = ("8", "30", "20") if dyn else ("3", "10", "10")
-        out += [
-            {"key": f"monthly_portfolio:{pid}", "label": f"Mensile +{month}% · {name}",
-             "body": _body("mensile", "month", month, portfolio_id=pid, today=today)},
-            {"key": f"quarterly_portfolio:{pid}", "label": f"Trimestrale +10% · {name}",
-             "body": _body("trimestrale", "quarter", "10", portfolio_id=pid, today=today)},
-            {"key": f"yearly_portfolio:{pid}", "label": f"Annuale +{year}% · {name}",
-             "body": _body("annuale", "year", year, portfolio_id=pid, today=today)},
-            {"key": f"risk_monthly:{pid}", "label": f"Rischio mensile −5% · {name}",
-             "body": _body("rischio mensile", "month", "5", kind="max_loss",
-                           portfolio_id=pid, today=today)},
-            {"key": f"risk_quarterly:{pid}", "label": f"Rischio trimestrale −8% · {name}",
-             "body": _body("rischio trimestrale", "quarter", "8", kind="max_loss",
-                           portfolio_id=pid, today=today)},
-            {"key": f"risk_yearly:{pid}", "label": f"Rischio annuale −{risk_year}% · {name}",
-             "body": _body("rischio annuale", "year", risk_year, kind="max_loss",
-                           portfolio_id=pid, today=today)},
-        ]
-        if dyn:
-            out.append({"key": f"beat_qqq_quarter:{pid}",
-                        "label": f"Battere QQQ nel trimestre · {name}",
-                        "body": _body("battere QQQ", "quarter", "0", kind="beat_index",
-                                      portfolio_id=pid, benchmark="QQQ", today=today)})
+        out += portfolio_templates(str(pid), pid, name, loss_pct, today=today)
     out += [
         {"key": "beat_vwce_quarter", "label": "Battere VWCE nel trimestre (totale)",
          "body": _body("battere VWCE", "quarter", "0", kind="beat_index",

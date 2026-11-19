@@ -8,6 +8,7 @@ import AgentResults from "@/pages/AgentResults";
 import AgentDocs from "@/pages/AgentDocs";
 import Agents from "@/pages/Agents";
 import Brokers from "@/pages/Brokers";
+import Campaigns from "@/pages/Campaigns";
 import Connectors from "@/pages/Connectors";
 import Dashboard from "@/pages/Dashboard";
 import Fees from "@/pages/Fees";
@@ -45,6 +46,7 @@ export const routes: RouteObject[] = [
           { path: "posizioni", element: <Positions /> },
           { path: "strategie", element: <Strategies /> },
           { path: "obiettivi", element: <Goals /> },
+          { path: "campagne", element: <Campaigns /> },
           { path: "agenti", element: <Agents /> },
           { path: "agenti/:id", element: <AgentDetail /> },
           { path: "costi-agenti", element: <AgentCosts /> },

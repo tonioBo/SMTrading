@@ -668,6 +668,35 @@ async def test_0037_reconciliation_checks_round_trip(fresh_db):
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
     assert await query(table) == [("reconciliation_checks",)]
 
+
+async def test_0038_campaigns_round_trip(fresh_db):
+    """0038: campaigns, campaign_portfolios, campaign_goals; reversible (one step back)."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    async def query(sql: str):
+        engine = make_engine(fresh_db)
+        async with engine.begin() as conn:
+            rows = (await conn.execute(text(sql))).all()
+        await engine.dispose()
+        return rows
+
+    tables = ("select to_regclass('campaigns')::text, to_regclass('campaign_portfolios')::text,"
+              " to_regclass('campaign_goals')::text")
+    assert await query(tables) == [("campaigns", "campaign_portfolios", "campaign_goals")]
+    with pytest.raises(Exception, match="ck_campaigns_status"):
+        await query("insert into campaigns (id, name, start_date, end_date, status)"
+                    " values (gen_random_uuid(), 'x', '2027-01-01', '2027-02-01', 'altro')")
+    with pytest.raises(Exception, match="ck_campaigns_dates"):
+        await query("insert into campaigns (id, name, start_date, end_date, status)"
+                    " values (gen_random_uuid(), 'x', '2027-02-01', '2027-01-01', 'attiva')")
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0037")
+    assert await query(tables) == [(None, None, None)]
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    assert await query(tables) == [("campaigns", "campaign_portfolios", "campaign_goals")]
+
+
 async def test_0039_instrument_metadata_round_trip(fresh_db):
     """0039: sector / industry / indices / created_at; rows that existed before keep a
     NULL created_at (never «aggiunti di recente»), new ones get now(); downgrade drops."""
