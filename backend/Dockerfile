@@ -30,9 +30,11 @@ RUN uv sync --frozen --no-dev && chmod +x docker/entrypoint-api.sh \
     && useradd --system --uid 10001 --no-create-home smt \
     && mkdir -p /app/.cache && chown -R smt /app
 
-# build id (X-SMT-Build): set by compose; the web image stamps its own on proxied responses
+# build id (X-SMT-Build): set by compose; the web image stamps its own on proxied responses.
+# SMT_BUILT_AT (optional, e.g. `date -Iseconds`): the build time on «Salute del sistema»
 ARG SMT_BUILD_ID=dev
-ENV SMT_BUILD_ID=$SMT_BUILD_ID
+ARG SMT_BUILT_AT=
+ENV SMT_BUILD_ID=$SMT_BUILD_ID SMT_BUILT_AT=$SMT_BUILT_AT
 
 # yfinance writes its tz cache under $HOME/.cache; the runtime user owns /app/.cache
 ENV PATH="/app/.venv/bin:$PATH" HOME=/app

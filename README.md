@@ -631,8 +631,9 @@ fornitori non sono registrate e un filtro maschera token, API key, password e cr
 
 Dopo un `docker compose up -d --build` una scheda aperta con la versione precedente mostra
 «Nuova versione disponibile — Ricarica». Per un identificativo esplicito della build:
-`SMT_BUILD_ID=$(git rev-parse --short HEAD) docker compose up -d --build` (altrimenti
-l'immagine web usa l'ora della build).
+`SMT_BUILD_ID=$(git rev-parse --short HEAD) SMT_BUILT_AT=$(date -Iseconds) docker compose up -d --build`
+(altrimenti l'immagine web usa l'ora della build). Versione, ora della build e ultimo avvio di
+api e worker si leggono in «Salute del sistema».
 
 ## Test
 

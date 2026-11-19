@@ -7,6 +7,7 @@ x-app: &app
       agentdocs: ./docs/paperclip-agents  # «Istruzioni agenti» seed (COPY --from=agentdocs)
     args:
       SMT_BUILD_ID: ${SMT_BUILD_ID:-}
+      SMT_BUILT_AT: ${SMT_BUILT_AT:-}
   image: smtrading-backend:local
   restart: unless-stopped
   env_file: .env
