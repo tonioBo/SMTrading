@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useAgentCosts } from "@/api/hooks/paperclip";
 import type { AgentCostMonth, AgentCostPeriod, AgentCostRow, AgentCosts as AgentCostsData } from "@/api/types";
+import { AgentModelCosts } from "@/components/AgentModelCosts";
 import { DataTable, type Column } from "@/components/DataTable";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -30,6 +31,7 @@ const columns: Column<AgentCostRow>[] = [
   {
     key: "name",
     header: "Agente",
+    primary: true,
     sortValue: (r) => r.name,
     cell: (r) => (
       <div>
@@ -40,6 +42,7 @@ const columns: Column<AgentCostRow>[] = [
       </div>
     ),
   },
+  { key: "model", header: "Modello", sortValue: (r) => r.model ?? "", cell: (r) => <span className="font-mono text-xs">{r.model ?? "—"}</span> },
   { key: "api", header: "A consumo API ($)", align: "right", sortValue: (r) => num(r.api_usd), cell: (r) => <Usd value={r.api_usd} /> },
   { key: "sub", header: "Incluso nell'abbonamento ($)", align: "right", sortValue: (r) => num(r.subscription_usd), cell: (r) => <Usd value={r.subscription_usd} /> },
   { key: "other", header: "Altro ($)", align: "right", sortValue: (r) => num(r.other_usd), cell: (r) => <Usd value={r.other_usd} /> },
@@ -71,6 +74,7 @@ const unmatchedColumns: Column<Unmatched>[] = [
   {
     key: "name",
     header: "Agente Paperclip",
+    primary: true,
     sortValue: (r) => r.name ?? r.paperclip_agent_id,
     cell: (r) => (
       <div>
@@ -145,11 +149,11 @@ function MonthCard({ month }: { month: AgentCostMonth }) {
           <ul aria-label="Quota per agente" className="space-y-1">
             {month.shares.map((s) => (
               <li key={`${s.agent_id ?? ""}-${s.name}`} className="flex items-center gap-2">
-                <span className="w-40 truncate">{s.name}</span>
+                <span className="w-24 truncate sm:w-40">{s.name}</span>
                 <span className="h-2 flex-1 rounded bg-border/40">
                   <span className="block h-2 rounded bg-accent" style={{ width: `${Math.min(100, Number(s.pct ?? 0))}%` }} />
                 </span>
-                <span className="num w-28 text-right">
+                <span className="num shrink-0 text-right sm:w-28">
                   <Usd value={s.usd} /> · {s.pct == null ? "—" : pctText(s.pct)}
                 </span>
               </li>
@@ -169,7 +173,7 @@ export default function AgentCosts() {
   return (
     <div className="space-y-6">
       <PageHeader title="Costi agenti">
-        <div className="flex gap-1" role="group" aria-label="Periodo">
+        <div className="flex flex-wrap gap-1" role="group" aria-label="Periodo">
           {PERIODS.map((p) => (
             <Button key={p.value} size="sm" variant={p.value === period ? "secondary" : "ghost"} aria-pressed={p.value === period} onClick={() => setPeriod(p.value)}>
               {p.label}
@@ -193,6 +197,7 @@ export default function AgentCosts() {
           <DataTable aria-label="Costi per agente" columns={columns} rows={data?.agents} rowKey={(r) => r.agent_id} loading={isLoading} empty="Nessun agente" />
         </CardContent>
       </Card>
+      {data?.models && <AgentModelCosts models={data.models} />}
       <Card role="region" aria-label="Agenti Paperclip non abbinati">
         <CardHeader>
           <CardTitle>Agenti Paperclip non abbinati</CardTitle>

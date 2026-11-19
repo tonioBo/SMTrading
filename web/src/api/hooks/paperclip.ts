@@ -3,6 +3,7 @@ import { apiFetch } from "@/api/client";
 import type {
   AgentCostPeriod,
   AgentCosts,
+  ModelCompare,
   PaperclipConfig,
   PaperclipConfigPatch,
   PaperclipStatus,
@@ -55,6 +56,20 @@ export function useReconfirmPaperclip() {
   return useMutation({
     mutationFn: () => apiFetch<PaperclipStatus>("/api/paperclip/baseline", { method: "POST" }),
     onSuccess: (data) => qc.setQueryData(paperclipStatusKey, data),
+  });
+}
+
+/** Per model, before and after `at` (default: the last model change seen). */
+export function useModelCompare(at: string | null, days: number, enabled = true) {
+  return useQuery({
+    queryKey: [...agentCostsKey, "compare", at, days],
+    queryFn: () => {
+      const q = new URLSearchParams({ days: String(days) });
+      if (at) q.set("at", at);
+      return apiFetch<ModelCompare>(`/api/agent-costs/compare?${q.toString()}`);
+    },
+    enabled,
+    retry: false,
   });
 }
 
