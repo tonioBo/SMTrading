@@ -50,6 +50,7 @@ from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.risk.models import AppSetting, RiskProfile
 from smtrading.telegram.models import OutboxStatus, TelegramOutbox
 from smtrading.telegram.outbox import enqueue
+from smtrading.worker.jobstate import job_tick
 
 log = logging.getLogger(__name__)
 
@@ -256,6 +257,7 @@ class HandoffWatchdog:
         while True:
             try:
                 await self.tick()
+                await job_tick()  # «Salute del sistema»: last pass
             except Exception:
                 log.warning("hand-off watchdog failed; retrying in %ss", self._interval_s,
                             exc_info=True)

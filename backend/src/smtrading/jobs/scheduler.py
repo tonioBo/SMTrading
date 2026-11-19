@@ -38,6 +38,7 @@ from smtrading.risk.daily_loss import reset_daily
 from smtrading.risk.margin import margin_sweep
 from smtrading.risk.models import JobRun
 from smtrading.useractivity.throttle import flush_suppressed
+from smtrading.worker.jobstate import job_tick
 
 log = logging.getLogger("smtrading.jobs.scheduler")
 
@@ -74,6 +75,7 @@ class JobScheduler:
     async def run(self) -> None:
         while True:
             await self.tick()
+            await job_tick()  # «Salute del sistema»: last pass
             await asyncio.sleep(self._tick_s)
 
     async def tick(self) -> None:

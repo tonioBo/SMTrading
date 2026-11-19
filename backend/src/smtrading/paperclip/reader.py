@@ -39,6 +39,7 @@ from smtrading.paperclip.costs import _amount, daily_costs
 from smtrading.paperclip.models import AgentCostDay
 from smtrading.paperclip.sessions import SessionClientFactory, SessionRefresher
 from smtrading.telegram.outbox import enqueue
+from smtrading.worker.jobstate import job_tick
 
 log = logging.getLogger(__name__)
 
@@ -182,6 +183,7 @@ class PaperclipReader:
         while True:
             try:
                 await self.tick()
+                await job_tick()  # «Salute del sistema»: last pass
             except Exception:
                 log.warning("paperclip read failed; retrying in %ss", self._interval_s,
                             exc_info=True)

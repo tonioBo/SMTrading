@@ -34,6 +34,7 @@ from smtrading.telegram.preopen import PreopenCheck
 from smtrading.telegram.sender import OutboxSender
 from smtrading.telegram.summaries import SummaryScheduler
 from smtrading.watch.evaluator import AlertEvaluator
+from smtrading.worker.jobstate import JobRecorder, bind, job_tick
 
 log = logging.getLogger("smtrading.worker")
 
@@ -70,6 +71,7 @@ async def health_checks(router) -> None:
         try:
             results = await router.check_health()
             log.info("connector health: %s", results)
+            await job_tick()
         except Exception:
             log.warning("connector health check failed; retrying in %ss", HEALTH_INTERVAL_S,
                         exc_info=True)
@@ -127,21 +129,36 @@ async def gated(gate: StartupGate, factory: Callable[[], Awaitable[None]]) -> No
     await factory()
 
 
-async def supervise(name: str, factory: Callable[[], Awaitable[None]]) -> None:
+# set by run(): the default recorder of `supervise`
+_recorder: JobRecorder | None = None
+
+
+async def supervise(name: str, factory: Callable[[], Awaitable[None]],
+                    recorder: JobRecorder | None = None) -> None:
     """Run `factory()` forever: a crash is logged and the job restarted after a delay.
 
     A cancel that the job turned into an error (e.g. a TaskGroup whose child failed while
-    it was being cancelled) still stops the loop instead of being swallowed.
+    it was being cancelled) still stops the loop instead of being swallowed. With a
+    `recorder` every start, crash and exit is recorded (worker.jobstate), and the job's
+    own `job_tick()` calls record its passes (default: the worker's recorder, set by run()).
     """
+    recorder = recorder or _recorder
     task = asyncio.current_task()
+    bind(recorder, name)
     while True:
         try:
+            if recorder is not None:
+                await recorder.started(name)
             await factory()
             log.warning("%s exited; restarting in %ss", name, RESTART_DELAY_S)
-        except Exception:
+            if recorder is not None:
+                await recorder.exited(name)
+        except Exception as e:
             if task is not None and task.cancelling():
                 raise asyncio.CancelledError from None
             log.exception("%s crashed; restarting in %ss", name, RESTART_DELAY_S)
+            if recorder is not None:
+                await recorder.crashed(name, e)
         await asyncio.sleep(RESTART_DELAY_S)
 
 
@@ -159,6 +176,7 @@ async def register_live_keys(sessionmaker) -> None:
 
 
 async def run() -> None:
+    global _recorder
     settings = get_settings()
     redis = Redis.from_url(settings.redis_url)
     engine = make_engine(settings.database_url)
@@ -171,6 +189,8 @@ async def run() -> None:
     try:
         await register_live_keys(sessionmaker)
         await warn_if_fake_broker(sessionmaker, process="worker")
+        _recorder = JobRecorder(redis)  # every supervised job's state («Salute del sistema»)
+        await _recorder.worker_started()
         async with httpx.AsyncClient() as http:
             router = MarketDataRouter(sessionmaker, redis, http)
             gate = StartupGate(http, getattr(settings, "api_health_url", API_HEALTH_URL))
@@ -240,6 +260,7 @@ async def run() -> None:
         for sig in (signal.SIGTERM, signal.SIGINT):
             with contextlib.suppress(NotImplementedError, RuntimeError):
                 loop.remove_signal_handler(sig)
+        _recorder = None
         await redis.aclose()
         await engine.dispose()
 
