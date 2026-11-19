@@ -127,6 +127,7 @@ def _local_hit(i: Instrument) -> dict:
         "symbol": i.symbol, "name": i.name, "asset_class": i.asset_class, "market": i.market,
         "exchange": i.market, "currency": i.currency, "tradable": bool(i.active),
         "in_catalogo": True, "aggiungibile": False, "provider": "local",
+        "sector": i.sector, "industry": i.industry, "indices": list(i.indices or []),
     }
 
 

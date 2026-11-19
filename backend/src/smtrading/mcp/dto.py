@@ -61,7 +61,7 @@ QUOTE_FIELDS = ("symbol", "bid", "ask", "last", "ts", "provider")
 BAR_FIELDS = ("ts", "open", "high", "low", "close", "volume")
 INSTRUMENT_FIELDS = (
     "symbol", "name", "asset_class", "market", "currency", "lot_size", "tick_size",
-    "shortable", "active",
+    "shortable", "active", "sector", "industry", "indices",
 )
 NOTIFICATION_FIELDS = ("id", "portfolio_id", "kind", "payload", "created_at")
 DECISION_FIELDS = (

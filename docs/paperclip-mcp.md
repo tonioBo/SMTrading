@@ -160,7 +160,7 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
 - `close_position`: chiude una posizione (o parte di essa) con un ordine market reduce-only.
 - `close_all_positions`: chiude tutte le posizioni aperte con ordini market reduce-only.
 - `search_instruments`: cerca strumenti per simbolo o nome (al massimo 50 risultati), filtrabili per `asset_class` e `market`: prima il catalogo (`in_catalogo: true`), poi, con `include_provider` (default `true`), i risultati dei provider non ancora in catalogo che si possono aggiungere (`in_catalogo: false`, `aggiungibile: true`). La ricerca non crea nulla: per aggiungerne uno basta chiamare `get_instrument(symbol)` (o quotarlo, o fare trading).
-- `get_instrument`: anagrafica di uno strumento e stato del suo mercato; un simbolo non in catalogo viene aggiunto automaticamente (vedi sotto).
+- `get_instrument`: anagrafica di uno strumento e stato del suo mercato; un simbolo non in catalogo viene aggiunto automaticamente (vedi sotto). Anagrafica e risultati di `search_instruments` riportano anche `sector` (settore in italiano, oppure ETF / Crypto / Cambi), `industry` (per gli ETF il tipo: Azionario, Obbligazionario, Materie prime...) e `indices` (gli indici di appartenenza: SP500, NDX, FTSEMIB, DAX, CAC40, MDAX); `null` quando non noti.
 - `get_quote`: ultime quotazioni (bid, ask, last) fino a 50 simboli. Le azioni USA hanno
   anche `extended`: con la seduta regolare chiusa, l'ultimo prezzo pre-market o after-hours
   `{session: "pre"|"post", price, change_pct_vs_close, ts}` (variazione in % sull'ultima

@@ -68,7 +68,7 @@ async def test_search_merges_local_and_provider(env):
     assert not err
     by = {r["symbol"]: r for r in rows}
     assert by["BTC-USD"]["tradable"] is True and by["BTC-USD"]["provider"] == "local"
-    assert by["BTC-USD"]["in_catalogo"] is True
+    assert by["BTC-USD"]["in_catalogo"] is True and by["BTC-USD"]["sector"] == "Crypto"
     assert by["BTCX-USD"]["tradable"] is False and by["BTCX-USD"]["provider"] == "fake"
     assert by["BTCX-USD"]["in_catalogo"] is False and by["BTCX-USD"]["aggiungibile"] is True
     assert "BTCQ" not in by  # a provider hit that could not be added is left out
@@ -91,6 +91,8 @@ async def test_get_instrument(env):
     assert not err
     assert out["symbol"] == SYM and out["market_status"]["market"] == "CRYPTO"
     assert out["market_status"]["is_open"] is True
+    assert {k: out[k] for k in ("sector", "industry", "indices")} == {
+        "sector": "Crypto", "industry": None, "indices": []}
     err, out = await env["call"]("get_instrument", {"symbol": " btc-usd "})
     assert not err and out["symbol"] == SYM
     err, out = await env["call"]("get_instrument", {"symbol": "NOPE"})
