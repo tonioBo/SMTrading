@@ -288,6 +288,12 @@ async def _approved(session: AsyncSession) -> list[_Approved]:
     return out
 
 
+async def approved_strategies(session: AsyncSession) -> list[_Approved]:
+    """The approved strategies as `strategy_signals` sees them (ref, name, type, params,
+    timeframe, symbols, non-archived portfolios), without reading any market data."""
+    return await _approved(session)
+
+
 def _fast_name(p: dict) -> str:
     return "Chiusura" if p["fast"] == 1 else f"SMA {p['fast']}"  # SMA 1 is the close
 
