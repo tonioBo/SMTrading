@@ -3,6 +3,8 @@
 Mappa di **chi passa il lavoro a chi**, con quale task e quando, ricavata dalle istruzioni
 (`00`–`09`), dalle Routine configurate in Paperclip e dai task che SMTrading apre da sé.
 È un documento di controllo per chi gestisce il sistema: **non** va incollato negli agenti.
+I punti citati delle istruzioni possono ora trovarsi nell'appendice `10-appendice.md` (casi
+rari, sezioni «§<id>» richiamate dalle istruzioni con «→ §<id>»).
 Le regole generali del passaggio (nuovo task, un solo assegnatario, «copia» = menzione solo
 informativa e task separato a chi deve agire, chi chiude, cosa fare senza risposta) sono in `00-regole-comuni.md` §4 «Passaggi tra
 agenti».
@@ -17,7 +19,7 @@ Legenda: **O** = obbligatorio (anche se non è successo nulla) · **C** = condiz
 |---|---|---|---|---|
 | lun-ven 08:30 | Scansione pre-mercato 08:30 | NA | `06` «Scansione pre-mercato delle 08:30» | **O** task «AGENDA <data>» al PM (non nei giorni di borse chiuse); task della Routine chiuso con l'id |
 | lun-ven 08:45 | — (SMTrading, nessun agente) | — | — | Telegram «Pronti per l'apertura» / problemi / «Mercati chiusi oggi» |
-| lun-ven 09:00-22:00 ogni ora :00 | Sentinella rischio (oraria) | RM | `03` «Ciclo programmato (sentinella)» | **O** controllo completo a ogni ciclo (niente uscita rapida); una riga per portafoglio; task solo se serve (sotto) |
+| lun-ven 9, 11, 13, 15, 16, 17, 19, 21, 22 (:00) | Sentinella rischio (oraria) | RM | `03` «Ciclo programmato (sentinella)» | **O** controllo completo a ogni ciclo (niente uscita rapida); una riga per portafoglio; task solo se serve (sotto) |
 | lun-ven 09:05-21:05 ogni ora :05 | Sentinella portafogli (oraria) | PM | `02` «Ciclo programmato (sentinella)» | **O** uscita rapida «Nessuna novità» se feed e alert vuoti (non alle 09:05/15:35, non in pre-chiusura, non con ingressi in attesa); altrimenti controllo ingressi in attesa (ANNULLA se scaduti), proposte; alle 09:05 controllo BUONGIORNO |
 | lun-ven 15:35 | Sentinella portafogli (oraria), 2° cron | PM | `02` sentinella, punto 6 (apertura USA) | giro opportunità; ANALISI se c'è uno slot libero |
 | lun-ven 17:05-17:30, 21:05-22:00 (di norma; l'ora prima della chiusura reale di `get_market_status`) | (i cicli PM che cadono nelle finestre) | PM | `02` sentinella, punto 7 | controllo barra in formazione; PROPOSTA se il segnale scatta, con `valid_until: "close"` |

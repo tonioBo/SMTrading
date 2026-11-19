@@ -9,7 +9,8 @@ protezione, obiettivi, split, perdita giornaliera, sorveglianza dei passaggi) il
 Legenda: **Coperto** = già nelle istruzioni · **Lacuna corretta** = mancava o era ambigua,
 corretta il 18/11 nel file indicato · PM, RM, ES, CEO, MA, NA, QR, PA, NOT = agenti come nel
 README · `00 §7` = file `00-regole-comuni.md`, sezione 7 · `#35` = riga della matrice di
-`HANDOFFS.md`.
+`HANDOFFS.md`. Dal 19/11 i casi rari citati qui sono nell'appendice `10-appendice.md`
+(sezioni «§<id>», richiamate dalle istruzioni con «→ §<id>»): il testo è lo stesso, spostato.
 
 Principi applicati (decisioni del titolare del 18/11, `00` §2 e §4):
 

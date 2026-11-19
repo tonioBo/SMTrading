@@ -123,16 +123,7 @@ Normalmente non decidi nulla: **non** registrare le analisi. Registra solo:
 |---|---|
 | Classificazione del regime di mercato richiesta dal CEO | `other` |
 
-```json
-{
-  "kind": "other",
-  "summary": "Regime di mercato 16/11: laterale-volatile; SPY sotto SMA50, ATR in aumento",
-  "symbols": ["SPY", "QQQ", "EXS1.DE", "BTC-USD", "EURUSD"],
-  "details": {"ref": "REGIME-20261116", "by": "Market Analyst",
-              "data": {"SPY": {"last": "...", "sma_50": "...", "sma_200": "...", "atr": "..."}},
-              "ts": "2026-11-16T09:10:00Z"}
-}
-```
+Esempio JSON → §MA1.
 
 ## Escalation
 
@@ -160,23 +151,4 @@ Se lo stesso problema di dati si ripete in 2 task consecutivi, crea un nuovo tas
 
 ## Esempio di report
 
-```text
-ANALISI AGG · MSFT, AAPL · 16/11/2026 09:10
-
-SINTESI
-1. MSFT: segnale STR-002 (sma_cross 20/50) presente sull'ultima barra chiusa (13/11).
-2. Last 413,62 $ (09:04 UTC, mercato USA chiuso); ATR14 6,15; RSI14 54,2.
-3. AAPL: nessun segnale (SMA20 sotto SMA50); nessuna azione.
-
-DATI (get_indicators 1d, ts 2026-11-13)
-- MSFT: sma_20 409,8 · sma_50 407,1 (incrocio il 13/11) · rsi 54,2 · atr 6,15
-- AAPL: sma_20 221,4 · sma_50 224,0 · rsi 41,7 · atr 3,90
-
-LIVELLI (MSFT)
-- supporto 401,0 (minimo barra 10/11) · resistenza 438,0 (massimo 28/10)
-- stop indicativo 401,2 (2 ATR) · target 437,8 (R:R 2)
-- alert suggeriti: price_below "401.2", price_above "438"
-
-RISCHI
-- Nessun utile nei prossimi 5 giorni; volatilità del settore in aumento (ATR +12% in 10 giorni).
-```
+→ §MA1.

@@ -136,17 +136,7 @@ Non decidi trade. Registra solo le valutazioni che condizionano gli altri:
 |---|---|
 | Segnali una notizia materiale con urgenza alta | `other` |
 
-```json
-{
-  "kind": "other",
-  "summary": "Notizia materiale negativa su NVDA: indagine antitrust annunciata, prezzo -4,1%",
-  "symbols": ["NVDA"],
-  "details": {"ref": "NEWS-20261116-1400-NVDA", "by": "News Analyst",
-              "sources": [{"name": "<testata>", "date": "2026-11-16T13:42:00+01:00", "url": "<link>"}],
-              "price": {"last": "...", "ts": "2026-11-16T13:58:10Z", "change_pct": "-4.1"},
-              "impact": "negativo", "urgency": "alta"}
-}
-```
+Esempio JSON → §NA1.
 
 ## Escalation
 
@@ -170,23 +160,4 @@ altrimenti al **Portfolio Manager**, **e** un task `ESCALATION` al Notifier (liv
 
 ## Esempio di report
 
-```text
-NOTIZIA · NVDA · negativa · urgenza alta
-
-SINTESI
-1. Annunciata indagine antitrust su NVDA (fonte primaria + agenzia, 16/11 13:42).
-2. Last 168,20 $ alle 13:58 UTC, −4,1% (≈ 1,6 × ATR14); posizione aperta su AGG.
-3. Segnalo al PM e al RM: possibile revisione dello stop o chiusura.
-
-FONTI
-1) <comunicato dell'autorità> · 2026-11-16 13:42 · <link>
-2) <agenzia di stampa> · 2026-11-16 13:55 · <link>
-3) get_news SMTrading: 2 articoli (13:47, 13:51)
-
-DATI
-- get_quote NVDA 13:58 UTC · get_positions AGG: 0,5 NVDA, P&L non realizzato −3,40 €
-- prossimi utili: nessuno entro 10 giorni (get_earnings_calendar)
-
-RISCHI (valutazione)
-- Impatto atteso negativo nel breve; esito dell'indagine incerto, tempi lunghi.
-```
+→ §NA1.

@@ -141,22 +141,7 @@ Campi:
 | Non conformità grave (apertura senza stop o senza approvazione) | `other` con `details.severity: "alta"` |
 | Errore o perdita evitabile trovati nell'audit | `lesson` (00 §9) |
 
-```json
-{
-  "kind": "other",
-  "summary": "Audit settimanale 16-20/11: PRU primo (+1,2%), AGG ultimo (-2,9%); 1 non conformità (AGG, stop mancante 2 ore)",
-  "details": {
-    "ref": "AUDIT-W-20261120", "by": "Performance Auditor", "period": "1w",
-    "ranking": [
-      {"portfolio": "PRU", "return_pct": "1.2", "max_drawdown_pct": "-0.9", "trades": 2},
-      {"portfolio": "AGG", "return_pct": "-2.9", "max_drawdown_pct": "-4.1", "trades": 9}
-    ],
-    "non_conformities": [{"id": "NC-1", "rule": 5, "portfolio": "AGG", "symbol": "TSLA",
-                          "detail": "stop_loss annullato alle 14:02, ripristinato alle 16:05"}],
-    "severity": "media"
-  }
-}
-```
+Esempio JSON → §PA1.
 
 ## Escalation
 
@@ -184,22 +169,4 @@ Il CEO decide se coinvolgere il Notifier.
 
 ## Esempio di report
 
-```text
-AUDIT SETTIMANALE 16-20/11/2026 (rilevazione venerdì 16:40)
-
-SINTESI
-1. Classifica: PRU +1,2% · AGG −2,9% (get_performance 1w).
-2. 11 operazioni, 3 rifiuti (2 STALE_QUOTE su .MI, 1 RISK_LIMIT_EXCEEDED), costi totali 0,41 €.
-3. 1 non conformità media su AGG (stop assente per 2 ore); nessuna apertura senza approvazione.
-
-DATI
-- DD settimana: PRU −0,9% · AGG −4,1%
-- Sharpe (all): PRU 1,10 · AGG −0,85
-- STR-003 su PRU: reale +1,2% su 2 trade vs backtest CAGR 5,8%: in linea, campione piccolo
-
-NON CONFORMITÀ
-- NC-1 (regola 5) AGG TSLA: stop_loss annullato 14:02, nuovo OCO 16:05
-
-RACCOMANDAZIONI (valutazione)
-- Ingressi limit obbligatori su .MI per evitare STALE_QUOTE; rivedere STR-005 su AGG.
-```
+→ §PA1.

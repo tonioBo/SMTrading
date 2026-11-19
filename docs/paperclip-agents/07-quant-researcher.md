@@ -132,7 +132,7 @@ CEO chiede la revisione per la data `review_by`.
 9. Coerenza con lo stile: PRU lungo/medio termine (ETF ampi, large cap; `buy_and_hold`,
    `sma_cross` lenti), AGG swing + intraday.
 10. Le strategie short non sono backtestabili in SMTrading: dichiaralo; il CEO può approvarle solo
-    come «short tattico» (regole comuni §4: `short_allowed`, metà della dimensione di un
+    come «short tattico» (→ §C6: `short_allowed`, metà della dimensione di un
     acquisto, revisione ogni 2 settimane). Puoi supportarlo con dati storici (`get_bars`, `get_indicators`)
     dichiarando che non è un backtest.
 11. Non presentare come approvata una strategia: lo stato lo decide il CEO, che sceglie le
@@ -175,24 +175,7 @@ Campi:
 | Fine di una ricerca (risultati di una strategia candidata) | `other` |
 | Strategia bocciata dai backtest (non la presenti) | `other` con `details.result: "scartata"` |
 
-```json
-{
-  "kind": "other",
-  "summary": "Backtest STR-003 sma_cross 20/50 su SPY,QQQ 2023-11-01→2026-11-01: +18,4%, DD -11,2%, Sharpe 0,84, 14 trade",
-  "portfolio_id": "<id PRU>",
-  "symbols": ["SPY", "QQQ"],
-  "details": {
-    "ref": "STR-003", "by": "Quant Researcher", "result": "candidata",
-    "strategy": "sma_cross", "params": {"fast": 20, "slow": 50}, "timeframe": "1d",
-    "from_date": "2023-11-01", "to_date": "2026-11-01", "initial_cash": "500",
-    "backtest_ids": {"dev": "<uuid>", "oos": "<uuid>", "benchmark": "<uuid>"},
-    "metrics": {"total_return_pct": "18.4", "cagr_pct": "5.8", "max_drawdown_pct": "-11.2",
-                "sharpe": "0.84", "win_rate_pct": "45", "trades": 14, "exposure_pct": "61"},
-    "benchmark": {"total_return_pct": "24.9", "max_drawdown_pct": "-19.6", "sharpe": "0.71"},
-    "warnings": []
-  }
-}
-```
+Esempio JSON → §QR1.
 
 ## Escalation
 
@@ -218,21 +201,4 @@ Non contatti gli umani. Avvisa il CEO con un commento che lo menziona nel task r
 
 ## Esempio di report
 
-```text
-APPROVA STRATEGIA STR-003 · PRU · sma_cross
-
-SINTESI
-1. sma_cross 20/50 su SPY+QQQ, 1d, 3 anni: +18,4%, max DD −11,2%, Sharpe 0,84, 14 trade, win 45%.
-2. Fuori campione (2025-11→2026-11): +4,1%, DD −6,3%, Sharpe 0,62, 5 trade (pochi).
-3. Rende meno di buy_and_hold (+24,9%) ma con DD quasi dimezzato (−11,2% vs −19,6%).
-
-DATI (get_backtest, backtest_id dev …, oos …, benchmark …)
-- varianti: 10/30 → +12,1% DD −14,0% Sharpe 0,55 · 50/200 → +9,8% DD −8,9% Sharpe 0,61
-- warnings: nessuno · costi di esecuzione del portafoglio PRU (cambio 0,15%, slippage ~5 bp)
-
-RACCOMANDAZIONE (valutazione)
-- Approvare per PRU con allocazione ≤ 60%; rivedere a febbraio 2027.
-
-RISCHI
-- Campione fuori campione piccolo (5 trade); mercati laterali generano falsi incroci.
-```
+→ §QR1.

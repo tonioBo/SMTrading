@@ -17,6 +17,7 @@ lavorano sui 2 portafogli di SMTrading («Portafoglio Prudente» e «Portafoglio
 | `07-quant-researcher.md` | Quant Researcher | read | solo task |
 | `08-performance-auditor.md` | Performance Auditor | read | solo task |
 | `09-notifier.md` | Notifier | read + **notify** (unico) | solo task |
+| `10-appendice.md` | **tutti** (non va incollato: lo leggono a richiesta) | — | — |
 
 ## 1. Incollare le istruzioni in Paperclip
 
@@ -29,6 +30,16 @@ Per **ogni** agente, nel campo delle istruzioni (instructions / system prompt) d
 
 Quando cambi una regola comune, aggiorna `00-regole-comuni.md` e reincollalo in **tutti** i 9
 agenti, così nessuno lavora con regole vecchie.
+
+**Appendice (casi rari).** Per contenere il costo di ogni ciclo, le istruzioni di ogni agente
+contengono solo quello che serve sempre; i casi rari (split, blocchi, SMTrading non
+raggiungibile, piani nel dettaglio, task rari, esempi, glossario) sono in `10-appendice.md`,
+indicati nelle istruzioni con «→ §<id>». **Non** va incollato: l'agente legge la sezione che
+gli serve con il tool `get_instructions_appendix` (da consentire a tutti, tabella sotto),
+che risponde con la versione corrente del documento «Appendice» della pagina «Istruzioni
+agenti». Con le istruzioni in modalità *External* SMTrading scrive anche, accanto ad
+`AGENTS.md`, il file `APPENDICE.md`: Paperclip carica solo `AGENTS.md` (l'appendice non pesa
+sui cicli) e il file serve all'agente solo se il tool non risponde.
 
 ## 2. Permessi da configurare
 
@@ -98,6 +109,7 @@ Performance Auditor, NOT = Notifier. ✎ = azione di scrittura.
 | `get_decisions` | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** |
 | `get_activity_feed` | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** |
 | `send_telegram` ✎ | Off | Off | Off | Off | Off | Off | Off | Off | **Allowed** |
+| `get_instructions_appendix` | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** |
 
 Riepilogo delle azioni di scrittura:
 
@@ -112,7 +124,7 @@ Riepilogo delle azioni di scrittura:
 - `log_decision`: tutti gli agenti che decidono o registrano (tutti e 9).
 
 Dopo ogni aggiornamento di SMTrading che aggiunge o cambia metodi (per esempio l'arrivo di
-`set_trading_halt`/`get_trading_halt` o di `get_goals`) premi **Refresh actions** nel connettore e ricontrolla
+`set_trading_halt`/`get_trading_halt`, di `get_goals` o di `get_instructions_appendix`) premi **Refresh actions** nel connettore e ricontrolla
 questa tabella: le azioni nuove vanno impostate esplicitamente (Allowed o Off).
 
 Anche se Paperclip lo consentisse per errore, SMTrading rifiuta con `FORBIDDEN` gli ordini di
@@ -126,7 +138,7 @@ solo su task. Fuso orario delle Routine: **Europe/Rome**.
 
 | Agente | Routine (titolo) | Cron (Europe/Rome) | Prompt della Routine |
 |---|---|---|---|
-| Risk Manager | «Sentinella rischio (oraria)»: ogni ora, lun-ven, 09:00-22:00 | `0 9-22 * * 1-5` | «Esegui il ciclo programmato (sentinella rischio) delle tue istruzioni.» |
+| Risk Manager | «Sentinella rischio (oraria)»: lun-ven alle 9, 11, 13, 15, 16, 17, 19, 21, 22 | `0 9,11,13,15,16,17,19,21,22 * * 1-5` | «Esegui il ciclo programmato (sentinella rischio) delle tue istruzioni.» |
 | Risk Manager | «Sentinella rischio (weekend, crypto)»: sab-dom 10, 13, 16, 19, 22 | `0 10-22/3 * * 0,6` | «Esegui il ciclo programmato (sentinella rischio) delle tue istruzioni. È fine settimana: sono aperti solo i mercati crypto.» |
 | Portfolio Manager | «Sentinella portafogli (oraria)»: ogni ora, lun-ven, 09:05-21:05, più 15:35 | `5 9-21 * * 1-5` e `35 15 * * 1-5` | «Esegui il ciclo programmato (sentinella) delle tue istruzioni.» |
 | Portfolio Manager | «Sentinella portafogli (weekend, crypto)»: sab-dom 10:05, 13:05, 16:05, 19:05, 22:05 | `5 10-22/3 * * 0,6` | «Esegui il ciclo programmato (sentinella) delle tue istruzioni. È fine settimana: sono aperti solo i mercati crypto.» |
@@ -140,7 +152,10 @@ Consigli:
 
 - crea una Routine per riga; assegnala all'agente indicato; disattiva la sovrapposizione
   (se un ciclo è ancora in corso, il successivo va saltato, non accodato);
-- il RM gira al minuto 00 e il PM al minuto 05: il PM trova lo stato di rischio aggiornato;
+- il RM gira al minuto 00 e il PM al minuto 05: nelle ore in cui girano entrambi il PM trova
+  lo stato di rischio aggiornato; il RM non gira più ogni ora, ma copre l'apertura UE (9),
+  l'apertura USA (15, 16), la chiusura UE (17) e la chiusura USA (21, 22), con un ciclo
+  ogni 2 ore nel resto della giornata;
 - il venerdì alle 16:00 il CEO chiede l'audit al Performance Auditor, così alle 17:00 lo trova pronto;
 - ogni ciclo parte dal feed e dagli alert e si ferma subito se non è cambiato nulla, quindi il
   costo di un'ora tranquilla è di poche chiamate;

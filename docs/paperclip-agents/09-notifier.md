@@ -168,14 +168,7 @@ Normalmente **no**: la decisione l'ha già registrata chi l'ha presa. Registra s
 | Hai deciso di **non** inviare un messaggio richiesto (duplicato, dati non verificabili) | `other` |
 | Hai inviato una richiesta agli umani per conto del CEO | `other` (con il riferimento) |
 
-```json
-{
-  "kind": "other",
-  "summary": "Inviata richiesta agli umani: cambio profilo Aggressivo 4→3 (per conto del CEO)",
-  "details": {"ref": "ESC-20261120-1710", "by": "Notifier", "level": "warning",
-              "requested_by": "CEO SMTrading", "telegram_status": "pending"}
-}
-```
+Esempio JSON → §NOT1.
 
 ## Escalation
 
@@ -200,20 +193,4 @@ Sei tu il canale di escalation. Se non riesci a inviare:
 
 ## Esempio di report
 
-```text
-ESITO NOTIFICA ESC-20261116-1500 · AGG
-
-SINTESI
-1. Inviato warning sulla perdita giornaliera di AGG (27,20 € su 40 €, 68%).
-2. Verificato con get_risk_limits alle 15:03; nel feed nessun daily_loss con already_sent: true.
-3. outbox_id 418, status pending.
-
-TESTO INVIATO (warning)
-Escalation perdita giornaliera – Aggressivo
-Perdita di oggi 27,20 € su un limite di 40,00 € (68%).
-Nuove aperture sospese per oggi, posizioni protette da stop.
-Nessuna azione richiesta.
-
-RISCHI
-- Nessuno: se il limite viene superato SMTrading invia da sé il messaggio critico.
-```
+→ §NOT1.
