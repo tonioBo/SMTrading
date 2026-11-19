@@ -156,4 +156,4 @@ async def test_report_numbers_match_the_existing_pages(results_env):
     raw = render_pdf(data)
     text = "\n".join(p.extract_text() for p in PdfReader(io.BytesIO(raw)).pages)
     assert "Resoconto del periodo" in text and "Report A" in text
-    assert "2.050,00 EUR" in text and "Lezione del periodo" in text
+    assert "2.050,00 €" in text and "Lezione del periodo" in text

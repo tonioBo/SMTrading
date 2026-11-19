@@ -1,5 +1,5 @@
 """The «Resoconto» PDF (reports.pdf): a smoke test on report data, Italian titles in the
-extracted text, Italian number formats, characters outside Latin-1 replaced."""
+extracted text, Italian number formats, € and − rendered by the embedded Unicode font."""
 
 import io
 from datetime import UTC, date, datetime, timedelta
@@ -84,9 +84,11 @@ def test_pdf_has_the_italian_sections():
                   "Obiettivi", "Costi degli agenti", "Lezioni e regole del team",
                   "Decisioni rilevanti"):
         assert title in text, title
-    assert "10.250,50 EUR" in text and "+2,50%" in text  # Italian formats
+    assert "10.250,50 €" in text and "+2,50%" in text  # Italian formats, the euro sign
     assert "Momentum" in text and "Veto su TSLA" in text and "Mai più del 10%" in text
-    assert "Test con EUR e - segni" in text  # € and − replaced (Latin-1 fonts)
+    assert "Test con € e − segni" in text  # rendered (DejaVu Sans embedded)
+    assert "−1,20%" in text  # the drawdown, with the minus sign
+    assert "Stop troppo stretto → uscita" in text
     assert "Pagina 1 di" in text
 
 
@@ -110,8 +112,21 @@ def test_pdf_without_any_data():
     assert "dati non disponibili" in text
 
 
+def test_characters_without_a_glyph_become_a_question_mark():
+    assert pdf._text("Rosso 🔴 · € −") == "Rosso ? · € −"
+    raw = pdf.render_pdf(_data(title="Resoconto 🔴"))
+    assert "Resoconto ?" in _text(raw)
+
+
+def test_fonts_are_shipped_with_their_license():
+    for name in ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf", "LICENSE"):
+        assert (pdf.FONTS_DIR / name).is_file(), name
+
+
 def test_formats_and_filename():
-    assert pdf.money(D("-1234.5")) == "-1.234,50 EUR"
+    assert pdf.money(D("-1234.5")) == "−1.234,50 €"
+    assert pdf.money(D(12), "USD") == "12,00 USD"
+    assert pdf.signed_money(D(3)) == "+3,00 €"
     assert pdf.pct(D(0)) == "0,00%" and pdf.pct(None) == "n.d."
     assert pdf.filename(_data()) == "resoconto-prova-di-marzo-2027-03-01-2027-03-10.pdf"
     assert pdf.filename(_data(campaign=None)) == "resoconto-2027-03-01-2027-03-10.pdf"

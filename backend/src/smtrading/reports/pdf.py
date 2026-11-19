@@ -1,19 +1,24 @@
 """The «Resoconto» PDF (fpdf2, pure Python): A4, Italian, from `reports.period` data.
 
-The core PDF fonts (Helvetica) only know Latin-1: Italian accents and «» are fine, other
-characters are replaced (`_latin`, e.g. € → EUR, − → -). Numbers in Italian format
-(1.234,56); «n.d.» when a value is not available."""
+The text is set in DejaVu Sans (regular and bold, embedded: `fonts/`, with its license), a
+Unicode TrueType font, so €, − and the Italian punctuation render as they are; a character
+the font has no glyph for (e.g. an emoji) becomes «?» (`_text`). Numbers in Italian format
+(1.234,56, negatives with the minus sign −); «n.d.» when a value is not available."""
 
 from datetime import date, datetime
 from decimal import Decimal
+from functools import cache
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from fpdf import FPDF
 from fpdf.fonts import FontFace
 
-_REPLACE = {"€": "EUR", "−": "-", "–": "-", "—": "-", "…": "...", "’": "'", "‘": "'",
-            "“": '"', "”": '"', "·": "-", "→": "->", "≥": ">=", "≤": "<=", " ": " "}
+FONT = "dejavu"
+FONTS_DIR = Path(__file__).parent / "fonts"
+_FONT_FILES = {"": "DejaVuSans.ttf", "B": "DejaVuSans-Bold.ttf"}
+MINUS = "−"
 NA = "n.d."
 INK = (33, 37, 41)
 MUTED = (108, 117, 125)
@@ -34,22 +39,31 @@ STATUS_LABELS = {"bozza": "bozza", "attiva": "attiva", "conclusa": "conclusa"}
 RULE_LABELS = {"active": "attiva", "retired": "ritirata"}
 
 
-def _latin(text: Any) -> str:
+@cache
+def _glyphs() -> frozenset[int]:
+    """The code points both embedded fonts have a glyph for."""
+    pdf = FPDF()
+    for style, name in _FONT_FILES.items():
+        pdf.add_font(FONT, style, str(FONTS_DIR / name))
+    return frozenset.intersection(*(frozenset(f.cmap) for f in pdf.fonts.values()))
+
+
+def _text(text: Any) -> str:
     s = "" if text is None else str(text)
-    for a, b in _REPLACE.items():
-        s = s.replace(a, b)
-    return s.encode("latin-1", "replace").decode("latin-1")
+    glyphs = _glyphs()
+    return "".join(ch if ord(ch) in glyphs or ch in "\n\t" else "?" for ch in s)
 
 
 def _num(v: Decimal | float | None, digits: int = 2) -> str:
     if v is None:
         return NA
     text = f"{Decimal(v):,.{digits}f}"
-    return text.replace(",", "_").replace(".", ",").replace("_", ".")
+    text = text.replace(",", "_").replace(".", ",").replace("_", ".")
+    return MINUS + text[1:] if text.startswith("-") else text
 
 
 def money(v: Decimal | None, ccy: str = "EUR") -> str:
-    return NA if v is None else f"{_num(v)} {ccy}"
+    return NA if v is None else f"{_num(v)} {'€' if ccy == 'EUR' else ccy}"
 
 
 def signed_money(v: Decimal | None) -> str:
@@ -77,9 +91,9 @@ class _Doc(FPDF):
 
     def footer(self) -> None:
         self.set_y(-12)
-        self.set_font("helvetica", size=7)
+        self.set_font(FONT, size=7)
         self.set_text_color(*MUTED)
-        self.cell(0, 5, _latin(self.footer_text), align="L")
+        self.cell(0, 5, _text(self.footer_text), align="L")
         self.set_x(self.l_margin)
         self.cell(0, 5, f"Pagina {self.page_no()} di {{nb}}", align="R")
 
@@ -89,9 +103,11 @@ class _Writer:
         self.data = data
         self.zone = ZoneInfo(data.get("timezone") or "Europe/Rome")
         pdf = _Doc(orientation="P", unit="mm", format="A4")
+        for style, name in _FONT_FILES.items():
+            pdf.add_font(FONT, style, str(FONTS_DIR / name))
         pdf.set_margins(14, 14, 14)
         pdf.set_auto_page_break(True, margin=16)
-        pdf.set_title(_latin(data["title"]))
+        pdf.set_title(_text(data["title"]))
         pdf.set_author("SMTrading")
         pdf.set_creator("SMTrading")
         pdf.footer_text = f"SMTrading - {data['title']} - {day(data['from'])} - {day(data['to'])}"
@@ -106,17 +122,17 @@ class _Writer:
 
     def text(self, value: Any, size: float = 9, *, bold: bool = False,
              color=INK, h: float = 4.6) -> None:
-        self.pdf.set_font("helvetica", "B" if bold else "", size)
+        self.pdf.set_font(FONT, "B" if bold else "", size)
         self.pdf.set_text_color(*color)
-        self.pdf.multi_cell(0, h, _latin(value), new_x="LMARGIN", new_y="NEXT")
+        self.pdf.multi_cell(0, h, _text(value), new_x="LMARGIN", new_y="NEXT")
 
     def heading(self, title: str) -> None:
         if self.pdf.get_y() > self.pdf.h - 50:
             self.pdf.add_page()
         self.pdf.ln(3)
-        self.pdf.set_font("helvetica", "B", 12.5)
+        self.pdf.set_font(FONT, "B", 12.5)
         self.pdf.set_text_color(*ACCENT)
-        self.pdf.cell(0, 7, _latin(title), new_x="LMARGIN", new_y="NEXT")
+        self.pdf.cell(0, 7, _text(title), new_x="LMARGIN", new_y="NEXT")
         y = self.pdf.get_y()
         self.pdf.set_draw_color(*ACCENT)
         self.pdf.set_line_width(0.4)
@@ -130,7 +146,7 @@ class _Writer:
               align: str | None = None, size: float = 7.5) -> None:
         """`align`: one letter per column (L, R, C)."""
         pdf = self.pdf
-        pdf.set_font("helvetica", "", size)
+        pdf.set_font(FONT, "", size)
         pdf.set_text_color(*INK)
         pdf.set_draw_color(*GRID)
         pdf.set_line_width(0.2)
@@ -145,11 +161,11 @@ class _Writer:
                        borders_layout="HORIZONTAL_LINES") as t:
             r = t.row()
             for h in headers:
-                r.cell(_latin(h))
+                r.cell(_text(h))
             for row in rows:
                 r = t.row()
                 for v in row:
-                    r.cell(_latin(v))
+                    r.cell(_text(v))
         pdf.ln(2)
 
     def kpis(self, items: list[tuple[str, str]]) -> None:
@@ -162,13 +178,13 @@ class _Writer:
             pdf.set_fill_color(*HEAD_BG)
             pdf.rect(x + 0.8, y0, w - 1.6, 15, style="F")
             pdf.set_xy(x + 2.5, y0 + 2)
-            pdf.set_font("helvetica", "", 7)
+            pdf.set_font(FONT, "", 7)
             pdf.set_text_color(*MUTED)
-            pdf.cell(w - 5, 3.5, _latin(label))
+            pdf.cell(w - 5, 3.5, _text(label))
             pdf.set_xy(x + 2.5, y0 + 7)
-            pdf.set_font("helvetica", "B", 10.5)
+            pdf.set_font(FONT, "B", 10.5)
             pdf.set_text_color(*INK)
-            pdf.cell(w - 5, 5, _latin(value))
+            pdf.cell(w - 5, 5, _text(value))
         pdf.set_xy(x0, y0 + 18)
 
     # -- chart -----------------------------------------------------------------------
@@ -212,14 +228,14 @@ class _Writer:
 
         pdf.set_line_width(0.15)
         pdf.set_draw_color(*GRID)
-        pdf.set_font("helvetica", "", 6.5)
+        pdf.set_font(FONT, "", 6.5)
         pdf.set_text_color(*MUTED)
         for i in range(5):
             v = lo + (hi - lo) * i / 4
             y = py(v)
             pdf.line(x0, y, x0 + w, y)
             pdf.set_xy(pdf.l_margin, y - 1.5)
-            pdf.cell(11, 3, _latin(f"{_num(Decimal(str(v)), 1)}%"), align="R")
+            pdf.cell(11, 3, _text(f"{_num(Decimal(str(v)), 1)}%"), align="R")
         if lo < 0 < hi:
             pdf.set_draw_color(*MUTED)
             pdf.set_line_width(0.25)
@@ -233,14 +249,14 @@ class _Writer:
             pdf.polyline([(px(d), py(float(v))) for d, v in pts])
         # legend
         lx, ly = x0, y0 + h + 6
-        pdf.set_font("helvetica", "", 7)
+        pdf.set_font(FONT, "", 7)
         for label, color, _ in series:
             pdf.set_fill_color(*color)
             pdf.rect(lx, ly + 0.8, 4, 1.6, style="F")
             pdf.set_xy(lx + 5, ly)
             pdf.set_text_color(*INK)
-            tw = pdf.get_string_width(_latin(label)) + 8
-            pdf.cell(tw, 3.4, _latin(label))
+            tw = pdf.get_string_width(_text(label)) + 8
+            pdf.cell(tw, 3.4, _text(label))
             lx += tw + 4
         pdf.set_xy(pdf.l_margin, ly + 6)
         self.text("Variazione percentuale dal primo giorno del periodo; per i portafogli "
@@ -251,9 +267,9 @@ class _Writer:
     def cover(self) -> None:
         d, pdf = self.data, self.pdf
         pdf.add_page()
-        pdf.set_font("helvetica", "B", 18)
+        pdf.set_font(FONT, "B", 18)
         pdf.set_text_color(*ACCENT)
-        pdf.multi_cell(0, 9, _latin(d["title"]), new_x="LMARGIN", new_y="NEXT")
+        pdf.multi_cell(0, 9, _text(d["title"]), new_x="LMARGIN", new_y="NEXT")
         self.text(f"Periodo: {day(d['from'])} - {day(d['to'])}", 10.5, bold=True)
         c = d.get("campaign")
         if c:
@@ -359,7 +375,7 @@ class _Writer:
         for g in items:
             target = (f"+{_num(g['target_pct'])} pp su {g['benchmark']}"
                       if g["kind"] == "beat_index"
-                      else f"-{_num(g['target_pct'])}%" if g["kind"] == "max_loss"
+                      else f"{MINUS}{_num(g['target_pct'])}%" if g["kind"] == "max_loss"
                       else f"{_num(g['target_pct'])}%")
             name = g["name"] + (" (piano)" if g.get("closes_positions") else "")
             rows.append([name, g.get("portfolio_name") or "totale",
