@@ -48,9 +48,9 @@ const PROBLEM = {
   },
 };
 
-let body: unknown = HEALTH_OK;
+let body: object = HEALTH_OK;
 const server = setupServer(
-  http.get("*/api/system-health", () => HttpResponse.json(body)), // before the common «all ok» one
+  http.get("*/api/system-health", () => HttpResponse.json(body as Record<string, unknown>)), // before the common «all ok» one
   ...commonHandlers,
   http.get("*/api/dashboard", () => new HttpResponse(null, { status: 503 })),
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "v@example.com", role: "viewer", totp_enabled: false })),

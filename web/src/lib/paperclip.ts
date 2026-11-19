@@ -52,3 +52,21 @@ export function formatUsd(value: string): string {
   if (abs < 0.005) return "< 0,01 $";
   return `${formatDecimal(value, 3)} $`;
 }
+
+const ROME = new Intl.DateTimeFormat("it-IT", {
+  timeZone: "Europe/Rome",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+/** ISO → the `datetime-local` value in Rome time («2026-11-19T09:38»). */
+export function romeInputValue(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const p = Object.fromEntries(ROME.formatToParts(d).map((x) => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+}

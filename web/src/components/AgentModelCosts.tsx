@@ -4,7 +4,7 @@ import type { AgentCostModels, ModelCompare, ModelCostRow } from "@/api/types";
 import { DataTable, type Column } from "@/components/DataTable";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatDateTime, formatPct } from "@/lib/format";
-import { formatUsd } from "@/lib/paperclip";
+import { formatUsd, romeInputValue } from "@/lib/paperclip";
 import { cn } from "@/lib/utils";
 
 const usd = (v: string | null) => (v == null ? "—" : formatUsd(v));
@@ -46,24 +46,6 @@ function totals(rows: ModelCostRow[]): { billed: number; runs: number; perRun: n
   const billed = rows.reduce((s, r) => s + Number(r.billed_usd), 0);
   const runs = rows.reduce((s, r) => s + r.runs, 0);
   return { billed, runs, perRun: runs ? billed / runs : null };
-}
-
-const ROME = new Intl.DateTimeFormat("it-IT", {
-  timeZone: "Europe/Rome",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  hourCycle: "h23",
-});
-
-/** ISO → the `datetime-local` value in Rome time («2026-11-19T09:38»). */
-export function romeInputValue(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const p = Object.fromEntries(ROME.formatToParts(d).map((x) => [x.type, x.value]));
-  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
 }
 
 function Side({ title, side }: { title: string; side: ModelCompare["before"] }) {
