@@ -49,6 +49,21 @@ def _payload(items: list[StrategySignal], as_of: datetime) -> dict[str, Any]:
 
 @router.get("/signals")
 async def signals(request: Request, session: DbSession, redis: RedisClient) -> dict:
+    return await signals_body(request, session, redis)
+
+
+async def cached_signals(redis) -> dict | None:
+    """The cached answer of GET /api/signals, None when there is none (never computes)."""
+    try:
+        cached = await redis.get(CACHE_KEY)
+    except RedisError:
+        log.warning("signals cache read failed", exc_info=True)
+        return None
+    return json.loads(cached) if cached is not None else None
+
+
+async def signals_body(request: Request, session, redis) -> dict:
+    """The GET /api/signals answer: from the cache, else computed and cached."""
     try:
         cached = await redis.get(CACHE_KEY)
     except RedisError:

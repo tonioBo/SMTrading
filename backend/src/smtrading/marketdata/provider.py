@@ -10,6 +10,7 @@ from smtrading.marketdata.types import (
     Bar,
     CalendarEvent,
     Capability,
+    DayChange,
     ExtendedQuote,
     Fundamentals,
     InstrumentHit,
@@ -54,6 +55,15 @@ class DataProvider:
 
     async def get_quotes(self, items: list[tuple[str, str]]) -> dict[str, Quote]:
         raise self._unsupported("quote")
+
+    # batch day changes (router.get_day_changes): at most `day_change_chunk` items per
+    # call, each call costing `day_change_cost` rate-limit tokens (one HTTP request)
+    day_change_chunk: ClassVar[int] = 0
+    day_change_cost: ClassVar[int] = 1
+
+    async def get_day_changes(self, items: list[tuple[str, str]]) -> dict[str, DayChange]:
+        """{canonical: DayChange} for the items it knows (absent ones are left out)."""
+        raise self._unsupported("day changes")
 
     async def get_extended(self, symbol: str, provider_symbol: str) -> ExtendedQuote | None:
         """US equities only: the latest pre-market / after-hours price (information only:

@@ -58,6 +58,11 @@ const server = setupServer(
     closureDeletes.push(String(params.id));
     return HttpResponse.json({ deleted: Number(params.id) });
   }),
+  http.get("*/api/instruments/facets", () =>
+    HttpResponse.json({ sectors: [], indices: [], universes: [{ code: "SP500", label: "S&P 500" }], sector_list: [], etf_types: [] }),
+  ),
+  http.get("*/api/markets/snapshot", () => HttpResponse.json({ universe: "SP500", label: "S&P 500", as_of: "2026-11-19T15:00:00Z", total: 0, covered: 0, sectors: [], gainers: [], losers: [] })),
+  http.get("*/api/markets/day-changes", () => HttpResponse.json({})),
   http.get("*/api/quotes", () => HttpResponse.json({ AAPL: { symbol: "AAPL", bid: "189.1", ask: "189.2", last: "189.15", ts: null, provider: "alpaca" } })),
   http.get("*/api/instruments", ({ request }) => {
     instrumentQueries.push(new URL(request.url).search);
@@ -88,6 +93,7 @@ const server = setupServer(
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
   server.resetHandlers();
+  localStorage.clear();
   posts = [];
   tracks = [];
   autoAdd = [];
@@ -186,9 +192,9 @@ describe("Markets", () => {
     await waitFor(() => expect(autoAdd).toEqual([{ on: false }]));
     await user.selectOptions(screen.getByLabelText("Filtra per mercato"), "XNAS");
     await waitFor(() => expect(instrumentQueries.some((q) => q.includes("market=XNAS"))).toBe(true));
-    expect(await screen.findByText("1–100 di 250")).toBeInTheDocument();
+    expect(await screen.findByText("1–50 di 250")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Successivi" }));
-    await waitFor(() => expect(instrumentQueries.some((q) => q.includes("offset=100"))).toBe(true));
+    await waitFor(() => expect(instrumentQueries.some((q) => q.includes("offset=50"))).toBe(true));
   });
 
   it("validates the new instrument client-side, then posts normalized values", async () => {

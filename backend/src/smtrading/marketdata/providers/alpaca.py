@@ -8,7 +8,7 @@ import websockets
 from smtrading.instruments.models import AssetClass
 from smtrading.marketdata.provider import DataProvider
 from smtrading.marketdata.registry import register
-from smtrading.marketdata.types import Bar, Capability, NewsItem, Quote, Timeframe
+from smtrading.marketdata.types import Bar, Capability, DayChange, NewsItem, Quote, Timeframe
 
 BASE_URL = "https://data.alpaca.markets"
 WS_BASE = "wss://stream.data.alpaca.markets"
@@ -155,6 +155,38 @@ class AlpacaProvider(DataProvider):
             quotes = (await self._get("/v1beta3/crypto/us/latest/quotes", params))["quotes"]
             trades = (await self._get("/v1beta3/crypto/us/latest/trades", params))["trades"]
             out.update(self._build(crypto, quotes, trades))
+        return out
+
+    day_change_chunk = 200  # symbols per snapshots request (the URL stays short)
+    day_change_cost = 1
+
+    async def get_day_changes(self, items: list[tuple[str, str]]) -> dict[str, DayChange]:
+        """One snapshots request per asset type: the latest session's daily bar close
+        against the previous daily bar's close (both from the same feed)."""
+        stocks = [(c, ps) for c, ps in items if not _is_crypto(ps)]
+        crypto = [(c, ps) for c, ps in items if _is_crypto(ps)]
+        out: dict[str, DayChange] = {}
+        if stocks:
+            params = {"symbols": ",".join(ps for _, ps in stocks), "feed": self.feed}
+            out.update(self._changes(stocks, await self._get("/v2/stocks/snapshots", params)))
+        if crypto:
+            params = {"symbols": ",".join(ps for _, ps in crypto)}
+            data = await self._get("/v1beta3/crypto/us/snapshots", params)
+            out.update(self._changes(crypto, data.get("snapshots") or {}))
+        return out
+
+    def _changes(self, items: list[tuple[str, str]], snaps: dict) -> dict[str, DayChange]:
+        out: dict[str, DayChange] = {}
+        for canonical, ps in items:
+            snap = snaps.get(ps)
+            if not isinstance(snap, dict):
+                continue
+            day, prev = snap.get("dailyBar") or {}, snap.get("prevDailyBar") or {}
+            last, prev_close = _price(day.get("c")), _price(prev.get("c"))
+            ts = _ts((snap.get("latestTrade") or {}).get("t")) or _ts(day.get("t"))
+            if last is None or prev_close is None or ts is None:
+                continue
+            out[canonical] = DayChange(canonical, last, prev_close, ts, self.name)
         return out
 
     def _build(self, items: list[tuple[str, str]], quotes: dict, trades: dict) -> dict[str, Quote]:

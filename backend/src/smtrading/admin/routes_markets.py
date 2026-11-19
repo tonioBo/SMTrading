@@ -9,13 +9,14 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select
+from sqlalchemy import false, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_access
 from smtrading.admin.common import _invalid, _transaction
 from smtrading.agents.service import write_audit
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.instruments import explore
 from smtrading.instruments.closures import (
     MarketClosure,
     add_closure,
@@ -26,6 +27,7 @@ from smtrading.instruments.discovery import DAILY_LIMIT, auto_add_enabled, set_a
 from smtrading.instruments.market_hours import MARKETS, all_market_status
 from smtrading.instruments.models import AssetClass, Instrument, InstrumentSource
 from smtrading.instruments.service import canonical_symbol
+from smtrading.instruments.taxonomy import INDICES, SECTORS
 from smtrading.marketdata.extended import extended_hours
 from smtrading.marketdata.streaming import (
     STATUS_KEY,
@@ -84,12 +86,16 @@ class InstrumentPatchIn(BaseModel):
     tick_size: str | int | None = None
     shortable: bool | None = None
     provider_symbols: dict[str, str] | None = None
+    sector: str | None = None
+    industry: str | None = None
+    indices: list[str] | None = None
 
 
 def _dto(i: Instrument) -> dict[str, Any]:
     return {
         **instrument_dto(i), "provider_symbols": dict(i.provider_symbols or {}),
         "source": str(i.source), "added_by": i.added_by,
+        "created_at": to_jsonable(i.created_at),
     }
 
 
@@ -164,11 +170,19 @@ def _provider_symbols(value: dict[str, str]) -> dict[str, str]:
 
 @router.get("/instruments")
 async def list_instruments(
-    session: DbSession, query: str | None = None, asset_class: str | None = None,
-    market: str | None = None, source: str | None = None,
+    request: Request, session: DbSession, redis: RedisClient,
+    query: str | None = None, asset_class: str | None = None,
+    market: str | None = None, source: str | None = None, sector: str | None = None,
+    index: str | None = None, quick: str | None = None,
+    sort: str = "symbol", dir: str = "asc",
     offset: int = Query(0, ge=0), limit: int = Query(DEFAULT_LIST, ge=1, le=MAX_LIST),
 ) -> dict:
-    """A page of the catalog ordered by symbol: {items, total, offset, limit}."""
+    """A page of the catalog: {items, total, offset, limit}. Filters: query (symbol or
+    name contains), asset_class, market, source, sector (one of taxonomy.SECTORS, or
+    "Senza settore"), index (an index code), quick (portfolio: open positions, watchlist:
+    in an agent's watchlist, strategy: used by an approved strategy, signal: entry signal
+    now in «Segnali», recent: added in the last 7 days or on demand). Sort: symbol | name
+    | sector | market | asset_class | created_at, dir asc | desc (then by symbol)."""
     conds = []
     ac = parse_enum(AssetClass, asset_class, "asset_class")
     if ac is not None:
@@ -180,17 +194,54 @@ async def list_instruments(
     src = parse_enum(InstrumentSource, source, "source")
     if src is not None:
         conds.append(Instrument.source == src)
+    if sector:
+        if sector == explore.UNSECTORED:
+            conds.append(Instrument.sector.is_(None))
+        elif sector in SECTORS:
+            conds.append(Instrument.sector == sector)
+        else:
+            raise _invalid("sector", "settore sconosciuto")
+    if index:
+        if index not in INDICES:
+            raise _invalid("index", f"index deve essere uno tra {list(INDICES)}")
+        conds.append(Instrument.indices.contains([index]))
+    if quick:
+        conds.append(await _quick(request, session, redis, quick))
     if query and query.strip():
-        like = "%" + re.sub(r"([\\%_])", r"\\\1", query.strip()) + "%"
+        like = "%" + explore.escape_like(query.strip()) + "%"
         conds.append(
-            or_(Instrument.symbol.ilike(like, escape="\\"), Instrument.name.ilike(like, escape="\\"))
+            or_(Instrument.symbol.ilike(like, escape="\\"),
+                Instrument.name.ilike(like, escape="\\"))
         )
+    col = explore.SORTS.get(sort)
+    if col is None or dir not in ("asc", "desc"):
+        raise _invalid("sort", f"sort deve essere uno tra {list(explore.SORTS)}, dir asc o desc")
+    order = col.desc().nulls_last() if dir == "desc" else col.asc().nulls_last()
     total = await session.scalar(select(func.count()).select_from(Instrument).where(*conds))
     rows = await session.scalars(
-        select(Instrument).where(*conds).order_by(Instrument.symbol).offset(offset).limit(limit)
+        select(Instrument).where(*conds).order_by(order, Instrument.symbol)
+        .offset(offset).limit(limit)
     )
     return {"items": [_dto(i) for i in rows], "total": int(total or 0), "offset": offset,
             "limit": limit}
+
+
+async def _quick(request: Request, session, redis, quick: str):
+    if quick == "portfolio":
+        syms = await explore.held_symbols(session)
+    elif quick == "watchlist":
+        syms = await explore.watchlist_symbols(session)
+    elif quick == "strategy":
+        syms = await explore.strategy_symbols(session)
+    elif quick == "signal":
+        from smtrading.admin.routes_signals import signals_body
+
+        syms = explore.signal_symbols(await signals_body(request, session, redis))
+    elif quick == "recent":
+        return explore.recent_condition()
+    else:
+        raise _invalid("quick", f"quick deve essere uno tra {list(explore.QUICK_FILTERS)}")
+    return Instrument.symbol.in_(sorted(syms)) if syms else false()
 
 
 @router.get("/instruments/auto-add")
@@ -260,6 +311,17 @@ async def patch_instrument(
             instrument.shortable = bool(body.shortable)
         if "provider_symbols" in fields:
             instrument.provider_symbols = _provider_symbols(body.provider_symbols or {})
+        if "sector" in fields:
+            if body.sector not in SECTORS:
+                raise _invalid("sector", "settore sconosciuto")
+            instrument.sector = body.sector
+        if "industry" in fields:
+            instrument.industry = _text(body.industry, "industry", 128)
+        if "indices" in fields:
+            codes = list(dict.fromkeys(body.indices or []))
+            if any(c not in INDICES for c in codes):
+                raise _invalid("indices", f"indici ammessi: {list(INDICES)}")
+            instrument.indices = codes
         await session.flush()
     return _dto(instrument)
 

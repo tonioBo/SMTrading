@@ -642,7 +642,55 @@ async def test_0036_portfolio_in_totals_round_trip(fresh_db):
                 " 'Europe/Rome')")
     assert await query(column) == [("boolean", "true")]
     assert await query("select in_totals from portfolios where name = 'tot'") == [(True,)]
-    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "-1")
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0035")
     assert await query(column) == []
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
     assert await query("select in_totals from portfolios where name = 'tot'") == [(True,)]
+
+
+async def test_0039_instrument_metadata_round_trip(fresh_db):
+    """0039: sector / industry / indices / created_at; rows that existed before keep a
+    NULL created_at (never «aggiunti di recente»), new ones get now(); downgrade drops."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    async def columns() -> set[str]:
+        engine = make_engine(fresh_db)
+        async with engine.connect() as conn:
+            got = {r[0] for r in await conn.execute(text(
+                "select column_name from information_schema.columns"
+                " where table_name = 'instruments'"))}
+        await engine.dispose()
+        return got
+
+    new = {"sector", "industry", "indices", "created_at"}
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "-1")
+    assert not new & await columns()
+    engine = make_engine(fresh_db)
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "insert into instruments (symbol, name, asset_class, market, currency, lot_size,"
+            " tick_size, shortable, active, provider_symbols, source) values ('OLD1', 'Old',"
+            " 'us_equity', 'NYSE', 'USD', 1, 0.01, false, true, '{}', 'manual')"))
+    await engine.dispose()
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    assert new <= await columns()
+    engine = make_engine(fresh_db)
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "insert into instruments (symbol, name, asset_class, market, currency, lot_size,"
+            " tick_size, shortable, active, provider_symbols, source, indices) values ('NEW1',"
+            " 'New', 'us_equity', 'NYSE', 'USD', 1, 0.01, false, true, '{}', 'manual',"
+            " '{SP500}')"))
+        rows = dict((await conn.execute(text(
+            "select symbol, created_at is not null from instruments"
+            " where symbol in ('OLD1', 'NEW1')"))).all())
+        assert rows == {"OLD1": False, "NEW1": True}
+        assert await conn.scalar(text(
+            "select symbol from instruments where indices @> '{SP500}'")) == "NEW1"
+        await conn.execute(text("delete from instruments where symbol in ('OLD1', 'NEW1')"))
+    await engine.dispose()
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "-1")
+    assert not new & await columns()
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")

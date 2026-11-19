@@ -1,230 +1,230 @@
-symbol,name,market,asset_class,currency,lot_size,tick_size,shortable,provider_symbols
-1COV.DE,Covestro AG,XETRA,eu_equity,EUR,1,0.0001,true,
-2B76.DE,iShares Automation & Robotics UCITS ETF USD (Acc),XETRA,eu_equity,EUR,1,0.0001,true,
-4GLD.DE,Xetra-Gold,XETRA,eu_equity,EUR,1,0.0001,true,
-8TRA.DE,Traton SE,XETRA,eu_equity,EUR,1,0.0001,true,
-A2A.MI,A2A S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-AC.PA,Accor SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-ACA.PA,Crédit Agricole S.A.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-ADS.DE,adidas AG,XETRA,eu_equity,EUR,1,0.0001,true,
-AFX.DE,Carl Zeiss Meditec AG,XETRA,eu_equity,EUR,1,0.0001,true,
-AG1.DE,AUTO1 Group SE,XETRA,eu_equity,EUR,1,0.0001,true,
-AGGH.MI,iShares Core Global Aggregate Bond UCITS ETF EUR Hedged (Acc),MTA,eu_equity,EUR,1,0.0001,true,
-AI.PA,L'Air Liquide S.A.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-AIR.DE,Airbus SE,XETRA,eu_equity,EUR,1,0.0001,true,
-AIR.PA,Airbus SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-AIXA.DE,AIXTRON SE,XETRA,eu_equity,EUR,1,0.0001,true,
-ALV.DE,Allianz SE,XETRA,eu_equity,EUR,1,0.0001,true,
-AMP.MI,Amplifon S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-AVIO.MI,Avio S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-AZM.MI,Azimut Holding S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-BAMI.MI,Banco BPM S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-BAS.DE,BASF SE,XETRA,eu_equity,EUR,1,0.0001,true,
-BAYN.DE,Bayer Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,
-BC.MI,Brunello Cucinelli S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-BC8.DE,Bechtle AG,XETRA,eu_equity,EUR,1,0.0001,true,
-BEI.DE,Beiersdorf Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,
-BGN.MI,Banca Generali S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-BMED.MI,Banca Mediolanum S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-BMPS.MI,Banca Monte dei Paschi di Siena S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-BMW.DE,Bayerische Motoren Werke Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,
-BN.PA,Danone S.A.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-BNP.PA,BNP Paribas SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-BNR.DE,Brenntag SE,XETRA,eu_equity,EUR,1,0.0001,true,
-BOSS.DE,Hugo Boss AG,XETRA,eu_equity,EUR,1,0.0001,true,
-BPE.MI,BPER Banca SpA,MTA,eu_equity,EUR,1,0.0001,true,
-BVI.PA,Bureau Veritas SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-BZU.MI,Buzzi S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-C40.PA,Amundi Index Solutions - AMUNDI CAC 40 ESG UCITS ETF DR - EUR (C),EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-CA.PA,Carrefour SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-CAC.PA,Amundi CAC 40 UCITS ETF Dist,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-CAP.PA,Capgemini SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-CBK.DE,Commerzbank AG,XETRA,eu_equity,EUR,1,0.0001,true,
-CON.DE,Continental Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,
-CPR.MI,Davide Campari-Milano N.V.,MTA,eu_equity,EUR,1,0.0001,true,
-CS.PA,AXA SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-CSNDX.MI,iShares NASDAQ 100 UCITS ETF USD (Acc),MTA,eu_equity,EUR,1,0.0001,true,
-CSSPX.MI,iShares Core S&P 500 UCITS ETF USD (Acc),MTA,eu_equity,EUR,1,0.0001,true,
-CW8.PA,Amundi Index Solutions - Amundi MSCI World Swap UCITS ETF EUR Acc,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-DB1.DE,Deutsche Börse AG,XETRA,eu_equity,EUR,1,0.0001,true,
-DBK.DE,Deutsche Bank Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,
-DBXD.DE,Xtrackers DAX UCITS ETF 1C,XETRA,eu_equity,EUR,1,0.0001,true,
-DCAM.PA,Amundi PEA Monde (MSCI World) UCITS ETF,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-DG.PA,Vinci SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-DHER.DE,Delivery Hero SE,XETRA,eu_equity,EUR,1,0.0001,true,
-DHL.DE,DHL AG,XETRA,eu_equity,EUR,1,0.0001,true,
-DIA.MI,DiaSorin S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-DSY.PA,Dassault Systèmes SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-DTE.DE,Deutsche Telekom AG,XETRA,eu_equity,EUR,1,0.0001,true,
-DTG.DE,Daimler Truck Holding AG,XETRA,eu_equity,EUR,1,0.0001,true,
-DWNI.DE,Deutsche Wohnen SE,XETRA,eu_equity,EUR,1,0.0001,true,
-EDEN.PA,Edenred SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-EIMI.MI,iShares Core MSCI EM IMI UCITS ETF USD (Acc),MTA,eu_equity,EUR,1,0.0001,true,
-EL.PA,EssilorLuxottica Société anonyme,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-EN.PA,Bouygues SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-ENEL.MI,Enel SpA,MTA,eu_equity,EUR,1,0.0001,true,
-ENGI.PA,Engie SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-ENI.MI,Eni S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-ENR.DE,Siemens Energy AG,XETRA,eu_equity,EUR,1,0.0001,true,
-ENX.PA,Euronext N.V.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-EOAN.DE,E.ON SE,XETRA,eu_equity,EUR,1,0.0001,true,
-EQQQ.DE,Invesco EQQQ NASDAQ-100 UCITS ETF,XETRA,eu_equity,EUR,1,0.0001,true,
-ERF.PA,Eurofins Scientific SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-ERG.MI,ERG S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-ESE.PA,BNP Paribas Easy S&P 500 UCITS ETF EUR C,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-ETFMIB.MI,Amundi FTSE MIB UCITS ETF Dist,MTA,eu_equity,EUR,1,0.0001,true,
-EUN5.DE,iShares Core € Corp Bond UCITS ETF EUR (Dist),XETRA,eu_equity,EUR,1,0.0001,true,
-EUNA.DE,iShares Core Global Aggregate Bond UCITS ETF EUR Hedged (Acc),XETRA,eu_equity,EUR,1,0.0001,true,
-EUNH.DE,iShares Core € Govt Bond UCITS ETF EUR (Dist),XETRA,eu_equity,EUR,1,0.0001,true,
-EUNK.DE,iShares Core MSCI Europe UCITS ETF EUR (Acc),XETRA,eu_equity,EUR,1,0.0001,true,
-EUNL.DE,iShares Core MSCI World UCITS ETF USD (Acc),XETRA,eu_equity,EUR,1,0.0001,true,
-EVD.DE,CTS Eventim AG & Co. KGaA,XETRA,eu_equity,EUR,1,0.0001,true,
-EVK.DE,Evonik Industries AG,XETRA,eu_equity,EUR,1,0.0001,true,
-EVT.DE,Evotec SE,XETRA,eu_equity,EUR,1,0.0001,true,
-EXH1.DE,iShares STOXX Europe 600 Oil & Gas UCITS ETF (DE),XETRA,eu_equity,EUR,1,0.0001,true,
-EXS1.DE,iShares Core DAX UCITS ETF (DE) EUR (Acc),XETRA,eu_equity,EUR,1,0.0001,true,
-EXSA.DE,iShares STOXX Europe 600 UCITS ETF (DE) EUR (Dist),XETRA,eu_equity,EUR,1,0.0001,true,
-EXV1.DE,iShares STOXX Europe 600 Banks UCITS ETF (DE) (Dist),XETRA,eu_equity,EUR,1,0.0001,true,
-EXV3.DE,iShares STOXX Europe 600 Technology UCITS ETF (DE) EUR dis,XETRA,eu_equity,EUR,1,0.0001,true,
-EXV4.DE,iShares STOXX Europe 600 Health Care UCITS ETF (DE),XETRA,eu_equity,EUR,1,0.0001,true,
-EXXT.DE,iShares NASDAQ-100 UCITS ETF (DE),XETRA,eu_equity,EUR,1,0.0001,true,
-FBK.MI,FinecoBank Banca Fineco S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-FCT.MI,Fincantieri S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-FGR.PA,Eiffage SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-FME.DE,Fresenius Medical Care AG,XETRA,eu_equity,EUR,1,0.0001,true,
-FNTN.DE,freenet AG,XETRA,eu_equity,EUR,1,0.0001,true,
-FPE3.DE,Fuchs SE,XETRA,eu_equity,EUR,1,0.0001,true,
-FRA.DE,Fraport AG,XETRA,eu_equity,EUR,1,0.0001,true,
-FRE.DE,Fresenius SE & Co. KGaA,XETRA,eu_equity,EUR,1,0.0001,true,
-G.MI,Assicurazioni Generali S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-G1A.DE,GEA Group Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,
-G24.DE,Scout24 SE,XETRA,eu_equity,EUR,1,0.0001,true,
-GLE.PA,Société Générale Société anonyme,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-GXI.DE,Gerresheimer AG,XETRA,eu_equity,EUR,1,0.0001,true,
-HAG.DE,Hensoldt AG,XETRA,eu_equity,EUR,1,0.0001,true,
-HEI.DE,Heidelberg Materials AG,XETRA,eu_equity,EUR,1,0.0001,true,
-HEN3.DE,Henkel AG & Co. KGaA,XETRA,eu_equity,EUR,1,0.0001,true,
-HER.MI,Hera S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-HFG.DE,HelloFresh SE,XETRA,eu_equity,EUR,1,0.0001,true,
-HLAG.DE,Hapag-Lloyd Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,
-HNR1.DE,Hannover Rück SE,XETRA,eu_equity,EUR,1,0.0001,true,
-HO.PA,Thales S.A.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-HOT.DE,HOCHTIEF Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,
-IBCI.DE,iShares € Inflation Linked Govt Bond UCITS ETF EUR (Acc),XETRA,eu_equity,EUR,1,0.0001,true,
-IFX.DE,Infineon Technologies AG,XETRA,eu_equity,EUR,1,0.0001,true,
-IG.MI,Italgas S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-INW.MI,Infrastrutture Wireless Italiane S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-IP.MI,Interpump Group S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-IQQH.DE,iShares Global Clean Energy Transition UCITS ETF USD (Dist),XETRA,eu_equity,EUR,1,0.0001,true,
-IS3N.DE,iShares Core MSCI EM IMI UCITS ETF USD (Acc),XETRA,eu_equity,EUR,1,0.0001,true,
-IS3Q.DE,iShares Edge MSCI World Quality Factor UCITS ETF USD (Acc),XETRA,eu_equity,EUR,1,0.0001,true,
-ISP.MI,Intesa Sanpaolo S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-IUSN.DE,iShares MSCI World Small Cap UCITS ETF USD (Acc),XETRA,eu_equity,EUR,1,0.0001,true,
-IUSQ.DE,iShares MSCI All Country World UCITS ETF USD Acc,XETRA,eu_equity,EUR,1,0.0001,true,
-IVG.MI,Iveco Group N.V.,MTA,eu_equity,EUR,1,0.0001,true,
-JEN.DE,Jenoptik AG,XETRA,eu_equity,EUR,1,0.0001,true,
-JUN3.DE,Jungheinrich Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,
-KBX.DE,Knorr-Bremse AG,XETRA,eu_equity,EUR,1,0.0001,true,
-KER.PA,Kering SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-KGX.DE,KION GROUP AG,XETRA,eu_equity,EUR,1,0.0001,true,
-KRN.DE,Krones AG,XETRA,eu_equity,EUR,1,0.0001,true,
-LDO.MI,Leonardo S.p.a.,MTA,eu_equity,EUR,1,0.0001,true,
-LEG.DE,LEG Immobilien SE,XETRA,eu_equity,EUR,1,0.0001,true,
-LHA.DE,Deutsche Lufthansa AG,XETRA,eu_equity,EUR,1,0.0001,true,
-LR.PA,Legrand SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-LTMC.MI,Lottomatica Group S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-LXS.DE,LANXESS Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,
-MB.MI,Mediobanca Banca di Credito Finanziario S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-MBG.DE,Mercedes-Benz Group AG,XETRA,eu_equity,EUR,1,0.0001,true,
-MC.PA,"LVMH Moët Hennessy - Louis Vuitton, Société Européenne",EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-MEUD.PA,Amundi Core Stoxx Europe 600 UCITS ETF Acc,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-ML.PA,Compagnie Générale des Établissements Michelin Société en commandite par actions,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-MONC.MI,Moncler S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-MRK.DE,Merck KGaA,XETRA,eu_equity,EUR,1,0.0001,true,
-MTX.DE,MTU Aero Engines AG,XETRA,eu_equity,EUR,1,0.0001,true,
-MUV2.DE,Münchener Rückversicherungs-Gesellschaft Aktiengesellschaft in München,XETRA,eu_equity,EUR,1,0.0001,true,
-NDA.DE,Aurubis AG,XETRA,eu_equity,EUR,1,0.0001,true,
-NDX1.DE,Nordex SE,XETRA,eu_equity,EUR,1,0.0001,true,
-NEM.DE,Nemetschek SE,XETRA,eu_equity,EUR,1,0.0001,true,
-NEXI.MI,Nexi S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-OR.PA,L'Oréal S.A.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-ORA.PA,Orange S.A.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-P911.DE,Dr. Ing. h.c. F. Porsche AG,XETRA,eu_equity,EUR,1,0.0001,true,
-PAEEM.PA,Amundi PEA Émergent (MSCI Emerging) ESG Transition UCITS ETF Acc,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-PAH3.DE,Porsche Automobil Holding SE,XETRA,eu_equity,EUR,1,0.0001,true,
-PANX.PA,Amundi PEA US Tech Screened UCITS ETF - Acc,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-PHAU.MI,WisdomTree Physical Gold,MTA,eu_equity,EUR,1,0.0001,true,
-PIRC.MI,Pirelli & C. S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-PRY.MI,Prysmian S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-PST.MI,Poste Italiane S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-PUB.PA,Publicis Groupe S.A.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-PUM.DE,PUMA SE,XETRA,eu_equity,EUR,1,0.0001,true,
-QDVE.DE,iShares S&P 500 Information Technology Sector UCITS ETF USD (Acc),XETRA,eu_equity,EUR,1,0.0001,true,
-QIA.DE,Qiagen N.V.,XETRA,eu_equity,EUR,1,0.0001,true,
-R3NK.DE,RENK Group AG,XETRA,eu_equity,EUR,1,0.0001,true,
-RAA.DE,RATIONAL Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,
-RACE.MI,Ferrari N.V.,MTA,eu_equity,EUR,1,0.0001,true,
-RDC.DE,Redcare Pharmacy NV,XETRA,eu_equity,EUR,1,0.0001,true,
-REC.MI,Recordati Industria Chimica e Farmaceutica S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-RHM.DE,Rheinmetall AG,XETRA,eu_equity,EUR,1,0.0001,true,
-RI.PA,Pernod Ricard SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-RMS.PA,Hermès International Société en commandite par actions,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-RNO.PA,Renault SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-RWE.DE,RWE Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,
-SAF.PA,Safran SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-SAN.PA,Sanofi,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-SAP.DE,SAP SE,XETRA,eu_equity,EUR,1,0.0001,true,
-SAX.DE,Ströer SE & Co. KGaA,XETRA,eu_equity,EUR,1,0.0001,true,
-SDF.DE,K+S Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,
-SGO.PA,Compagnie de Saint-Gobain S.A.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-SHL.DE,Siemens Healthineers AG,XETRA,eu_equity,EUR,1,0.0001,true,
-SIE.DE,Siemens Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,
-SMEA.MI,iShares Core MSCI Europe UCITS ETF EUR (Acc),MTA,eu_equity,EUR,1,0.0001,true,
-SPM.MI,Saipem SpA,MTA,eu_equity,EUR,1,0.0001,true,
-SPPW.DE,State Street SPDR MSCI World UCITS ETF,XETRA,eu_equity,EUR,1,0.0001,true,
-SRG.MI,Snam S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-SRT3.DE,Sartorius Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,
-STLAM.MI,Stellantis N.V.,MTA,eu_equity,EUR,1,0.0001,true,
-STLAP.PA,Stellantis N.V.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-STMMI.MI,STMicroelectronics N.V.,MTA,eu_equity,EUR,1,0.0001,true,
-STMPA.PA,STMicroelectronics N.V.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-SU.PA,Schneider Electric S.E.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-SWDA.MI,iShares Core MSCI World UCITS ETF USD (Acc),MTA,eu_equity,EUR,1,0.0001,true,
-SXR7.DE,iShares VII PLC -iShares Core MSCI EMU UCITS ETF EUR (Acc),XETRA,eu_equity,EUR,1,0.0001,true,
-SXR8.DE,iShares Core S&P 500 UCITS ETF USD (Acc),XETRA,eu_equity,EUR,1,0.0001,true,
-SXRT.DE,iShares VII PLC - iShares Core EURO STOXX 50 ETF EUR Acc,XETRA,eu_equity,EUR,1,0.0001,true,
-SXRV.DE,iShares NASDAQ 100 UCITS ETF USD (Acc),XETRA,eu_equity,EUR,1,0.0001,true,
-SY1.DE,Symrise AG,XETRA,eu_equity,EUR,1,0.0001,true,
-TEN.MI,Tenaris S.A.,MTA,eu_equity,EUR,1,0.0001,true,
-TEP.PA,Teleperformance SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-TIT.MI,Telecom Italia S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-TKA.DE,thyssenkrupp AG,XETRA,eu_equity,EUR,1,0.0001,true,
-TLX.DE,Talanx AG,XETRA,eu_equity,EUR,1,0.0001,true,
-TMV.DE,TeamViewer SE,XETRA,eu_equity,EUR,1,0.0001,true,
-TPRO.MI,Technoprobe S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-TRN.MI,Terna S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-TTE.PA,TotalEnergies SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-TUI1.DE,TUI AG,XETRA,eu_equity,EUR,1,0.0001,true,
-UCG.MI,UniCredit S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-UNI.MI,Unipol Assicurazioni S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,
-URW.PA,Unibail-Rodamco-Westfield SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-UTDI.DE,United Internet AG,XETRA,eu_equity,EUR,1,0.0001,true,
-VFEM.DE,Vanguard FTSE Emerging Markets UCITS ETF USD Distributing,XETRA,eu_equity,EUR,1,0.0001,true,
-VGWL.DE,Vanguard FTSE All-World UCITS ETF,XETRA,eu_equity,EUR,1,0.0001,true,
-VIE.PA,Veolia Environnement SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-VIV.PA,Vivendi SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-VNA.DE,Vonovia SE,XETRA,eu_equity,EUR,1,0.0001,true,
-VOW3.DE,Volkswagen AG,XETRA,eu_equity,EUR,1,0.0001,true,
-VUSA.DE,Vanguard S&P 500 UCITS ETF,XETRA,eu_equity,EUR,1,0.0001,true,
-VWCE.DE,Vanguard FTSE All-World UCITS ETF USD Accumulation,XETRA,eu_equity,EUR,1,0.0001,true,
-VWCE.MI,Vanguard FTSE All-World UCITS ETF USD Accumulation,MTA,eu_equity,EUR,1,0.0001,true,
-WAF.DE,Siltronic AG,XETRA,eu_equity,EUR,1,0.0001,true,
-WCH.DE,Wacker Chemie AG,XETRA,eu_equity,EUR,1,0.0001,true,
-WPEA.PA,iShares MSCI World Swap PEA UCITS ETF,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,
-XDWD.DE,Xtrackers MSCI World UCITS ETF 1C,XETRA,eu_equity,EUR,1,0.0001,true,
-XDWD.MI,Xtrackers MSCI World UCITS ETF 1C,MTA,eu_equity,EUR,1,0.0001,true,
-XDWF.DE,Xtrackers MSCI World Financials UCITS ETF 1C,XETRA,eu_equity,EUR,1,0.0001,true,
-XDWH.DE,Xtrackers MSCI World Health Care UCITS ETF 1C,XETRA,eu_equity,EUR,1,0.0001,true,
-XDWT.DE,Xtrackers MSCI World Information Technology UCITS ETF 1C,XETRA,eu_equity,EUR,1,0.0001,true,
-ZAL.DE,Zalando SE,XETRA,eu_equity,EUR,1,0.0001,true,
-ZPRV.DE,State Street SPDR MSCI USA Small Cap Value Weighted UCITS ETF USD Acc,XETRA,eu_equity,EUR,1,0.0001,true,
+symbol,name,market,asset_class,currency,lot_size,tick_size,shortable,provider_symbols,sector,industry,indices
+1COV.DE,Covestro AG,XETRA,eu_equity,EUR,1,0.0001,true,,Materiali,Specialty Chemicals,
+2B76.DE,iShares Automation & Robotics UCITS ETF USD (Acc),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+4GLD.DE,Xetra-Gold,XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Materie prime,
+8TRA.DE,Traton SE,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Farm & Heavy Construction Machinery,MDAX
+A2A.MI,A2A S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Servizi di pubblica utilità,Utilities - Diversified,FTSEMIB
+AC.PA,Accor SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Lodging,CAC40
+ACA.PA,Crédit Agricole S.A.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Finanza,Banks - Diversified,CAC40
+ADS.DE,adidas AG,XETRA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Footwear & Accessories,DAX
+AFX.DE,Carl Zeiss Meditec AG,XETRA,eu_equity,EUR,1,0.0001,true,,Sanità,Medical Instruments & Supplies,MDAX
+AG1.DE,AUTO1 Group SE,XETRA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Auto & Truck Dealerships,
+AGGH.MI,iShares Core Global Aggregate Bond UCITS ETF EUR Hedged (Acc),MTA,eu_equity,EUR,1,0.0001,true,,ETF,Obbligazionario,
+AI.PA,L'Air Liquide S.A.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Materiali,Specialty Chemicals,CAC40
+AIR.DE,Airbus SE,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Aerospace & Defense,
+AIR.PA,Airbus SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Industria,Aerospace & Defense,DAX;CAC40
+AIXA.DE,AIXTRON SE,XETRA,eu_equity,EUR,1,0.0001,true,,Tecnologia,Semiconductor Equipment & Materials,MDAX
+ALV.DE,Allianz SE,XETRA,eu_equity,EUR,1,0.0001,true,,Finanza,Insurance - Diversified,DAX
+AMP.MI,Amplifon S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Sanità,Medical Distribution,FTSEMIB
+AVIO.MI,Avio S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Industria,Aerospace & Defense,FTSEMIB
+AZM.MI,Azimut Holding S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Finanza,Asset Management,FTSEMIB
+BAMI.MI,Banco BPM S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Finanza,Banks - Regional,FTSEMIB
+BAS.DE,BASF SE,XETRA,eu_equity,EUR,1,0.0001,true,,Materiali,Chemicals,DAX
+BAYN.DE,Bayer Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,,Sanità,Drug Manufacturers - General,DAX
+BC.MI,Brunello Cucinelli S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Luxury Goods,FTSEMIB
+BC8.DE,Bechtle AG,XETRA,eu_equity,EUR,1,0.0001,true,,Tecnologia,Information Technology Services,MDAX
+BEI.DE,Beiersdorf Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,,Beni di prima necessità,Household & Personal Products,DAX
+BGN.MI,Banca Generali S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Finanza,Banks - Regional,
+BMED.MI,Banca Mediolanum S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Finanza,Banks - Regional,FTSEMIB
+BMPS.MI,Banca Monte dei Paschi di Siena S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Finanza,Banks - Regional,FTSEMIB
+BMW.DE,Bayerische Motoren Werke Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Auto Manufacturers,DAX
+BN.PA,Danone S.A.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Beni di prima necessità,Packaged Foods,CAC40
+BNP.PA,BNP Paribas SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Finanza,Banks - Regional,CAC40
+BNR.DE,Brenntag SE,XETRA,eu_equity,EUR,1,0.0001,true,,Materiali,Specialty Chemicals,DAX
+BOSS.DE,Hugo Boss AG,XETRA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Apparel Manufacturing,MDAX
+BPE.MI,BPER Banca SpA,MTA,eu_equity,EUR,1,0.0001,true,,Finanza,Banks - Regional,FTSEMIB
+BVI.PA,Bureau Veritas SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Industria,Consulting Services,CAC40
+BZU.MI,Buzzi S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Materiali,Building Materials,FTSEMIB
+C40.PA,Amundi Index Solutions - AMUNDI CAC 40 ESG UCITS ETF DR - EUR (C),EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+CA.PA,Carrefour SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Beni di prima necessità,Grocery Stores,CAC40
+CAC.PA,Amundi CAC 40 UCITS ETF Dist,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+CAP.PA,Capgemini SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Tecnologia,Information Technology Services,CAC40
+CBK.DE,Commerzbank AG,XETRA,eu_equity,EUR,1,0.0001,true,,Finanza,Banks - Regional,DAX
+CON.DE,Continental Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Auto Parts,DAX
+CPR.MI,Davide Campari-Milano N.V.,MTA,eu_equity,EUR,1,0.0001,true,,Beni di prima necessità,Beverages - Wineries & Distilleries,FTSEMIB
+CS.PA,AXA SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Finanza,Insurance - Diversified,CAC40
+CSNDX.MI,iShares NASDAQ 100 UCITS ETF USD (Acc),MTA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+CSSPX.MI,iShares Core S&P 500 UCITS ETF USD (Acc),MTA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+CW8.PA,Amundi Index Solutions - Amundi MSCI World Swap UCITS ETF EUR Acc,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+DB1.DE,Deutsche Börse AG,XETRA,eu_equity,EUR,1,0.0001,true,,Finanza,Financial Data & Stock Exchanges,DAX
+DBK.DE,Deutsche Bank Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,,Finanza,Banks - Regional,DAX
+DBXD.DE,Xtrackers DAX UCITS ETF 1C,XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+DCAM.PA,Amundi PEA Monde (MSCI World) UCITS ETF,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+DG.PA,Vinci SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Industria,Engineering & Construction,CAC40
+DHER.DE,Delivery Hero SE,XETRA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Internet Retail,MDAX
+DHL.DE,DHL AG,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Integrated Freight & Logistics,DAX
+DIA.MI,DiaSorin S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Sanità,Diagnostics & Research,
+DSY.PA,Dassault Systèmes SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Tecnologia,Software - Application,CAC40
+DTE.DE,Deutsche Telekom AG,XETRA,eu_equity,EUR,1,0.0001,true,,Servizi di comunicazione,Telecom Services,DAX
+DTG.DE,Daimler Truck Holding AG,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Farm & Heavy Construction Machinery,DAX
+DWNI.DE,Deutsche Wohnen SE,XETRA,eu_equity,EUR,1,0.0001,true,,Immobiliare,Real Estate Services,
+EDEN.PA,Edenred SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Finanza,Credit Services,
+EIMI.MI,iShares Core MSCI EM IMI UCITS ETF USD (Acc),MTA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+EL.PA,EssilorLuxottica Société anonyme,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Sanità,Medical Instruments & Supplies,CAC40
+EN.PA,Bouygues SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Industria,Engineering & Construction,CAC40
+ENEL.MI,Enel SpA,MTA,eu_equity,EUR,1,0.0001,true,,Servizi di pubblica utilità,Utilities - Diversified,FTSEMIB
+ENGI.PA,Engie SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Servizi di pubblica utilità,Utilities - Diversified,CAC40
+ENI.MI,Eni S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Energia,Oil & Gas Integrated,FTSEMIB
+ENR.DE,Siemens Energy AG,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Specialty Industrial Machinery,DAX
+ENX.PA,Euronext N.V.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Finanza,Financial Data & Stock Exchanges,CAC40
+EOAN.DE,E.ON SE,XETRA,eu_equity,EUR,1,0.0001,true,,Servizi di pubblica utilità,Utilities - Diversified,DAX
+EQQQ.DE,Invesco EQQQ NASDAQ-100 UCITS ETF,XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+ERF.PA,Eurofins Scientific SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Sanità,Diagnostics & Research,CAC40
+ERG.MI,ERG S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Servizi di pubblica utilità,Utilities - Renewable,
+ESE.PA,BNP Paribas Easy S&P 500 UCITS ETF EUR C,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+ETFMIB.MI,Amundi FTSE MIB UCITS ETF Dist,MTA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+EUN5.DE,iShares Core € Corp Bond UCITS ETF EUR (Dist),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Obbligazionario,
+EUNA.DE,iShares Core Global Aggregate Bond UCITS ETF EUR Hedged (Acc),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Obbligazionario,
+EUNH.DE,iShares Core € Govt Bond UCITS ETF EUR (Dist),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Obbligazionario,
+EUNK.DE,iShares Core MSCI Europe UCITS ETF EUR (Acc),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+EUNL.DE,iShares Core MSCI World UCITS ETF USD (Acc),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+EVD.DE,CTS Eventim AG & Co. KGaA,XETRA,eu_equity,EUR,1,0.0001,true,,Servizi di comunicazione,Entertainment,MDAX
+EVK.DE,Evonik Industries AG,XETRA,eu_equity,EUR,1,0.0001,true,,Materiali,Specialty Chemicals,MDAX
+EVT.DE,Evotec SE,XETRA,eu_equity,EUR,1,0.0001,true,,Sanità,Drug Manufacturers - Specialty & Generic,MDAX
+EXH1.DE,iShares STOXX Europe 600 Oil & Gas UCITS ETF (DE),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+EXS1.DE,iShares Core DAX UCITS ETF (DE) EUR (Acc),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+EXSA.DE,iShares STOXX Europe 600 UCITS ETF (DE) EUR (Dist),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+EXV1.DE,iShares STOXX Europe 600 Banks UCITS ETF (DE) (Dist),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+EXV3.DE,iShares STOXX Europe 600 Technology UCITS ETF (DE) EUR dis,XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+EXV4.DE,iShares STOXX Europe 600 Health Care UCITS ETF (DE),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+EXXT.DE,iShares NASDAQ-100 UCITS ETF (DE),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+FBK.MI,FinecoBank Banca Fineco S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Finanza,Banks - Regional,FTSEMIB
+FCT.MI,Fincantieri S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Industria,Aerospace & Defense,FTSEMIB
+FGR.PA,Eiffage SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Industria,Engineering & Construction,CAC40
+FME.DE,Fresenius Medical Care AG,XETRA,eu_equity,EUR,1,0.0001,true,,Sanità,Medical Care Facilities,DAX
+FNTN.DE,freenet AG,XETRA,eu_equity,EUR,1,0.0001,true,,Servizi di comunicazione,Telecom Services,MDAX
+FPE3.DE,Fuchs SE,XETRA,eu_equity,EUR,1,0.0001,true,,Materiali,Specialty Chemicals,MDAX
+FRA.DE,Fraport AG,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Airports & Air Services,MDAX
+FRE.DE,Fresenius SE & Co. KGaA,XETRA,eu_equity,EUR,1,0.0001,true,,Sanità,Medical Care Facilities,DAX;MDAX
+G.MI,Assicurazioni Generali S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Finanza,Insurance - Diversified,FTSEMIB
+G1A.DE,GEA Group Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Specialty Industrial Machinery,DAX;MDAX
+G24.DE,Scout24 SE,XETRA,eu_equity,EUR,1,0.0001,true,,Servizi di comunicazione,Internet Content & Information,DAX;MDAX
+GLE.PA,Société Générale Société anonyme,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Finanza,Banks - Regional,CAC40
+GXI.DE,Gerresheimer AG,XETRA,eu_equity,EUR,1,0.0001,true,,Sanità,Medical Instruments & Supplies,MDAX
+HAG.DE,Hensoldt AG,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Aerospace & Defense,MDAX
+HEI.DE,Heidelberg Materials AG,XETRA,eu_equity,EUR,1,0.0001,true,,Materiali,Building Materials,DAX
+HEN3.DE,Henkel AG & Co. KGaA,XETRA,eu_equity,EUR,1,0.0001,true,,Beni di prima necessità,Household & Personal Products,DAX
+HER.MI,Hera S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Servizi di pubblica utilità,Utilities - Diversified,FTSEMIB
+HFG.DE,HelloFresh SE,XETRA,eu_equity,EUR,1,0.0001,true,,Beni di prima necessità,Grocery Stores,MDAX
+HLAG.DE,Hapag-Lloyd Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Marine Shipping,
+HNR1.DE,Hannover Rück SE,XETRA,eu_equity,EUR,1,0.0001,true,,Finanza,Insurance - Reinsurance,DAX
+HO.PA,Thales S.A.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Industria,Aerospace & Defense,CAC40
+HOT.DE,HOCHTIEF Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Engineering & Construction,MDAX
+IBCI.DE,iShares € Inflation Linked Govt Bond UCITS ETF EUR (Acc),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Obbligazionario,
+IFX.DE,Infineon Technologies AG,XETRA,eu_equity,EUR,1,0.0001,true,,Tecnologia,Semiconductors,DAX
+IG.MI,Italgas S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Servizi di pubblica utilità,Utilities - Regulated Gas,FTSEMIB
+INW.MI,Infrastrutture Wireless Italiane S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Immobiliare,Real Estate Services,FTSEMIB
+IP.MI,Interpump Group S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Industria,Specialty Industrial Machinery,
+IQQH.DE,iShares Global Clean Energy Transition UCITS ETF USD (Dist),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+IS3N.DE,iShares Core MSCI EM IMI UCITS ETF USD (Acc),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+IS3Q.DE,iShares Edge MSCI World Quality Factor UCITS ETF USD (Acc),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+ISP.MI,Intesa Sanpaolo S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Finanza,Banks - Regional,FTSEMIB
+IUSN.DE,iShares MSCI World Small Cap UCITS ETF USD (Acc),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+IUSQ.DE,iShares MSCI All Country World UCITS ETF USD Acc,XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+IVG.MI,Iveco Group N.V.,MTA,eu_equity,EUR,1,0.0001,true,,Industria,Farm & Heavy Construction Machinery,FTSEMIB
+JEN.DE,Jenoptik AG,XETRA,eu_equity,EUR,1,0.0001,true,,Tecnologia,Electronic Components,MDAX
+JUN3.DE,Jungheinrich Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Specialty Industrial Machinery,MDAX
+KBX.DE,Knorr-Bremse AG,XETRA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Auto Parts,MDAX
+KER.PA,Kering SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Luxury Goods,CAC40
+KGX.DE,KION GROUP AG,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Farm & Heavy Construction Machinery,MDAX
+KRN.DE,Krones AG,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Specialty Industrial Machinery,MDAX
+LDO.MI,Leonardo S.p.a.,MTA,eu_equity,EUR,1,0.0001,true,,Industria,Aerospace & Defense,FTSEMIB
+LEG.DE,LEG Immobilien SE,XETRA,eu_equity,EUR,1,0.0001,true,,Immobiliare,Real Estate Services,MDAX
+LHA.DE,Deutsche Lufthansa AG,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Airlines,MDAX
+LR.PA,Legrand SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Industria,Electrical Equipment & Parts,CAC40
+LTMC.MI,Lottomatica Group S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Gambling,FTSEMIB
+LXS.DE,LANXESS Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,,Materiali,Specialty Chemicals,MDAX
+MB.MI,Mediobanca Banca di Credito Finanziario S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Finanza,Banks - Regional,FTSEMIB
+MBG.DE,Mercedes-Benz Group AG,XETRA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Auto Manufacturers,DAX
+MC.PA,"LVMH Moët Hennessy - Louis Vuitton, Société Européenne",EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Luxury Goods,CAC40
+MEUD.PA,Amundi Core Stoxx Europe 600 UCITS ETF Acc,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+ML.PA,Compagnie Générale des Établissements Michelin Société en commandite par actions,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Auto Parts,CAC40
+MONC.MI,Moncler S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Apparel Manufacturing,FTSEMIB
+MRK.DE,Merck KGaA,XETRA,eu_equity,EUR,1,0.0001,true,,Sanità,Drug Manufacturers - Specialty & Generic,DAX
+MTX.DE,MTU Aero Engines AG,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Aerospace & Defense,DAX
+MUV2.DE,Münchener Rückversicherungs-Gesellschaft Aktiengesellschaft in München,XETRA,eu_equity,EUR,1,0.0001,true,,Finanza,Insurance - Reinsurance,DAX
+NDA.DE,Aurubis AG,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Metal Fabrication,MDAX
+NDX1.DE,Nordex SE,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Specialty Industrial Machinery,MDAX
+NEM.DE,Nemetschek SE,XETRA,eu_equity,EUR,1,0.0001,true,,Tecnologia,Software - Application,MDAX
+NEXI.MI,Nexi S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Tecnologia,Software - Infrastructure,FTSEMIB
+OR.PA,L'Oréal S.A.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Beni di prima necessità,Household & Personal Products,CAC40
+ORA.PA,Orange S.A.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Servizi di comunicazione,Telecom Services,CAC40
+P911.DE,Dr. Ing. h.c. F. Porsche AG,XETRA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Auto Manufacturers,
+PAEEM.PA,Amundi PEA Émergent (MSCI Emerging) ESG Transition UCITS ETF Acc,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+PAH3.DE,Porsche Automobil Holding SE,XETRA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Auto Manufacturers,DAX
+PANX.PA,Amundi PEA US Tech Screened UCITS ETF - Acc,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+PHAU.MI,WisdomTree Physical Gold,MTA,eu_equity,EUR,1,0.0001,true,,ETF,Materie prime,
+PIRC.MI,Pirelli & C. S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Auto Parts,
+PRY.MI,Prysmian S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Industria,Electrical Equipment & Parts,FTSEMIB
+PST.MI,Poste Italiane S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Industria,Integrated Freight & Logistics,FTSEMIB
+PUB.PA,Publicis Groupe S.A.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Servizi di comunicazione,Advertising Agencies,CAC40
+PUM.DE,PUMA SE,XETRA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Footwear & Accessories,MDAX
+QDVE.DE,iShares S&P 500 Information Technology Sector UCITS ETF USD (Acc),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+QIA.DE,Qiagen N.V.,XETRA,eu_equity,EUR,1,0.0001,true,,Sanità,Diagnostics & Research,DAX
+R3NK.DE,RENK Group AG,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Aerospace & Defense,
+RAA.DE,RATIONAL Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Specialty Industrial Machinery,MDAX
+RACE.MI,Ferrari N.V.,MTA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Auto Manufacturers,FTSEMIB
+RDC.DE,Redcare Pharmacy NV,XETRA,eu_equity,EUR,1,0.0001,true,,Sanità,Pharmaceutical Retailers,MDAX
+REC.MI,Recordati Industria Chimica e Farmaceutica S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Sanità,Drug Manufacturers - General,FTSEMIB
+RHM.DE,Rheinmetall AG,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Aerospace & Defense,DAX
+RI.PA,Pernod Ricard SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Beni di prima necessità,Beverages - Wineries & Distilleries,CAC40
+RMS.PA,Hermès International Société en commandite par actions,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Luxury Goods,CAC40
+RNO.PA,Renault SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Auto Manufacturers,CAC40
+RWE.DE,RWE Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,,Servizi di pubblica utilità,Utilities - Diversified,DAX
+SAF.PA,Safran SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Industria,Aerospace & Defense,CAC40
+SAN.PA,Sanofi,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Sanità,Drug Manufacturers - General,CAC40
+SAP.DE,SAP SE,XETRA,eu_equity,EUR,1,0.0001,true,,Tecnologia,Software - Application,DAX
+SAX.DE,Ströer SE & Co. KGaA,XETRA,eu_equity,EUR,1,0.0001,true,,Servizi di comunicazione,Advertising Agencies,MDAX
+SDF.DE,K+S Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,,Materiali,Agricultural Inputs,MDAX
+SGO.PA,Compagnie de Saint-Gobain S.A.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Industria,Building Products & Equipment,CAC40
+SHL.DE,Siemens Healthineers AG,XETRA,eu_equity,EUR,1,0.0001,true,,Sanità,Medical Devices,DAX
+SIE.DE,Siemens Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Specialty Industrial Machinery,DAX
+SMEA.MI,iShares Core MSCI Europe UCITS ETF EUR (Acc),MTA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+SPM.MI,Saipem SpA,MTA,eu_equity,EUR,1,0.0001,true,,Energia,Oil & Gas Equipment & Services,FTSEMIB
+SPPW.DE,State Street SPDR MSCI World UCITS ETF,XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+SRG.MI,Snam S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Servizi di pubblica utilità,Utilities - Regulated Gas,FTSEMIB
+SRT3.DE,Sartorius Aktiengesellschaft,XETRA,eu_equity,EUR,1,0.0001,true,,Sanità,Medical Instruments & Supplies,
+STLAM.MI,Stellantis N.V.,MTA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Auto Manufacturers,FTSEMIB
+STLAP.PA,Stellantis N.V.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Auto Manufacturers,CAC40
+STMMI.MI,STMicroelectronics N.V.,MTA,eu_equity,EUR,1,0.0001,true,,Tecnologia,Semiconductors,FTSEMIB
+STMPA.PA,STMicroelectronics N.V.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Tecnologia,Semiconductors,CAC40
+SU.PA,Schneider Electric S.E.,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Industria,Specialty Industrial Machinery,CAC40
+SWDA.MI,iShares Core MSCI World UCITS ETF USD (Acc),MTA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+SXR7.DE,iShares VII PLC -iShares Core MSCI EMU UCITS ETF EUR (Acc),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+SXR8.DE,iShares Core S&P 500 UCITS ETF USD (Acc),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+SXRT.DE,iShares VII PLC - iShares Core EURO STOXX 50 ETF EUR Acc,XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+SXRV.DE,iShares NASDAQ 100 UCITS ETF USD (Acc),XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+SY1.DE,Symrise AG,XETRA,eu_equity,EUR,1,0.0001,true,,Materiali,Specialty Chemicals,DAX
+TEN.MI,Tenaris S.A.,MTA,eu_equity,EUR,1,0.0001,true,,Energia,Oil & Gas Equipment & Services,FTSEMIB
+TEP.PA,Teleperformance SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Industria,Specialty Business Services,
+TIT.MI,Telecom Italia S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Servizi di comunicazione,Telecom Services,FTSEMIB
+TKA.DE,thyssenkrupp AG,XETRA,eu_equity,EUR,1,0.0001,true,,Industria,Conglomerates,MDAX
+TLX.DE,Talanx AG,XETRA,eu_equity,EUR,1,0.0001,true,,Finanza,Insurance - Diversified,MDAX
+TMV.DE,TeamViewer SE,XETRA,eu_equity,EUR,1,0.0001,true,,Tecnologia,Software - Application,MDAX
+TPRO.MI,Technoprobe S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Tecnologia,Semiconductors,FTSEMIB
+TRN.MI,Terna S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Servizi di pubblica utilità,Utilities - Regulated Electric,FTSEMIB
+TTE.PA,TotalEnergies SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Energia,Oil & Gas Integrated,CAC40
+TUI1.DE,TUI AG,XETRA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Travel Services,MDAX
+UCG.MI,UniCredit S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Finanza,Banks - Regional,FTSEMIB
+UNI.MI,Unipol Assicurazioni S.p.A.,MTA,eu_equity,EUR,1,0.0001,true,,Finanza,Insurance - Property & Casualty,FTSEMIB
+URW.PA,Unibail-Rodamco-Westfield SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Immobiliare,REIT - Retail,CAC40
+UTDI.DE,United Internet AG,XETRA,eu_equity,EUR,1,0.0001,true,,Servizi di comunicazione,Telecom Services,MDAX
+VFEM.DE,Vanguard FTSE Emerging Markets UCITS ETF USD Distributing,XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+VGWL.DE,Vanguard FTSE All-World UCITS ETF,XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+VIE.PA,Veolia Environnement SA,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Industria,Waste Management,CAC40
+VIV.PA,Vivendi SE,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,Servizi di comunicazione,Electronic Gaming & Multimedia,
+VNA.DE,Vonovia SE,XETRA,eu_equity,EUR,1,0.0001,true,,Immobiliare,Real Estate Services,DAX
+VOW3.DE,Volkswagen AG,XETRA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Auto Manufacturers,DAX
+VUSA.DE,Vanguard S&P 500 UCITS ETF,XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+VWCE.DE,Vanguard FTSE All-World UCITS ETF USD Accumulation,XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+VWCE.MI,Vanguard FTSE All-World UCITS ETF USD Accumulation,MTA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+WAF.DE,Siltronic AG,XETRA,eu_equity,EUR,1,0.0001,true,,Tecnologia,Semiconductors,MDAX
+WCH.DE,Wacker Chemie AG,XETRA,eu_equity,EUR,1,0.0001,true,,Materiali,Specialty Chemicals,MDAX
+WPEA.PA,iShares MSCI World Swap PEA UCITS ETF,EURONEXT_PARIS,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+XDWD.DE,Xtrackers MSCI World UCITS ETF 1C,XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+XDWD.MI,Xtrackers MSCI World UCITS ETF 1C,MTA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+XDWF.DE,Xtrackers MSCI World Financials UCITS ETF 1C,XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+XDWH.DE,Xtrackers MSCI World Health Care UCITS ETF 1C,XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+XDWT.DE,Xtrackers MSCI World Information Technology UCITS ETF 1C,XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,
+ZAL.DE,Zalando SE,XETRA,eu_equity,EUR,1,0.0001,true,,Beni voluttuari,Internet Retail,DAX
+ZPRV.DE,State Street SPDR MSCI USA Small Cap Value Weighted UCITS ETF USD Acc,XETRA,eu_equity,EUR,1,0.0001,true,,ETF,Azionario,

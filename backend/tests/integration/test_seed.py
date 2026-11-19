@@ -282,3 +282,39 @@ async def test_seed_does_not_recreate_demo_on_existing_install(db_session):
     assert await db_session.scalar(select(Portfolio.id).where(Portfolio.name == "Demo")) is None
     names = (await db_session.execute(select(Agent.name))).scalars().all()
     assert names == ["Risk Manager"]
+
+
+async def test_metadata_backfill_fills_only_nulls(db_session):
+    """Rows that predate sector / industry / indices (or a pre-catalog manual row) get them
+    from the catalog; a value already set, an admin edit included, is never overwritten;
+    a second run changes nothing."""
+    from sqlalchemy import update
+
+    from smtrading.instruments.catalog import backfill_metadata, load_catalog
+    from smtrading.instruments.models import Instrument
+
+    await run_seed(db_session)
+    assert await backfill_metadata(db_session) == 0  # a fresh install has them all
+    await db_session.execute(
+        update(Instrument).where(Instrument.symbol.in_(["AAPL", "ENI.MI", "BTC-USD", "IVV"]))
+        .values(sector=None, industry=None, indices=None))
+    await db_session.execute(  # admin edits
+        update(Instrument).where(Instrument.symbol == "ENI.MI")
+        .values(sector="Materiali"))
+    await db_session.execute(
+        update(Instrument).where(Instrument.symbol == "IVV").values(indices=[]))
+    assert await backfill_metadata(db_session) == 4
+    assert await backfill_metadata(db_session) == 0  # idempotent
+    db_session.expire_all()
+    rows = {r.symbol: r for r in load_catalog()}
+    aapl = await db_session.get(Instrument, "AAPL")
+    assert (aapl.sector, aapl.industry, aapl.indices) == (
+        rows["AAPL"].sector, rows["AAPL"].industry, ["SP500", "NDX"])
+    eni = await db_session.get(Instrument, "ENI.MI")
+    assert eni.sector == "Materiali"  # kept
+    assert eni.industry == rows["ENI.MI"].industry and eni.indices == ["FTSEMIB"]
+    btc = await db_session.get(Instrument, "BTC-USD")
+    assert (btc.sector, btc.industry, btc.indices) == ("Crypto", None, [])
+    ivv = await db_session.get(Instrument, "IVV")
+    assert (ivv.sector, ivv.industry, ivv.indices) == ("ETF", "Azionario", [])
+    assert aapl.created_at is not None  # new rows get a creation time

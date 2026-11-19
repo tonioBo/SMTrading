@@ -726,6 +726,13 @@ export interface Instrument {
   source: InstrumentSource;
   /** "auto:<agent name>" for on-demand instruments */
   added_by: string | null;
+  /** Italian sector (GICS-like, or ETF / Crypto / Cambi); null when unknown */
+  sector?: string | null;
+  /** the provider's industry; for ETFs the asset type */
+  industry?: string | null;
+  /** index codes: SP500, NDX, FTSEMIB, DAX, CAC40, MDAX */
+  indices?: string[] | null;
+  created_at?: string | null;
 }
 
 export interface InstrumentCreate {

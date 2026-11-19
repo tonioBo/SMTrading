@@ -1,8 +1,9 @@
 import enum
+from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, String
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Boolean, DateTime, Index, String, func
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from smtrading.common.db import Base
@@ -23,7 +24,17 @@ class InstrumentSource(enum.StrEnum):
 
 
 class Instrument(Base):
+    """`sector` is one of `instruments.taxonomy.SECTORS` (Italian, GICS-like, plus ETF /
+    Crypto / Cambi), `industry` the provider's industry (for ETFs the asset type),
+    `indices` the index codes of `taxonomy.INDICES` it belongs to; all three NULL until the
+    catalog backfill (or the admin) fills them. `created_at` is NULL for the rows that
+    existed before 0039."""
+
     __tablename__ = "instruments"
+    __table_args__ = (
+        Index("ix_instruments_sector", "sector"),
+        Index("ix_instruments_indices", "indices", postgresql_using="gin"),
+    )
 
     symbol: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(256))
@@ -39,3 +50,9 @@ class Instrument(Base):
         str_enum(InstrumentSource), default=InstrumentSource.manual, server_default="manual"
     )
     added_by: Mapped[str | None] = mapped_column(String(128))
+    sector: Mapped[str | None] = mapped_column(String(64))
+    industry: Mapped[str | None] = mapped_column(String(128))
+    indices: Mapped[list[str] | None] = mapped_column(ARRAY(String(16)))
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
