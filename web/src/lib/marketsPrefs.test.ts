@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { tileStyle } from "@/components/markets/labels";
 import { DEFAULT_PREFS, MARKETS_PREFS_KEY, highlightParts, readPrefs, writePrefs } from "@/lib/marketsPrefs";
 
 afterEach(() => localStorage.clear());
@@ -27,12 +26,5 @@ describe("marketsPrefs", () => {
       { text: "a", hit: true },
       { text: "a", hit: true },
     ]);
-  });
-
-  it("colours a tile by the sign and size of the change", () => {
-    expect(tileStyle("3").backgroundColor).toBe("rgb(var(--gain) / 0.80)");
-    expect(tileStyle("0.3").backgroundColor).toBe("rgb(var(--gain) / 0.21)");
-    expect(tileStyle("-9").backgroundColor).toBe("rgb(var(--loss) / 0.80)");
-    expect(tileStyle("0").backgroundColor).toContain("--border");
   });
 });

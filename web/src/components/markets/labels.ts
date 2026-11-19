@@ -29,13 +29,3 @@ export const DEFAULT_UNIVERSES = [
   { code: "CRYPTO", label: "Crypto" },
   { code: "MINE", label: "Watchlist e posizioni" },
 ];
-
-/** ±3% or more is the full colour; the sign picks green or red. */
-const FULL_SCALE = 3;
-
-export function tileStyle(avg: string): { backgroundColor: string } {
-  const v = Number(avg);
-  if (!Number.isFinite(v) || v === 0) return { backgroundColor: "rgb(var(--border) / 0.5)" };
-  const alpha = 0.15 + 0.65 * Math.min(Math.abs(v) / FULL_SCALE, 1);
-  return { backgroundColor: `rgb(var(${v > 0 ? "--gain" : "--loss"}) / ${alpha.toFixed(2)})` };
-}

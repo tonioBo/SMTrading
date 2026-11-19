@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -6,6 +6,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
 import { MARKETS_PREFS_KEY } from "@/lib/marketsPrefs";
+import { instances } from "@/test/echarts";
+import { charts, markers } from "@/test/lightweightCharts";
 
 vi.mock("@/lib/ws", async (orig) => ({
   ...(await orig<typeof import("@/lib/ws")>()),
@@ -99,6 +101,10 @@ const server = setupServer(
       market_status: { market: "NASDAQ", is_open: true, next_open: null, next_close: null },
       positions: [{ portfolio_id: "p1", portfolio_name: "Prudente", qty: "2", avg_price: "180", opened_at: null }],
       open_orders: [{ id: "o1", portfolio_id: "p1", portfolio_name: "Prudente", side: "sell", type: "stop", qty: "2", notional: null, limit_price: null, stop_price: "150", role: "stop_loss", status: "pending", created_at: "2026-11-19T10:00:00Z" }],
+      fills: [
+        { id: "f2", order_id: "o3", portfolio_id: "p1", portfolio_name: "Prudente", side: "sell", qty: "1", price: "195", role: null, ts: "2026-11-19T15:30:00Z" },
+        { id: "f1", order_id: "o2", portfolio_id: "p1", portfolio_name: "Prudente", side: "buy", qty: "3", price: "181", role: "entry", ts: "2026-11-17T15:30:00Z" },
+      ],
       watchlists: [{ agent: "CEO", watchlist: "Tech" }],
       strategies: [{ ref: "STR-007", name: "RSI veloce", type: "rsi_reversion", timeframe: "1d", portfolios: ["Prudente"] }],
       decisions: [],
@@ -112,9 +118,9 @@ const server = setupServer(
       quote: { symbol: "AAPL", bid: "199", ask: "201", last: "200.5", ts: "2026-11-19T15:00:00Z", provider: "alpaca" },
       day_change: { last: "200", prev_close: "190", change_pct: "5.26", ts: "2026-11-19T15:00:00Z", provider: "alpaca" },
       bars: [
-        { ts: "2026-11-17T00:00:00Z", close: "180" },
-        { ts: "2026-11-18T00:00:00Z", close: "190" },
-        { ts: "2026-11-19T00:00:00Z", close: "200" },
+        { ts: "2026-11-17T00:00:00Z", open: "178", high: "182", low: "177", close: "180", volume: "1000" },
+        { ts: "2026-11-18T00:00:00Z", open: "180", high: "191", low: "179", close: "190", volume: "1500" },
+        { ts: "2026-11-19T00:00:00Z", open: "190", high: "201", low: "188", close: "200", volume: "1200" },
       ],
       indicators: { close: "200", ts: "2026-11-19T00:00:00Z", rsi14: "72.31", sma20: "185", sma50: "170", atr14: "4" },
       news: [{ id: "n1", ts: "2026-11-19T12:00:00Z", headline: "Apple presenta qualcosa", url: "https://example.com/a", source: "feed" }],
@@ -173,7 +179,29 @@ describe("Markets: search, sheet, filters, sector map", () => {
     const sheet = await screen.findByRole("dialog");
     expect(await within(sheet).findByText("200,50 $")).toBeInTheDocument();
     expect(within(sheet).getByText("+5,26%")).toBeInTheDocument();
-    expect(within(sheet).getByTestId("line-chart")).toBeInTheDocument();
+    // the candlesticks: volume pane, our average price and stop as lines, our fills as markers
+    expect(await within(sheet).findByTestId("price-chart")).toBeInTheDocument();
+    await waitFor(() => expect(charts.at(-1)?.series.length).toBeGreaterThan(0));
+    const c = charts.at(-1)!;
+    const candles = c.series.find((x) => x.type === "Candlestick")!;
+    expect(candles.data).toHaveLength(3);
+    expect(candles.data[2]).toEqual({ time: Date.parse("2026-11-19T00:00:00Z") / 1000, open: 190, high: 201, low: 188, close: 200 });
+    expect(candles.priceLines.map((l) => [l.options.title, l.options.price])).toEqual([
+      ["Prezzo medio", 180],
+      ["Stop 150,00 $", 150],
+    ]);
+    const vol = c.series.find((x) => x.type === "Histogram")!;
+    expect(vol.pane).toBe(1);
+    expect(c.paneStretch[1] / c.paneStretch[0]).toBeLessThan(0.3); // the volumes stay a small pane
+    expect(markers.at(-1)!.markers).toMatchObject([
+      { time: Date.parse("2026-11-17T00:00:00Z") / 1000, position: "belowBar", shape: "arrowUp", text: "Acquisto 3" },
+      { time: Date.parse("2026-11-19T00:00:00Z") / 1000, position: "aboveBar", shape: "arrowDown", text: "Vendita 1" },
+    ]);
+    expect(within(sheet).getByTestId("price-legend")).toHaveTextContent("Chius. 200,00");
+    // the moving averages on request (3 bars: too few for either, so nothing is drawn)
+    await user.click(within(sheet).getByRole("button", { name: "SMA 20" }));
+    expect(within(sheet).getByRole("button", { name: "SMA 20" })).toHaveAttribute("aria-pressed", "true");
+    expect(c.series.filter((x) => x.type === "Line")).toHaveLength(0);
     expect(within(sheet).getByText("72,3")).toBeInTheDocument();
     expect(within(sheet).getByText("ipercomprato")).toBeInTheDocument();
     expect(within(sheet).getAllByText("prezzo sopra")).toHaveLength(2);
@@ -252,23 +280,41 @@ describe("Markets: search, sheet, filters, sector map", () => {
   it("shows the sector map, drills down, switches universe, lists the movers", async () => {
     const user = userEvent.setup();
     renderApp("/mercati");
-    const map = await screen.findByLabelText("Mappa dei settori");
-    const tech = within(map).getByRole("button", { name: /^Tecnologia: media 1.5%/ });
-    expect(tech).toHaveTextContent("+1,50%");
-    expect(tech.getAttribute("style")).toContain("--gain");
-    expect(within(map).getByRole("button", { name: /^Energia/ }).getAttribute("style")).toContain("--loss");
+    const map = await screen.findByRole("list", { name: "Mappa dei settori" });
+    expect(within(map).getByRole("button", { name: /^Tecnologia: media 1.5%, 2 titoli, 2 in rialzo/ })).toBeInTheDocument();
     expect(screen.getByText(/3 di 4 titoli/)).toBeInTheDocument();
     expect(within(screen.getByRole("list", { name: "Migliori 10" })).getAllByRole("listitem")).toHaveLength(2);
     expect(within(screen.getByRole("list", { name: "Peggiori 10" })).getByText("XOM")).toBeInTheDocument();
-    await user.click(tech);
-    const detail = await screen.findByLabelText("Titoli del settore Tecnologia");
-    expect(within(detail).getAllByRole("button").map((b) => b.querySelector("span")?.textContent)).toEqual(["NVDA", "AAPL"]);
+    // the treemap: a tile per sector sized by its count, coloured by its change
+    await screen.findByTestId("sector-treemap");
+    await waitFor(() => expect(instances.at(-1)?.option).not.toBeNull());
+    const tm = instances.at(-1)!;
+    const data = () => (tm.option!.series as { data: { id: string; value: number; itemStyle: { color: string } }[] }[])[0].data;
+    expect(data().map((d) => [d.id, d.value])).toEqual([
+      ["Tecnologia", 2],
+      ["Energia", 1],
+    ]);
+    expect(data()[1].itemStyle.color).toBe("rgb(244, 63, 94)"); // -3.1%: full red
+    // a click on a tile opens the sector: its members, the breadcrumb
+    act(() => tm.click(data()[0]));
+    expect(await screen.findByRole("list", { name: "Titoli del settore Tecnologia" })).toBeInTheDocument();
+    await waitFor(() => expect(data().map((d) => d.id)).toEqual(["NVDA", "AAPL"]));
+    expect(within(screen.getByRole("navigation", { name: "Percorso della mappa" })).getByText("Tecnologia")).toHaveAttribute("aria-current", "page");
+    // a member's click opens its sheet
+    act(() => tm.click(data()[0]));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Tutti i settori" }));
+    // keyboard: the same tiles as buttons
+    await user.click(within(await screen.findByRole("list", { name: "Mappa dei settori" })).getByRole("button", { name: /^Energia/ }));
+    expect(await screen.findByRole("list", { name: "Titoli del settore Energia" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Tutti i settori" }));
     await user.selectOptions(screen.getByLabelText("Universo"), "DAX");
     await waitFor(() => expect(snapshots).toContain("DAX"));
     expect(JSON.parse(localStorage.getItem(MARKETS_PREFS_KEY)!).universe).toBe("DAX");
     // hidden: no more snapshot requests
     await user.click(screen.getByRole("button", { name: "Nascondi" }));
-    expect(screen.queryByLabelText("Mappa dei settori")).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Mappa dei settori" })).not.toBeInTheDocument();
   });
 });

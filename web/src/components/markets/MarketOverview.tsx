@@ -1,12 +1,13 @@
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { useMarketSnapshot } from "@/api/hooks/marketsExplore";
-import type { Mover, SectorTile } from "@/api/marketsTypes";
+import type { MarketSnapshot, Mover, SectorTile } from "@/api/marketsTypes";
+import { SectorTreemap } from "@/components/charts";
 import { Pct } from "@/components/Pct";
 import { selectClass } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { formatClock, formatMoney } from "@/lib/format";
-import { tileStyle } from "@/components/markets/labels";
+import { FULL_SCALE } from "@/lib/sectorMap";
 
 function MoverList({ title, rows, onOpen }: { title: string; rows: Mover[]; onOpen: (s: string) => void }) {
   return (
@@ -32,36 +33,67 @@ function MoverList({ title, rows, onOpen }: { title: string; rows: Mover[]; onOp
   );
 }
 
-function SectorDetail({ tile, onBack, onOpen }: { tile: SectorTile; onBack: () => void; onOpen: (s: string) => void }) {
+/** The breadcrumb of the map: «Tutti i settori» › the opened sector and its counts. */
+function Breadcrumb({ tile, onBack }: { tile: SectorTile | null; onBack: () => void }) {
   return (
-    <div>
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <Button type="button" size="sm" variant="outline" onClick={onBack}>
-          <ArrowLeft className="mr-1 h-4 w-4" />
+    <nav aria-label="Percorso della mappa" className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+      {tile ? (
+        <>
+          <Button type="button" size="sm" variant="outline" onClick={onBack}>
+            <ArrowLeft className="mr-1 h-4 w-4" />
+            Tutti i settori
+          </Button>
+          <ChevronRight className="h-4 w-4 text-muted" aria-hidden />
+          <span className="font-medium" aria-current="page">
+            {tile.sector}
+          </span>
+          <Pct value={tile.avg_change_pct} tone />
+          <span className="text-xs text-muted">
+            {tile.count} titoli · {tile.up} in rialzo · {tile.down} in ribasso
+          </span>
+        </>
+      ) : (
+        <span className="font-medium" aria-current="page">
           Tutti i settori
-        </Button>
-        <span className="font-medium">{tile.sector}</span>
-        <Pct value={tile.avg_change_pct} tone />
-        <span className="text-xs text-muted">
-          {tile.count} titoli · {tile.up} in rialzo · {tile.down} in ribasso
         </span>
-      </div>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5" aria-label={`Titoli del settore ${tile.sector}`}>
+      )}
+      <span className="text-xs text-muted sm:ml-auto">area: numero di titoli · colore: variazione media (±{FULL_SCALE}%)</span>
+    </nav>
+  );
+}
+
+/**
+ * The map's tiles as buttons for keyboards and screen readers (the treemap is a canvas):
+ * visually hidden, same order and actions.
+ */
+function TileList({ snapshot, tile, onSector, onOpen }: { snapshot: MarketSnapshot; tile: SectorTile | null; onSector: (s: string) => void; onOpen: (s: string) => void }) {
+  if (tile) {
+    return (
+      <ul className="sr-only" aria-label={`Titoli del settore ${tile.sector}`}>
         {tile.members.map((m) => (
-          <button key={m.symbol} type="button" style={tileStyle(m.change_pct)} className="rounded-md p-2 text-left text-sm" onClick={() => onOpen(m.symbol)} title={m.name}>
-            <span className="num block font-medium">{m.symbol}</span>
-            <span className="block truncate text-xs">{m.name}</span>
-            <Pct value={m.change_pct} className="text-xs" />
-          </button>
+          <li key={m.symbol}>
+            <button type="button" onClick={() => onOpen(m.symbol)}>{`${m.symbol} ${m.name}: ${m.change_pct}%`}</button>
+          </li>
         ))}
-      </div>
-    </div>
+      </ul>
+    );
+  }
+  return (
+    <ul className="sr-only" aria-label="Mappa dei settori">
+      {snapshot.sectors.map((t) => (
+        <li key={t.sector}>
+          <button type="button" onClick={() => onSector(t.sector)}>{`${t.sector}: media ${t.avg_change_pct}%, ${t.count} titoli, ${t.up} in rialzo, ${t.down} in ribasso`}</button>
+        </li>
+      ))}
+    </ul>
   );
 }
 
 /**
  * «Mappa dei settori» and «Titoli più mossi» of a universe: one snapshot request (day
- * changes from batch calls, cached 5 minutes on the server) while the panel is shown.
+ * changes from batch calls, cached 5 minutes on the server) while the panel is shown. The
+ * map is an ECharts treemap (lazily loaded): sectors by member count coloured by their
+ * average change; a click opens a sector's members, a member's click its sheet.
  */
 export function MarketOverview({
   universe,
@@ -105,31 +137,13 @@ export function MarketOverview({
       {snap.isLoading && <p className="text-sm text-muted">Caricamento…</p>}
       {snap.data && snap.data.total === 0 && <p className="text-sm text-muted">Nessuno strumento in questo universo</p>}
       {snap.data && snap.data.total > 0 && snap.data.covered === 0 && <p className="text-sm text-muted">Variazioni non disponibili al momento</p>}
-      {snap.data &&
-        (tile ? (
-          <SectorDetail tile={tile} onBack={() => setSector(null)} onOpen={onOpen} />
-        ) : (
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4" aria-label="Mappa dei settori">
-            {snap.data.sectors.map((t) => (
-              <button
-                key={t.sector}
-                type="button"
-                style={tileStyle(t.avg_change_pct)}
-                className="flex min-h-20 flex-col justify-between rounded-md p-3 text-left"
-                onClick={() => setSector(t.sector)}
-                aria-label={`${t.sector}: media ${t.avg_change_pct}%, ${t.count} titoli`}
-              >
-                <span className="text-sm font-medium leading-tight">{t.sector}</span>
-                <span className="mt-1 flex items-baseline justify-between gap-2">
-                  <Pct value={t.avg_change_pct} className="text-base font-semibold" />
-                  <span className="text-xs">
-                    {t.count} · ▲{t.up} ▼{t.down}
-                  </span>
-                </span>
-              </button>
-            ))}
-          </div>
-        ))}
+      {snap.data && snap.data.sectors.length > 0 && (
+        <div>
+          <Breadcrumb tile={tile} onBack={() => setSector(null)} />
+          <SectorTreemap snapshot={snap.data} sector={tile} onSector={setSector} onMember={onOpen} />
+          <TileList snapshot={snap.data} tile={tile} onSector={setSector} onOpen={onOpen} />
+        </div>
+      )}
       {snap.data && snap.data.covered > 0 && (
         <div className="grid gap-4 md:grid-cols-2">
           <MoverList title="Migliori 10" rows={snap.data.gainers} onOpen={onOpen} />
