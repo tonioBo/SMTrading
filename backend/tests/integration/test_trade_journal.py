@@ -366,3 +366,25 @@ async def test_api_filters_and_pages(env, book, redis_url):
         await redis.aclose()
     async with env.sm() as s:
         assert await s.scalar(select(Order.id).where(Order.id == book["open"]))
+
+
+async def test_two_open_trades_of_a_symbol_keep_their_own_orders(env):
+    async with env.sm() as s:
+        p = await create_portfolio(s, name="Portafoglio Aggressivo", initial_cash=D(20000))
+        await _commit(s)
+    _quote(env, "AAPL", "199", "200")
+    legs = []
+    for coid in ("PROP-A", "PROP-B"):
+        async with env.sm() as s:
+            legs.append(await place_bracket_order(s, env.qs, PlaceOrderRequest(
+                portfolio_id=p.id, symbol="AAPL", side=OrderSide.buy, type=OrderType.market,
+                qty=D(2), client_order_id=coid), take_profit=D(250), stop_loss=D(150),
+                now=OPEN))
+            await _commit(s)
+    (a, a_tp, a_sl), (b, b_tp, b_sl) = legs
+    async with env.sm() as s:
+        da = await trade_detail(s, env.qs, str(a.id))
+        db = await trade_detail(s, env.qs, str(b.id))
+    assert {o["id"] for o in da["orders"]} == {a.id, a_tp.id, a_sl.id}
+    assert {o["id"] for o in db["orders"]} == {b.id, b_tp.id, b_sl.id}
+    assert da["trade"].outcome == db["trade"].outcome == "open"

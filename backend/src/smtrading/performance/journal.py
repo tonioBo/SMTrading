@@ -346,11 +346,15 @@ def _related_orders(trade: Trade, all_trades: list[Trade], candidates: list[Orde
     """The trade's orders among the portfolio+symbol's orders: its entry and the orders
     of its fills, the orders sent for the same proposal (resends), the bracket children,
     the exit-side orders placed while it was open (OCO legs, stops, closes) unless they
-    opened another trade, and the OCO siblings of those."""
+    belong to another trade, and the OCO siblings of those."""
     by_id = {o.id: o for o in candidates}
     entry = by_id.get(trade.order_id)
     own = {f.order_id for f, _, _ in trade.legs}
-    others = {t.order_id for t in all_trades if t is not trade} - own
+    # orders that belong to another trade only: its opening order, the orders of its
+    # fills, its bracket children (two trades of the same symbol open at once)
+    others = {i for t in all_trades if t is not trade
+              for i in (t.order_id, *(f.order_id for f, _, _ in t.legs))} - own
+    others |= {o.id for o in candidates if o.parent_id in others} - own
     start = entry.created_at if entry is not None else trade.opened_at
     end = trade.closed_at or now
     entry_side = entry.side if entry is not None else None
