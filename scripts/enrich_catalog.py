@@ -41,14 +41,14 @@ MANUAL: dict[str, tuple[str, str]] = {
 
 _ISSUERS = re.compile(
     r"\b(ETF|UCITS|iShares|Xtrackers|Lyxor|Amundi|SPDR|Vanguard|Invesco|ProShares|"
-    r"Direxion|WisdomTree|VanEck|Schwab|JPMorgan Equity Premium|ARK Innovation)\b", re.I)
-_LEVERAGE = re.compile(r"\b(Ultra\w*|[23]x|Leveraged|Short|Bear|Inverse)\b", re.I)
-_MONEY = re.compile(r"(0-3 Month|1-3 Month T-Bill|Treasury Bill|Money Market|T-Bill)", re.I)
+    r"Direxion|WisdomTree|VanEck|Schwab|JPMorgan Equity Premium|ARK Innovation)\b", re.IGNORECASE)
+_LEVERAGE = re.compile(r"\b(Ultra\w*|[23]x|Leveraged|Short|Bear|Inverse)\b", re.IGNORECASE)
+_MONEY = re.compile(r"(0-3 Month|1-3 Month T-Bill|Treasury Bill|Money Market|T-Bill)", re.IGNORECASE)
 _BOND = re.compile(r"\b(Bond|Treasury|Aggregate|Govt|Government|Corporate|TIPS|Muni\w*|"
-                   r"Inflation)\b", re.I)
-_COMMODITY = re.compile(r"\b(Gold|Silver|Oil|Natural Gas|Commodit\w*|Physical)\b", re.I)
+                   r"Inflation)\b", re.IGNORECASE)
+_COMMODITY = re.compile(r"\b(Gold|Silver|Oil|Natural Gas|Commodit\w*|Physical)\b", re.IGNORECASE)
 # a fund of companies of a commodity sector (miners, oil & gas producers) holds shares
-_SHARES = re.compile(r"\b(Miners|STOXX|S&P|Exploration|Production|Producers|Equity)\b", re.I)
+_SHARES = re.compile(r"\b(Miners|STOXX|S&P|Exploration|Production|Producers|Equity)\b", re.IGNORECASE)
 
 
 def etf_type(name: str, category: str | None) -> str:

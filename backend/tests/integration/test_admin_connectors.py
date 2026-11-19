@@ -251,11 +251,12 @@ async def test_instruments_crud_and_validation(admin):
     assert p1["items"][-1]["symbol"] < p2["items"][0]["symbol"]
     assert (await c.get("/api/instruments", params={"limit": 501})).status_code in (400, 422)
 
-    new = {"symbol": "xyz", "name": "XYZ Corp", "asset_class": "us_equity", "market": "NYSE",
+    # not a catalog symbol (XYZ is Block, Inc. since the S&P 500 catalog)
+    new = {"symbol": "zzxy", "name": "XYZ Corp", "asset_class": "us_equity", "market": "NYSE",
            "currency": "usd", "lot_size": "1", "tick_size": "0.01", "shortable": True}
     r = await c.post("/api/instruments", json=new)
     assert r.status_code == 200, r.text
-    assert r.json()["symbol"] == "XYZ" and r.json()["currency"] == "USD"
+    assert r.json()["symbol"] == "ZZXY" and r.json()["currency"] == "USD"
     assert r.json()["shortable"] is True and r.json()["active"] is True
     dup = await c.post("/api/instruments", json=new)
     assert dup.status_code == 400 and dup.json()["details"]["field"] == "symbol"
@@ -266,7 +267,7 @@ async def test_instruments_crud_and_validation(admin):
         r = await c.post("/api/instruments", json={**new, "symbol": "ABC", **bad})
         assert r.status_code == 400, bad
 
-    r = await c.patch("/api/instruments/xyz", json={
+    r = await c.patch("/api/instruments/zzxy", json={
         "name": "XYZ Inc", "active": False, "lot_size": "10", "tick_size": "0.05",
         "shortable": False, "provider_symbols": {"yahoo": "XYZ.X"}})
     assert r.status_code == 200, r.text
@@ -274,11 +275,11 @@ async def test_instruments_crud_and_validation(admin):
     assert (got["name"], got["active"], got["lot_size"], got["tick_size"]) == (
         "XYZ Inc", False, "10", "0.05")
     assert got["provider_symbols"] == {"yahoo": "XYZ.X"}
-    assert (await c.patch("/api/instruments/XYZ", json={"tick_size": "0"})).status_code == 400
-    assert (await c.patch("/api/instruments/XYZ", json={"active": None})).status_code == 400
+    assert (await c.patch("/api/instruments/ZZXY", json={"tick_size": "0"})).status_code == 400
+    assert (await c.patch("/api/instruments/ZZXY", json={"active": None})).status_code == 400
     assert (await c.patch("/api/instruments/NOPE", json={"active": True})).status_code == 404
     manual = (await c.get("/api/instruments", params={"source": "manual"})).json()["items"]
-    assert [r["symbol"] for r in manual] == ["XYZ"]
+    assert [r["symbol"] for r in manual] == ["ZZXY"]
 
 
 async def test_instruments_auto_add_toggle(admin):

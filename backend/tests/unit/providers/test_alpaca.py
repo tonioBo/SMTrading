@@ -419,5 +419,5 @@ async def test_day_changes_from_snapshots(provider):
     aapl = got["AAPL"]
     assert (aapl.last, aapl.prev_close) == (Decimal("349.36"), Decimal("352.3"))
     assert aapl.ts == datetime(2026, 11, 19, 19, 59, 32, 22194, tzinfo=UTC)
-    assert got["BTC-USD"].change_pct == Decimal(-3.125)
+    assert got["BTC-USD"].change_pct == Decimal("-3.125")
     assert AlpacaProvider.day_change_chunk == 200 and AlpacaProvider.day_change_cost == 1
