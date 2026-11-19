@@ -99,6 +99,7 @@ async def test_list_portfolios_only_assigned(mcp_server, mcp_call, hide_mode):
         "name": "Demo",
         "base_currency": "EUR",
         "status": "active",
+        "in_totals": True,
         **({} if hide_mode is None else {"mode": "simulazione", "live_state": None}),
         "permission": "trade",
     }
