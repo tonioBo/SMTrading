@@ -33,6 +33,9 @@ change in EUR from the goal's period start over the range
 (`goals.benchmark.benchmark_series`, downsampled), empty without such a goal. One series
 per symbol: when listed goals on the same index have different periods, the one whose
 period starts latest gives it (the client rebases each series to the range start).
+`in_totals` (each portfolio): false for a portfolio left out of the total
+(`portfolios.in_totals`): the client leaves it out of the «Totale» line; the total goals'
+`base_eur` and the weekly `goal` leave it out too (`goals.progress.portfolio_periods`).
 Admin-only data: never reaches the agents."""
 
 from datetime import date, datetime, timedelta
@@ -242,7 +245,7 @@ def _item(p: Portfolio, points: list[Point], goal: dict[str, Any] | None) -> dic
     if first is not None and first > 0:
         change_pct = ((last / first - 1) * 100).quantize(_Q2, rounding=ROUND_HALF_EVEN)
     return {
-        "id": p.id, "name": p.name,
+        "id": p.id, "name": p.name, "in_totals": p.in_totals,
         "series": [{"ts": ts, "equity_eur": _eur(eq)} for ts, eq in _thin(points)],
         "first_eur": _eur(first), "last_eur": _eur(last),
         "change_eur": None if first is None else _eur(last - first),

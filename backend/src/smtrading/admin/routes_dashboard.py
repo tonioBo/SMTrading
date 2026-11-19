@@ -16,6 +16,10 @@ an admin session (router level). Read-only: nothing is committed.
   previous value, seeded with its last snapshot before the window: no false dips). Every
   series is also capped to 500 points.
 
+A portfolio out of the totals (`in_totals` false, listed with that flag) is left out of
+`total_equity_eur`, the day P&L totals and the total equity series; it keeps its own
+row and curve.
+
 Archived portfolios (Task 13) are left out of everything: totals, list, margin alerts and
 the equity curves (their whole history).
 """
@@ -48,7 +52,12 @@ from smtrading.portfolios.mode import (
     mode_fields,
     portfolio_links,
 )
-from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
+from smtrading.portfolios.models import (
+    Portfolio,
+    PortfolioStatus,
+    live_portfolio_ids,
+    total_portfolio_ids,
+)
 from smtrading.portfolios.queries import day_pnl_detail
 from smtrading.positions.models import Position
 from smtrading.risk.models import EquitySnapshot, Notification, SnapshotKind
@@ -105,7 +114,7 @@ async def dashboard(session: DbSession, redis: RedisClient, qs: Quotes) -> dict[
             "id": str(p.id), "name": p.name, "status": to_jsonable(p.status),
             **to_jsonable(admin_mode_fields(p, links.get(p.broker_link_id))),
             "equity_eur": None, "day_pnl_eur": None, "day_pnl_pct": None,
-            "stale_symbols": [], "error": None,
+            "stale_symbols": [], "error": None, "in_totals": p.in_totals,
         }
         items.append(item)
         try:
@@ -114,16 +123,18 @@ async def dashboard(session: DbSession, redis: RedisClient, qs: Quotes) -> dict[
         except SMTError as e:
             item["error"] = str(e.code)
             continue
+        item.update(
+            equity_eur=to_jsonable(v.equity_eur), day_pnl_eur=to_jsonable(pnl),
+            day_pnl_pct=to_jsonable(pct), stale_symbols=list(v.stale_symbols),
+        )
+        if not p.in_totals:  # listed, left out of the totals
+            continue
         total_equity += v.equity_eur
         if pnl is not None:
             total_pnl += pnl
         if pct is not None:
             pct_pnl += pnl
             pct_base += base
-        item.update(
-            equity_eur=to_jsonable(v.equity_eur), day_pnl_eur=to_jsonable(pnl),
-            day_pnl_pct=to_jsonable(pct), stale_symbols=list(v.stale_symbols),
-        )
 
     modes = {m.value: 0 for m in PortfolioMode}
     for item in items:
@@ -240,10 +251,12 @@ async def dashboard_equity(session: DbSession, period: str = "1m") -> dict[str, 
 
     per_portfolio: dict[Any, list[tuple[datetime, Decimal]]] = {}
     by_bucket: dict[datetime, dict[Any, Decimal]] = {}
+    counted = set(await session.scalars(total_portfolio_ids()))
     for pid, ts, equity in rows:
         per_portfolio.setdefault(pid, []).append((ts, equity))
-        by_bucket.setdefault(ts, {})[pid] = equity
-    latest = dict(seeds)
+        if pid in counted:
+            by_bucket.setdefault(ts, {})[pid] = equity
+    latest = {pid: eq for pid, eq in seeds.items() if pid in counted}
     total: list[tuple[datetime, Decimal]] = []
     for ts in sorted(by_bucket):
         latest.update(by_bucket[ts])

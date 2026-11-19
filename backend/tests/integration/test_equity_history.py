@@ -359,3 +359,33 @@ async def test_benchmark_series_of_beat_index_goals(env, monkeypatch):
     assert list(body["benchmarks"]) == ["SPY"]
     assert [(datetime.fromisoformat(p["ts"]), D(p["pct"])) for p in body["benchmarks"]["SPY"]
             ] == [(rome(11, 0), D(0)), (rome(FRI, 17), D("5.77"))]
+
+
+async def test_portfolio_out_of_totals(env, monkeypatch):
+    """A portfolio with in_totals false is listed (flag `in_totals`) with its own goals,
+    but left out of the total goals' base and gets no weekly `goal`."""
+    from datetime import date
+
+    _clock(monkeypatch)
+    a = await _portfolio(env.sm, "Conta A")
+    s = await _portfolio(env.sm, "Sfida S")
+    await _snap(env.sm, a, rome(MON, 0, 1), "600", SnapshotKind.day_open)
+    await _snap(env.sm, s, rome(MON, 0, 1), "1000", SnapshotKind.day_open)
+    async with env.sm() as session:
+        await session.execute(update(Portfolio).where(Portfolio.id == s)
+                              .values(in_totals=False))
+        session.add(Goal(name="sfida", horizon="custom", start_date=date(2027, 3, 8),
+                         end_date=date(2027, 3, 12), recurring=False, scope="portfolio",
+                         portfolio_id=s, target_pct=D("4"), kind="min", active=True))
+        await session.commit()
+
+    body = (await _get(env, range="1w")).json()
+    by_name = {p["name"]: p for p in body["portfolios"]}
+    assert (by_name["Conta A"]["in_totals"], by_name["Sfida S"]["in_totals"]) == (True, False)
+    assert by_name["Sfida S"]["goal"] is None
+    assert D(by_name["Conta A"]["goal"]["base_eur"]) == D(600)
+    lines = {g["name"]: g for g in body["goals"]}
+    assert (D(lines["settimanale"]["base_eur"]), D(lines["settimanale"]["target_eur"])) == (
+        D(600), D(612))
+    assert (D(lines["sfida"]["base_eur"]), D(lines["sfida"]["target_eur"])) == (
+        D(1000), D(1040))

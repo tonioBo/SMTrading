@@ -527,3 +527,34 @@ async def test_dashboard_lists_the_held_symbols_of_live_portfolios(server):
         await s.commit()
     body = (await server.client.get("/api/dashboard")).json()
     assert "ZZHELD" in body["held_symbols"] and "ZZFLAT" not in body["held_symbols"]
+
+
+async def test_dashboard_totals_leave_out_portfolios_out_of_totals(server):
+    """A portfolio with in_totals false keeps its row and curve (flag `in_totals`) but is
+    left out of the totals and of the total equity series."""
+    from smtrading.portfolios.service import create_portfolio
+    from smtrading.risk.models import EquitySnapshot, SnapshotKind
+
+    async with server.sm() as s:
+        team = await create_portfolio(s, name="Squadra", initial_cash=D(2000), timezone="UTC")
+        sfida = await create_portfolio(s, name="Sfida", initial_cash=D(1000), timezone="UTC")
+        sfida.in_totals = False
+        await s.commit()
+    now = datetime.now(UTC) - timedelta(minutes=10)
+    async with server.sm() as s:
+        for p, equity in ((team, "2000"), (sfida, "1000")):
+            s.add(EquitySnapshot(
+                portfolio_id=p.id, ts=now, kind=SnapshotKind.periodic, local_date=None,
+                equity_eur=D(equity), cash_eur=D(equity), exposure_eur=D(0),
+                margin_used_eur=D(0),
+            ))
+        await s.commit()
+
+    body = (await server.client.get("/api/dashboard")).json()
+    by_name = {p["name"]: p for p in body["portfolios"]}
+    assert (by_name["Squadra"]["in_totals"], by_name["Sfida"]["in_totals"]) == (True, False)
+    assert by_name["Sfida"]["equity_eur"] == "1000"
+    assert body["total_equity_eur"] == "2000"
+    curve = (await server.client.get("/api/dashboard/equity", params={"period": "1d"})).json()
+    assert sorted(p["name"] for p in curve["portfolios"]) == ["Sfida", "Squadra"]
+    assert curve["series"][-1]["equity_eur"] == "2000"
