@@ -2,14 +2,15 @@ import { ExternalLink } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { useInstrumentMarket, useInstrumentOverview } from "@/api/hooks/marketsExplore";
 import type { InstrumentMarket, InstrumentOverview } from "@/api/marketsTypes";
-import { LineChart } from "@/components/LineChart";
+import { PriceChart } from "@/components/charts";
+import type { PriceOverlay } from "@/components/charts/types";
 import { Pct } from "@/components/Pct";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { formatClock, formatDateTime, formatDecimal, formatMoney, formatQty } from "@/lib/format";
 import { ASSET_CLASS_LABELS } from "@/lib/labels";
-import { chartNumber } from "@/lib/lineChart";
+import { chartMoney, fillMarkers, positionLines, sma, toCandles } from "@/lib/priceChart";
 import { INDEX_LABELS } from "@/components/markets/labels";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -38,24 +39,51 @@ function PriceLine({ m, currency }: { m: InstrumentMarket | undefined; currency:
   );
 }
 
-function Chart({ m, timeframe }: { m: InstrumentMarket | undefined; timeframe: "1d" | "1h" }) {
-  const lines = useMemo(
+const SMA_COLORS = { sma20: "#3b82f6", sma50: "#a855f7" } as const;
+
+/**
+ * The candlesticks of the sheet: volume below, SMA 20 / 50 on request, our average price,
+ * stop and target as lines, our executions as markers.
+ */
+function Chart({ m, o, timeframe }: { m: InstrumentMarket | undefined; o: InstrumentOverview | undefined; timeframe: "1d" | "1h" }) {
+  const [avg, setAvg] = useState<{ sma20: boolean; sma50: boolean }>({ sma20: false, sma50: false });
+  const currency = o?.instrument.currency ?? "USD";
+  const candles = useMemo(() => (m ? toCandles(m.bars) : []), [m]);
+  const overlays = useMemo<PriceOverlay[]>(
     () =>
-      m && m.bars.length > 1
-        ? [{ key: "close", label: "Chiusura", color: "rgb(var(--accent))", points: m.bars.map((b) => ({ t: Date.parse(b.ts), v: Number(b.close) })) }]
-        : [],
-    [m],
+      (["sma20", "sma50"] as const)
+        .filter((k) => avg[k])
+        .map((k) => ({ key: k, label: k === "sma20" ? "SMA 20" : "SMA 50", color: SMA_COLORS[k], data: sma(candles, k === "sma20" ? 20 : 50) }))
+        .filter((x) => x.data.length > 0),
+    [avg, candles],
+  );
+  const lines = useMemo(() => (o ? positionLines(o.positions, o.open_orders, (v) => chartMoney(v, currency)) : []), [o, currency]);
+  const markers = useMemo(
+    () => fillMarkers((o?.fills ?? []).map((f) => ({ ts: f.ts, side: f.side, text: `${f.side === "buy" ? "Acquisto" : "Vendita"} ${formatQty(f.qty)}` })), candles, timeframe),
+    [o, candles, timeframe],
   );
   if (!m) return <div className="h-64 animate-pulse rounded bg-card" />;
-  if (lines.length === 0) return <p className="text-sm text-muted">{m.errors.bars ? "Grafico non disponibile" : "Nessun dato"}</p>;
+  if (candles.length < 2) return <p className="text-sm text-muted">{m.errors.bars ? "Grafico non disponibile" : "Nessun dato"}</p>;
   return (
-    <LineChart
-      lines={lines}
-      formatValue={(v) => chartNumber(v, v < 1 ? 6 : 2)}
-      formatTick={(v, step) => chartNumber(v, step < 0.01 ? 6 : step < 1 ? 2 : 0)}
-      axisTime="day"
-      ariaLabel={timeframe === "1d" ? "Andamento giornaliero" : "Andamento orario"}
-    />
+    <div className="space-y-2">
+      <PriceChart
+        candles={candles}
+        timeframe={timeframe}
+        overlays={overlays}
+        lines={lines}
+        markers={markers}
+        ariaLabel={timeframe === "1d" ? "Andamento giornaliero" : "Andamento orario"}
+      />
+      <div className="flex flex-wrap items-center gap-1 text-xs" role="group" aria-label="Medie mobili">
+        {(["sma20", "sma50"] as const).map((k) => (
+          <Button key={k} type="button" size="sm" variant={avg[k] ? "secondary" : "ghost"} aria-pressed={avg[k]} onClick={() => setAvg((a) => ({ ...a, [k]: !a[k] }))}>
+            <span className="mr-1.5 inline-block h-0.5 w-3" style={{ background: SMA_COLORS[k] }} aria-hidden />
+            {k === "sma20" ? "SMA 20" : "SMA 50"}
+          </Button>
+        ))}
+        {markers.length > 0 && <span className="text-muted">▲ nostri acquisti · ▼ nostre vendite</span>}
+      </div>
+    </div>
   );
 }
 
@@ -179,7 +207,7 @@ export function InstrumentSheet({ symbol, onClose }: { symbol: string | null; on
             </Button>
           ))}
         </div>
-        <Chart m={m} timeframe={timeframe} />
+        <Chart m={m} o={o} timeframe={timeframe} />
         <Section title="Indicatori">
           <Indicators m={m} />
         </Section>
