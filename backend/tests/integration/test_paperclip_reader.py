@@ -85,7 +85,8 @@ async def sm(reader_db, redis_url, monkeypatch):
     maker = async_sessionmaker(engine, expire_on_commit=False)
     async with maker() as s:
         await s.execute(delete(AppSetting).where(
-            AppSetting.key.in_(["paperclip", "paperclip_state", "paperclip_sessions"])))
+            AppSetting.key.in_(["paperclip", "paperclip_state", "paperclip_sessions",
+                                "paperclip_models", "paperclip_cycles"])))
         await s.execute(delete(AgentCostDay))
         await s.execute(text("delete from telegram_outbox"))
         await s.commit()
@@ -127,8 +128,11 @@ def _company(budget_cents=0, spent_cents=0, cid=CID):
 
 
 def _mock(router, *, policies=None, runs=None, agents=None, keys=None, cid=CID,
-          company=None):
+          company=None, routines=None, executions=None):
     api = f"{BASE}/api/companies/{cid}"
+    router.get(f"{api}/routines").mock(return_value=routines if isinstance(
+        routines, httpx.Response) else httpx.Response(200, json=routines or []))
+    router.get(f"{api}/issues").mock(return_value=httpx.Response(200, json=executions or []))
     router.get(api).mock(return_value=company if isinstance(company, httpx.Response)
                          else httpx.Response(200, json=company or _company(cid=cid)))
     router.get(f"{api}/heartbeat-runs").mock(
@@ -342,6 +346,51 @@ async def test_costs_upserted_per_day_agent(sm):
         Decimal("0.5"), Decimal(2), Decimal(0), 2)
     assert a1.paperclip_agent_name == "Trader"
     assert rows[(date(2026, 11, 15), "a2")].other_usd == Decimal("0.25")
+
+
+async def test_models_and_cycles_recorded(sm):
+    """The runs per model (the run's `usageJson.model`, else the agent's configured
+    model), the model change, the routines and today's executions."""
+    await _configure(sm)
+    runs = [{"id": "m1", "agentId": "a1", "startedAt": "2026-11-15T09:00:00Z",
+             "usageJson": {"costUsd": 2, "billingType": "metered_api", "model": "opus"}},
+            {"id": "m2", "agentId": "a1", "startedAt": "2026-11-15T10:00:00Z",
+             "usageJson": {"costUsd": 1, "billingType": "metered_api"}}]
+    routines = [{"id": "rt1", "title": "Ciclo", "status": "active", "assigneeAgentId": "a1",
+                 "triggers": [{"kind": "schedule", "cronExpression": "0 9 * * *",
+                               "timezone": "Europe/Rome", "enabled": True}]}]
+    executions = [{"id": "i1", "originKind": "routine_execution", "originId": "rt1",
+                   "status": "done", "createdAt": "2026-11-15T08:00:01Z"}]
+    agents = [{"id": "a1", "name": "Trader", "adapterConfig": {"model": "sonnet"}}]
+    with _respx() as router:
+        _mock(router, runs=runs, agents=agents, routines=routines, executions=executions)
+        await _reader(sm).tick()
+    async with sm() as s:
+        models = (await s.get(AppSetting, "paperclip_models")).value
+        cyc = (await s.get(AppSetting, "paperclip_cycles")).value
+    day = models["buckets"]["2026-11-15"]["a1"]
+    assert day["opus"]["runs"] == 1 and Decimal(day["opus"]["api_usd"]) == 2
+    assert day["sonnet"]["derived"] == 1  # no model in the run: the configured one
+    assert models["agents"]["a1"]["history"] == [{"model": "sonnet", "since": None}]
+    assert cyc["routines"][0]["triggers"][0]["cron"] == "0 9 * * *"
+    assert cyc["executions"][0]["routine_id"] == "rt1" and cyc["error"] is None
+
+    later = NOW + timedelta(minutes=5)
+    agents[0]["adapterConfig"]["model"] = "haiku"
+    with _respx() as router:
+        _mock(router, runs=runs, agents=agents, executions=executions,
+              routines=httpx.Response(500))
+        await _reader(sm, now=later).tick()
+    async with sm() as s:
+        models = (await s.get(AppSetting, "paperclip_models")).value
+        cyc = (await s.get(AppSetting, "paperclip_cycles")).value
+    assert models["changes"] == [{"agent_id": "a1", "name": "Trader", "from": "sonnet",
+                                  "to": "haiku", "at": later.isoformat()}]
+    # the earlier run without a model keeps the model configured at its time
+    assert models["buckets"]["2026-11-15"]["a1"]["sonnet"]["runs"] == 1
+    assert cyc["error"] == "HTTP 500" and cyc["routines"]  # the stored ones are kept
+    st = await _state(sm)
+    assert st["consecutive_errors"] == 0  # not a reader error
 
 
 async def test_agent_names_fall_back_to_the_id(sm):

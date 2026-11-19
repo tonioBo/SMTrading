@@ -49,6 +49,8 @@ def _mock(router, policies=None, agents=None):
     router.get(f"{API}/tools/policies").mock(return_value=httpx.Response(
         200, json={"policies": policies if policies is not None else [POLICY]}))
     router.get(f"{API}/heartbeat-runs").mock(return_value=httpx.Response(200, json=[]))
+    router.get(f"{API}/routines").mock(return_value=httpx.Response(200, json=[]))
+    router.get(f"{API}/issues").mock(return_value=httpx.Response(200, json=[]))
     router.get(f"{BASE}/api/cli-auth/me").mock(
         return_value=httpx.Response(200, json={"userId": "u1", "keyId": "k1"}))
     router.get(f"{BASE}/api/board-api-keys").mock(return_value=httpx.Response(200, json=[
