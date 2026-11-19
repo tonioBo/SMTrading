@@ -17,6 +17,7 @@ import smtrading.ledger.models
 import smtrading.paperclip.models
 import smtrading.portfolios.models
 import smtrading.positions.models
+import smtrading.reconciliation.models
 import smtrading.risk.models
 import smtrading.telegram.models
 import smtrading.useractivity.models

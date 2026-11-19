@@ -648,6 +648,26 @@ async def test_0036_portfolio_in_totals_round_trip(fresh_db):
     assert await query("select in_totals from portfolios where name = 'tot'") == [(True,)]
 
 
+async def test_0037_reconciliation_checks_round_trip(fresh_db):
+    """0037: reconciliation_checks (plan 21); reversible."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    async def query(sql: str):
+        engine = make_engine(fresh_db)
+        async with engine.begin() as conn:
+            rows = (await conn.execute(text(sql))).all()
+        await engine.dispose()
+        return rows
+
+    table = "select to_regclass('reconciliation_checks')::text"
+    assert await query(table) == [("reconciliation_checks",)]
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0036")
+    assert await query(table) == [(None,)]
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    assert await query(table) == [("reconciliation_checks",)]
+
 async def test_0039_instrument_metadata_round_trip(fresh_db):
     """0039: sector / industry / indices / created_at; rows that existed before keep a
     NULL created_at (never «aggiunti di recente»), new ones get now(); downgrade drops."""

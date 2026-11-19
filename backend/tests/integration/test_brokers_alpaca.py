@@ -334,3 +334,27 @@ async def test_find_order_by_client_reference(http):
     assert await AlpacaPaperAdapter(CFG, http).find_order(o, _inst(), None, frozenset({"x1"})) is None
     route.mock(return_value=httpx.Response(404, json={"message": "not found"}))
     assert await AlpacaPaperAdapter(CFG, http).find_order(o, _inst(), None) is None
+
+
+@respx.mock
+async def test_get_open_orders_reads_the_open_list(http):
+    """Reconciliation: GET only; open quantity = qty − filled; a trailing stop's moving
+    level is left out; crypto symbols mapped back."""
+    route = respx.get(f"{PAPER_URL}/v2/orders").mock(return_value=httpx.Response(200, json=[
+        {"id": "o1", "symbol": "AAPL", "asset_class": "us_equity", "side": "buy",
+         "type": "limit", "qty": "10", "filled_qty": "4", "limit_price": "150.5",
+         "stop_price": None},
+        {"id": "o2", "symbol": "BTC/USD", "asset_class": "crypto", "side": "sell",
+         "type": "trailing_stop", "qty": "0.5", "filled_qty": "0", "stop_price": "60000"},
+        {"id": "o3", "symbol": "MSFT", "side": "buy", "type": "market", "qty": None,
+         "notional": "100"},
+    ]))
+    orders = await AlpacaPaperAdapter(CFG, http).get_open_orders()
+    assert route.calls.last.request.method == "GET"
+    assert route.calls.last.request.url.params["status"] == "open"
+    assert [(o.broker_order_id, o.symbol, o.side, o.qty, o.limit_price, o.stop_price)
+            for o in orders] == [
+        ("o1", "AAPL", "buy", Decimal(6), Decimal("150.5"), None),
+        ("o2", "BTC-USD", "sell", Decimal("0.5"), None, None),
+        ("o3", "MSFT", "buy", None, None, None),
+    ]

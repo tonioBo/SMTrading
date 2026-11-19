@@ -23,6 +23,7 @@ import httpx
 from smtrading.brokers.base import (
     AccountSnapshot,
     BrokerAdapter,
+    BrokerOpenOrder,
     BrokerOrder,
     BrokerStatus,
     RateLimited,
@@ -554,6 +555,38 @@ class _T212Protocol(BrokerAdapter):
             if qty is None or not ticker:
                 continue
             out[_canonical(str(ticker), self._instruments)] = qty
+        return out
+
+    async def get_open_orders(self) -> list[BrokerOpenOrder]:
+        """GET orders (the pending ones): a sell has a negative `quantity` (or `side`
+        sell); the open quantity is |quantity| − |filledQuantity|."""
+        await self._load_instruments()
+        resp = await self._request("GET", f"{_API}/orders")
+        if resp.status_code >= 300:
+            raise self._fail(resp)
+        data = self._parse(resp)
+        if not isinstance(data, list):
+            raise RuntimeError(f"{self.kind}: unexpected orders response")  # noqa: TRY004
+        out: list[BrokerOpenOrder] = []
+        for o in data:
+            if not isinstance(o, dict) or o.get("id") in (None, ""):
+                continue
+            ticker = o.get("ticker") or (o.get("instrument") or {}).get("ticker")
+            qty = _dec(o.get("quantity"))
+            if not ticker or qty is None:
+                continue
+            side = str(o.get("side") or "").lower()
+            sell = side == "sell" if side else qty < 0
+            open_qty = max(abs(qty) - abs(_dec(o.get("filledQuantity")) or Decimal(0)),
+                           Decimal(0))
+            out.append(BrokerOpenOrder(
+                broker_order_id=str(o["id"]),
+                symbol=_canonical(str(ticker), self._instruments),
+                side="sell" if sell else "buy",
+                qty=open_qty,
+                limit_price=_dec(o.get("limitPrice")),
+                stop_price=_dec(o.get("stopPrice")),
+            ))
         return out
 
     async def get_account(self) -> AccountSnapshot:

@@ -39,7 +39,8 @@ Il controllo dei limiti si fa **sempre** (niente uscita rapida), ma leggero:
 
 1. Feed (`after_id` = cursore): `daily_loss`, `margin_warning`, `liquidation`,
    `kill_switch`, `order.rejected`, `order.filled`, `order.canceled`, `order.expired`,
-   `split_orders_canceled`, `decision.risk_rule`, `halt.set`, `halt.cleared`.
+   `split_orders_canceled`, `decision.risk_rule`, `halt.set`, `halt.cleared`,
+   `broker.reconciliation_mismatch` (decidi tu, nessuna correzione automatica → §C19).
 2. `get_triggered_alerts` (cursore): i tuoi `price_alert` di rischio.
 3. Per **ognuno dei 2 portafogli** `get_risk_limits`: `kill_switch`; `status` e
    `reduce_only_reason`; rapporto `daily_loss.current_eur` / `limit_eur` (≥ `limit_eur` con

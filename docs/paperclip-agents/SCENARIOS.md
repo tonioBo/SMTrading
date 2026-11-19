@@ -138,6 +138,7 @@ Principi applicati (decisioni del titolare del 18/11, `00` §2 e §4):
 | I5 | Task della Routine lasciato aperto | — | va sempre chiuso | cicli successivi saltati | Coperto: `00` §6 |
 | I6 | Passaggio mancante (AGENDA, BUONGIORNO, PROTEGGI/RISCHIO OBIETTIVO senza risposta, ESEGUI aperto) | sorveglianza di SMTrading | gli agenti chiudono i task in tempo; il RM sollecita i suoi (B8) | Telegram «⚠ Passaggio mancante» agli umani | Coperto: `#2` |
 | I7 | Budget mensile di Paperclip vicino alla soglia | — (gli agenti non lo vedono) | i cicli economici restano la regola | Telegram agli umani | Coperto: `00` §6 «Ciclo economico» |
+| I8 | Posizione, liquidità o ordine aperto diversi tra SMTrading e il broker (riconciliazione, 2 controlli di fila) | SMTrading → RM (feed `broker.reconciliation_mismatch`) | RM verifica e decide (veto sul simbolo, PROTEGGI se manca uno stop al broker, ESCALATION); ES solo protezione su task del RM; PM nessuna proposta sul simbolo col veto; mai correzioni da soli | controllo ogni 15 min in seduta e dopo la chiusura USA, solo letture; Telegram agli umani una volta al giorno per voce; nessuna correzione automatica | Coperto (19/11): `00` §7, `03` sentinella 1, `04` regola 9, appendice §C19, `#50` |
 
 ## J. Processo e persone
 
@@ -154,9 +155,9 @@ Principi applicati (decisioni del titolare del 18/11, `00` §2 e §4):
 
 ## Conteggio
 
-- Scenari: **81** (A 10 · B 9 · C 12 · D 7 · E 4 · F 15 · G 5 · H 4 · I 7 · J 8; B5 raggruppa
+- Scenari: **82** (A 10 · B 9 · C 12 · D 7 · E 4 · F 15 · G 5 · H 4 · I 8 · J 8; B5 raggruppa
   i 16 codici d'errore del rifiuto all'invio).
-- Già coperti: **40** (C10-C12, i piani, aggiunti il 18/11 già coperti). Lacune corrette il 18/11: **41**, di cui 4 righe già coperte con un
+- Già coperti: **41** (C10-C12, i piani, aggiunti il 18/11 già coperti; I8, la riconciliazione, aggiunta il 19/11). Lacune corrette il 18/11: **41**, di cui 4 righe già coperte con un
   passo ambiguo (F2, F3, I4, J1).
 
 ## Decisioni affidate agli agenti

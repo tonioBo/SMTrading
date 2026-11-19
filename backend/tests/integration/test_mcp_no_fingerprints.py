@@ -85,6 +85,27 @@ def _market(qs) -> None:
                                           datetime(2026, 11, 17, 21, 45, tzinfo=UTC), "yahoo"))
 
 
+async def _reconciliation_alert(s: AsyncSession, pid) -> None:
+    """A confirmed reconciliation mismatch of every kind, as the agents read it."""
+    from smtrading.activity.service import record_activity
+    from smtrading.brokers.base import BrokerOpenOrder
+    from smtrading.reconciliation.compare import (
+        CashView,
+        compare_cash,
+        compare_orders,
+        compare_positions,
+    )
+    from smtrading.reconciliation.service import alert_draft
+
+    items = compare_positions({"AAPL": D(2)}, {"AAPL": D(1), "MSFT": D(3)}, [])
+    items.append(compare_cash(CashView("USD", D(10), D(100))))
+    items += compare_orders([], [BrokerOpenOrder("b9", "AAPL", "sell", D(1), D(5), None)],
+                            NOW)
+    for item in items:
+        item.update(streak=2, since=NOW.isoformat())
+        record_activity(s, alert_draft(item, 1, NOW), portfolio_id=pid, agent_id=None)
+
+
 async def _setup(server, flavor: str) -> str:
     """The portfolio the sweep runs on (neutral names; seeded instruments and fees)."""
     async with _Db(server.db_url) as s:
@@ -114,6 +135,7 @@ async def _setup(server, flavor: str) -> str:
             other.broker_link_id = link.id
             await agents.assign_portfolio(s, server.agent_id, other.id, "trade")
             pid = other.id
+            await _reconciliation_alert(s, pid)
         await deposit(s, pid, D(1000), "EUR", author_id="admin")
         from smtrading.goals.service import create_goal
 
@@ -414,6 +436,8 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
     feed = next(p for t, p in outputs if t == "get_activity_feed")
     assert {i["type"] for i in feed["items"]} >= {"portfolio.cash", "decision.strategy",
                                                    "kill_switch", "halt.set"}
+    if flavor in ("paper_linked", "etoro_linked", "etoro_live_dry_run"):
+        assert "broker.reconciliation_mismatch" in {i["type"] for i in feed["items"]}
     if canceled_by_humans:  # eToro takes market orders only: nothing rests there
         assert {i["type"] for i in feed["items"]} & {"order.canceled",
                                                       "order.cancel_requested"}

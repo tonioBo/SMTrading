@@ -371,3 +371,20 @@ async def test_cancel_4xx_is_terminal_5xx_raises(http):
     route.mock(return_value=httpx.Response(503, json={}))
     with pytest.raises(RuntimeError):
         await a.cancel_order("x")
+
+
+@respx.mock
+async def test_get_open_orders_reads_the_pending_list(http):
+    """Reconciliation: the pending orders (GET); a negative quantity is a sell."""
+    _mock_instruments()
+    respx.get(f"{API}/orders").mock(return_value=httpx.Response(200, json=[
+        {"id": 11, "ticker": "AAPL_US_EQ", "quantity": 3, "filledQuantity": 1,
+         "limitPrice": 150.25, "type": "LIMIT"},
+        {"id": 12, "ticker": "AAPL_US_EQ", "quantity": -2, "stopPrice": 140, "type": "STOP"},
+    ]))
+    orders = await T212DemoAdapter(CFG, http).get_open_orders()
+    assert [(o.broker_order_id, o.symbol, o.side, o.qty, o.limit_price, o.stop_price)
+            for o in orders] == [
+        ("11", "AAPL", "buy", Decimal(2), Decimal("150.25"), None),
+        ("12", "AAPL", "sell", Decimal(2), None, Decimal(140)),
+    ]

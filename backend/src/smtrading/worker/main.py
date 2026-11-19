@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 import smtrading.models  # noqa: F401  (complete mapper registry before any session)
 from smtrading.backtest.runner import BacktestRunner
 from smtrading.brokers.live.account import register_live_secrets
+from smtrading.brokers.live.gate import make_live_client
 from smtrading.brokers.live.monitor import LiveMonitor
 from smtrading.brokers.live.startup import warn_if_fake_broker
 from smtrading.brokers.sync import BrokerSync
@@ -29,6 +30,7 @@ from smtrading.marketdata.streaming import StreamManager
 from smtrading.paperclip.reader import PaperclipReader
 from smtrading.paperclip.watchdog import HandoffWatchdog
 from smtrading.positions.protection import ProtectionAlarm
+from smtrading.reconciliation.job import ReconciliationJob
 from smtrading.telegram.planner import TelegramPlanner
 from smtrading.telegram.preopen import PreopenCheck
 from smtrading.telegram.sender import OutboxSender
@@ -42,7 +44,7 @@ RESTART_DELAY_S = 5
 HEALTH_FIRST_DELAY_S = 30
 HEALTH_INTERVAL_S = 300
 # the alerting jobs (protection alarm, goal alerts, plan closer, pre-open check, hand-off
-# watchdog) wait
+# watchdog, broker reconciliation) wait
 # STARTUP_DELAY_S after the worker start and until the api health endpoint answers, so a
 # deploy restart fires nothing; after STARTUP_MAX_WAIT_S they start anyway (fail open)
 STARTUP_DELAY_S = 180
@@ -231,6 +233,11 @@ async def run() -> None:
                         gate, lambda: PreopenCheck(sessionmaker, router, redis).run()))),
                     tg.create_task(supervise("hand-off watchdog", lambda: gated(
                         gate, lambda: HandoffWatchdog(sessionmaker).run()))),
+                    tg.create_task(supervise("broker reconciliation", lambda: gated(
+                        gate, lambda: ReconciliationJob(
+                            sessionmaker, router, http,
+                            live_http_factory=lambda link_id: make_live_client(
+                                sessionmaker, link_id)).run()))),
                 ]
                 await stop.wait()
                 log.info("shutdown requested")

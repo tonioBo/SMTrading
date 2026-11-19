@@ -58,6 +58,7 @@ describe("Layout", () => {
       "Decisioni e lezioni",
       "Log MCP",
       "Broker",
+      "Riconciliazione",
       "Connettori",
       "Commissioni",
       "Rischio e margine",

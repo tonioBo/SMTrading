@@ -137,6 +137,7 @@ secondi (per un ordine appena inviato usa `get_order`). Cursore perso o rifiutat
   ≥ `limit_eur`), **locked** (`PORTFOLIO_LOCKED`: **nemmeno gli stop si eseguono**): solo
   chiusure e riduzioni. Tolto un blocco, gli ingressi annullati non tornano: li rivaluta il
   PM. Dettagli → §C9.
+- `broker.reconciliation_mismatch`: differenza col broker → §C19.
 - **Posizioni**: una per simbolo e portafoglio; `close_position`, anche parziale, annulla
   stop e target del simbolo (la qty restante va riprotetta); una chiusura in coda non si
   copre con un OCO; stop e target solo in seduta regolare e mai su quotazioni vecchie;
