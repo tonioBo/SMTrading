@@ -72,6 +72,7 @@ describe("Positions", () => {
     const agg = screen.getByRole("table", { name: "Posizioni Portafoglio Aggressivo" });
     const row = within(agg).getAllByRole("row")[1];
     expect(within(row).getByText("AMZN")).toBeInTheDocument();
+    expect(within(row).getByRole("link", { name: "Diario AMZN" })).toHaveAttribute("href", "/diario-operazioni?portfolio_id=p1&symbol=AMZN&outcome=open");
     expect(within(row).getByText("0,51")).toBeInTheDocument();
     expect(within(row).getByText("242,20 $")).toBeInTheDocument();
     expect(within(row).getByText("284,00 $")).toBeInTheDocument();

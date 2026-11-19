@@ -176,6 +176,8 @@ describe("AgentResults", () => {
     const strategies = screen.getByRole("table", { name: "Risultati per strategia" });
     const [str, none] = within(strategies).getAllByRole("row").slice(1);
     expect(str).toHaveTextContent("STR-7");
+    expect(within(str).getByRole("link", { name: "Operazioni STR-7" })).toHaveAttribute("href", "/diario-operazioni?strategy=STR-7");
+    expect(within(none).getByRole("link", { name: "Operazioni Senza strategia" })).toHaveAttribute("href", "/diario-operazioni?strategy=none");
     expect(str).toHaveTextContent("approvata");
     expect(str).toHaveTextContent("100,0%(1/1)");
     expect(str).toHaveTextContent("1 h 30 min");

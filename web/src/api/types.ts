@@ -1865,3 +1865,206 @@ export interface CampaignCloseCheck {
   }[];
   plans: (PlanState & { goal_name: string | null })[];
 }
+
+// --- «Diario operazioni» (GET /api/trades, /api/trades/{key}) ---
+
+export type TradeOutcome = "win" | "loss" | "open";
+export type TradePeriod = "week" | "1m" | "3m" | "all";
+
+export interface TradeRow {
+  key: string;
+  portfolio_id: string;
+  portfolio_name: string;
+  symbol: string;
+  currency: string;
+  direction: "long" | "short";
+  /** null: «Senza strategia» */
+  strategy_ref: string | null;
+  strategy_name: string | null;
+  proposal_ref: string | null;
+  order_id: string;
+  opened_at: string;
+  closed_at: string | null;
+  outcome: TradeOutcome;
+  qty: string;
+  open_qty: string;
+  entry_price: string;
+  exit_price: string | null;
+  mark: string | null;
+  realized_pnl_eur: string | null;
+  unrealized_pnl_eur: string | null;
+  costs_eur: string | null;
+  pnl_eur: string | null;
+  pnl_pct: string | null;
+  holding_s: number;
+  exit_reason: string | null;
+  exit_reason_label: string | null;
+  exit_reasons: string[];
+}
+
+export interface TradesResponse {
+  as_of: string;
+  period: TradePeriod;
+  total: number;
+  page: number;
+  page_size: number;
+  summary: { trades: number; open: number; closed: number; wins: number; win_rate_pct: string | null; pnl_eur: string | null };
+  filters: {
+    portfolios: { id: string; name: string }[];
+    strategies: { ref: string; name: string | null }[];
+    no_strategy: boolean;
+    symbols: string[];
+  };
+  items: TradeRow[];
+}
+
+export interface TradeFilters {
+  period: TradePeriod;
+  portfolio_id: string;
+  strategy: string;
+  symbol: string;
+  outcome: "" | TradeOutcome;
+  page: number;
+}
+
+export interface TradeDecision {
+  id: number;
+  kind: string;
+  created_at: string;
+  agent: string | null;
+  summary: string;
+  subject: string | null;
+  outcome: string | null;
+  reason: string | null;
+  symbols: string[];
+  details: Record<string, unknown>;
+}
+
+export interface TradeOrder {
+  id: string;
+  label: string;
+  role: string | null;
+  client_order_id: string | null;
+  side: "buy" | "sell";
+  type: string;
+  tif: string;
+  qty: string | null;
+  filled_qty: string;
+  limit_price: string | null;
+  stop_price: string | null;
+  avg_fill_price: string | null;
+  status: string;
+  source: string;
+  agent: string | null;
+  reduce_only: boolean;
+  parent_id: string | null;
+  oco_group_id: string | null;
+  created_at: string;
+  updated_at: string;
+  reject_code: string | null;
+  reject_message: string | null;
+  cancel_reason: string | null;
+}
+
+export interface TradeFx {
+  sold: { currency: string; amount: string } | null;
+  bought: { currency: string; amount: string } | null;
+  rate: string | null;
+  fee: Record<string, string>;
+}
+
+export interface TradeFill {
+  fill_id: string;
+  order_id: string;
+  kind: "entry" | "exit";
+  side: "buy" | "sell";
+  ts: string;
+  qty: string;
+  fill_qty: string;
+  price: string;
+  currency: string;
+  fee_amount: string | null;
+  fee_currency: string | null;
+  fx: TradeFx | null;
+  exit_reason: string | null;
+  exit_reason_label: string | null;
+}
+
+export interface TradeChange {
+  id: number;
+  ts: string;
+  method: string;
+  outcome: string;
+  agent: string | null;
+  order_id: string | null;
+  changes: Record<string, unknown>;
+}
+
+export interface TradeTimelineItem {
+  ts: string;
+  type: string;
+  title: string;
+  text: string;
+  decision_id: number | null;
+  order_id: string | null;
+}
+
+export interface TradeDetail {
+  as_of: string;
+  trade: TradeRow;
+  instrument_name: string | null;
+  proposal: TradeDecision | null;
+  decisions: TradeDecision[];
+  lessons: TradeDecision[];
+  orders: TradeOrder[];
+  fills: TradeFill[];
+  changes: TradeChange[];
+  activity: { id: number; ts: string; type: string; level: string; summary: string; data: Record<string, unknown> }[];
+  timeline: TradeTimelineItem[];
+}
+
+// --- «Strategie: previsto contro reale» (GET /api/strategies/expectations) ---
+
+export type ExpectationVerdict = "in linea" | "sotto le attese" | "dati insufficienti";
+
+export interface StrategyExpectation {
+  ref: string;
+  name: string;
+  status: string;
+  approved_at: string;
+  expected: {
+    source: string | null;
+    backtest_id: string | null;
+    from_date: string | null;
+    to_date: string | null;
+    trades: number | null;
+    trades_per_month: string | null;
+    win_rate_pct: string | null;
+    avg_trade_pct: string | null;
+    max_drawdown_pct: string | null;
+    sharpe: string | null;
+    total_return_pct: string | null;
+  };
+  live: {
+    since: string;
+    trades: number;
+    open_trades: number;
+    closed_trades: number;
+    wins: number;
+    win_rate_pct: string | null;
+    avg_trade_pct: string | null;
+    pnl_eur: string | null;
+    max_drawdown_pct: string | null;
+    max_drawdown_eur: string | null;
+    trades_per_month: string | null;
+    days: number;
+  };
+  verdict: ExpectationVerdict;
+  reasons: string[];
+}
+
+export interface StrategyExpectationsResponse {
+  as_of: string;
+  min_trades: number;
+  strategies: StrategyExpectation[];
+}

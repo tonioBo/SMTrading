@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatDateTime, formatDecimal, formatHolding } from "@/lib/format";
 import { formatDay } from "@/lib/goals";
 import { formatUsd } from "@/lib/paperclip";
+import { journalLink } from "@/lib/trades";
 
 export const NO_STRATEGY = "Senza strategia";
 
@@ -156,7 +157,9 @@ const strategyColumns: Column<StrategyResultRow>[] = [
     sortValue: (r) => r.ref ?? "~",
     cell: (r) => (
       <div>
-        <div className="num font-semibold">{r.ref ?? NO_STRATEGY}</div>
+        <Link to={journalLink({ strategy: r.ref ?? "none" })} className="num block font-semibold text-accent hover:underline" aria-label={`Operazioni ${r.ref ?? NO_STRATEGY}`}>
+          {r.ref ?? NO_STRATEGY}
+        </Link>
         {r.name && <div className="text-xs text-muted">{r.name}</div>}
         {r.portfolios.length > 0 && <div className="text-xs text-muted">{r.portfolios.join(", ")}</div>}
       </div>

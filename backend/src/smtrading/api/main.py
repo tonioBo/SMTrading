@@ -43,6 +43,7 @@ from smtrading.admin.routes_signals import router as signals_router
 from smtrading.admin.routes_strategies import router as strategies_router
 from smtrading.admin.routes_system import router as system_router
 from smtrading.admin.routes_telegram import router as telegram_router
+from smtrading.admin.routes_trades import router as trades_router
 from smtrading.admin.routes_users import router as users_router
 from smtrading.admin.routes_watch import router as watch_router
 from smtrading.admin.ws import router as ws_router
@@ -221,6 +222,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(signals_router)
     app.include_router(positions_router)
     app.include_router(strategies_router)
+    app.include_router(trades_router)
     app.include_router(agent_results_router)
     app.include_router(watch_router)
     app.include_router(telegram_router)

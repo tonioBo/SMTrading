@@ -6,9 +6,11 @@ import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
 import { Pnl } from "@/components/Pnl";
 import { StatusBadge, type StatusTone } from "@/components/StatusBadge";
+import { StrategyExpectations } from "@/components/StrategyExpectations";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatDateTime, formatDecimal, formatMoney, formatQty } from "@/lib/format";
 
 export const NO_STRATEGY = "Senza strategia";
@@ -132,46 +134,57 @@ export default function Strategies() {
       <PageHeader title="Strategie">
         {data?.as_of && <span className="text-xs text-muted">{`ultimo aggiornamento ${formatDateTime(data.as_of)}`}</span>}
       </PageHeader>
-      {isError && <p className="text-loss">Impossibile caricare i risultati delle strategie</p>}
-      {isLoading ? (
-        <p className="text-sm text-muted">Caricamento…</p>
-      ) : (
-        data &&
-        (rows.length === 0 ? (
-          <p className="text-sm text-muted">Nessuna operazione eseguita</p>
-        ) : (
-          <Card>
-            <CardContent className="pt-6">
-              <p className="mb-3 text-xs text-muted">
-                Risultati lordi in euro; i costi (commissioni e cambio) sono a parte e già tolti dal totale. Realizzato e costi al cambio di oggi. Le uscite chiudono le entrate più vecchie (FIFO).
-              </p>
-              <Table aria-label="Risultati per strategia">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Strategia</TableHead>
-                    <TableHead>Portafoglio</TableHead>
-                    <TableHead>Stato</TableHead>
-                    <TableHead className="text-right">Operazioni</TableHead>
-                    <TableHead className="text-right">Posizioni aperte</TableHead>
-                    <TableHead className="text-right">Vincenti</TableHead>
-                    <TableHead className="text-right">Realizzato</TableHead>
-                    <TableHead className="text-right">Non realizzato</TableHead>
-                    <TableHead className="text-right">Costi</TableHead>
-                    <TableHead className="text-right">Totale</TableHead>
-                    <TableHead>Periodo</TableHead>
-                    <TableHead />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {rows.map((s) => (
-                    <StrategyRow key={rowKey(s)} s={s} open={open.has(rowKey(s))} onToggle={() => toggle(rowKey(s))} />
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        ))
-      )}
+      <Tabs defaultValue="results">
+        <TabsList className="mb-4 flex-wrap">
+          <TabsTrigger value="results">Risultati</TabsTrigger>
+          <TabsTrigger value="expected">Previsto contro reale</TabsTrigger>
+        </TabsList>
+        <TabsContent value="results">
+          {isError && <p className="text-loss">Impossibile caricare i risultati delle strategie</p>}
+          {isLoading ? (
+            <p className="text-sm text-muted">Caricamento…</p>
+          ) : (
+            data &&
+            (rows.length === 0 ? (
+              <p className="text-sm text-muted">Nessuna operazione eseguita</p>
+            ) : (
+              <Card>
+                <CardContent className="pt-6">
+                  <p className="mb-3 text-xs text-muted">
+                    Risultati lordi in euro; i costi (commissioni e cambio) sono a parte e già tolti dal totale. Realizzato e costi al cambio di oggi. Le uscite chiudono le entrate più vecchie (FIFO).
+                  </p>
+                  <Table aria-label="Risultati per strategia">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Strategia</TableHead>
+                        <TableHead>Portafoglio</TableHead>
+                        <TableHead>Stato</TableHead>
+                        <TableHead className="text-right">Operazioni</TableHead>
+                        <TableHead className="text-right">Posizioni aperte</TableHead>
+                        <TableHead className="text-right">Vincenti</TableHead>
+                        <TableHead className="text-right">Realizzato</TableHead>
+                        <TableHead className="text-right">Non realizzato</TableHead>
+                        <TableHead className="text-right">Costi</TableHead>
+                        <TableHead className="text-right">Totale</TableHead>
+                        <TableHead>Periodo</TableHead>
+                        <TableHead />
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {rows.map((s) => (
+                        <StrategyRow key={rowKey(s)} s={s} open={open.has(rowKey(s))} onToggle={() => toggle(rowKey(s))} />
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            ))
+          )}
+        </TabsContent>
+        <TabsContent value="expected">
+          <StrategyExpectations />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

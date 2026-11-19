@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { StrategiesPerformanceResponse } from "@/api/types";
+import type { StrategiesPerformanceResponse, StrategyExpectationsResponse } from "@/api/types";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
 
@@ -55,12 +55,52 @@ const body: StrategiesPerformanceResponse = {
   ],
 };
 
+const expectations: StrategyExpectationsResponse = {
+  as_of: "2026-11-16T21:00:00Z",
+  min_trades: 5,
+  strategies: [
+    {
+      ref: "STR-7",
+      name: "Approvata STR-7 rsi_reversion",
+      status: "approvata",
+      approved_at: "2026-10-01T08:00:00Z",
+      expected: {
+        source: "approvazione", backtest_id: "bt1", from_date: "2025-11-01", to_date: "2026-11-01", trades: 12,
+        trades_per_month: "1.00", win_rate_pct: "50", avg_trade_pct: "4", max_drawdown_pct: "10", sharpe: "1.1", total_return_pct: "14",
+      },
+      live: {
+        since: "2026-10-01T08:00:00Z", trades: 6, open_trades: 0, closed_trades: 6, wins: 1, win_rate_pct: "16.7", avg_trade_pct: "-2.5",
+        pnl_eur: "-40.2", max_drawdown_pct: "14.2", max_drawdown_eur: "45", trades_per_month: "3.9", days: 46,
+      },
+      verdict: "sotto le attese",
+      reasons: ["vincenti 16,7% contro 50,0% attese"],
+    },
+    {
+      ref: "STR-9",
+      name: "Approvata STR-9",
+      status: "sospesa",
+      approved_at: "2026-11-10T08:00:00Z",
+      expected: {
+        source: null, backtest_id: null, from_date: null, to_date: null, trades: null, trades_per_month: null, win_rate_pct: null,
+        avg_trade_pct: null, max_drawdown_pct: null, sharpe: null, total_return_pct: null,
+      },
+      live: {
+        since: "2026-11-10T08:00:00Z", trades: 0, open_trades: 0, closed_trades: 0, wins: 0, win_rate_pct: null, avg_trade_pct: null,
+        pnl_eur: null, max_drawdown_pct: null, max_drawdown_eur: null, trades_per_month: "0", days: 6,
+      },
+      verdict: "dati insufficienti",
+      reasons: ["metriche del backtest non registrate nell'approvazione"],
+    },
+  ],
+};
+
 let current: StrategiesPerformanceResponse = body;
 const server = setupServer(
   ...commonHandlers,
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "v@example.com", role: "viewer", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
   http.get("*/api/strategies/performance", () => HttpResponse.json(current)),
+  http.get("*/api/strategies/expectations", () => HttpResponse.json(expectations)),
 );
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
@@ -111,5 +151,26 @@ describe("Strategies", () => {
     current = { as_of: body.as_of, strategies: [] };
     renderApp("/strategie");
     expect(await screen.findByText("Nessuna operazione eseguita")).toBeInTheDocument();
+  });
+
+  it("compares the backtest with the live results in its own tab", async () => {
+    renderApp("/strategie");
+    const tab = await screen.findByRole("tab", { name: "Previsto contro reale" });
+    await userEvent.click(tab);
+    const table = await screen.findByRole("table", { name: "Previsto contro reale" });
+    const [s7, s9] = within(table).getAllByRole("row").slice(1);
+    expect(within(s7).getByRole("link", { name: "STR-7" })).toHaveAttribute("href", "/diario-operazioni?strategy=STR-7");
+    expect(s7).toHaveTextContent("50,0% · 16,7%");
+    expect(s7).toHaveTextContent("4,00% · -2,50%");
+    expect(s7).toHaveTextContent("10,0% · 14,2%");
+    expect(s7).toHaveTextContent("12 · 6/6");
+    expect(within(s7).getByText("sotto le attese")).toBeInTheDocument();
+    expect(within(s7).getByText("vincenti 16,7% contro 50,0% attese")).toBeInTheDocument();
+    expect(s7).toHaveTextContent("backtest 01/11/2025 – 01/11/2026");
+    expect(within(s9).getByText("dati insufficienti")).toBeInTheDocument();
+    expect(s9).toHaveTextContent("— · —");
+    // the cards for small screens carry the same verdicts
+    const cards = screen.getByRole("list", { name: "Previsto contro reale (schede)" });
+    expect(within(cards).getAllByRole("listitem")).toHaveLength(2);
   });
 });
