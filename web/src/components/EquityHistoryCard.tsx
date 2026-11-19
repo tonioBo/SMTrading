@@ -1,28 +1,18 @@
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { EQUITY_HISTORY_RANGES, HOURLY_RANGES, useEquityHistory, type EquityHistoryRange } from "@/api/hooks/equityHistory";
-import { LineChart } from "@/components/LineChart";
+import { EquityChart } from "@/components/charts";
 import { Pnl } from "@/components/Pnl";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { historyLines, TOTAL_COLOR, TOTAL_KEY, totalChange, type Unit } from "@/lib/equityHistory";
-import { chartNumber } from "@/lib/lineChart";
-
-function signed(v: number, places: number): string {
-  const text = chartNumber(v, places);
-  return (v > 0 && /[1-9]/.test(text) ? "+" : "") + text;
-}
+import { historyLines, TOTAL_COLOR, TOTAL_KEY, totalChange, tooltipRows, type Unit } from "@/lib/equityHistory";
+import { chartNumber, signedNumber } from "@/lib/lineChart";
 
 const CHANGE_HINT = "variazione del valore (include depositi/prelievi)";
 
-const FORMAT: Record<Unit, { value: (v: number) => string; tick: (v: number, step: number) => string }> = {
-  eur: {
-    value: (v) => `${chartNumber(v, 2)} €`,
-    tick: (v, step) => `${chartNumber(v, step >= 1 ? 0 : 2)} €`,
-  },
-  pct: {
-    value: (v) => `${signed(v, 2)}%`,
-    tick: (v, step) => `${signed(v, step >= 1 ? 0 : step >= 0.1 ? 1 : 2)}%`,
-  },
+/** The price axis labels. */
+const FORMAT: Record<Unit, (v: number) => string> = {
+  eur: (v) => `${chartNumber(v, Math.abs(v) >= 1000 ? 0 : 2)} €`,
+  pct: (v) => `${signedNumber(v, 2)}%`,
 };
 
 /**
@@ -30,14 +20,19 @@ const FORMAT: Record<Unit, { value: (v: number) => string; tick: (v: number, ste
  * in % since the range start by default so portfolios of any size compare, toggle €/%,
  * plus their «Totale» (bold, first in the legend) with more than one: the sum of their
  * equity, in % on the sum at the start, as the total goals compute it.
- * Portfolio detail: that portfolio only, in €.
+ * Portfolio detail: that portfolio only, in €, green when up over the range, red when down.
+ * The chart (Lightweight Charts, lazily loaded) has the goals as labelled price lines and a
+ * crosshair tooltip with every series' value and change; the legend stays below.
  */
 export function EquityHistoryCard({ portfolioId }: { portfolioId?: string }) {
   const single = portfolioId != null;
   const [range, setRange] = useState<EquityHistoryRange>("1d");
   const [unit, setUnit] = useState<Unit>(single ? "eur" : "pct");
   const { data, isLoading, isError } = useEquityHistory(range, portfolioId);
-  const lines = data ? historyLines(data, unit, single) : [];
+  const lines = useMemo(() => (data ? historyLines(data, unit, single) : []), [data, unit, single]);
+  // the tooltip shows euros and the change in both units, whatever the unit drawn
+  const both = useMemo(() => (data ? { eur: historyLines(data, "eur", single), pct: historyLines(data, "pct", single) } : null), [data, single]);
+  const rowsAt = useCallback((t: number) => (both ? tooltipRows(lines, both.eur, both.pct, t) : []), [lines, both]);
   const colors = new Map(lines.filter((l) => !l.reference && !l.thin).map((l) => [l.key, l.color]));
   const total = data && colors.has(TOTAL_KEY) ? totalChange(data) : null;
   const shown = data?.portfolios.filter((p) => colors.has(p.id)) ?? [];
@@ -82,11 +77,13 @@ export function EquityHistoryCard({ portfolioId }: { portfolioId?: string }) {
           <p className="py-16 text-center text-sm text-muted">Nessun dato nel periodo</p>
         ) : (
           <>
-            <LineChart
+            <EquityChart
               lines={lines}
-              formatValue={FORMAT[unit].value}
-              formatTick={FORMAT[unit].tick}
-              axisTime={HOURLY_RANGES.has(range) ? "time" : "day"}
+              single={single}
+              formatValue={FORMAT[unit]}
+              rowsAt={rowsAt}
+              daily={!HOURLY_RANGES.has(range)}
+              resetKey={`${range}-${unit}`}
               ariaLabel={`Andamento ${single ? "del portafoglio" : "dei portafogli"} (${unit === "pct" ? "%" : "€"})`}
             />
             <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm" aria-label="Legenda">
@@ -105,13 +102,13 @@ export function EquityHistoryCard({ portfolioId }: { portfolioId?: string }) {
                 </li>
               ))}
               {goals.map((g) => (
-                <li key={g.key} className="flex items-center gap-1.5 text-muted">
+                <li key={g.key} className="flex items-center gap-1.5 text-muted" data-testid={`legend-${g.key}`}>
                   <span className="inline-block w-4 border-t-2 border-dashed" style={{ borderColor: g.color }} />
                   {g.label}
                 </li>
               ))}
               {indices.map((b) => (
-                <li key={b.key} className="flex items-center gap-1.5 text-muted" title="in euro, sullo stesso periodo dell'obiettivo">
+                <li key={b.key} className="flex items-center gap-1.5 text-muted" title="in euro, sullo stesso periodo dell'obiettivo" data-testid={`legend-${b.key}`}>
                   <span className="inline-block w-4 border-t" style={{ borderColor: b.color }} />
                   {b.label}
                 </li>

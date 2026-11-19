@@ -1,13 +1,15 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { HOURLY_RANGES, type EquityHistory, type EquityHistoryGoalLine } from "@/api/hooks/equityHistory";
 import { EquityHistoryCard } from "@/components/EquityHistoryCard";
-import { historyLines, totalChange, totalPoints } from "@/lib/equityHistory";
+import { readPalette } from "@/lib/chartTheme";
+import { equitySeries, historyLines, toSeriesData, tooltipRows, totalChange, totalPoints } from "@/lib/equityHistory";
 import { createQueryClient } from "@/queryClient";
+import { charts, type FakeChart } from "@/test/lightweightCharts";
 
 const requests: URLSearchParams[] = [];
 
@@ -281,36 +283,89 @@ describe("historyLines with the benchmarks", () => {
   });
 });
 
+describe("chart series and tooltip", () => {
+  const palette = readPalette();
+  it("areas first, then the indices (thin), the «Totale» (bold), the goals as price lines", () => {
+    const series = equitySeries(historyLines(withBenchmark(), "pct", false), palette, false);
+    expect(series.map((s) => [s.key, s.kind, s.lineWidth])).toEqual([
+      ["p1", "area", 2],
+      ["p2", "area", 2],
+      ["bench-VWCE.DE", "line", 1],
+      ["total", "line", 3],
+      ["goal-g1", "goal", 1],
+      ["goal-g2", "goal", 1],
+    ]);
+    expect(series[3].color).toBe(palette.fg); // the token resolved for the canvas
+    expect(series[4].priceLine).toMatchObject({ title: "settimanale +2%", color: palette.warn });
+    expect(series[5].priceLine?.price).toBeCloseTo(2.9, 3);
+  });
+  it("chart data: seconds, ascending, one point per second", () => {
+    expect(toSeriesData([{ t: 2500, v: 2 }, { t: 1000, v: 1 }, { t: 2900, v: 3 }, { t: NaN, v: 1 }])).toEqual([
+      { time: 1, value: 1 },
+      { time: 2, value: 3 },
+    ]);
+  });
+  it("the tooltip: euros and the change in € and % for each series, an index in %, no goals", () => {
+    const h = withBenchmark();
+    const pct = historyLines(h, "pct", false);
+    const eur = historyLines(h, "eur", false);
+    const rows = tooltipRows(pct, eur, pct, Date.parse("2026-11-16T11:00:00Z"));
+    expect(rows.map((r) => [r.label, r.value, r.change])).toEqual([
+      ["Prudente", "255,00 €", "+5,00 € · +2,00%"],
+      ["Aggressivo", "990,00 €", "-10,00 € · -1,00%"],
+      ["Totale", "1.245,00 €", "-5,00 € · -0,40%"],
+      ["Indice VWCE", "+0,75%", null],
+    ]);
+    expect(rows[2].bold).toBe(true);
+    // the first point: no change yet
+    expect(tooltipRows(pct, eur, pct, 0)[0]).toMatchObject({ value: "250,00 €", change: "0,00 € · 0,00%" });
+  });
+});
+
+/** The chart drawn (the Lightweight Charts stand-in of src/test), once loaded. */
+async function drawn(): Promise<FakeChart> {
+  await screen.findByTestId("equity-chart");
+  await waitFor(() => expect(charts.at(-1)?.series.length ?? 0).toBeGreaterThan(0));
+  return charts.at(-1)!;
+}
+const lineSeries = (c: FakeChart, width: number) => c.series.filter((s) => s.type === "Line" && s.options.lineWidth === width && s.options.lineVisible !== false);
+const goalTitles = (c: FakeChart) => c.series.flatMap((s) => s.priceLines.map((l) => l.options.title));
+const sec = (iso: string) => Date.parse(iso) / 1000;
+
 describe("EquityHistoryCard", () => {
+  afterEach(() => {
+    charts.length = 0;
+  });
+
   it("dashboard with an index goal: the index line is thin, tagged and in the legend", async () => {
     server.use(http.get("*/api/portfolios/equity-history", () => HttpResponse.json(withBenchmark())));
     renderCard();
     const legend = await screen.findByRole("list", { name: "Legenda" });
     expect(within(legend).getByText("Indice VWCE")).toBeInTheDocument();
-    const path = screen.getByTestId("line-bench-VWCE.DE");
-    expect(path).toHaveAttribute("stroke-width", "1");
-    expect(path).not.toHaveAttribute("stroke-dasharray");
-    expect(screen.getByTestId("tag-bench-VWCE.DE")).toHaveTextContent("VWCE");
+    const c = await drawn();
+    const [bench] = lineSeries(c, 1);
+    expect(bench.data.map((p) => (p as { time: number }).time)).toEqual([sec("2026-11-10T08:00:00Z"), sec("2026-11-16T11:55:00Z")]);
+    expect(bench.options.lastValueVisible).toBe(false);
     await userEvent.click(screen.getByRole("button", { name: "€" }));
-    expect(screen.queryByTestId("line-bench-VWCE.DE")).toBeNull();
+    await waitFor(() => expect(lineSeries(c, 1)).toHaveLength(0));
     expect(screen.queryByText("Indice VWCE")).toBeNull();
   });
 
-  it("dashboard with the goals list: dashed lines labelled in the chart and the legend", async () => {
+  it("dashboard with the goals list: labelled dashed price lines in the chart, and the legend", async () => {
     server.use(http.get("*/api/portfolios/equity-history", () => HttpResponse.json(withGoals())));
     renderCard();
     const legend = await screen.findByRole("list", { name: "Legenda" });
     expect(within(legend).getByText("Obiettivo settimanale +2%")).toBeInTheDocument();
     expect(within(legend).getByText("Obiettivo Natale tetto +5% · Aggressivo")).toBeInTheDocument();
-    // a goal inside the portfolios' scale is a dashed line, one outside an edge label
-    const g1 = screen.queryByTestId("line-goal-g1");
-    if (g1) expect(g1).toHaveAttribute("stroke-dasharray");
-    else expect(screen.getByTestId("edge-goal-g1")).toBeInTheDocument();
-    const g2 = screen.queryByTestId("tag-goal-g2") ?? screen.getByTestId("edge-goal-g2");
-    expect(g2).toHaveTextContent("Natale tetto +5% · Aggressivo");
+    const c = await drawn();
+    expect(goalTitles(c)).toEqual(["settimanale +2%", "Natale tetto +5% · Aggressivo"]);
+    const weekly = c.series.find((s) => s.priceLines[0]?.options.title === "settimanale +2%")!;
+    expect(weekly.options.lineVisible).toBe(false); // only its price line shows (and counts in the autoscale)
+    expect(weekly.priceLines[0].options).toMatchObject({ lineStyle: 2, axisLabelVisible: true });
+    expect(weekly.priceLines[0].options.price as number).toBeCloseTo(2.326, 3);
   });
 
-  it("dashboard: every portfolio in %, legend with the change, goals, €/% toggle", async () => {
+  it("dashboard: every portfolio in % as gradient areas, legend with the change, crosshair tooltip, €/% toggle", async () => {
     server.use(
       http.get("*/api/portfolios/equity-history", ({ request }) => {
         const qs = new URL(request.url).searchParams;
@@ -329,20 +384,34 @@ describe("EquityHistoryCard", () => {
     expect(within(legend).getByText("variazione del valore (include depositi/prelievi)")).toBeInTheDocument();
     expect(within(legend).getByText("Prudente").closest("li")).toHaveAttribute("title", "variazione del valore (include depositi/prelievi)");
     expect(screen.getByRole("img", { name: /dei portafogli \(%\)/ })).toBeInTheDocument();
-    expect(screen.getByText("+2%")).toBeInTheDocument(); // a y tick
+    const c = await drawn();
+    const areas = c.series.filter((s) => s.type === "Area");
+    expect(areas).toHaveLength(2);
+    expect(areas[0].options).toMatchObject({ lineColor: "#10b981", topColor: "rgba(16, 185, 129, 0.12)", bottomColor: "rgba(16, 185, 129, 0)" });
+    expect(areas[1].data).toEqual([
+      { time: sec("2026-11-10T08:00:00Z"), value: 0 },
+      { time: sec("2026-11-16T11:55:00Z"), value: -1 },
+    ]);
+    const fmt = (areas[0].options.priceFormat as { formatter: (v: number) => string }).formatter;
+    expect(fmt(2)).toBe("+2,00%");
 
-    // hover: the tooltip lists each portfolio's nearest value (jsdom: no layout -> the end)
-    fireEvent.pointerMove(screen.getByTestId("line-chart-plot"), { clientX: 10 });
+    // the crosshair: every series' value in euros and its change in € and %
+    act(() => c.moveCrosshair(sec("2026-11-16T11:55:00Z")));
     const tip = screen.getByRole("tooltip");
     expect(within(tip).getByText("16/11 12:55")).toBeInTheDocument();
-    expect(within(tip).getByText("+2,00%")).toBeInTheDocument();
-    expect(within(tip).getByText("-1,00%")).toBeInTheDocument();
-    fireEvent.pointerLeave(screen.getByTestId("line-chart-plot"));
+    expect(within(tip).getByText("255,00 €")).toBeInTheDocument();
+    expect(within(tip).getByText("+5,00 € · +2,00%")).toBeInTheDocument();
+    expect(within(tip).getByText("-10,00 € · -1,00%")).toBeInTheDocument();
+    expect(within(tip).queryByText(/settimanale/)).toBeNull(); // goals are not in the tooltip
+    act(() => c.moveCrosshair());
     expect(screen.queryByRole("tooltip")).toBeNull();
 
     await userEvent.click(screen.getByRole("button", { name: "€" }));
     expect(screen.getByRole("img", { name: /dei portafogli \(€\)/ })).toBeInTheDocument();
-    fireEvent.pointerMove(screen.getByTestId("line-chart-plot"), { clientX: 10 });
+    await waitFor(() => expect(c.series.find((s) => s.type === "Area")?.data[0]).toEqual({ time: sec("2026-11-10T08:00:00Z"), value: 250 }));
+    const area = c.series.find((s) => s.type === "Area")!;
+    expect((area.options.priceFormat as { formatter: (v: number) => string }).formatter(1250)).toBe("1.250 €");
+    act(() => c.moveCrosshair(sec("2026-11-16T11:55:00Z")));
     expect(within(screen.getByRole("tooltip")).getByText("990,00 €")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "1m" }));
@@ -362,9 +431,37 @@ describe("EquityHistoryCard", () => {
     expect(within(rows[0]).getByText("-5,00 €")).toBeInTheDocument();
     expect(rows[0]).toHaveTextContent("(-0,40%)");
     expect(rows[1]).toHaveTextContent("Prudente");
-    expect(screen.getByTestId("line-total")).toHaveAttribute("stroke-width", "3");
-    fireEvent.pointerMove(screen.getByTestId("line-chart-plot"), { clientX: 10 });
-    expect(within(screen.getByRole("tooltip")).getByText("-0,40%")).toBeInTheDocument();
+    const c = await drawn();
+    const [total] = lineSeries(c, 3);
+    expect(total.data.map((p) => (p as { value: number }).value)).toEqual([0, -0.4]);
+    // drawn after the areas: on top
+    const lastArea = Math.max(...c.series.map((s, i) => (s.type === "Area" ? i : -1)));
+    expect(c.series.indexOf(total)).toBeGreaterThan(lastArea);
+    act(() => c.moveCrosshair(sec("2026-11-16T11:55:00Z")));
+    const tip = screen.getByRole("tooltip");
+    expect(within(tip).getByText("1.245,00 €")).toBeInTheDocument();
+    expect(within(tip).getByText("-5,00 € · -0,40%")).toBeInTheDocument();
+  });
+
+  it("portfolio detail: one green area when up (stronger gradient), red when down; removed on unmount", async () => {
+    server.use(
+      http.get("*/api/portfolios/equity-history", ({ request }) => {
+        const id = new URL(request.url).searchParams.get("portfolio_id");
+        const h = history();
+        return HttpResponse.json({ ...h, portfolios: h.portfolios.filter((p) => p.id === id) });
+      }),
+    );
+    const { unmount } = renderCard("p1");
+    const c = await drawn();
+    const [area] = c.series;
+    expect(area.type).toBe("Area");
+    expect(area.options).toMatchObject({ lineColor: "rgb(16, 185, 129)", topColor: "rgba(16, 185, 129, 0.35)" });
+    unmount();
+    expect(c.removed).toBe(true);
+    charts.length = 0;
+    renderCard("p2"); // 1000 -> 990
+    const down = await drawn();
+    expect(down.series[0].options.lineColor).toBe("rgb(244, 63, 94)");
   });
 
   it("«Sett.»: after «1g», asks for the current week, dates on the axis, the weekly goal drawn", async () => {

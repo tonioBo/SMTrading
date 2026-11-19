@@ -1,14 +1,16 @@
 /** The «Andamento» chart lines of an `equity-history` response (EquityHistoryCard). */
 import type { EquityHistory, EquityHistoryGoalLine } from "@/api/hooks/equityHistory";
-import type { ChartLine } from "@/components/LineChart";
+import { cssColor, toSeconds, withAlpha, type Palette } from "@/lib/chartTheme";
 import { benchmarkLabel, goalTargetLabel } from "@/lib/goals";
-import { toPctPoints, type ChartPoint } from "@/lib/lineChart";
+import { chartNumber, nearestIndex, signedNumber, toPctPoints, type ChartLine, type ChartPoint } from "@/lib/lineChart";
 
 export type Unit = "eur" | "pct";
 
-/** Series colours: distinct in light and dark mode; the single-portfolio line is the accent. */
+/** Series colours: distinct in light and dark mode; the single portfolio is green when up
+ * over the range, red when down. */
 export const SERIES_COLORS = ["#10b981", "#3b82f6", "#a855f7", "#f59e0b", "#ec4899", "#06b6d4", "#84cc16", "#f97316"];
-export const ACCENT = "rgb(var(--accent))";
+export const GAIN_COLOR = "rgb(var(--gain))";
+export const LOSS_COLOR = "rgb(var(--loss))";
 export const GOAL_COLOR = "rgb(var(--warn))";
 export const BENCHMARK_COLOR = "rgb(var(--muted))";
 /** The «Totale» line (dashboard, more than one portfolio): neutral and thicker. */
@@ -89,8 +91,9 @@ export function historyLines(data: EquityHistory, unit: Unit, single: boolean): 
   data.portfolios
     .filter((p) => p.series.length > 0)
     .forEach((p, i) => {
-      const color = single ? ACCENT : SERIES_COLORS[i % SERIES_COLORS.length];
       const eur: ChartPoint[] = p.series.map((s) => ({ t: Date.parse(s.ts), v: Number(s.equity_eur) }));
+      const up = eur.length === 0 || eur[eur.length - 1].v >= eur[0].v;
+      const color = single ? (up ? GAIN_COLOR : LOSS_COLOR) : SERIES_COLORS[i % SERIES_COLORS.length];
       if (inTotals(p)) eurSeries.push(eur);
       const points = unit === "pct" ? toPctPoints(eur) : eur;
       if (points.length === 0) return;
@@ -154,4 +157,99 @@ export function historyLines(data: EquityHistory, unit: Unit, single: boolean): 
     const text = single ? `${g.name} ${tag}` : `${g.name} ${tag} · ${names.get(g.portfolio_id!) ?? ""}`;
     return flat(`goal-${g.goal_id}`, `Obiettivo ${text}`, text, single ? GOAL_COLOR : (colorOf.get(g.portfolio_id!) ?? GOAL_COLOR), v, from, to);
   }
+}
+
+// ---------------------------------------------------------------- the chart's series
+
+export interface SeriesPoint {
+  time: number; // UTC seconds
+  value: number;
+}
+
+export interface EquitySeries {
+  key: string;
+  /** area: a portfolio (gradient); line: the «Totale» (bold) or an index (thin); goal: a
+   * hidden flat series carrying the goal's labelled price line (and the autoscale) */
+  kind: "area" | "line" | "goal";
+  color: string;
+  lineWidth: 1 | 2 | 3;
+  topColor?: string;
+  bottomColor?: string;
+  data: SeriesPoint[];
+  priceLine?: { price: number; title: string; color: string };
+}
+
+/** Points as chart data: UTC seconds, ascending, one per second (the last wins). */
+export function toSeriesData(points: ChartPoint[]): SeriesPoint[] {
+  const byTime = new Map<number, number>();
+  for (const p of points) if (Number.isFinite(p.t) && Number.isFinite(p.v)) byTime.set(toSeconds(p.t), p.v);
+  return [...byTime.entries()].sort((a, b) => a[0] - b[0]).map(([time, value]) => ({ time, value }));
+}
+
+/**
+ * The lines as chart series, drawn in this order: the portfolios (areas with a gradient:
+ * stronger with one portfolio), the indices (thin), the «Totale» (bold, on top), then the
+ * goals (labelled dashed price lines). Colours resolved for the canvas.
+ */
+export function equitySeries(lines: ChartLine[], palette: Palette, single: boolean): EquitySeries[] {
+  const rank = (l: ChartLine) => (l.reference ? 3 : l.bold ? 2 : l.thin ? 1 : 0);
+  return [...lines]
+    .filter((l) => l.points.length > 0)
+    .sort((a, b) => rank(a) - rank(b))
+    .map((l) => {
+      const color = cssColor(l.color, palette);
+      const data = toSeriesData(l.points);
+      if (l.reference) {
+        return { key: l.key, kind: "goal", color, lineWidth: 1, data, priceLine: { price: data[0]?.value ?? 0, title: l.tag ?? l.label, color } };
+      }
+      if (l.bold || l.thin) return { key: l.key, kind: "line", color, lineWidth: l.bold ? 3 : 1, data };
+      return {
+        key: l.key,
+        kind: "area",
+        color,
+        lineWidth: 2,
+        topColor: withAlpha(color, single ? 0.35 : 0.12),
+        bottomColor: withAlpha(color, 0),
+        data,
+      };
+    });
+}
+
+export interface TooltipRow {
+  key: string;
+  label: string;
+  color: string;
+  /** the value: euros where known (an index: its %) */
+  value: string;
+  /** the change since the range start: "+5,00 € · +2,00%" (null for an index) */
+  change: string | null;
+  bold?: boolean;
+}
+
+/**
+ * The crosshair tooltip at `t`: every drawn series (not the goals), in the order of
+ * `lines`, at its point closest in time, with its value in euros and its change since
+ * the range start in € and % (from the same response in both units).
+ */
+export function tooltipRows(lines: ChartLine[], eurLines: ChartLine[], pctLines: ChartLine[], t: number): TooltipRow[] {
+  const eur = new Map(eurLines.map((l) => [l.key, l.points]));
+  const pct = new Map(pctLines.map((l) => [l.key, l.points]));
+  const at = (pts: ChartPoint[] | undefined) => (pts && pts.length > 0 ? pts[nearestIndex(pts, t)] : undefined);
+  const rows: TooltipRow[] = [];
+  for (const l of lines) {
+    if (l.reference || l.points.length === 0) continue;
+    const e = at(eur.get(l.key));
+    const p = at(pct.get(l.key));
+    const first = eur.get(l.key)?.[0];
+    let value: string;
+    let change: string | null = null;
+    if (e) {
+      value = `${chartNumber(e.v, 2)} €`;
+      const parts = [first ? `${signedNumber(e.v - first.v, 2)} €` : null, p ? `${signedNumber(p.v, 2)}%` : null].filter(Boolean);
+      change = parts.length > 0 ? parts.join(" · ") : null;
+    } else if (p) value = `${signedNumber(p.v, 2)}%`;
+    else continue;
+    rows.push({ key: l.key, label: l.label, color: l.color, value, change, bold: l.bold });
+  }
+  return rows;
 }
