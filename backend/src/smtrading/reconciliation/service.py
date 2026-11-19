@@ -231,6 +231,20 @@ async def _alerted_today(session: AsyncSession, pid: UUID, key: str, now: dateti
         Activity.data["day"].astext == _day(now)).limit(1)) is not None
 
 
+def alert_draft(item: dict, check_id: int, now: datetime) -> ActivityDraft:
+    """The agents' activity of a confirmed mismatch (no simulation words, no broker or
+    link name: only what SMTrading and the broker say)."""
+    return ActivityDraft(
+        ALERT_TYPE, ActivityLevel.warning, False,
+        f"Riconciliazione con il broker: {_mismatch_text(item)}, da {item['streak']} "
+        "controlli di fila. Nessuna correzione automatica: decide il Risk Manager.",
+        {"key": item["key"], "kind": item["kind"], "symbol": item.get("symbol"),
+         "ours": item["ours"], "broker": item["broker"], "diff": item["diff"],
+         "note": item["note"], "streak": item["streak"], "since": item["since"],
+         "check_id": check_id, "day": _day(now)},
+    )
+
+
 def _for_portfolio(items: list[dict], pid: UUID) -> list[dict]:
     key = str(pid)
     return [dict(i) for i in items if i.get("portfolio_id", key) == key]
@@ -273,16 +287,8 @@ async def _write(session: AsyncSession, link: BrokerLink, ours: _Ours, items: li
         await session.flush()
         rows.append(row)
         for item in confirmed:
-            record_activity(session, ActivityDraft(
-                ALERT_TYPE, ActivityLevel.warning, False,
-                f"Riconciliazione con il broker: {_mismatch_text(item)}, da "
-                f"{item['streak']} controlli di fila. Nessuna correzione automatica: "
-                "decide il Risk Manager.",
-                {"key": item["key"], "kind": item["kind"], "symbol": item.get("symbol"),
-                 "ours": item["ours"], "broker": item["broker"], "diff": item["diff"],
-                 "note": item["note"], "streak": item["streak"], "since": item["since"],
-                 "check_id": row.id, "day": _day(now)},
-            ), portfolio_id=pid, agent_id=None)
+            record_activity(session, alert_draft(item, row.id, now), portfolio_id=pid,
+                            agent_id=None)
             if item["key"] not in telegrammed:
                 telegrammed.add(item["key"])
                 await enqueue(session, source="system", category="system", level="warning",
