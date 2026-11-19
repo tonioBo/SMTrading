@@ -1,8 +1,10 @@
 import { ArrowLeft } from "lucide-react";
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
+import { useInstrumentBars } from "@/api/hooks/marketsExplore";
 import { useTrade } from "@/api/hooks/trades";
-import type { TradeDecision, TradeFill, TradeOrder, TradeTimelineItem } from "@/api/types";
+import type { TradeDecision, TradeDetail as TradeDetailData, TradeFill, TradeOrder, TradeTimelineItem } from "@/api/types";
+import { PriceChart } from "@/components/charts";
 import { Money } from "@/components/Money";
 import { OutcomeBadge } from "@/components/OutcomeBadge";
 import { PageHeader } from "@/components/PageHeader";
@@ -13,6 +15,7 @@ import { errorMessage } from "@/lib/errors";
 import { formatDateTime, formatHolding, formatMoney, formatQty } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { NO_STRATEGY } from "@/lib/trades";
+import { chartMoney, fillMarkers, protectionLines, toCandles, tradeChartWindow, type PriceLine } from "@/lib/priceChart";
 
 const SIDE_LABELS: Record<string, string> = { buy: "acquisto", sell: "vendita" };
 const STATUS_LABELS: Record<string, string> = {
@@ -173,6 +176,65 @@ function FillsTable({ fills }: { fills: TradeFill[] }) {
   );
 }
 
+/**
+ * The trade on the price: hourly bars when it lasted under 3 days, daily ones otherwise,
+ * over its window with a margin; entry ▲ / exit ▼ markers (the exit with its reason), the
+ * stop and target of its orders and the entry price as lines.
+ */
+function TradeChart({ data }: { data: TradeDetailData }) {
+  const t = data.trade;
+  const win = useMemo(() => tradeChartWindow(t.opened_at, t.closed_at), [t.opened_at, t.closed_at]);
+  const bars = useInstrumentBars(t.symbol, win.timeframe, win.start, win.end);
+  const candles = useMemo(() => toCandles(bars.data?.bars ?? []), [bars.data]);
+  const markers = useMemo(
+    () =>
+      fillMarkers(
+        data.fills.map((f) => ({
+          ts: f.ts,
+          side: f.side,
+          text: f.kind === "entry" ? "Ingresso" : `Uscita${f.exit_reason_label ? ` · ${f.exit_reason_label}` : ""}`,
+        })),
+        candles,
+        win.timeframe,
+      ),
+    [data.fills, candles, win.timeframe],
+  );
+  const lines = useMemo(() => {
+    const money = (v: number) => chartMoney(v, t.currency);
+    const out: PriceLine[] = protectionLines(data.orders, money);
+    const entry = t.entry_price == null ? NaN : Number(t.entry_price);
+    if (Number.isFinite(entry) && entry > 0) out.push({ price: entry, kind: "entry", title: `Ingresso ${money(entry)}` });
+    return out;
+  }, [data.orders, t.entry_price, t.currency]);
+  const daily = win.timeframe === "1d";
+  return (
+    <div className="space-y-2">
+      {bars.isLoading ? (
+        <div className="h-64 animate-pulse rounded bg-card" />
+      ) : bars.isError || candles.length < 2 ? (
+        <p className="text-sm text-muted">{bars.isError || bars.data?.error ? "Grafico non disponibile" : "Nessuna barra nel periodo"}</p>
+      ) : (
+        <PriceChart
+          candles={candles}
+          timeframe={win.timeframe}
+          lines={lines}
+          markers={markers}
+          ariaLabel={`Grafico dell'operazione ${t.symbol} (${daily ? "barre giornaliere" : "barre orarie"})`}
+        />
+      )}
+      <p className="text-xs text-muted">
+        {`${daily ? "Barre giornaliere" : "Barre orarie"} · ▲ ingresso · ▼ uscita`}
+        {t.exit_reason_label && (
+          <>
+            {" · "}
+            <span className="font-medium text-fg">{`Motivo d'uscita: ${t.exit_reason_label}`}</span>
+          </>
+        )}
+      </p>
+    </div>
+  );
+}
+
 function Fact({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div>
@@ -182,7 +244,7 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-/** One trade of the «Diario operazioni»: summary, timeline, orders, fills, lessons. */
+/** One trade of the «Diario operazioni»: summary, chart, timeline, orders, fills, lessons. */
 export default function TradeDetail() {
   const { key = "" } = useParams();
   const { data, isError, error, isLoading } = useTrade(key);
@@ -222,6 +284,14 @@ export default function TradeDetail() {
                   <Money value={t.costs_eur} />
                 </Fact>
               </dl>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Grafico</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <TradeChart data={data} />
             </CardContent>
           </Card>
           <div className="grid gap-6 lg:grid-cols-2">

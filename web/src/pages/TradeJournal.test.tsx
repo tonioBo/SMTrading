@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import type { TradeDetail, TradeRow, TradesResponse } from "@/api/types";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
+import { charts, markers } from "@/test/lightweightCharts";
 
 vi.mock("@/lib/ws", async (orig) => ({
   ...(await orig<typeof import("@/lib/ws")>()),
@@ -82,6 +83,12 @@ const detail: TradeDetail = {
 };
 
 const seen: string[] = [];
+const barRequests: URLSearchParams[] = [];
+/** hourly AAPL bars from 10/11 14:00 to 11/11 16:00 UTC */
+const hourly = Array.from({ length: 27 }, (_, i) => {
+  const close = 200 - i * 2;
+  return { ts: new Date(Date.parse("2026-11-10T14:00:00Z") + i * 3_600_000).toISOString(), open: String(close + 1), high: String(close + 2), low: String(close - 2), close: String(close), volume: "100" };
+});
 let current: TradesResponse = list();
 const server = setupServer(
   ...commonHandlers,
@@ -90,6 +97,10 @@ const server = setupServer(
   http.get("*/api/trades", ({ request }) => {
     seen.push(new URL(request.url).search);
     return HttpResponse.json(current);
+  }),
+  http.get("*/api/instruments/:symbol/bars", ({ request, params }) => {
+    barRequests.push(new URL(request.url).searchParams);
+    return HttpResponse.json({ symbol: params.symbol, timeframe: "1h", bars: hourly, error: null });
   }),
   http.get("*/api/trades/:key", ({ params }) =>
     params.key === "o1" ? HttpResponse.json(detail) : HttpResponse.json({ code: "NOT_FOUND", message: "operazione non trovata" }, { status: 404 }),
@@ -100,6 +111,9 @@ afterEach(() => {
   server.resetHandlers();
   current = list();
   seen.length = 0;
+  barRequests.length = 0;
+  charts.length = 0;
+  markers.length = 0;
 });
 afterAll(() => server.close());
 
@@ -185,6 +199,23 @@ describe("TradeDetail", () => {
     expect(entry).toHaveTextContent("802,50 € → 1.000,00 $ a 1.25 (costo 2,50 €)");
     expect(exit).toHaveTextContent("Uscita · Stop loss");
     expect(screen.getByRole("link", { name: "Torna al diario operazioni" })).toHaveAttribute("href", "/diario-operazioni");
+  });
+
+  it("draws the trade on hourly bars (under 3 days): entry and exit markers, target and entry lines, the exit reason", async () => {
+    renderApp("/diario-operazioni/o1");
+    expect(await screen.findByRole("img", { name: "Grafico dell'operazione AAPL (barre orarie)" })).toBeInTheDocument();
+    const q = barRequests[0];
+    expect(q.get("timeframe")).toBe("1h");
+    expect(q.get("start")).toBe("2026-11-09T15:00:00.000Z"); // a day of margin before the entry
+    await waitFor(() => expect(charts.at(-1)?.series.length).toBeGreaterThan(0));
+    const candles = charts.at(-1)!.series.find((x) => x.type === "Candlestick")!;
+    expect(candles.data).toHaveLength(27);
+    expect(candles.priceLines.map((l) => l.options.title)).toEqual(["Target 250,00 $", "Ingresso 200,00 $"]);
+    expect(markers.at(-1)!.markers).toMatchObject([
+      { time: Date.parse("2026-11-10T15:00:00Z") / 1000, shape: "arrowUp", text: "Ingresso" },
+      { time: Date.parse("2026-11-11T15:00:00Z") / 1000, shape: "arrowDown", text: "Uscita · Stop loss" },
+    ]);
+    expect(screen.getByText("Motivo d'uscita: Stop loss")).toBeInTheDocument();
   });
 
   it("says when the trade does not exist", async () => {
