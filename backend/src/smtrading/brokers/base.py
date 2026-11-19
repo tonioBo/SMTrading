@@ -25,6 +25,19 @@ class BrokerOrder:
     fees: Decimal | None = None
 
 
+@dataclass(frozen=True)
+class BrokerOpenOrder:
+    """An order still open at the broker, as its open-orders list shows it (reconciliation:
+    read with GET requests only)."""
+
+    broker_order_id: str
+    symbol: str  # canonical when the adapter can map it, else the broker's own
+    side: Literal["buy", "sell"]
+    qty: Decimal | None  # the open (unfilled) quantity; None: an amount order
+    limit_price: Decimal | None
+    stop_price: Decimal | None  # None for a trailing stop (its level moves)
+
+
 class RateLimited(RuntimeError):  # retryable, like any RuntimeError
     """The broker refused the request for its rate limit (HTTP 429): not a rejection,
     and the request was not processed."""
@@ -142,6 +155,11 @@ class BrokerAdapter:
         """The positions, right after `get_account` (an adapter whose account read
         already fetched them reuses that answer: one positions read per pass)."""
         return await self.get_positions()
+
+    async def get_open_orders(self) -> list[BrokerOpenOrder] | None:
+        """The orders open at the broker, read with GET requests only; None: this broker
+        does not list them (the reconciliation then does not compare the orders)."""
+        return None
 
     async def health_check(self) -> None:
         raise NotImplementedError

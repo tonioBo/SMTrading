@@ -17,7 +17,13 @@ from typing import ClassVar
 
 import httpx
 
-from smtrading.brokers.base import AccountSnapshot, BrokerAdapter, BrokerOrder, BrokerStatus
+from smtrading.brokers.base import (
+    AccountSnapshot,
+    BrokerAdapter,
+    BrokerOpenOrder,
+    BrokerOrder,
+    BrokerStatus,
+)
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.models import Order, OrderType, TimeInForce
 from smtrading.instruments.models import AssetClass, Instrument
@@ -271,6 +277,36 @@ class _AlpacaProtocol(BrokerAdapter):
             if p.get("side") == "short" and qty > 0:
                 qty = -qty
             out[from_alpaca_symbol(str(p["symbol"]), p.get("asset_class"))] = qty
+        return out
+
+    async def get_open_orders(self) -> list[BrokerOpenOrder]:
+        """GET /v2/orders?status=open (bracket legs flattened). The open quantity is
+        `qty` − `filled_qty`; a trailing stop's moving `stop_price` is left out."""
+        resp = await self._request(
+            "GET", "/v2/orders",
+            params={"status": "open", "limit": _OPEN_ORDERS_LIMIT, "nested": "false"},
+        )
+        if resp.status_code >= 300:
+            raise self._fail(resp)
+        data = self._parse(resp)
+        if not isinstance(data, list):
+            raise RuntimeError(f"{self.kind}: unexpected orders response")  # noqa: TRY004
+        out: list[BrokerOpenOrder] = []
+        for o in data:
+            if not isinstance(o, dict) or not o.get("id") or not o.get("symbol"):
+                continue
+            qty = _dec(o.get("qty"))
+            if qty is not None:
+                qty = max(qty - (_dec(o.get("filled_qty")) or Decimal(0)), Decimal(0))
+            trailing = str(o.get("type")) == "trailing_stop"
+            out.append(BrokerOpenOrder(
+                broker_order_id=str(o["id"]),
+                symbol=from_alpaca_symbol(str(o["symbol"]), o.get("asset_class")),
+                side="sell" if str(o.get("side")) == "sell" else "buy",
+                qty=qty,
+                limit_price=_dec(o.get("limit_price")),
+                stop_price=None if trailing else _dec(o.get("stop_price")),
+            ))
         return out
 
     async def get_account(self) -> AccountSnapshot:
