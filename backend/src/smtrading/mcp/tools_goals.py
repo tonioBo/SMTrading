@@ -6,7 +6,7 @@ never another agent's, and not the goals that do not recur once their period is 
 Each item is the Progress of `goals.progress` without the internal goal id and the
 per-portfolio `parts` (admin only; `portfolio_id` is kept: the agent knows its
 portfolios). A total goal sums every live
-portfolio: unless the agent holds all of them, its EUR figures (`TOTAL_EUR_FIELDS`) are
+portfolio counted in the total: unless the agent holds all of them, its EUR figures (`TOTAL_EUR_FIELDS`) are
 null, so they never reveal the equity of portfolios it cannot read (the percentages,
 status and elapsed share stay).
 """
@@ -27,7 +27,7 @@ from smtrading.goals.periods import Period
 from smtrading.goals.plans import grace_days
 from smtrading.goals.progress import active_progress
 from smtrading.mcp.runtime import ToolCtx, run_tool
-from smtrading.portfolios.models import live_portfolio_ids
+from smtrading.portfolios.models import total_portfolio_ids
 
 TOTAL_EUR_FIELDS = ("start_eur", "current_eur", "target_eur", "gap_eur")
 
@@ -60,7 +60,7 @@ async def _get_goals(ctx: ToolCtx) -> dict[str, Any]:
                        {"needed": "read"})
     now, zone = _now(), ZoneInfo(get_settings().tz)
     today = now.astimezone(zone).date()
-    sees_all = set(await ctx.session.scalars(live_portfolio_ids())) <= set(pids)
+    sees_all = set(await ctx.session.scalars(total_portfolio_ids())) <= set(pids)
     out = []
     progress = await active_progress(ctx.session, now, zone, portfolio_ids=set(pids))
     goals = {g.id: g for g in await ctx.session.scalars(

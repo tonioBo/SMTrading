@@ -557,3 +557,25 @@ async def test_a_flip_is_refused_at_placement_in_plan_closing(sm, qs):
         "reason": "plan_grace", "symbol": "BTC-USD", "deadline": DEADLINE.isoformat()}
     await _buy(sm, qs, pid, "BTC-USD", "0.05", now=TUESDAY, side=OrderSide.sell)
     assert await _qty(sm, pid, "BTC-USD") == D("0.05")
+
+
+async def test_total_plan_leaves_out_portfolios_out_of_totals(sm, qs):
+    """A total piano covers the portfolios counted in the total only; a portfolio out of
+    the totals is closed by its own piano (a custom period here: 2 days, 1 market day of
+    grace)."""
+    team = await _portfolio(sm, "Squadra")
+    sfida = await _portfolio(sm, "Sfida")
+    async with sm() as s:
+        await s.execute(update(Portfolio).where(Portfolio.id == sfida).values(in_totals=False))
+        await s.commit()
+    await _buy(sm, qs, team, "AAPL", 10)
+    await _buy(sm, qs, sfida, "AAPL", 3)
+    await _plan(sm)
+    await _plan(sm, name="sfida", horizon="custom", recurring=False, scope="portfolio",
+                portfolio_id=sfida, start_date=date(2027, 1, 16), end_date=date(2027, 1, 17))
+    await _job(sm, qs, Clock(SUNDAY_NIGHT)).tick()
+    async with sm() as s:
+        rows = list(await s.scalars(select(PlanClosure).order_by(PlanClosure.grace_days)))
+        goals = {g.id: g.name for g in await s.scalars(select(Goal))}
+    assert sorted((goals[r.goal_id], r.portfolio_id, r.grace_days) for r in rows) == sorted([
+        ("settimana", team, 1), ("sfida", sfida, 1)])

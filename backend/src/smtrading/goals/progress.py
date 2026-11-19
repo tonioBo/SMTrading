@@ -1,8 +1,8 @@
 """The progress of the goals (the maths of the former `telegram.weekly_goal`, for every
 horizon and scope).
 
-The equity of a goal is the sum, over its portfolios (scope total: the live ones; scope
-portfolio: that one, unless archived), of the equity in EUR of the `equity_snapshots`:
+The equity of a goal is the sum, over its portfolios (scope total: the live ones counted in the
+total, `portfolios.in_totals`; scope portfolio: that one, unless archived), of the equity in EUR of the `equity_snapshots`:
 - start of a portfolio: its `day_open` of the period's first day, else its earliest
   snapshot within the period (a portfolio created later, or no snapshot at the very
   start);
@@ -48,7 +48,7 @@ from smtrading.goals.models import HORIZONS, Goal
 from smtrading.goals.periods import Period, elapsed_pct, goal_period, previous_period
 from smtrading.goals.service import portfolio_labels
 from smtrading.jobs.runs import run_job_once
-from smtrading.portfolios.models import Portfolio, live_portfolio_ids
+from smtrading.portfolios.models import Portfolio, live_portfolio_ids, total_portfolio_ids
 from smtrading.risk.models import EquitySnapshot, SnapshotKind
 
 PERIOD_END_JOB = "goals.period_end"
@@ -180,15 +180,17 @@ class PortfolioPeriod:
 async def portfolio_periods(session: AsyncSession, period: Period, now: datetime,
                             zone: ZoneInfo,
                             portfolio_ids: list[UUID] | None = None) -> list[PortfolioPeriod]:
-    """(start, current) of every live portfolio (or of the live ones of `portfolio_ids`)
-    with a snapshot in `period` up to `now`."""
+    """(start, current) of every portfolio counted in the total (`total_portfolio_ids`:
+    live and `in_totals`), or of the live ones of `portfolio_ids`, with a snapshot in
+    `period` up to `now`."""
     start_ts = local_midnight(period.start, zone)
     end_ts = local_midnight(period.end + timedelta(days=1), zone)
     if now < start_ts:
         return []
-    ids_stmt = live_portfolio_ids()
-    if portfolio_ids is not None:
-        ids_stmt = ids_stmt.where(Portfolio.id.in_(portfolio_ids))
+    if portfolio_ids is None:
+        ids_stmt = total_portfolio_ids()
+    else:
+        ids_stmt = live_portfolio_ids().where(Portfolio.id.in_(portfolio_ids))
     out = []
     for pid in list(await session.scalars(ids_stmt.order_by(Portfolio.id))):
         in_period = (select(EquitySnapshot.equity_eur, EquitySnapshot.ts)

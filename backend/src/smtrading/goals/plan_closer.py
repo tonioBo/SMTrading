@@ -81,7 +81,7 @@ from smtrading.instruments.models import Instrument
 from smtrading.jobs.runs import run_job_once
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.locks import lock_live_portfolio
-from smtrading.portfolios.models import Portfolio, live_portfolio_ids
+from smtrading.portfolios.models import Portfolio, live_portfolio_ids, total_portfolio_ids
 from smtrading.positions.models import Position
 from smtrading.risk.settings import get_stale_threshold
 from smtrading.telegram.outbox import enqueue
@@ -211,9 +211,10 @@ class PlanCloser:
     # 1. periods over
 
     async def _covered(self, session: AsyncSession, goal: Goal) -> list[UUID]:
-        stmt = live_portfolio_ids()
         if goal.scope == "portfolio":
-            stmt = stmt.where(Portfolio.id == goal.portfolio_id)
+            stmt = live_portfolio_ids().where(Portfolio.id == goal.portfolio_id)
+        else:  # a total piano: the portfolios counted in the total
+            stmt = total_portfolio_ids()
         return list(await session.scalars(stmt.order_by(Portfolio.name)))
 
     async def _open_periods(self, now: datetime) -> None:

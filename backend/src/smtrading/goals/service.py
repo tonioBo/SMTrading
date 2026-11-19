@@ -137,8 +137,8 @@ PLAN_OVERLAP = ("c'è già un piano attivo che chiude le posizioni di questo por
 async def covering_plan(session: AsyncSession, scope: str, portfolio_id: Any,
                         exclude_id: UUID | None = None) -> Goal | None:
     """The active piano already covering a goal of `scope` / `portfolio_id`, if any: a
-    total one covers every portfolio, a portfolio one its own (goals of archived
-    portfolios aside)."""
+    total one covers every portfolio counted in the total (`in_totals`), a portfolio one
+    its own (goals of archived portfolios aside)."""
     pid = UUID(str(portfolio_id)) if portfolio_id is not None else None
     others = await session.scalars(
         select(Goal).where(Goal.active.is_(True), Goal.closes_positions.is_(True),
@@ -146,12 +146,40 @@ async def covering_plan(session: AsyncSession, scope: str, portfolio_id: Any,
         .order_by(Goal.created_at, Goal.id))
     archived = set(await session.scalars(
         select(Portfolio.id).where(Portfolio.status == PortfolioStatus.archived)))
+    outside = set(await session.scalars(
+        select(Portfolio.id).where(Portfolio.in_totals.is_(False))))
     for other in others:
         if other.scope == "portfolio" and other.portfolio_id in archived:
             continue
-        if scope == "total" or other.scope == "total" or other.portfolio_id == pid:
+        if scope == "total" and other.scope == "total":
+            return other
+        if scope == "total":  # other: a portfolio piano
+            if other.portfolio_id not in outside:
+                return other
+        elif other.scope == "total":
+            if pid not in outside:
+                return other
+        elif other.portfolio_id == pid:
             return other
     return None
+
+
+IN_TOTALS_OVERLAP = ("il portafoglio ha un suo piano attivo ({own}) e c'è un piano sul "
+                     "totale ({total}): contandolo nei totali sarebbe coperto da due piani; "
+                     "disattiva prima uno dei due")
+
+
+async def check_in_totals(session: AsyncSession, portfolio_id: UUID) -> None:
+    """Counting `portfolio_id` in the total again: refused while it has its own active
+    piano and an active piano on the total exists (two piani would cover it)."""
+    plans = list(await session.scalars(
+        select(Goal).where(Goal.active.is_(True), Goal.closes_positions.is_(True))
+        .order_by(Goal.created_at, Goal.id)))
+    own = next((g for g in plans if g.scope == "portfolio"
+                and g.portfolio_id == portfolio_id), None)
+    total = next((g for g in plans if g.scope == "total"), None)
+    if own is not None and total is not None:
+        raise _invalid("in_totals", IN_TOTALS_OVERLAP.format(own=own.name, total=total.name))
 
 
 async def _check_one_plan(session: AsyncSession, values: dict[str, Any],

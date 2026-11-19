@@ -456,3 +456,60 @@ async def test_plans_one_per_portfolio(env, monkeypatch):
     r = await c.post("/api/goals", json={**body, "closes_positions": "yes"})
     assert r.status_code in (400, 422)
     assert (await c.get("/api/goals/plans")).json() == []
+
+
+async def _out_of_totals(sm, pid, value: bool = False) -> None:
+    async with sm() as s:
+        await s.execute(update(Portfolio).where(Portfolio.id == pid).values(in_totals=value))
+        await s.commit()
+
+
+async def test_portfolio_out_of_totals(env, monkeypatch):
+    """A portfolio with in_totals false is left out of the total goals (progress, parts,
+    the weekly goal of the home page) and of the total piano's coverage: its own goal
+    works as usual and may be a piano beside the total one."""
+    import smtrading.admin.routes_dashboard as dash
+
+    _clock(monkeypatch, rome(WED, 12))
+    monkeypatch.setattr(dash, "_now", lambda: rome(WED, 12))
+    c = await _admin(env)
+    a = await _portfolio(env.sm, "Squadra A")
+    s = await _portfolio(env.sm, "Sfida S")
+    await _snap(env.sm, a, rome(MON, 0, 1), "1000", SnapshotKind.day_open)
+    await _snap(env.sm, a, rome(WED, 11), "1010")
+    await _snap(env.sm, s, rome(MON, 0, 1), "1000", SnapshotKind.day_open)
+    await _snap(env.sm, s, rome(WED, 11), "1300")
+    await _out_of_totals(env.sm, s)
+    # the total piano («settimanale») no longer covers S: S's own goal is a piano too
+    r = await c.post("/api/goals", json={
+        "name": "Sfida +4%", "horizon": "custom", "start_date": "2027-03-08",
+        "end_date": "2027-03-12", "scope": "portfolio", "portfolio_id": str(s),
+        "target_pct": "4", "closes_positions": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["closes_positions"] is True
+    by = {p["name"]: p for p in (await c.get("/api/goals/progress")).json()}
+    week = by["settimanale"]
+    assert (D(week["start_eur"]), D(week["current_eur"]), D(week["pct"])) == (
+        D(1000), D(1010), D(1))
+    assert [p["name"] for p in week["parts"]] == ["Squadra A"]
+    sfida = by["Sfida +4%"]
+    assert (D(sfida["start_eur"]), D(sfida["current_eur"]), D(sfida["pct"]),
+            sfida["status"]) == (D(1000), D(1300), D(30), "raggiunto")
+    home = (await c.get("/api/weekly-goal")).json()
+    assert D(home["total"]["current_eur"]) == D(1010)
+    assert [p["name"] for p in home["portfolios"]] == ["Squadra A"]
+    # a total piano is allowed beside S's piano too (it does not cover S)
+    weekly = next(g for g in (await c.get("/api/goals")).json() if g["name"] == "settimanale")
+    assert (await c.patch(f"/api/goals/{weekly['id']}", json={"closes_positions": False})
+            ).status_code == 200
+    assert (await c.patch(f"/api/goals/{weekly['id']}", json={"closes_positions": True})
+            ).status_code == 200
+    # counted again: the piani would overlap, so it is refused while both are piani
+    r = await c.patch(f"/api/portfolios/{s}", json={"in_totals": True})
+    assert r.status_code == 400, r.text
+    assert r.json()["details"]["field"] == "in_totals"
+    assert (await c.patch(f"/api/goals/{sfida['goal_id']}", json={"closes_positions": False})
+            ).status_code == 200
+    r = await c.patch(f"/api/portfolios/{s}", json={"in_totals": True})
+    assert r.status_code == 200, r.text
+    assert D((await c.get("/api/goals/progress")).json()[0]["current_eur"]) == D(2310)
