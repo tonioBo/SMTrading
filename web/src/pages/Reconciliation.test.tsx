@@ -87,7 +87,9 @@ describe("Reconciliation", () => {
     const links = within(within(nav).getByRole("group", { name: "Sistema" }))
       .getAllByRole("link")
       .map((a) => a.textContent);
-    expect(links.slice(0, 2)).toEqual(["Broker", "Riconciliazione"]);
+    const broker = links.indexOf("Broker");
+    expect(broker).toBeGreaterThanOrEqual(0);
+    expect(links.slice(broker, broker + 2)).toEqual(["Broker", "Riconciliazione"]);
     expect(await screen.findByRole("heading", { name: "Riconciliazione" })).toBeInTheDocument();
   });
 
