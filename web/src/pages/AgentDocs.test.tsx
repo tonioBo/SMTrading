@@ -17,6 +17,7 @@ vi.mock("@/lib/ws", async (orig) => ({
 const TITLES: Record<string, string> = {
   readme: "Guida all'installazione",
   common: "Regole comuni",
+  appendice: "Appendice delle istruzioni (casi rari)",
   ceo: "CEO SMTrading",
   "portfolio-manager": "Portfolio Manager",
   "risk-manager": "Risk Manager",
@@ -63,7 +64,7 @@ function reset() {
     dir: "/agent-instructions",
     entry_file: "AGENTS.md",
     agents: Object.keys(TITLES)
-      .filter((s) => s !== "readme" && s !== "common")
+      .filter((s) => s !== "readme" && s !== "common" && s !== "appendice")
       .map((slug) => ({ slug, path: `/smtrading-instructions/${slug}` })),
   };
 }
@@ -179,6 +180,7 @@ describe("AgentDocs page", () => {
     expect(buttons.map((b) => b.querySelector("span")?.textContent)).toEqual([
       "Guida all'installazione",
       "00 · Regole comuni",
+      "10 · Appendice (casi rari)",
       "CEO SMTrading",
       "Portfolio Manager",
       "Risk Manager",
@@ -189,8 +191,9 @@ describe("AgentDocs page", () => {
       "Performance Auditor",
       "Notifier",
     ]);
-    expect(within(buttons[5]).getByText("trade")).toBeInTheDocument();
-    expect(within(buttons[3]).getByText("ogni ora")).toBeInTheDocument();
+    expect(within(buttons[6]).getByText("trade")).toBeInTheDocument();
+    expect(within(buttons[4]).getByText("ogni ora")).toBeInTheDocument();
+    expect(within(buttons[5]).getByText("9 cicli al giorno")).toBeInTheDocument();
     expect(buttons[0]).toHaveAttribute("aria-current", "true");
     expect(await screen.findByText("Testo di Guida all'installazione.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copia testo" })).toBeInTheDocument();

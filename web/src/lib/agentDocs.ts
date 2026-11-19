@@ -16,9 +16,10 @@ const onTask = { text: "su task", kind: "plain" } as const;
 export const ROSTER: RosterEntry[] = [
   { slug: "readme", section: "setup", label: "Guida all'installazione", tags: [] },
   { slug: "common", section: "setup", label: "00 · Regole comuni", tags: [] },
+  { slug: "appendice", section: "setup", label: "10 · Appendice (casi rari)", tags: [] },
   { slug: "ceo", section: "agents", tags: [{ text: "read + halt", kind: "plain" }, { text: "venerdì", kind: "cron" }] },
   { slug: "portfolio-manager", section: "agents", tags: [read, { text: "ogni ora", kind: "cron" }] },
-  { slug: "risk-manager", section: "agents", tags: [read, { text: "ogni ora", kind: "cron" }] },
+  { slug: "risk-manager", section: "agents", tags: [read, { text: "9 cicli al giorno", kind: "cron" }] },
   { slug: "execution-supervisor", section: "agents", tags: [{ text: "trade", kind: "trade" }, onTask] },
   { slug: "market-analyst", section: "agents", tags: [read, onTask] },
   { slug: "news-analyst", section: "agents", tags: [read, { text: "08:30 + ogni 2h", kind: "cron" }] },
