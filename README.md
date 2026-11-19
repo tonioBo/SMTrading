@@ -145,6 +145,14 @@ Funzionamento:
   prima); gli annullamenti richiesti vengono mantenuti.
 - *Riconciliazione* (*Riconcilia ora*, e periodica): confronta le posizioni del broker con
   le nostre e registra le differenze; non corregge nulla.
+- Pagina **Riconciliazione** (Sistema): per ogni portafoglio collegato (prova o denaro
+  reale) posizioni, liquidità e ordini aperti di SMTrading contro il conto del broker, con
+  stato, voci, storico e *Riconcilia ora* (amministratori). Il worker la ripete ogni 15
+  minuti durante le sedute e una volta dopo la chiusura USA, solo in lettura (nessun
+  ordine inviato o annullato). Una differenza che resta per 2 controlli di fila manda un
+  avviso Telegram (categoria sistema, una volta al giorno per voce) e una voce nel feed
+  degli agenti del portafoglio: decide il Risk Manager, nulla si corregge da sé. Un broker
+  che non risponde dà «non verificabile», senza avvisi.
 
 - **Quantità frazionarie su Alpaca** (paper e reale): Alpaca accetta un ordine frazionario
   solo «per la giornata». Uno stop, un target o un limit `gtc` frazionario viene inviato
