@@ -25,6 +25,8 @@ import Risk from "@/pages/Risk";
 import Settings from "@/pages/Settings";
 import Signals from "@/pages/Signals";
 import Strategies from "@/pages/Strategies";
+import TradeDetail from "@/pages/TradeDetail";
+import TradeJournal from "@/pages/TradeJournal";
 
 export const routes: RouteObject[] = [
   { path: "/login", element: <Login />, errorElement: <RouteError /> },
@@ -42,6 +44,8 @@ export const routes: RouteObject[] = [
           { path: "portafogli/:id", element: <PortfolioDetail /> },
           { path: "segnali", element: <Signals /> },
           { path: "posizioni", element: <Positions /> },
+          { path: "diario-operazioni", element: <TradeJournal /> },
+          { path: "diario-operazioni/:key", element: <TradeDetail /> },
           { path: "strategie", element: <Strategies /> },
           { path: "obiettivi", element: <Goals /> },
           { path: "agenti", element: <Agents /> },

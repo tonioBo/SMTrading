@@ -47,6 +47,7 @@ describe("Layout", () => {
       "Portafogli",
       "Segnali",
       "Posizioni",
+      "Diario operazioni",
       "Strategie",
       "Obiettivi",
       "Mercati",

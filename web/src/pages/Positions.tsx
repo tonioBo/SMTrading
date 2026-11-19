@@ -11,6 +11,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatDateTime, formatDecimal, formatMoney, formatQty } from "@/lib/format";
+import { journalLink } from "@/lib/trades";
 import { cn } from "@/lib/utils";
 
 const TIF_LABEL: Record<ProtectiveLeg["tif"], string> = { day: "giornaliero", gtc: "fino a revoca" };
@@ -54,6 +55,13 @@ function PositionRow({ p }: { p: OpenPosition }) {
       <TableCell>
         <div className="font-medium">{p.symbol}</div>
         {p.name && <div className="text-xs text-muted">{p.name}</div>}
+        <Link
+          to={journalLink({ portfolio_id: p.portfolio_id, symbol: p.symbol, outcome: "open" })}
+          className="block text-xs text-accent hover:underline"
+          aria-label={`Diario ${p.symbol}`}
+        >
+          Diario
+        </Link>
       </TableCell>
       <TableCell className="num text-right">{`${p.side === "short" ? "short " : ""}${formatQty(p.qty)}`}</TableCell>
       <TableCell className="num text-right">{price(p.avg_price, p.currency)}</TableCell>
