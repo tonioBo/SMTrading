@@ -455,7 +455,8 @@ seguite in streaming), alert di prezzo e di variazione percentuale (arrivano com
 
 ### Catalogo strumenti (pagina *Mercati*)
 
-Il catalogo parte con circa 400 strumenti (USA, Europa `.MI/.DE/.PA`, crypto in USD, forex).
+Il catalogo parte con circa 900 strumenti (USA: S&P 500, Nasdaq-100 ed ETF; Europa `.MI/.DE/.PA`:
+FTSE MIB, DAX, CAC 40, principali MDAX ed ETF UCITS; circa 65 crypto in USD; forex).
 La colonna *Seguito da* mostra quali agenti hanno lo strumento in una watchlist. Con
 l'**aggiunta automatica** attiva (interruttore in *Mercati*) un agente che usa un simbolo
 non in catalogo lo aggiunge se supera i controlli (massimo 25 aggiunte al giorno per

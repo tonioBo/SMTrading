@@ -247,7 +247,7 @@ README).
 
 ### Strumenti: catalogo e aggiunta automatica
 
-Il catalogo contiene circa 400 strumenti verificati: azioni ed ETF USA (Nasdaq-100, S&P 100, principali ETF), Europa (FTSE MIB `.MI`, DAX `.DE`, CAC 40 `.PA`, ETF UCITS su Xetra in EUR), le principali crypto in USD (`BTC-USD`, ...) e le coppie forex maggiori e incrociate (`EURUSD`, ...). Mercati: `NASDAQ`, `NYSE`, `MTA`, `XETRA`, `EURONEXT_PARIS`, `CRYPTO`, `FX`.
+Il catalogo contiene circa 900 strumenti verificati: azioni ed ETF USA (S&P 500, Nasdaq-100, ETF settoriali, obbligazionari, materie prime, internazionali, a leva e inversi), Europa (FTSE MIB `.MI`, DAX e principali MDAX `.DE`, CAC 40 `.PA`, ETF UCITS su Xetra, Borsa Italiana e Parigi in EUR), le circa 65 crypto principali in USD (`BTC-USD`, ..., niente stablecoin) e le coppie forex maggiori e incrociate (`EURUSD`, ...). Mercati: `NASDAQ`, `NYSE`, `MTA`, `XETRA`, `EURONEXT_PARIS`, `CRYPTO`, `FX`.
 
 Quando un agente usa un simbolo che non e' in catalogo (`get_instrument`, `get_quote`, `get_bars`, `get_indicators`, `preview_order`, `place_order` e varianti, `create_alert`, `add_to_watchlist`, `run_backtest`), la piattaforma prova ad aggiungerlo:
 

@@ -1,9 +1,10 @@
+import csv
 import re
 from decimal import Decimal
 
 import pytest
 
-from smtrading.instruments.catalog import load_catalog, parse_row
+from smtrading.instruments.catalog import CATALOG_DIR, load_catalog, parse_row
 from smtrading.instruments.market_hours import MARKETS
 from smtrading.instruments.models import AssetClass
 
@@ -12,11 +13,45 @@ _SUFFIX_MARKET = {".MI": "MTA", ".DE": "XETRA", ".PA": "EURONEXT_PARIS"}
 
 
 def test_catalog_size_and_unique_symbols():
-    assert len(ROWS) >= 380
+    assert len(ROWS) >= 900
     assert len({r.symbol for r in ROWS}) == len(ROWS)
     by_class = {ac: sum(r.asset_class == ac for r in ROWS) for ac in AssetClass}
-    assert by_class[AssetClass.us_equity] >= 180 and by_class[AssetClass.eu_equity] >= 120
-    assert by_class[AssetClass.crypto] >= 25 and by_class[AssetClass.forex] >= 20
+    assert by_class[AssetClass.us_equity] >= 580 and by_class[AssetClass.eu_equity] >= 220
+    assert by_class[AssetClass.crypto] >= 60 and by_class[AssetClass.forex] >= 20
+    by_market = {m: sum(r.market == m for r in ROWS) for m in MARKETS}
+    # S&P 500 + Nasdaq-100 + ETFs; FTSE MIB, DAX 40 + MDAX majors + UCITS ETFs, CAC 40
+    assert by_market["NYSE"] + by_market["NASDAQ"] >= 580
+    assert by_market["MTA"] >= 50 and by_market["XETRA"] >= 115
+    assert by_market["EURONEXT_PARIS"] >= 48
+
+
+@pytest.mark.parametrize("path", sorted(CATALOG_DIR.glob("*.csv")), ids=lambda p: p.name)
+def test_catalog_files_sorted_by_symbol(path):
+    with path.open(newline="", encoding="utf-8") as f:
+        symbols = [r["symbol"] for r in csv.DictReader(f)]
+    assert symbols == sorted(symbols)
+
+
+def test_catalog_covers_indices_and_etfs():
+    symbols = {r.symbol for r in ROWS}
+    sample = {
+        "BRK-B", "BF-B", "JPM", "WMT", "NVDA", "COST",  # S&P 500 / Nasdaq-100
+        "IVV", "VTV", "SCHD", "AGG", "BND", "TQQQ", "SQQQ", "GLD",  # US ETFs
+        "SWDA.MI", "CSSPX.MI", "CW8.PA", "MEUD.PA",  # UCITS ETFs
+        "BMPS.MI", "HEI.DE", "SY1.DE", "LHA.DE", "MC.PA", "ENX.PA",  # FTSE MIB/DAX/MDAX/CAC
+        "BTC-USD", "HYPE-USD", "ONDO-USD",  # crypto
+    }
+    assert sample <= symbols, sorted(sample - symbols)
+
+
+def test_catalog_provider_overrides():
+    for row in ROWS:
+        if row.asset_class == AssetClass.us_equity and "-" in row.symbol:  # share classes
+            dotted = row.symbol.replace("-", ".")
+            assert {row.provider_symbols.get(p) for p in ("alpaca", "finnhub", "twelvedata")} == {
+                dotted}, row.symbol
+        if row.asset_class == AssetClass.crypto:  # CoinGecko needs the coin id
+            assert row.provider_symbols.get("coingecko", "").endswith(":usd"), row.symbol
 
 
 @pytest.mark.parametrize("row", ROWS, ids=lambda r: r.symbol)
