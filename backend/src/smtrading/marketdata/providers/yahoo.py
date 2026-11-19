@@ -15,6 +15,7 @@ from smtrading.marketdata.types import (
     Bar,
     CalendarEvent,
     Capability,
+    DayChange,
     ExtendedQuote,
     Fundamentals,
     InstrumentHit,
@@ -265,6 +266,23 @@ class _YF:
             )
         }
 
+    def batch_quote(self, syms: list[str]) -> list[dict]:
+        """One v7 quote request for many symbols (yfinance adds the crumb): symbol, regular
+        price, previous close and time of each symbol Yahoo knows."""
+        from yfinance.data import YfData
+
+        fields = "symbol,regularMarketPrice,regularMarketPreviousClose,regularMarketTime"
+
+        def once() -> list[dict]:
+            data = YfData(session=_session()).get_raw_json(
+                "https://query1.finance.yahoo.com/v7/finance/quote",
+                params={"symbols": ",".join(syms), "fields": fields},
+            )
+            rows = ((data or {}).get("quoteResponse") or {}).get("result") or []
+            return [self._clean({k: r.get(k) for k in fields.split(",")}) for r in rows]
+
+        return _attempt(once)
+
     def news(self, sym: str) -> list[dict]:
         return _attempt(lambda: self._clean(_ticker(sym).news))
 
@@ -388,6 +406,28 @@ class YahooProvider(DataProvider):
         # nothing at all and at least one call raised: an outage, not missing symbols
         if not out and first_error is not None:
             raise first_error
+        return out
+
+    day_change_chunk = 50  # symbols per v7 quote request
+    day_change_cost = 1
+
+    async def get_day_changes(self, items: list[tuple[str, str]]) -> dict[str, DayChange]:
+        """One v7 quote request: the regular market price against the previous close."""
+        by_ps: dict[str, list[str]] = {}
+        for canonical, ps in items:
+            by_ps.setdefault(ps, []).append(canonical)
+        rows = await self._call(self._yf.batch_quote, list(by_ps))
+        out: dict[str, DayChange] = {}
+        for r in rows:
+            last, prev = _positive(r.get("regularMarketPrice")), _positive(
+                r.get("regularMarketPreviousClose"))
+            t = r.get("regularMarketTime")
+            if last is None or prev is None or isinstance(t, bool) \
+                    or not isinstance(t, (int, float)):
+                continue
+            for canonical in by_ps.get(str(r.get("symbol")), []):
+                out[canonical] = DayChange(
+                    canonical, last, prev, datetime.fromtimestamp(int(t), UTC), self.name)
         return out
 
     async def get_extended(self, symbol: str, provider_symbol: str) -> ExtendedQuote | None:

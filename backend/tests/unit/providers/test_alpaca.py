@@ -390,3 +390,34 @@ def test_news_tags_are_unverified():
     """Alpaca's feed tags bare tickers from any exchange ("QQQ" on Questcorp Mining, CSE):
     the router checks each tag against the item's text."""
     assert AlpacaProvider.news_tags_unverified is True
+
+
+@respx.mock
+async def test_day_changes_from_snapshots(provider):
+    """Shape of GET /v2/stocks/snapshots as answered in production (2026-11-19): a
+    symbol it does not know is simply absent."""
+    snap = {
+        "AAPL": {
+            "latestTrade": {"p": 349.23, "t": "2026-11-19T19:59:32.022194596Z"},
+            "dailyBar": {"c": 349.36, "t": "2026-11-19T05:00:00Z"},
+            "prevDailyBar": {"c": 352.3, "t": "2026-11-18T05:00:00Z"},
+        },
+        "BRK.B": {"dailyBar": {"c": 571.49, "t": "2026-11-19T05:00:00Z"},
+                  "prevDailyBar": {"c": 0}},  # no previous close: left out
+    }
+    crypto = {"snapshots": {"BTC/USD": {
+        "dailyBar": {"c": 62000, "t": "2026-11-19T00:00:00Z"},
+        "prevDailyBar": {"c": 64000, "t": "2026-11-18T00:00:00Z"}}}}
+    s = respx.get(f"{API}/v2/stocks/snapshots").respond(200, json=snap)
+    c = respx.get(f"{API}/v1beta3/crypto/us/snapshots").respond(200, json=crypto)
+    got = await provider.get_day_changes(
+        [("AAPL", "AAPL"), ("BRK-B", "BRK.B"), ("ZZZ", "ZZZ"), ("BTC-USD", "BTC/USD")])
+    assert s.calls.last.request.url.params["symbols"] == "AAPL,BRK.B,ZZZ"
+    assert s.calls.last.request.url.params["feed"] == "iex"
+    assert c.calls.last.request.url.params["symbols"] == "BTC/USD"
+    assert sorted(got) == ["AAPL", "BTC-USD"]
+    aapl = got["AAPL"]
+    assert (aapl.last, aapl.prev_close) == (Decimal("349.36"), Decimal("352.3"))
+    assert aapl.ts == datetime(2026, 11, 19, 19, 59, 32, 22194, tzinfo=UTC)
+    assert got["BTC-USD"].change_pct == Decimal(-3.125)
+    assert AlpacaProvider.day_change_chunk == 200 and AlpacaProvider.day_change_cost == 1

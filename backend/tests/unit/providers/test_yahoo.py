@@ -407,3 +407,30 @@ async def test_extended_none_without_data_or_only_before_the_close(provider):
     assert await provider.get_extended("AAPL", "AAPL") is None
     provider._yf.extended["AAPL"] = {"post_price": 354.6, "post_time": FRI_CLOSE + 5}
     assert await provider.get_extended("AAPL", "AAPL") is None  # no regular close to compare
+
+
+async def test_day_changes_one_batch_call(provider):
+    rows = [
+        {"symbol": "ENI.MI", "regularMarketPrice": 24.7, "regularMarketPreviousClose": 24.955,
+         "regularMarketTime": 1795106375},
+        {"symbol": "EURUSD=X", "regularMarketPrice": 1.1, "regularMarketPreviousClose": None,
+         "regularMarketTime": 1795106375},  # no previous close: left out
+        {"symbol": "SAP.DE", "regularMarketPrice": 187.02,
+         "regularMarketPreviousClose": 193.92, "regularMarketTime": True},  # bad time
+    ]
+    seen = []
+
+    def batch_quote(syms):
+        seen.append(syms)
+        return rows
+
+    provider._yf.batch_quote = batch_quote
+    got = await provider.get_day_changes(
+        [("ENI.MI", "ENI.MI"), ("EURUSD", "EURUSD=X"), ("SAP.DE", "SAP.DE"), ("X.MI", "X.MI")])
+    assert seen == [["ENI.MI", "EURUSD=X", "SAP.DE", "X.MI"]]
+    assert list(got) == ["ENI.MI"]
+    dc = got["ENI.MI"]
+    assert (dc.last, dc.prev_close, dc.provider) == (Decimal("24.7"), Decimal("24.955"), "yahoo")
+    assert round(dc.change_pct, 2) == Decimal("-1.02")
+    assert dc.ts == datetime.fromtimestamp(1795106375, UTC)
+    assert YahooProvider.day_change_chunk == 50 and YahooProvider.day_change_cost == 1

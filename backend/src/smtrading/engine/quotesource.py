@@ -11,6 +11,7 @@ from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.marketdata.types import (
     Bar,
     CalendarEvent,
+    DayChange,
     ExtendedQuote,
     Fundamentals,
     InstrumentHit,
@@ -104,6 +105,13 @@ class FakeMarketData(FakeQuoteSource):
         self._hits: list[InstrumentHit] = []
         self._screen: list[dict] = []
         self._extended: dict[str, ExtendedQuote | None] = {}
+        self._day_changes: dict[str, DayChange] = {}
+
+    def set_day_change(self, symbol: str, last: Decimal, prev_close: Decimal) -> None:
+        self._day_changes[symbol] = DayChange(symbol, last, prev_close, datetime.now(UTC), "fake")
+
+    async def get_day_changes(self, symbols: list[str]) -> dict[str, DayChange]:
+        return {s: self._day_changes[s] for s in symbols if s in self._day_changes}
 
     def set_extended(self, symbol: str, e: ExtendedQuote | None) -> None:
         self._extended[symbol] = e

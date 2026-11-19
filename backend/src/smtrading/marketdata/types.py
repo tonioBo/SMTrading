@@ -138,3 +138,23 @@ class ExtendedQuote:
 
     def __post_init__(self) -> None:
         _normalize_utc(self, "ts")
+
+
+@dataclass(frozen=True)
+class DayChange:
+    """The latest price against the previous session's close (the «Mappa dei settori» and
+    «Titoli più mossi» of the Markets page; information only, never used for trading).
+    `ts` is the time of `last`."""
+
+    symbol: str
+    last: Decimal
+    prev_close: Decimal
+    ts: datetime
+    provider: str
+
+    def __post_init__(self) -> None:
+        _normalize_utc(self, "ts")
+
+    @property
+    def change_pct(self) -> Decimal:
+        return (self.last / self.prev_close - 1) * 100

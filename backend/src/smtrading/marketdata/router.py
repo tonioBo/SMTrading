@@ -19,6 +19,7 @@ from decimal import Decimal
 from typing import Any
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 # Importing the providers package registers every built-in provider in PROVIDERS, so router
@@ -33,7 +34,7 @@ from smtrading.connectors.service import (
     list_connectors,
     record_health,
 )
-from smtrading.instruments.models import AssetClass
+from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.instruments.service import canonical_symbol, get_instrument
 from smtrading.marketdata import serialization
 from smtrading.marketdata.bar_close import bar_is_closed, bars_cache_ttl
@@ -52,6 +53,7 @@ from smtrading.marketdata.types import (
     Bar,
     CalendarEvent,
     Capability,
+    DayChange,
     ExtendedQuote,
     Fundamentals,
     InstrumentHit,
@@ -72,6 +74,7 @@ BARS_COVERAGE_INTERVALS = 2
 BARS_CLOSED_MARKET_SLACK = timedelta(days=4)
 INSTANCE_MAX_AGE_S = 60
 RATE_LIMITED = "rate_limited"
+DAY_CHANGE_TTL_S = 300  # «Mappa dei settori» / «Titoli più mossi»: 5 minutes per symbol
 
 _MISS = object()
 
@@ -635,6 +638,82 @@ class MarketDataRouter:
                     Capability.quote, {"asset_class": str(asset_class), "symbols": list(pending)}
                 )
         return result
+
+    # ---------------------------------------------------------------- day changes
+
+    @_guard
+    async def get_day_changes(self, symbols: list[str]) -> dict[str, DayChange]:
+        """The latest price against the previous close for many symbols at once (the Markets
+        page's sector map and movers; information only). Each symbol is cached
+        DAY_CHANGE_TTL_S; the missing ones go to the quote providers in priority order that
+        have a batch call (`get_day_changes`: Alpaca snapshots, Yahoo v7 quote), in chunks of
+        `day_change_chunk`, each chunk costing `day_change_cost` rate-limit tokens. A refused
+        token, an error or an unknown symbol only leaves symbols out: never raises for them.
+        Unknown or inactive symbols are ignored."""
+        wanted = list(dict.fromkeys(canonical_symbol(s) for s in symbols if s and s.strip()))
+        if not wanted:
+            return {}
+        key = "daychg:" + hashlib.sha1(",".join(sorted(wanted)).encode()).hexdigest()
+        return await self._single_flight(key, lambda: self._day_changes(wanted))
+
+    async def _day_changes(self, wanted: list[str]) -> dict[str, DayChange]:
+        out: dict[str, DayChange] = {}
+        try:
+            cached = await self._redis.mget([f"daychg:{s}" for s in wanted])
+        except Exception:
+            log.warning("day change cache read failed", exc_info=True)
+            cached = [None] * len(wanted)
+        for sym, raw in zip(wanted, cached, strict=True):
+            if raw is None:
+                continue
+            try:
+                out[sym] = serialization.loads(
+                    raw.decode() if isinstance(raw, bytes) else raw, DayChange)
+            except Exception:
+                log.warning("day change cache entry for %s undecodable", sym, exc_info=True)
+        todo = [s for s in wanted if s not in out]
+        if not todo:
+            return out
+        async with self._sm() as session:
+            instrs = {
+                i.symbol: _Instr(i.symbol, i.asset_class, dict(i.provider_symbols or {}),
+                                 i.market, i.name)
+                for i in await session.scalars(select(Instrument).where(
+                    Instrument.symbol.in_(todo), Instrument.active.is_(True)))
+            }
+        for asset_class, group in self._by_class(instrs).items():
+            pending = {i.symbol: i for i in group}
+            for slot in await self._plan(asset_class, Capability.quote):
+                if not pending:
+                    break
+                p = slot.provider
+                if p is None or type(p).get_day_changes is DataProvider.get_day_changes \
+                        or p.day_change_chunk <= 0:
+                    continue
+                try:
+                    items = self._map_items(p, list(pending.values()))
+                except ProviderUnsupported:
+                    continue
+                for i in range(0, len(items), p.day_change_chunk):
+                    chunk = items[i:i + p.day_change_chunk]
+                    if not await self._acquire(slot, p.day_change_cost):
+                        log.info("day changes: %s rate limited", slot.name)
+                        break  # what is left goes to the next provider
+                    try:
+                        got = await asyncio.wait_for(
+                            p.get_day_changes(chunk), _batch_timeout(len(chunk)))
+                    except Exception as e:  # noqa: BLE001 - this chunk only, next provider
+                        log.warning("day changes from %s failed: %s", slot.name, _describe(e))
+                        continue
+                    for sym, _ in chunk:
+                        dc = got.get(sym)
+                        if dc is None or dc.prev_close <= 0 or sym not in pending:
+                            continue
+                        out[sym] = dc if dc.symbol == sym else replace(dc, symbol=sym)
+                        del pending[sym]
+                        await self._cache_write(
+                            f"daychg:{sym}", serialization.dumps(out[sym]), DAY_CHANGE_TTL_S)
+        return out
 
     @_guard
     async def get_extended_quote(self, symbol: str) -> ExtendedQuote | None:
