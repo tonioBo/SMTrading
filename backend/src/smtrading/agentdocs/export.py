@@ -1,7 +1,10 @@
 """Export of the «Istruzioni agenti» for Paperclip's "External" instructions mode.
 
 For each agent slug: `<dir>/<slug>/AGENTS.md` = what «Copia istruzioni complete» produces
-(common + "---" + role). Files are written atomically and only when the content changed.
+(common + "---" + role), the file Paperclip loads at every run; next to it `APPENDICE.md` =
+the appendix (slug `appendice`, the rare cases), which Paperclip does not load: the agents
+read its sections on demand (`get_instructions_appendix`, or this file). Files are written
+atomically and only when the content changed.
 A missing/unwritable folder is a warning (logged once) and a status error: it never fails
 the caller (a document save)."""
 
@@ -16,16 +19,18 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.agentdocs import service
+from smtrading.agentdocs.appendix import APPENDIX_FILE, APPENDIX_SLUG
 from smtrading.common.config import get_settings
 
 log = logging.getLogger(__name__)
 
-NON_AGENT_SLUGS = ("readme", "common")
+NON_AGENT_SLUGS = ("readme", "common", APPENDIX_SLUG)
 PAPERCLIP_ROOT = "/smtrading-instructions"
 ENTRY_FILE = "AGENTS.md"
 README_TEXT = (
-    "Questi file sono generati automaticamente da SMTrading (uno per agente, in "
-    "<agente>/AGENTS.md: regole comuni + ruolo). Non modificarli qui: verrebbero "
+    "Questi file sono generati automaticamente da SMTrading (per ogni agente, in "
+    "<agente>/AGENTS.md: regole comuni + ruolo; in <agente>/APPENDICE.md: l'appendice dei "
+    "casi rari). Non modificarli qui: verrebbero "
     "sovrascritti. Per cambiare le istruzioni usa la pagina «Istruzioni agenti» del portale; "
     "ogni salvataggio aggiorna questi file.\n"
 )
@@ -78,21 +83,29 @@ def _write_if_changed(path: Path, content: str) -> bool:
     return True
 
 
-def _write_all(root: Path, files: dict[str, str]) -> int:
+def _write_all(root: Path, files: dict[str, str], appendix: str | None) -> int:
     if not root.is_dir():
         raise FileNotFoundError(f"la cartella {root} non esiste")
     _write_if_changed(root / "README.txt", README_TEXT)
     for slug, content in files.items():
         _write_if_changed(root / slug / ENTRY_FILE, content)
+        if appendix is not None:
+            _write_if_changed(root / slug / APPENDIX_FILE, appendix)
     return len(files)
 
 
-async def agent_files(session: AsyncSession) -> dict[str, str]:
-    rows = await service._current(session)
-    bodies = {d.slug: v.body for d, v in rows}
+async def _bodies(session: AsyncSession) -> dict[str, str]:
+    return {d.slug: v.body for d, v in await service._current(session)}
+
+
+def _agent_files(bodies: dict[str, str]) -> dict[str, str]:
     common = bodies.get("common", "")
     return {slug: full_instructions(common, body) for slug, body in bodies.items()
             if slug not in NON_AGENT_SLUGS}
+
+
+async def agent_files(session: AsyncSession) -> dict[str, str]:
+    return _agent_files(await _bodies(session))
 
 
 async def export_all(session: AsyncSession) -> dict[str, Any]:
@@ -101,8 +114,9 @@ async def export_all(session: AsyncSession) -> dict[str, Any]:
     root = export_dir()
     exported, error = 0, None
     try:
-        files = await agent_files(session)
-        exported = await asyncio.to_thread(_write_all, Path(root), files)
+        bodies = await _bodies(session)
+        exported = await asyncio.to_thread(_write_all, Path(root), _agent_files(bodies),
+                                           bodies.get(APPENDIX_SLUG))
     except Exception as exc:  # noqa: BLE001 - an export problem must not fail a save
         error = f"Esportazione non riuscita: {exc}"
         if not _warned:

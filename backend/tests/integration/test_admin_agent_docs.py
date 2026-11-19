@@ -19,6 +19,7 @@ DOCS_DIR = Path(__file__).resolve().parents[3] / "docs" / "paperclip-agents"
 SLUGS = {
     "readme", "common", "ceo", "portfolio-manager", "risk-manager", "execution-supervisor",
     "market-analyst", "news-analyst", "quant-researcher", "performance-auditor", "notifier",
+    "appendice",
 }
 
 
@@ -38,7 +39,7 @@ async def _bodies(session, slug):
         .order_by(AgentDocVersion.version)))
 
 
-async def test_seed_loads_the_eleven_docs_at_version_1(db_session):
+async def test_seed_loads_the_twelve_docs_at_version_1(db_session):
     from smtrading.seed import run_seed
 
     await run_seed(db_session)
@@ -49,6 +50,7 @@ async def test_seed_loads_the_eleven_docs_at_version_1(db_session):
     assert docs["common"].title == "Regole comuni"
     assert docs["ceo"].title == "CEO SMTrading"
     assert docs["notifier"].title == "Notifier"
+    assert docs["appendice"].title == "Appendice delle istruzioni (casi rari)"
     assert await _bodies(db_session, "ceo") == [(DOCS_DIR / "01-ceo.md").read_text("utf-8")]
 
 
@@ -288,7 +290,7 @@ async def test_mutating_routes_require_csrf(admin, method, path, body):
 
 # --- export for Paperclip (External instructions mode) ------------------------------------
 
-AGENTS = sorted(SLUGS - {"readme", "common"})
+AGENTS = sorted(SLUGS - {"readme", "common", "appendice"})
 
 
 @pytest.fixture
@@ -311,6 +313,12 @@ async def test_startup_exports_the_copy_composition(export_dir, admin):
     assert sorted(p.name for p in export_dir.iterdir()) == sorted(AGENTS + ["README.txt"])
     ceo = (DOCS_DIR / "01-ceo.md").read_text("utf-8")
     assert (export_dir / "ceo" / "AGENTS.md").read_text("utf-8") == _composed(common, ceo)
+    appendix = (DOCS_DIR / "10-appendice.md").read_text("utf-8")
+    for slug in AGENTS:  # the appendix next to every entry file, never composed into it
+        assert sorted(p.name for p in (export_dir / slug).iterdir()) == ["AGENTS.md",
+                                                                          "APPENDICE.md"]
+        assert (export_dir / slug / "APPENDICE.md").read_text("utf-8") == appendix
+        assert "## §C1 ·" not in (export_dir / slug / "AGENTS.md").read_text("utf-8")
     assert "Non modificarli" in (export_dir / "README.txt").read_text("utf-8")
     assert oct((export_dir / "ceo").stat().st_mode & 0o777) == "0o755"
     assert oct((export_dir / "ceo" / "AGENTS.md").stat().st_mode & 0o777) == "0o644"
@@ -346,6 +354,17 @@ async def test_common_change_re_exports_all_agents(export_dir, admin):
     assert r.status_code == 200
     for slug in AGENTS:
         assert (export_dir / slug / "AGENTS.md").read_text("utf-8").startswith("# Regole\nNUOVE\n\n---\n\n")
+
+
+async def test_appendix_change_re_exports_every_appendix_only(export_dir, admin):
+    agents_md = {s: (export_dir / s / "AGENTS.md").read_text("utf-8") for s in AGENTS}
+    r = await admin.client.put("/api/agent-docs/appendice",
+                               json={"body": "# Appendice\n\n## §C1 · Uno\nnuovo", "base_version": 1})
+    assert r.status_code == 200
+    for slug in AGENTS:
+        assert (export_dir / slug / "APPENDICE.md").read_text("utf-8") == (
+            "# Appendice\n\n## §C1 · Uno\nnuovo")
+        assert (export_dir / slug / "AGENTS.md").read_text("utf-8") == agents_md[slug]
 
 
 async def test_failed_save_does_not_export(export_dir, admin):
