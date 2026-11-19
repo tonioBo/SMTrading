@@ -91,9 +91,9 @@ export function EquityHistoryCard({ portfolioId }: { portfolioId?: string }) {
             />
             <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm" aria-label="Legenda">
               {total && (
-                <li className="flex items-center gap-1.5 font-medium" title={`somma dei portafogli · ${CHANGE_HINT}`}>
+                <li className="flex items-center gap-1.5 font-medium" title={`somma dei portafogli conteggiati negli obiettivi · ${CHANGE_HINT}`}>
                   <span className="inline-block h-1 w-4 rounded-full" style={{ background: TOTAL_COLOR }} />
-                  <span>Totale</span>
+                  <span>{lines.find((l) => l.key === TOTAL_KEY)?.label ?? "Totale"}</span>
                   <Pnl value={total.change_eur} pct={total.change_pct} />
                 </li>
               )}

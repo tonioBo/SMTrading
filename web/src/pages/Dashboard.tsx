@@ -404,6 +404,12 @@ export default function Dashboard() {
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <Kpi title="Equity totale">
               <Money value={data.total_equity_eur} />
+              {(data.excluded_from_goals ?? []).length > 0 && (
+                <p className="mt-1 text-xs font-normal text-muted" data-testid="excluded-from-goals">
+                  di cui fuori dagli obiettivi:{" "}
+                  {data.excluded_from_goals!.map((p) => `${p.name} ${p.equity_eur == null ? "n.d." : formatMoney(p.equity_eur, "EUR")}`).join(", ")}
+                </p>
+              )}
             </Kpi>
             <Kpi title="P&L del giorno">
               <Pnl value={data.day_pnl_eur} pct={data.day_pnl_pct} />

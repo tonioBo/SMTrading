@@ -529,9 +529,10 @@ async def test_dashboard_lists_the_held_symbols_of_live_portfolios(server):
     assert "ZZHELD" in body["held_symbols"] and "ZZFLAT" not in body["held_symbols"]
 
 
-async def test_dashboard_totals_leave_out_portfolios_out_of_totals(server):
-    """A portfolio with in_totals false keeps its row and curve (flag `in_totals`) but is
-    left out of the totals and of the total equity series."""
+async def test_dashboard_totals_count_every_portfolio_and_list_those_out_of_goals(server):
+    """«Equity totale» and the total equity series count every non-archived portfolio,
+    also one with in_totals false (owner decision); that one is listed in
+    `excluded_from_goals` and left out of `goals_equity_eur`."""
     from smtrading.portfolios.service import create_portfolio
     from smtrading.risk.models import EquitySnapshot, SnapshotKind
 
@@ -554,7 +555,10 @@ async def test_dashboard_totals_leave_out_portfolios_out_of_totals(server):
     by_name = {p["name"]: p for p in body["portfolios"]}
     assert (by_name["Squadra"]["in_totals"], by_name["Sfida"]["in_totals"]) == (True, False)
     assert by_name["Sfida"]["equity_eur"] == "1000"
-    assert body["total_equity_eur"] == "2000"
+    assert body["total_equity_eur"] == "3000"  # both, as before p23
+    assert body["goals_equity_eur"] == "2000"
+    assert body["excluded_from_goals"] == [
+        {"id": str(sfida.id), "name": "Sfida", "equity_eur": "1000"}]
     curve = (await server.client.get("/api/dashboard/equity", params={"period": "1d"})).json()
     assert sorted(p["name"] for p in curve["portfolios"]) == ["Sfida", "Squadra"]
-    assert curve["series"][-1]["equity_eur"] == "2000"
+    assert curve["series"][-1]["equity_eur"] == "3000"

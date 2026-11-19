@@ -252,16 +252,16 @@ def register(mcp: MCPServer) -> None:
     async def list_portfolios() -> CallToolResult:
         """The portfolios this agent may use: [{id, name, base_currency, status,
         in_totals, permission}] where permission is "read" or "trade" (trade implies
-        read); in_totals false: the portfolio is left out of the team's totals and of the
-        total goals (it has only its own goals)."""
+        read); in_totals false: the portfolio is left out of the team's total goals (it
+        has only its own goals)."""
         return await run_tool("list_portfolios", {}, _list_portfolios)
 
     @mcp.tool(structured_output=False)
     async def get_portfolio(portfolio_id: str) -> CallToolResult:
         """Mark-to-market valuation of a portfolio (EUR, cents): cash, equity_eur,
         exposure_eur, margin requirements, buying_power_eur, margin_level, positions,
-        stale_symbols, plus status, in_totals (false: left out of the team's totals and of
-        the total goals), reduce_only_reason, leverage and the day P&L
+        stale_symbols, plus status, in_totals (false: left out of the team's total goals),
+        reduce_only_reason, leverage and the day P&L
         (day_pnl_eur / day_pnl_pct vs today's day_open equity, net of deposits and
         withdrawals; null before the day_open is taken)."""
         params = {"portfolio_id": portfolio_id}

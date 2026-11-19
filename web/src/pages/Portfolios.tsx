@@ -39,7 +39,7 @@ const baseColumns: Column<Portfolio>[] = [
         {p.in_totals === false && (
           <span
             className="ml-2 inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted"
-            title="Non conteggiato nei totali e negli obiettivi complessivi"
+            title="Non conteggiato negli obiettivi complessivi (resta nell'equity totale)"
           >
             fuori dai totali
           </span>

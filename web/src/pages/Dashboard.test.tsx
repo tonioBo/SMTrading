@@ -188,6 +188,18 @@ describe("Dashboard", () => {
     expect(screen.getByText(/Avviso di margine · Alfa/)).toBeInTheDocument();
   });
 
+  it("«Equity totale» counts every portfolio and names those out of the goals", async () => {
+    current = {
+      ...dashboard,
+      total_equity_eur: "13382.02",
+      goals_equity_eur: "12345.60",
+      excluded_from_goals: [{ id: "p9", name: "Portafoglio Sfida", equity_eur: "1036.42" }],
+    };
+    renderApp("/");
+    expect(await screen.findByText("13.382,02 €")).toBeInTheDocument();
+    expect(screen.getByTestId("excluded-from-goals")).toHaveTextContent("di cui fuori dagli obiettivi: Portafoglio Sfida 1.036,42 €");
+  });
+
   it("shows amber and red worker heartbeat states", async () => {
     current = { ...dashboard, worker_heartbeat_age_s: 60 };
     const { unmount } = renderApp("/");

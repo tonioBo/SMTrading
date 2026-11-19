@@ -16,9 +16,12 @@ an admin session (router level). Read-only: nothing is committed.
   previous value, seeded with its last snapshot before the window: no false dips). Every
   series is also capped to 500 points.
 
-A portfolio out of the totals (`in_totals` false, listed with that flag) is left out of
-`total_equity_eur`, the day P&L totals and the total equity series; it keeps its own
-row and curve.
+`total_equity_eur`, the day P&L totals and the total equity series count every
+non-archived portfolio (owner decision), also those out of the goals (`in_totals` false,
+listed with that flag): those are listed in `excluded_from_goals` ([{id, name,
+equity_eur}], equity null when it could not be valued) and `goals_equity_eur` is the
+equity of the portfolios counted in the goals (the total goals, the piano, the weekly
+goal and the «Andamento» «Totale» line leave the others out).
 
 Archived portfolios (Task 13) are left out of everything: totals, list, margin alerts and
 the equity curves (their whole history).
@@ -56,7 +59,6 @@ from smtrading.portfolios.models import (
     Portfolio,
     PortfolioStatus,
     live_portfolio_ids,
-    total_portfolio_ids,
 )
 from smtrading.portfolios.queries import day_pnl_detail
 from smtrading.positions.models import Position
@@ -107,6 +109,8 @@ async def dashboard(session: DbSession, redis: RedisClient, qs: Quotes) -> dict[
     total_pnl = Decimal(0)
     pct_pnl = Decimal(0)  # the % covers only the portfolios with a defined day %
     pct_base = Decimal(0)
+    goals_equity = Decimal(0)
+    excluded: list[dict[str, Any]] = []
     items = []
     links = await portfolio_links(session, portfolios)
     for p in portfolios:
@@ -117,6 +121,8 @@ async def dashboard(session: DbSession, redis: RedisClient, qs: Quotes) -> dict[
             "stale_symbols": [], "error": None, "in_totals": p.in_totals,
         }
         items.append(item)
+        if not p.in_totals:
+            excluded.append({"id": str(p.id), "name": p.name, "equity_eur": None})
         try:
             v = await value_portfolio(session, qs, p.id, redis=redis)
             pnl, pct, base = await day_pnl_detail(session, qs, p, v)
@@ -127,8 +133,10 @@ async def dashboard(session: DbSession, redis: RedisClient, qs: Quotes) -> dict[
             equity_eur=to_jsonable(v.equity_eur), day_pnl_eur=to_jsonable(pnl),
             day_pnl_pct=to_jsonable(pct), stale_symbols=list(v.stale_symbols),
         )
-        if not p.in_totals:  # listed, left out of the totals
-            continue
+        if p.in_totals:
+            goals_equity += v.equity_eur
+        else:  # counted in the totals, left out of the goals
+            excluded[-1]["equity_eur"] = to_jsonable(quantize_money(v.equity_eur, "EUR"))
         total_equity += v.equity_eur
         if pnl is not None:
             total_pnl += pnl
@@ -160,6 +168,8 @@ async def dashboard(session: DbSession, redis: RedisClient, qs: Quotes) -> dict[
         "total_equity_eur": to_jsonable(quantize_money(total_equity, "EUR")),
         "day_pnl_eur": to_jsonable(quantize_money(total_pnl, "EUR")),
         "day_pnl_pct": to_jsonable(total_pct),
+        "goals_equity_eur": to_jsonable(quantize_money(goals_equity, "EUR")),
+        "excluded_from_goals": excluded,
         "portfolios": items,
         "modes": modes,
         "mode_counts": mode_counts((p, links.get(p.broker_link_id)) for p in portfolios),
@@ -251,12 +261,10 @@ async def dashboard_equity(session: DbSession, period: str = "1m") -> dict[str, 
 
     per_portfolio: dict[Any, list[tuple[datetime, Decimal]]] = {}
     by_bucket: dict[datetime, dict[Any, Decimal]] = {}
-    counted = set(await session.scalars(total_portfolio_ids()))
     for pid, ts, equity in rows:
         per_portfolio.setdefault(pid, []).append((ts, equity))
-        if pid in counted:
-            by_bucket.setdefault(ts, {})[pid] = equity
-    latest = {pid: eq for pid, eq in seeds.items() if pid in counted}
+        by_bucket.setdefault(ts, {})[pid] = equity
+    latest = dict(seeds)
     total: list[tuple[datetime, Decimal]] = []
     for ts in sorted(by_bucket):
         latest.update(by_bucket[ts])

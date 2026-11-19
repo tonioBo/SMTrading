@@ -119,8 +119,8 @@ function SettingsForm({
 
 /**
  * «Conteggiato nei totali e negli obiettivi complessivi» (`in_totals`), saved on change:
- * unchecked, the portfolio is left out of the dashboard totals, the «Totale» line and the
- * total goals / piano. The API refuses re-counting a portfolio already under its own piano
+ * unchecked, the portfolio stays in the dashboard «Equity totale» but is left out of the
+ * total goals / piano and of the «Totale (obiettivi)» line. The API refuses re-counting a portfolio already under its own piano
  * while a total piano is active: its message is shown.
  */
 function InTotalsToggle({ portfolio }: { portfolio: Portfolio }) {
@@ -143,7 +143,7 @@ function InTotalsToggle({ portfolio }: { portfolio: Portfolio }) {
         />
         Conteggiato nei totali e negli obiettivi complessivi
       </label>
-      <p className="text-xs text-muted">Se tolto, il portafoglio resta visibile ma non entra nei totali della dashboard né negli obiettivi complessivi.</p>
+      <p className="text-xs text-muted">Se tolto, il portafoglio resta nell'equity totale della dashboard ma non entra negli obiettivi complessivi, nel piano sul totale né nella linea «Totale (obiettivi)» dell'andamento.</p>
       {patch.error && (
         <p role="alert" className="text-sm text-loss">
           {errorMessage(patch.error)}

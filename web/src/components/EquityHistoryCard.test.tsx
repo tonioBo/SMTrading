@@ -175,6 +175,8 @@ describe("historyLines with the goals list", () => {
     const eur = historyLines(h, "eur", false);
     expect(eur.map((l) => l.key)).toEqual(["p1", "p2", "p4", "total", "goal-g1", "goal-g2"]);
     expect(eur.find((l) => l.key === "total")!.points.map((p) => p.v)).toEqual([1250, 1245]);
+    expect(eur.find((l) => l.key === "total")!.label).toBe("Totale (obiettivi)");
+    expect(historyLines(withGoals(), "eur", false).find((l) => l.key === "total")!.label).toBe("Totale");
     const pct = historyLines(h, "pct", false);
     // base = 250 + 1000 (the counted portfolios' first points): 1279.08 / 1250 - 1
     expect(pct.find((l) => l.key === "goal-g1")!.points[0].v).toBeCloseTo(2.3264, 4);

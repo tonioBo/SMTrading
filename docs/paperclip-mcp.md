@@ -120,7 +120,7 @@ Passa i numeri come stringhe per mantenere la precisione esatta (es. `"qty": "0.
 Gli agenti non possono creare portafogli, depositare, prelevare o modificare i limiti.
 
 - `list_portfolios`: i portafogli utilizzabili dall'agente, con il permesso (`read`/`trade`)
-  e `in_totals` (falso: il portafoglio è fuori dai totali e dagli obiettivi complessivi).
+  e `in_totals` (falso: il portafoglio è fuori dagli obiettivi complessivi del team).
   I portafogli archiviati dall'amministratore non compaiono e, cercati per id, danno
   `NOT_FOUND` (l'assegnazione resta e torna valida quando vengono ripristinati).
   Il campo `mode` (anche in `get_portfolio`) indica la modalita': `simulazione` (nessun broker

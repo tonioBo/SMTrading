@@ -121,7 +121,12 @@ export interface MarginAlert {
 }
 
 export interface Dashboard {
+  /** every non-archived portfolio, also those out of the goals */
   total_equity_eur: string;
+  /** the equity of the portfolios counted in the goals (`in_totals`) */
+  goals_equity_eur?: string;
+  /** the portfolios left out of the goals (`in_totals` false); equity null when not valued */
+  excluded_from_goals?: { id: string; name: string; equity_eur: string | null }[];
   day_pnl_eur: string;
   day_pnl_pct: string | null;
   portfolios: DashboardPortfolio[];

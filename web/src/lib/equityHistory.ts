@@ -64,7 +64,8 @@ function flat(key: string, label: string, tag: string, color: string, v: number,
 /**
  * The chart lines of a response: each portfolio (in € or % since its first point), the
  * «Totale» of the portfolios counted in the totals (dashboard with more than one:
- * `totalPoints`, bold; a portfolio with `in_totals` false is drawn but not summed), then
+ * `totalPoints`, bold; a portfolio with `in_totals` false is drawn but not summed, and the
+ * line is then labelled «Totale (obiettivi)»), then
  * the goals, dashed and labelled, from the period start (or the first point) to now (or
  * the period end).
  * - Dashboard: the `goals` list only (the weekly goal is its total goal there, so the
@@ -108,7 +109,9 @@ export function historyLines(data: EquityHistory, unit: Unit, single: boolean): 
 
   if (!single && eurSeries.length > 1) {
     const points = totalPoints(eurSeries, unit);
-    if (points.length > 0) lines.push({ key: TOTAL_KEY, label: "Totale", color: TOTAL_COLOR, points, bold: true });
+    // «Totale (obiettivi)» when a portfolio with data is left out of it (out of the goals)
+    const label = data.portfolios.some((p) => p.series.length > 0 && !inTotals(p)) ? "Totale (obiettivi)" : "Totale";
+    if (points.length > 0) lines.push({ key: TOTAL_KEY, label, color: TOTAL_COLOR, points, bold: true });
   }
   const hasTotal = lines.some((l) => l.key === TOTAL_KEY);
 
