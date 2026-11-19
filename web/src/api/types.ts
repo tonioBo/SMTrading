@@ -887,6 +887,55 @@ export interface Reconciliation {
   diffs: ReconciliationDiff[];
 }
 
+// --- «Riconciliazione» (GET /api/reconciliation, plan 21) ------------------------------
+
+export type CheckStatus = "ok" | "warning" | "mismatch" | "unverifiable";
+
+/** One thing compared: a position, the cash, an open order. */
+export interface CheckItem {
+  key: string;
+  kind: "position" | "cash" | "order";
+  label: string;
+  symbol: string | null;
+  ours: string | null;
+  broker: string | null;
+  /** ours − broker */
+  diff: string | null;
+  status: CheckStatus;
+  note: string;
+  /** consecutive checks in mismatch (mismatch items only) */
+  streak?: number;
+  since?: string;
+  /** the owner and the agents were alerted by this check */
+  alerted?: boolean;
+  portfolio_id?: string;
+}
+
+export interface ReconciliationCheck {
+  id: number;
+  ts: string;
+  status: CheckStatus;
+  trigger: "schedule" | "manual";
+  error: string | null;
+  meta: { currency?: string; orders_checked?: boolean; link_portfolios?: number; link_name?: string };
+  counts: Record<CheckStatus, number>;
+  /** the latest check only (not in the history) */
+  items?: CheckItem[];
+}
+
+export interface ReconciliationPortfolio {
+  portfolio_id: string;
+  portfolio_name: string;
+  linked: boolean;
+  link: { id: string; name: string; kind: string; live: boolean; enabled: boolean } | null;
+  latest: ReconciliationCheck | null;
+  last_verified_at: string | null;
+}
+
+export interface ReconciliationDetail extends ReconciliationPortfolio {
+  history: ReconciliationCheck[];
+}
+
 // --- Telegram notifications (GET /api/telegram, outbox, decisions) -------------------
 
 /** skipped: paused for more than 24 h and not critical, never sent (old news) */

@@ -20,6 +20,7 @@ import Decisions from "@/pages/Decisions";
 import Notifications from "@/pages/Notifications";
 import PortfolioDetail from "@/pages/PortfolioDetail";
 import Portfolios from "@/pages/Portfolios";
+import Reconciliation from "@/pages/Reconciliation";
 import Positions from "@/pages/Positions";
 import Risk from "@/pages/Risk";
 import Settings from "@/pages/Settings";
@@ -53,6 +54,7 @@ export const routes: RouteObject[] = [
           { path: "rischio", element: <Risk /> },
           { path: "connettori", element: <Connectors /> },
           { path: "broker", element: <Brokers /> },
+          { path: "riconciliazione", element: <Reconciliation /> },
           { path: "registro-denaro-reale", element: <LiveAudit /> },
           { path: "notifiche", element: <Notifications /> },
           { path: "decisioni", element: <Decisions /> },

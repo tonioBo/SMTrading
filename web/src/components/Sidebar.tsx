@@ -15,6 +15,7 @@ import {
   LayoutDashboard,
   Percent,
   Radar,
+  Scale,
   ScrollText,
   Settings,
   ShieldAlert,
@@ -70,6 +71,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Sistema",
     items: [
       { to: "/broker", label: "Broker", icon: Landmark },
+      { to: "/riconciliazione", label: "Riconciliazione", icon: Scale },
       { to: "/connettori", label: "Connettori", icon: Cable },
       { to: "/commissioni", label: "Commissioni", icon: Percent },
       { to: "/rischio", label: "Rischio e margine", icon: Gauge },
