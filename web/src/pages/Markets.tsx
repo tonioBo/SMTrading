@@ -1,19 +1,27 @@
-import { Plus, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, ChevronUp, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useStreamStatus } from "@/api/hooks/connectors";
 import {
-  INSTRUMENTS_PAGE,
   useAddMarketClosure,
   useAutoAdd,
   useCreateInstrument,
   useDeleteMarketClosure,
-  useInstruments,
   useMarketClosures,
   useMarketsStatus,
   useQuotes,
   useSetAutoAdd,
   useTrack,
 } from "@/api/hooks/markets";
+import { LIST_PAGE, useFacets, useInstrumentList, usePageDayChanges, usePageQuotes } from "@/api/hooks/marketsExplore";
+import type { InstrumentSort, QuickFilter } from "@/api/marketsTypes";
+import { InstantSearch } from "@/components/markets/InstantSearch";
+import { InstrumentSheet } from "@/components/markets/InstrumentSheet";
+import { DEFAULT_UNIVERSES, INDEX_LABELS, QUICK_LABELS, UNSECTORED } from "@/components/markets/labels";
+import { MarketOverview } from "@/components/markets/MarketOverview";
+import { Pct } from "@/components/Pct";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ASSET_CLASS_LABELS } from "@/lib/labels";
+import { useMarketsPrefs, type MarketsPrefs } from "@/lib/marketsPrefs";
 import type { AssetClass, Instrument, InstrumentCreate, MarketClosure, MarketClosureCreate, MarketClosureKind, MarketStatus, Quote, TrackSource } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
@@ -198,16 +206,84 @@ function AutoAddToggle() {
   );
 }
 
-function InstrumentsSection({ sources, markets }: { sources: Record<string, TrackSource[]>; markets: string[] }) {
+type SortKey = InstrumentSort | "change";
+
+function SortHeader({ label, k, prefs, onSort, className }: { label: string; k: SortKey; prefs: MarketsPrefs; onSort: (k: SortKey) => void; className?: string }) {
+  const active = prefs.sort === k ? prefs.dir : null;
+  return (
+    <TableHead className={className} aria-sort={active ? (active === "asc" ? "ascending" : "descending") : undefined}>
+      <button type="button" onClick={() => onSort(k)} className="inline-flex items-center gap-1 hover:text-fg">
+        {label}
+        {active === "asc" && <ArrowUp className="h-3 w-3" />}
+        {active === "desc" && <ArrowDown className="h-3 w-3" />}
+      </button>
+    </TableHead>
+  );
+}
+
+function InstrumentsSection({
+  sources,
+  markets,
+  prefs,
+  setPrefs,
+  onOpen,
+}: {
+  sources: Record<string, TrackSource[]>;
+  markets: string[];
+  prefs: MarketsPrefs;
+  setPrefs: (p: Partial<MarketsPrefs>) => void;
+  onOpen: (symbol: string) => void;
+}) {
   const [query, setQuery] = useState("");
-  const [market, setMarket] = useState("");
   const [offset, setOffset] = useState(0);
   const admin = useIsAdmin();
   const [adding, setAdding] = useState(false);
   const [note, setNote] = useState<string | null>(null);
-  const { data, isLoading, isError } = useInstruments({ query: useDebounced(query.trim(), 250), market, offset });
+  const facets = useFacets();
+  const serverSort: InstrumentSort = prefs.sort === "change" ? "symbol" : prefs.sort;
+  const { data, isLoading, isError } = useInstrumentList({
+    query: useDebounced(query.trim(), 250),
+    asset_class: prefs.asset_class,
+    market: prefs.market,
+    sector: prefs.sector,
+    index: prefs.index,
+    quick: prefs.quick,
+    sort: serverSort,
+    dir: prefs.sort === "change" ? "asc" : prefs.dir,
+    offset,
+  });
+  const symbols = useMemo(() => (data?.items ?? []).map((i) => i.symbol), [data]);
+  const quotes = usePageQuotes(symbols);
+  const changes = usePageDayChanges(symbols);
   const track = useTrack();
   const total = data?.total ?? 0;
+  const filter = (patch: Partial<MarketsPrefs>) => {
+    setPrefs(patch);
+    setOffset(0);
+  };
+  const onSort = (k: SortKey) =>
+    setPrefs(prefs.sort !== k ? { sort: k, dir: k === "change" ? "desc" : "asc" } : { dir: prefs.dir === "asc" ? "desc" : "asc" });
+
+  const price = (sym: string): string | null => {
+    const q = quotes.data?.[sym];
+    if (q && !("error" in q)) return q.last ?? midPrice(q.bid, q.ask);
+    return changes.data?.[sym]?.last ?? null;
+  };
+  const change = (sym: string): string | null => changes.data?.[sym]?.change_pct ?? null;
+  const rows = useMemo(() => {
+    const items = data?.items ?? [];
+    if (prefs.sort !== "change") return items;
+    const v = (sym: string) => {
+      const c = changes.data?.[sym]?.change_pct;
+      return c == null ? null : Number(c);
+    };
+    return [...items].sort((a, b) => {
+      const x = v(a.symbol);
+      const y = v(b.symbol);
+      if (x == null || y == null) return x == null ? (y == null ? 0 : 1) : -1; // unknown last
+      return prefs.dir === "asc" ? x - y : y - x;
+    });
+  }, [data, changes.data, prefs.sort, prefs.dir]);
 
   function toggle(symbol: string, follow: boolean) {
     setNote(null);
@@ -222,40 +298,7 @@ function InstrumentsSection({ sources, markets }: { sources: Record<string, Trac
     );
   }
 
-  const columns: Column<Instrument>[] = [
-    { key: "symbol", header: "Simbolo", sortValue: (i) => i.symbol, cell: (i) => <span className="num font-medium">{i.symbol}</span> },
-    { key: "name", header: "Nome", sortValue: (i) => i.name, cell: (i) => i.name },
-    { key: "class", header: "Classe", sortValue: (i) => i.asset_class, cell: (i) => i.asset_class },
-    { key: "market", header: "Mercato", sortValue: (i) => i.market, cell: (i) => i.market },
-    { key: "ccy", header: "Valuta", cell: (i) => i.currency },
-    { key: "source", header: "Origine", sortValue: (i) => instrumentSourceLabel(i), cell: (i) => <span className="text-xs">{instrumentSourceLabel(i)}</span> },
-    {
-      key: "followed",
-      header: "Seguito da",
-      cell: (i) => <span className="text-xs text-muted">{sources[i.symbol]?.length ? sourceLabels(sources[i.symbol]) : "—"}</span>,
-    },
-    {
-      key: "act",
-      header: "",
-      align: "right",
-      cell: (i) => {
-        const byAdmin = sources[i.symbol]?.includes("admin") ?? false;
-        if (!admin) return null;
-        return (
-          <Button
-            type="button"
-            size="sm"
-            variant={byAdmin ? "outline" : "default"}
-            aria-label={`${byAdmin ? "Smetti di seguire" : "Segui"} ${i.symbol}`}
-            disabled={track.isPending}
-            onClick={() => toggle(i.symbol, !byAdmin)}
-          >
-            {byAdmin ? "Smetti di seguire" : "Segui"}
-          </Button>
-        );
-      },
-    },
-  ];
+  const filtered = !!(prefs.asset_class || prefs.market || prefs.sector || prefs.index || prefs.quick);
   return (
     <Card className="mt-6">
       <CardHeader className="flex-row items-center justify-between space-y-0">
@@ -271,25 +314,33 @@ function InstrumentsSection({ sources, markets }: { sources: Record<string, Trac
         <AdminFieldset>
           <AutoAddToggle />
         </AdminFieldset>
-        <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Filtri rapidi">
+          {(Object.keys(QUICK_LABELS) as QuickFilter[]).map((q) => (
+            <Button key={q} type="button" size="sm" variant={prefs.quick === q ? "default" : "outline"} aria-pressed={prefs.quick === q} onClick={() => filter({ quick: prefs.quick === q ? "" : q })}>
+              {QUICK_LABELS[q]}
+            </Button>
+          ))}
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
           <Input
             aria-label="Cerca strumento"
-            placeholder="Cerca per simbolo o nome"
+            placeholder="Filtra per simbolo o nome"
+            className="sm:col-span-2 lg:col-span-1"
             value={query}
             onChange={(e) => {
               setQuery(e.target.value);
               setOffset(0);
             }}
           />
-          <select
-            aria-label="Filtra per mercato"
-            className={`${selectClass} sm:w-56`}
-            value={market}
-            onChange={(e) => {
-              setMarket(e.target.value);
-              setOffset(0);
-            }}
-          >
+          <select aria-label="Filtra per classe" className={selectClass} value={prefs.asset_class} onChange={(e) => filter({ asset_class: e.target.value as AssetClass | "" })}>
+            <option value="">Tutte le classi</option>
+            {ASSET_CLASSES.map((c) => (
+              <option key={c} value={c}>
+                {ASSET_CLASS_LABELS[c] ?? c}
+              </option>
+            ))}
+          </select>
+          <select aria-label="Filtra per mercato" className={selectClass} value={prefs.market} onChange={(e) => filter({ market: e.target.value })}>
             <option value="">Tutti i mercati</option>
             {markets.map((m) => (
               <option key={m} value={m}>
@@ -297,7 +348,30 @@ function InstrumentsSection({ sources, markets }: { sources: Record<string, Trac
               </option>
             ))}
           </select>
+          <select aria-label="Filtra per settore" className={selectClass} value={prefs.sector} onChange={(e) => filter({ sector: e.target.value })}>
+            <option value="">Tutti i settori</option>
+            {(facets.data?.sectors ?? []).map((x) => (
+              <option key={x.sector} value={x.sector}>
+                {x.sector} ({x.count})
+              </option>
+            ))}
+            <option value={UNSECTORED}>{UNSECTORED}</option>
+          </select>
+          <select aria-label="Filtra per indice" className={selectClass} value={prefs.index} onChange={(e) => filter({ index: e.target.value })}>
+            <option value="">Tutti gli indici</option>
+            {(facets.data?.indices ?? Object.entries(INDEX_LABELS).map(([code, label]) => ({ code, label, count: null }))).map((x) => (
+              <option key={x.code} value={x.code}>
+                {x.label}
+                {x.count != null ? ` (${x.count})` : ""}
+              </option>
+            ))}
+          </select>
         </div>
+        {filtered && (
+          <Button type="button" size="sm" variant="outline" onClick={() => filter({ asset_class: "", market: "", sector: "", index: "", quick: "" })}>
+            Azzera filtri
+          </Button>
+        )}
         {isError && <p className="text-loss">Impossibile caricare gli strumenti</p>}
         {track.error && (
           <p role="alert" className="text-sm text-loss">
@@ -309,17 +383,96 @@ function InstrumentsSection({ sources, markets }: { sources: Record<string, Trac
             {note}
           </p>
         )}
-        <DataTable aria-label="Strumenti" columns={columns} rows={data?.items} rowKey={(i) => i.symbol} loading={isLoading} empty="Nessuno strumento trovato" />
+        <Table aria-label="Strumenti" aria-busy={isLoading || undefined}>
+          <TableHeader>
+            <TableRow>
+              <SortHeader label="Simbolo" k="symbol" prefs={prefs} onSort={onSort} />
+              <SortHeader label="Nome" k="name" prefs={prefs} onSort={onSort} />
+              <SortHeader label="Settore" k="sector" prefs={prefs} onSort={onSort} className="hidden md:table-cell" />
+              <SortHeader label="Classe" k="asset_class" prefs={prefs} onSort={onSort} className="hidden lg:table-cell" />
+              <SortHeader label="Mercato" k="market" prefs={prefs} onSort={onSort} className="hidden sm:table-cell" />
+              <TableHead className="text-right">Prezzo</TableHead>
+              <SortHeader label="Var." k="change" prefs={prefs} onSort={onSort} className="text-right" />
+              <SortHeader label="Origine" k="created_at" prefs={prefs} onSort={onSort} className="hidden xl:table-cell" />
+              <TableHead className="hidden xl:table-cell">Seguito da</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading && !data ? (
+              <TableRow>
+                <TableCell colSpan={10} className="py-8 text-center text-muted">
+                  Caricamento…
+                </TableCell>
+              </TableRow>
+            ) : rows.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={10} className="py-8 text-center text-muted">
+                  Nessuno strumento trovato
+                </TableCell>
+              </TableRow>
+            ) : (
+              rows.map((i) => {
+                const byAdmin = sources[i.symbol]?.includes("admin") ?? false;
+                const p = price(i.symbol);
+                return (
+                  <TableRow key={i.symbol}>
+                    <TableCell>
+                      <button type="button" className="num font-medium hover:underline" aria-label={`Scheda ${i.symbol}`} onClick={() => onOpen(i.symbol)}>
+                        {i.symbol}
+                      </button>
+                    </TableCell>
+                    <TableCell className="max-w-[14rem]">
+                      <span className="block truncate">{i.name}</span>
+                      {i.sector && <span className="block truncate text-xs text-muted md:hidden">{i.sector}</span>}
+                    </TableCell>
+                    <TableCell className="hidden md:table-cell">
+                      <span className="text-xs">{i.sector ?? "—"}</span>
+                      {(i.indices ?? []).length > 0 && <span className="block text-xs text-muted">{(i.indices ?? []).map((c) => INDEX_LABELS[c] ?? c).join(", ")}</span>}
+                    </TableCell>
+                    <TableCell className="hidden lg:table-cell">{ASSET_CLASS_LABELS[i.asset_class] ?? i.asset_class}</TableCell>
+                    <TableCell className="hidden sm:table-cell">{i.market}</TableCell>
+                    <TableCell className="num text-right">{p ? formatQty(p) : "—"}</TableCell>
+                    <TableCell className="text-right">
+                      <Pct value={change(i.symbol)} tone />
+                    </TableCell>
+                    <TableCell className="hidden xl:table-cell">
+                      <span className="text-xs">{instrumentSourceLabel(i)}</span>
+                    </TableCell>
+                    <TableCell className="hidden xl:table-cell">
+                      <span className="text-xs text-muted">{sources[i.symbol]?.length ? sourceLabels(sources[i.symbol]) : "—"}</span>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {admin && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={byAdmin ? "outline" : "default"}
+                          aria-label={`${byAdmin ? "Smetti di seguire" : "Segui"} ${i.symbol}`}
+                          disabled={track.isPending}
+                          onClick={() => toggle(i.symbol, !byAdmin)}
+                        >
+                          {byAdmin ? "Smetti di seguire" : "Segui"}
+                        </Button>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+        <p className="text-xs text-muted">Prezzi della pagina aggiornati ogni minuto; la variazione è rispetto alla chiusura precedente (ordinata all&apos;interno della pagina).</p>
         {total > 0 && (
           <div className="flex items-center justify-between text-sm text-muted">
             <span>
-              {offset + 1}–{Math.min(offset + INSTRUMENTS_PAGE, total)} di {total}
+              {offset + 1}–{Math.min(offset + LIST_PAGE, total)} di {total}
             </span>
             <div className="flex gap-2">
-              <Button type="button" size="sm" variant="outline" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - INSTRUMENTS_PAGE))}>
+              <Button type="button" size="sm" variant="outline" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - LIST_PAGE))}>
                 Precedenti
               </Button>
-              <Button type="button" size="sm" variant="outline" disabled={offset + INSTRUMENTS_PAGE >= total} onClick={() => setOffset(offset + INSTRUMENTS_PAGE)}>
+              <Button type="button" size="sm" variant="outline" disabled={offset + LIST_PAGE >= total} onClick={() => setOffset(offset + LIST_PAGE)}>
                 Successivi
               </Button>
             </div>
@@ -588,17 +741,37 @@ function ClosuresSection({ markets }: { markets: string[] }) {
 export default function Markets() {
   const stream = useStreamStatus();
   const hours = useMarketsStatus();
+  const facets = useFacets();
+  const [prefs, setPrefs] = useMarketsPrefs();
+  const [sheet, setSheet] = useState<string | null>(null);
   const tracked = useMemo(() => stream.data?.tracked ?? [], [stream.data]);
   const sources = useMemo(() => stream.data?.tracked_sources ?? {}, [stream.data]);
   const markets = (hours.data ?? []).filter((m) => m.tradable !== false).map((m) => m.market);
   const closureMarkets = (hours.data ?? []).map((m) => m.market).filter((m) => !NO_CALENDAR_MARKETS.includes(m));
+  const universes = facets.data?.universes ?? DEFAULT_UNIVERSES;
   return (
     <div>
       <PageHeader title="Mercati" />
+      <InstantSearch onOpen={setSheet} />
+      <Card className="mt-6">
+        <CardHeader className="flex-row items-center justify-between space-y-0">
+          <CardTitle>Mappa dei settori e titoli più mossi</CardTitle>
+          <Button type="button" size="sm" variant="outline" aria-expanded={prefs.mapOpen} onClick={() => setPrefs({ mapOpen: !prefs.mapOpen })}>
+            {prefs.mapOpen ? <ChevronUp className="mr-1 h-4 w-4" /> : <ChevronDown className="mr-1 h-4 w-4" />}
+            {prefs.mapOpen ? "Nascondi" : "Mostra"}
+          </Button>
+        </CardHeader>
+        {prefs.mapOpen && (
+          <CardContent>
+            <MarketOverview universe={prefs.universe} universes={universes} onUniverse={(universe) => setPrefs({ universe })} onOpen={setSheet} />
+          </CardContent>
+        )}
+      </Card>
+      <InstrumentsSection sources={sources} markets={markets} prefs={prefs} setPrefs={setPrefs} onOpen={setSheet} />
       <QuotesSection tracked={tracked} />
-      <InstrumentsSection sources={sources} markets={markets} />
       <HoursSection rows={hours.data} />
       <ClosuresSection markets={closureMarkets} />
+      <InstrumentSheet symbol={sheet} onClose={() => setSheet(null)} />
     </div>
   );
 }
