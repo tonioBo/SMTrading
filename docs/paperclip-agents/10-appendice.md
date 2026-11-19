@@ -583,6 +583,39 @@ torna. Al ritorno: ciclo completo di recupero (§6).
 - **Strategia approvata**: decisione `strategy` del CEO con `details.status = "approvata"`,
   `details.strategy_id` e `details.backtest_id`.
 
+## §C19 · Riconciliazione con il broker (`broker.reconciliation_mismatch`)
+
+SMTrading confronta ogni 15 minuti durante le sedute (e una volta dopo la chiusura USA)
+posizioni, liquidità e ordini aperti di ogni portafoglio con il conto presso il broker, solo
+in lettura. Una differenza che resta per **2 controlli di fila** arriva nel feed del
+portafoglio come `broker.reconciliation_mismatch` (`data`: `key`, `kind` `position` |
+`cash` | `order`, `symbol`, `ours` = SMTrading, `broker`, `diff`, `note`, `streak`); gli
+umani hanno già l'avviso su Telegram (al massimo uno al giorno per voce). **Nessuna
+correzione automatica**: SMTrading non tocca nulla e nessun agente «riallinea» posizioni,
+liquidità o ordini di sua iniziativa.
+
+- **RM** (decide, nello stesso ciclo): verifica con `get_positions`, `list_orders` e
+  `get_portfolio`. Se il feed mostra nel frattempo il fill o l'annullamento che spiega la
+  differenza, nessuna azione (annotalo). Altrimenti:
+  - posizione diversa o sconosciuta: veto su aperture e aumenti di quel simbolo nel
+    portafoglio (`log_decision` `risk_rule`) finché la differenza resta; la protezione
+    resta sulla qty di SMTrading;
+  - stop o target aperto in SMTrading ma assente al broker: la posizione può essere
+    scoperta, task «PROTEGGI · <nome portafoglio> · <simbolo>» all'ES (§RM2);
+  - ordine al broker sconosciuto a SMTrading, liquidità al broker inferiore, differenza
+    che resta al ciclo dopo: `ESCALATION <ESC-id> · <COD> · riconciliazione` al Notifier, CEO
+    in copia (`critical` se riguarda una posizione aperta o la liquidità, altrimenti
+    `warning`): sul conto possono intervenire solo gli amministratori;
+  - registra `log_decision` `other` con `details.ref` = la `key` e i valori `ours` e `broker`.
+- **ES**: agisce solo su task del RM e solo per la protezione («PROTEGGI», «MODIFICA STOP»,
+  `cancel_order` di un'uscita doppia indicata dal RM); mai ordini per riallineare quantità o
+  liquidità.
+- **PM**: nessuna proposta sul simbolo finché il RM non toglie il veto.
+- **Notifier**: invia l'ESCALATION come le altre, senza ripetere l'avviso già arrivato agli
+  umani.
+- Quando SMTrading e il broker tornano a coincidere la voce sparisce; se la differenza
+  torna, torna anche l'avviso.
+
 ## §CEO1 · Task rari: DISACCORDO, ESCALATION in copia, SMTrading non raggiungibile, SEGNALAZIONE STRUMENTO, NON CONFORMITÀ
 
 4. **"ESCALATION"** ricevuta in copia (menzione, solo informativa): non devi rispondere né

@@ -144,7 +144,7 @@ posizione elencata.
    `place_order` per aprire.
 3. **Sempre `preview_order` prima** di ogni apertura; se `ok: false` non inviare.
 4. Usa come `client_order_id` l'id della proposta; per un reinvio dopo correzione aggiungi
-   `-r1`, `-r2` (lo stesso id restituisce lo stesso errore).
+   `-r1`, `-r2`.
 5. Mai cambiare quantità, prezzi o lato del task. Solo arrotondamenti al `lot_size`/tick,
    sempre verso il **basso** per la quantità, dichiarati nella risposta.
 6. Non eseguire una proposta non più attuale (oltre la validità o l'intervallo di prezzo
@@ -153,10 +153,10 @@ posizione elencata.
    restituisci al RM.
 8. Con trading halt, kill switch, `reduce_only` o `locked`: solo chiusure e riduzioni.
 9. Non annullare mai stop o target di una posizione aperta se non per chiuderla o sostituirli
-   su ordine del RM.
+   su ordine del RM. Differenze col broker: solo su task del RM (§C19).
 10. Un solo invio per task: niente tentativi ripetuti alla cieca. Dopo un rifiuto, riporta e
     attendi istruzioni.
-11. Verifica sempre lo stato con `get_order` dopo l'invio; il feed lo mostra solo dopo ~3 s.
+11. Verifica sempre lo stato con `get_order` dopo l'invio.
 12. Ogni rifiuto o deviazione (non eseguito, arrotondato) → `log_decision` `other`.
 
 ## Collaborazione
