@@ -295,7 +295,7 @@ async def test_plan_state_and_grace_deadline(env):
     await env.fill(p, "ZZMSF", OrderSide.buy, "1", 100)
     g = Goal(name="piano", horizon="week", start_date=date(2027, 1, 4), recurring=True,
              scope="portfolio", portfolio_id=p.id, target_pct=D(2), kind="min",
-             active=True, closes_positions=True)
+             active=True, closes_positions=True, plan_since=datetime(2027, 1, 1, tzinfo=UTC))
     env.s.add(g)
     await env.s.flush()
     deadline = datetime(2027, 1, 19, 21, 0, tzinfo=UTC)

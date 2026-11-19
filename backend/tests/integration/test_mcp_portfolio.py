@@ -711,7 +711,7 @@ async def test_get_positions_plan_grace_until(mcp_server, mcp_call, book):
     async with _Db(mcp_server.db_url) as s:
         g = Goal(name="piano", horizon="week", start_date=date(2027, 1, 4), recurring=True,
                  scope="total", target_pct=D(2), kind="min", active=True,
-                 closes_positions=True)
+                 closes_positions=True, plan_since=datetime(2027, 1, 1, tzinfo=UTC))
         s.add(g)
         await s.flush()
         s.add(PlanClosure(goal_id=g.id, period_start=date(2027, 1, 11),
