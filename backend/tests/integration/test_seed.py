@@ -157,6 +157,27 @@ async def test_seed_catalog_insert_only(db_session):
     assert sui.provider_symbols["yahoo"] == "SUI20947-USD"
 
 
+async def test_seed_catalog_adds_only_the_missing_rows(db_session):
+    """An install seeded from an older catalog gets the new rows at the next deploy."""
+    from sqlalchemy import delete
+
+    from smtrading.instruments.catalog import seed_catalog
+    from smtrading.instruments.models import Instrument
+
+    await run_seed(db_session)
+    new = ["HYPE-USD", "IVV", "LHA.DE", "SWDA.MI"]  # rows added to the catalog later
+    await db_session.execute(delete(Instrument).where(Instrument.symbol.in_(new)))
+    aapl = await db_session.get(Instrument, "AAPL")
+    aapl.name = "Edited"
+    await db_session.flush()
+    assert await seed_catalog(db_session) == len(new)
+    assert await seed_catalog(db_session) == 0  # idempotent
+    await db_session.refresh(aapl)
+    assert aapl.name == "Edited"
+    ivv = await db_session.get(Instrument, "IVV")
+    assert (ivv.market, ivv.currency, ivv.lot_size) == ("NYSE", "USD", Decimal("0.000001"))
+
+
 async def test_seed_risk_never_overwrites_existing(db_session):
     from smtrading.risk.models import RiskProfile
 
