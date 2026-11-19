@@ -49,6 +49,7 @@ from smtrading.common.money import decimal_to_str
 from smtrading.engine.models import OPEN_STATUSES, OrderStatus
 from smtrading.engine.quotesource import MemoQuoteSource
 from smtrading.engine.service import cancel_order, list_orders
+from smtrading.goals.service import check_in_totals
 from smtrading.ledger.models import Account, Journal, JournalLine, JournalType
 from smtrading.ledger.service import reverse_journal
 from smtrading.mcp.dto import (
@@ -179,7 +180,7 @@ PORTFOLIO_FIELDS = (
     "id", "name", "base_currency", "leverage", "maintenance_margin_pct",
     "warning_margin_pct", "slippage_bps", "status", "timezone", "risk_profile_id",
     "reduce_only_reason", "reduce_only_until", "created_at", "broker_link_id",
-    "archived_at", "archived_by",
+    "archived_at", "archived_by", "in_totals",
 )
 
 
@@ -250,6 +251,7 @@ async def create(
                 leverage=leverage, slippage_bps=slippage, timezone=tz,
                 author_id=admin.email, risk_profile_id=body.risk_profile_id,
             )
+            portfolio.in_totals = body.in_totals
     except IntegrityError:  # a concurrent creation with the same name won the race
         if await _name_taken(session, name):
             raise _duplicate_name(name) from None
@@ -302,6 +304,12 @@ async def patch_portfolio(
                     {"field": "maintenance_margin_pct"
                      if "maintenance_margin_pct" in fields else "warning_margin_pct"},
                 )
+            if "in_totals" in fields:
+                if body.in_totals is None:
+                    raise _invalid("in_totals", "in_totals deve essere vero o falso")
+                if body.in_totals and not p.in_totals:
+                    await check_in_totals(session, p.id)
+                p.in_totals = body.in_totals
             if "status" in fields:
                 status = parse_enum(PortfolioStatus, body.status, "status")
                 if status is None or status.value not in _PATCH_STATUSES:

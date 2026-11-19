@@ -63,6 +63,7 @@ class PortfolioCreateIn(BaseModel):
     slippage_bps: int = 0
     timezone: str = "Europe/Rome"
     risk_profile_id: uuid.UUID | None = None
+    in_totals: StrictBool = True
 
 
 class PortfolioPatchIn(BaseModel):
@@ -76,6 +77,8 @@ class PortfolioPatchIn(BaseModel):
     risk_profile_id: uuid.UUID | None = None
     timezone: str | None = None
     status: str | None = None
+    # false: left out of the total (goals on the total, dashboard totals)
+    in_totals: StrictBool | None = None
 
 
 class CashMoveIn(BaseModel):
