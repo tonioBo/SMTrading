@@ -107,6 +107,8 @@ class AlpacaProvider(DataProvider):
     requires_key = True
     config_fields = ("key_id", "secret_key")  # the Alpaca account's API keys
     default_rate_limit_per_min = 200
+    # its feed (fiscal.ai) tags "QQQ" on Questcorp Mining (CSE), "T" on TELUS (TSX), ...
+    news_tags_unverified = True
 
     def _default_symbol(self, symbol: str, asset_class: AssetClass) -> str:
         if asset_class == AssetClass.us_equity:

@@ -384,3 +384,9 @@ def test_quotes_need_a_valid_timestamp(provider):
     built = provider._build([("AAPL", "AAPL")], {"AAPL": {"bp": 1, "ap": 2,
                                                          "t": "2026-11-10T15:00:00Z"}}, {})
     assert built["AAPL"].ts == datetime(2026, 11, 10, 15, 0, tzinfo=UTC)
+
+
+def test_news_tags_are_unverified():
+    """Alpaca's feed tags bare tickers from any exchange ("QQQ" on Questcorp Mining, CSE):
+    the router checks each tag against the item's text."""
+    assert AlpacaProvider.news_tags_unverified is True

@@ -12,10 +12,11 @@ from smtrading.common.db import make_engine
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.connectors.models import Connector, ProviderPriority
 from smtrading.instruments.models import AssetClass, Instrument
+from smtrading.marketdata import serialization
 from smtrading.marketdata.cache import write_quote
 from smtrading.marketdata.provider import DataProvider, ProviderUnsupported
 from smtrading.marketdata.registry import PROVIDERS
-from smtrading.marketdata.router import MarketDataRouter
+from smtrading.marketdata.router import MarketDataRouter, _cache_key
 from smtrading.marketdata.types import (
     Bar,
     CalendarEvent,
@@ -897,6 +898,88 @@ async def test_news_empty_falls_through_to_next_provider(env, monkeypatch):
 
     monkeypatch.setattr(FakeA, "get_news", empty)
     assert await router.get_news(["ETH-USD"]) == []
+
+
+async def _add_qqq(sm) -> None:
+    async with sm() as s:
+        s.add(Instrument(symbol="QQQ", name="Invesco QQQ Trust", asset_class=AssetClass.us_equity,
+                         market="us", currency="USD"))
+        row = await s.get(ProviderPriority, (AssetClass.us_equity, Capability.news))
+        row.providers = ["fake_b", "fake_a"]
+        await s.commit()
+
+
+# shaped like Alpaca's real answer for symbols=QQQ (fiscal.ai, 2026-11-07): the Canadian
+# Questcorp Mining (CSE: QQQ) tagged with the bare ticker of the Invesco QQQ ETF
+_QUESTCORP = NewsItem(
+    "116605848", datetime(2026, 11, 7, 14, 4, 43, tzinfo=UTC),
+    "Questcorp Mining and Riverside Resources Commence Phase 2B Exploration at La Union Project",
+    "Questcorp Mining Inc. and its joint venture partner, Riverside Resources Inc., have "
+    "initiated the Phase 2B exploration program at the La Union Project in Sonora, Mexico.",
+    "https://www.globenewswire.com/news-release/2026/11/06/3397381/0/en/x.html",
+    "fiscal.ai", ("QQQ",),
+)
+_QQQ_ETF = NewsItem(
+    "116700001", datetime(2026, 11, 18, 22, 43, tzinfo=UTC),
+    "Invesco QQQ Is 14% Below Its October Record", None, None, "fiscal.ai", ("QQQ",),
+)
+
+
+async def test_news_unverified_tags_need_the_instrument_in_the_text(env, monkeypatch):
+    """A feed whose tags carry no exchange (Alpaca) keeps an item for a symbol only when the
+    text names that instrument: the Questcorp Mining item tagged "QQQ" is dropped, the
+    Invesco QQQ one stays; the other providers' tags are trusted as they are."""
+    router, sm = env
+    await _add_qqq(sm)
+
+    async def tagged(self, symbols, limit):
+        type(self).calls.append(("news", [s for s, _ in symbols]))
+        return [_QUESTCORP, _QQQ_ETF]
+
+    monkeypatch.setattr(FakeB, "get_news", tagged)
+    monkeypatch.setattr(FakeB, "news_tags_unverified", True)
+    assert [n.id for n in await router.get_news(["QQQ"])] == [_QQQ_ETF.id]
+
+    monkeypatch.setattr(FakeB, "news_tags_unverified", False)
+    await router._redis.flushdb()
+    assert [n.id for n in await router.get_news(["QQQ"])] == [_QQQ_ETF.id, _QUESTCORP.id]
+
+
+async def test_news_only_foreign_items_fall_through_to_next_provider(env, monkeypatch):
+    """When every item of an unverified feed is about another company with the same bare
+    ticker, the answer counts as empty and the next provider (real QQQ news) is asked."""
+    router, sm = env
+    await _add_qqq(sm)
+
+    async def foreign(self, symbols, limit):
+        type(self).calls.append(("news", [s for s, _ in symbols]))
+        return [_QUESTCORP]
+
+    monkeypatch.setattr(FakeB, "get_news", foreign)
+    monkeypatch.setattr(FakeB, "news_tags_unverified", True)
+    news = await router.get_news(["QQQ"])
+    assert _QUESTCORP.id not in {n.id for n in news}
+    assert "fake_a-1" in {n.id for n in news}
+    assert FakeB.calls == [("news", ["QQQ"])] and FakeA.calls == [("news", ["QQQ"])]
+
+
+async def test_news_cache_from_before_the_relevance_check_is_not_served(env, monkeypatch):
+    """Answers cached before the check (wrong Questcorp tag inside) live under the old key:
+    they are never read again, the provider is asked and its answer filtered."""
+    router, sm = env
+    await _add_qqq(sm)
+    old_key = _cache_key(Capability.news, {"asset_class": AssetClass.us_equity,
+                                           "symbols": ["QQQ"], "limit": 20})
+    await router._redis.set(old_key, serialization.dumps([_QUESTCORP]), ex=300)
+
+    async def tagged(self, symbols, limit):
+        type(self).calls.append(("news", [s for s, _ in symbols]))
+        return [_QUESTCORP, _QQQ_ETF]
+
+    monkeypatch.setattr(FakeB, "get_news", tagged)
+    monkeypatch.setattr(FakeB, "news_tags_unverified", True)
+    assert [n.id for n in await router.get_news(["QQQ"])] == [_QQQ_ETF.id]
+    assert FakeB.calls == [("news", ["QQQ"])]
 
 
 async def test_daily_bar_closed_after_the_session_and_cache_follows(env, monkeypatch):

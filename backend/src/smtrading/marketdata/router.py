@@ -44,6 +44,7 @@ from smtrading.marketdata.cache import (
     read_quote_meta,
     write_quote,
 )
+from smtrading.marketdata.news_relevance import mentions
 from smtrading.marketdata.provider import DataProvider, ProviderUnsupported
 from smtrading.marketdata.ratelimit import acquire
 from smtrading.marketdata.registry import PROVIDERS
@@ -81,6 +82,7 @@ class _Instr:
     asset_class: AssetClass
     provider_symbols: dict
     market: str | None = None  # the session rule of daily/weekly bars (bar_close)
+    name: str | None = None  # the catalog name (news relevance)
 
     def override(self, provider: str) -> str | None:
         return self.provider_symbols.get(provider)
@@ -364,7 +366,7 @@ class MarketDataRouter:
                     continue
                 inst = await get_instrument(session, sym)
                 out[sym] = _Instr(sym, inst.asset_class, dict(inst.provider_symbols or {}),
-                                  inst.market)
+                                  inst.market, inst.name)
         return out
 
     async def _cache_read(self, key: str) -> str | None:
@@ -734,8 +736,9 @@ class MarketDataRouter:
         if not symbols:
             return []
         items = await self._per_group(
-            Capability.news, symbols, {"limit": limit}, CACHE_TTL["news"],
-            lambda group: lambda p: p.get_news(self._map_items(p, group), limit),
+            # "v": cache entries from before the relevance check are not reused
+            Capability.news, symbols, {"limit": limit, "v": 2}, CACHE_TTL["news"],
+            lambda group: lambda p: self._provider_news(p, group, limit),
             _dumps_list, _loads_list(NewsItem),
             # an empty answer is not final: ask the next provider (all empty -> empty)
             coverage=lambda result: (bool(result), 0),
@@ -747,6 +750,23 @@ class MarketDataRouter:
                 seen.add(n.id)
                 unique.append(n)
         return unique[:limit]
+
+    async def _provider_news(
+        self, p: DataProvider, group: list[_Instr], limit: int
+    ) -> list[NewsItem]:
+        items = await p.get_news(self._map_items(p, group), limit)
+        if not p.news_tags_unverified:
+            return items
+        # bare-ticker tags: keep a symbol only when the text names that instrument (the
+        # Questcorp Mining item tagged "QQQ" is not about the Invesco QQQ ETF)
+        names = {i.symbol: i.name for i in group}
+        kept: list[NewsItem] = []
+        for n in items:
+            text = f"{n.headline}\n{n.summary or ''}"
+            syms = tuple(s for s in n.symbols if mentions(text, s, names.get(s)))
+            if syms:
+                kept.append(n if syms == n.symbols else replace(n, symbols=syms))
+        return kept
 
     @_guard
     async def get_calendar(
