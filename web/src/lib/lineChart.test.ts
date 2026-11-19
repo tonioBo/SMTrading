@@ -1,21 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chartNumber, nearestIndex, niceTicks, timeLabel, toPctPoints } from "@/lib/lineChart";
-
-describe("niceTicks", () => {
-  it("covers the range with round steps", () => {
-    expect(niceTicks(98.3, 104.1, 4)).toEqual([98, 100, 102, 104, 106]);
-    const t = niceTicks(-0.8, 2.3, 4);
-    expect(t[0]).toBeLessThanOrEqual(-0.8);
-    expect(t[t.length - 1]).toBeGreaterThanOrEqual(2.3);
-    expect(t).toContain(0);
-  });
-  it("a flat range still gets ticks around the value", () => {
-    const t = niceTicks(250, 250, 4);
-    expect(t.length).toBeGreaterThanOrEqual(2);
-    expect(t[0]).toBeLessThan(250);
-    expect(t[t.length - 1]).toBeGreaterThan(250);
-  });
-});
+import { chartNumber, nearestIndex, signedNumber, timeLabel, toPctPoints } from "@/lib/lineChart";
 
 describe("toPctPoints", () => {
   it("is the change since the first point", () => {
@@ -47,6 +31,9 @@ describe("labels", () => {
   it("formats numbers the Italian way", () => {
     expect(chartNumber(1234.5, 2)).toBe("1.234,50");
     expect(chartNumber(-0.004, 2)).toBe("0,00");
+    expect(signedNumber(2, 2)).toBe("+2,00");
+    expect(signedNumber(-1.5, 1)).toBe("-1,5");
+    expect(signedNumber(0.001, 2)).toBe("0,00");
   });
   it("formats times in Europe/Rome", () => {
     const t = Date.parse("2026-11-16T08:05:00Z");

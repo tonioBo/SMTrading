@@ -1,7 +1,7 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
 import { instrumentsKey } from "@/api/hooks/markets";
-import type { DayChanges, Facets, InstrumentMarket, InstrumentOverview, InstrumentSort, MarketSnapshot, QuickFilter, SearchResponse } from "@/api/marketsTypes";
+import type { DayChanges, Facets, InstrumentBars, InstrumentMarket, InstrumentOverview, InstrumentSort, MarketSnapshot, QuickFilter, SearchResponse } from "@/api/marketsTypes";
 import type { AssetClass, InstrumentsPage, QuotesResponse } from "@/api/types";
 
 /** Rows per page of the «Strumenti» list: one batch quote request (at most 50) per page. */
@@ -91,6 +91,19 @@ export function useInstrumentMarket(symbol: string | null, timeframe: "1d" | "1h
     staleTime: PAGE_QUOTES_MS,
     refetchInterval: PAGE_QUOTES_MS,
     placeholderData: keepPreviousData,
+  });
+}
+
+/** The closed bars of a window (the «Diario operazioni» trade chart), cached a minute. */
+export function useInstrumentBars(symbol: string | null, timeframe: "1d" | "1h", start: Date, end: Date) {
+  // minute precision: an open trade's window (ending now) does not refetch on every render
+  const iso = (d: Date) => new Date(Math.floor(d.getTime() / 60_000) * 60_000).toISOString();
+  const params = new URLSearchParams({ timeframe, start: iso(start), end: iso(end) });
+  return useQuery({
+    queryKey: ["instrument-bars", symbol, params.toString()],
+    queryFn: () => apiFetch<InstrumentBars>(`/api/instruments/${encodeURIComponent(symbol!)}/bars?${params.toString()}`),
+    enabled: !!symbol,
+    staleTime: PAGE_QUOTES_MS,
   });
 }
 

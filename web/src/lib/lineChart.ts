@@ -1,6 +1,6 @@
 /**
- * Helpers of the hand-made SVG line chart (`components/LineChart.tsx`). The chart works on
- * numbers (`t` = epoch ms, `v` = value): the API decimals become numbers only for drawing
+ * Time series of the line/area charts (the «Andamento» of `components/charts/EquityChart`):
+ * numbers (`t` = epoch ms, `v` = value); the API decimals become numbers only for drawing
  * and its labels, which keep the it-IT formatting of format.ts.
  */
 import { formatDecimal } from "@/lib/format";
@@ -10,24 +10,19 @@ export interface ChartPoint {
   v: number;
 }
 
-/** About `count` round ticks (1, 2, 2.5, 5 × 10^n) covering [min, max]. */
-export function niceTicks(min: number, max: number, count = 4): number[] {
-  if (!Number.isFinite(min) || !Number.isFinite(max)) return [];
-  if (min === max) {
-    const pad = Math.abs(min) * 0.01 || 1;
-    min -= pad;
-    max += pad;
-  }
-  const raw = (max - min) / Math.max(1, count);
-  const mag = 10 ** Math.floor(Math.log10(raw));
-  const step = ([1, 2, 2.5, 5, 10].find((m) => m * mag >= raw) ?? 10) * mag;
-  const first = Math.floor(min / step) * step;
-  const last = Math.ceil(max / step) * step;
-  const out: number[] = [];
-  for (let i = 0; first + i * step <= last + step / 1e6; i++) {
-    out.push(Number((first + i * step).toPrecision(12)));
-  }
-  return out;
+export interface ChartLine {
+  key: string;
+  label: string;
+  color: string;
+  points: ChartPoint[];
+  /** reference lines (the goals): a labelled price line, left out of the tooltip */
+  reference?: boolean;
+  /** a short label of the line (the goal's price line, the index) */
+  tag?: string;
+  /** a thinner solid stroke (the indices compared by the goals) */
+  thin?: boolean;
+  /** a thicker stroke (the «Totale» of the portfolios) */
+  bold?: boolean;
 }
 
 /** The change in percent since the first point; empty without a positive first value. */
@@ -54,6 +49,12 @@ export function nearestIndex(points: ChartPoint[], t: number): number {
 /** A chart value with `places` decimals, it-IT separators ("1.234,50"). */
 export function chartNumber(value: number, places: number): string {
   return formatDecimal(value.toFixed(places), places);
+}
+
+/** chartNumber with "+" on positive values ("+2,00", "-1,50", "0,00"). */
+export function signedNumber(value: number, places: number): string {
+  const text = chartNumber(value, places);
+  return (value > 0 && /[1-9]/.test(text) ? "+" : "") + text;
 }
 
 const ROME = "Europe/Rome";

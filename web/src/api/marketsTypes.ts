@@ -42,6 +42,8 @@ export interface InstrumentOverview {
     status: string;
     created_at: string;
   }[];
+  /** our latest executions on it, newest first (the chart's markers) */
+  fills?: { id: string; order_id: string; portfolio_id: string; portfolio_name: string; side: "buy" | "sell"; qty: string; price: string; role: string | null; ts: string }[];
   watchlists: { agent: string; watchlist: string }[];
   strategies: { ref: string; name: string; type: string | null; timeframe: string | null; portfolios: string[] }[];
   decisions: { id: number; kind: string; summary: string; created_at: string }[];
@@ -70,12 +72,30 @@ export interface DayChange {
   provider: string;
 }
 
+/** A bar of the sheet's chart (OHLCV; old cached answers had the close only). */
+export interface InstrumentBar {
+  ts: string;
+  open?: string;
+  high?: string;
+  low?: string;
+  close: string;
+  volume?: string;
+}
+
+/** `GET /api/instruments/{symbol}/bars`: the closed bars of a window (the trade chart). */
+export interface InstrumentBars {
+  symbol: string;
+  timeframe: "1d" | "1h";
+  bars: InstrumentBar[];
+  error: string | null;
+}
+
 export interface InstrumentMarket {
   symbol: string;
   timeframe: "1d" | "1h";
   quote: Quote | null;
   day_change: DayChange | null;
-  bars: { ts: string; close: string }[];
+  bars: InstrumentBar[];
   indicators: { close: string; ts: string; rsi14: string | null; sma20: string | null; sma50: string | null; atr14: string | null } | null;
   news: { id: string; ts: string; headline: string; url: string | null; source: string }[];
   next_earnings: { date: string; data: Record<string, unknown> } | null;
