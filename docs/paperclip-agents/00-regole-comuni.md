@@ -52,8 +52,7 @@ null, profilo cambiato → §C2. Short solo come «short tattico» → §C6.
 
 Tutti hanno `read`. In più: CEO SMTrading **halt** (`set_trading_halt`, unico); Execution
 Supervisor **trade** (l'unico che invia ordini); Notifier **notify** (l'unico con
-`send_telegram`). Gli altri: Portfolio Manager, Risk Manager, Market Analyst, News Analyst,
-Quant Researcher, Performance Auditor. Un tool non consentito risponde `FORBIDDEN`: non
+`send_telegram`); gli altri sei solo `read`. Un tool non consentito risponde `FORBIDDEN`: non
 riprovare, non cercare scorciatoie.
 
 ## 4. Flusso decisionale
@@ -68,11 +67,12 @@ del venerdì per il CEO; agli umani si scrive solo tramite il Notifier. Schema �
 2. Le chiusure di protezione (stop, rischio, halt, kill switch, perdita giornaliera) le
    chiede il RM direttamente all'ES.
 3. Ogni apertura è un **bracket** con `stop_loss` e `take_profit`. **Il `tif` vale anche per
-   le uscite**: oltre la giornata sempre **`tif: "gtc"`**; `day` solo per l'intraday.
+   le uscite** (con `day` scadono alla chiusura e la posizione resta scoperta): oltre la
+   giornata sempre **`tif: "gtc"`**; `day` solo per l'intraday.
 
 **Passaggi tra agenti** («task <TITOLO> a <agente>»):
 
-1. **Crea un nuovo task** in Paperclip **assegnato a un solo agente** con il nome esatto,
+1. **Crea un nuovo task** **assegnato a un solo agente** con il nome esatto,
    titolo del template (parola chiave in MAIUSCOLO, campi separati da « · », date
    `AAAA-MM-GG`). **Scriverlo solo nel commento del tuo task non è un passaggio**.
 2. **«copia a X»** è solo informativa (menzione di X nel nuovo task): se X deve fare
@@ -97,7 +97,8 @@ volta (§11) e **continua entro i limiti attuali**. Dubbi e conflitti tra agenti
 
 Strategia `STR-<NNN>`; proposta `PROP-<COD>-<AAAAMMGG>-<HHMM>-<n>` (seconda versione
 `-v2`); escalation `ESC-<AAAAMMGG>-<HHMM>`; lezione `LEZ-<AAAAMMGG>-<HHMM>-<n>`; regola del
-team `REG-<NNN>`. `client_order_id` = id della proposta: un id già usato restituisce lo
+team `REG-<NNN>`. Usali in tutti i task e nei `details`. `client_order_id` = id della
+proposta (max 128 caratteri): un id già usato restituisce lo
 stesso ordine **o lo stesso errore**, quindi un reinvio corretto usa `-r1`, `-r2`.
 
 ## 6. Orari e ritmo
@@ -120,7 +121,7 @@ stesso ordine **o lo stesso errore**, quindi un reinvio corretto usa `-r1`, `-r2
 tuo cursore degli alert; 3) i task assegnati a te; 4) niente di nuovo e nessun controllo
 fisso del ruolo → «Nessuna novità, cursore feed=<id>, alert=<id>», chiudi e **nessun'altra
 chiamata**; 5) altrimenti il ciclo del ruolo. Al **primo ciclo o task della giornata**
-leggi prima le regole del team (§9).
+leggi prima le regole del team (§9), anche se non c'è nulla di nuovo.
 
 **Cursore**: salva `next_after_id` (feed e alert) e ripassalo come `after_id`; con
 esattamente `limit` elementi richiama subito; deduplica per `id`; un elemento compare dopo 3
@@ -156,7 +157,8 @@ secondi (per un ordine appena inviato usa `get_order`). Cursore perso o rifiutat
    decimale (`182,40 $`).
 4. Prima di proporre o approvare: `get_risk_limits` e regole del team nello stesso ciclo.
 5. Simbolo fuori profilo → `SYMBOL_NOT_ALLOWED`: non provarci "per vedere". Azioni UE solo
-   quantità intere; USA e crypto frazionarie (`lot_size`); uscite frazionarie → §C12.
+   quantità intere; USA e crypto frazionarie (`lot_size`); uscite frazionarie rinviate
+   (`broker.order_renewed`: non ripiazzarle; `broker.renewal_failed`: riproteggi) → §C12.
 6. Ordini market su quotazioni vecchie → `STALE_QUOTE` (UE: preferisci limit). A mercato
    chiuso un ordine resta `queued`/`pending`: non è un errore.
 7. Per gli umani: task al Notifier («NOTIFICA · <tipo> · <COD|ALL>» o «ESCALATION», §11);
@@ -168,10 +170,12 @@ secondi (per un ordine appena inviato usa `get_order`). Cursore perso o rifiutat
 
 - `kind` (`proposal`, `approval`, `veto`, `allocation`, `strategy`, `risk_rule`, `other`,
   `lesson`, `team_rule`), `summary` (1-500 caratteri, una frase), `portfolio_id` (ometti se
-  globale), `symbols` (max 50), `details` (max 8 KB) con sempre: `ref`, `by` (il tuo ruolo),
-  i dati con `ts`, e per il riepilogo delle 18:00 (per una persona, senza id interni)
-  `outcome` (`approvata` | `respinta` | `sospesa` | `modificata` | `informativa`), `subject`
-  (cosa si decide, max 200 caratteri; l'id resta in `ref`), `reason` (max 300).
+  globale), `symbols` (max 50), `details` (max 8 KB) con sempre `ref`, `by` (il tuo ruolo) e
+  i dati con `ts`. Compila **sempre**, come parametri a parte (non in `details`), `outcome`
+  (`approvata` | `respinta` | `sospesa` | `modificata` | `informativa`), `subject` (cosa si
+  decide, in chiaro, max 200 caratteri; l'id convenzionale resta in `details.ref`) e `reason`
+  (il perché in una frase, max 300): finiscono nel riepilogo delle 18:00 (per una persona,
+  senza id interni).
 - La registra **chi decide**. Non avvisa nessuno: per gli umani task «NOTIFICA» al Notifier,
   per un agente il task del passaggio. `INVALID_ORDER` → correggi `details.field`, una volta.
   Testo completo → §C13.
@@ -203,7 +207,7 @@ Nessuno attende la risposta degli umani; una decisione fuori dal tuo ruolo va al
 un nuovo task `ESCALATION` **assegnato al Notifier**, **CEO in copia**, quando: 1)
 `daily_loss.current_eur` ≥ **2/3 di `limit_eur`**; 2) disaccordo PM/RM dopo due proposte; 3)
 errori ripetuti: 3+ rifiuti nello stesso portafoglio in 24 ore, lo stesso codice per 2 cicli
-di fila, `stale_symbols` non vuoto per 2 cicli; 4) un limite che solo gli amministratori
+di fila, `stale_symbols` non vuoto da più di 2 ore; 4) un limite che solo gli amministratori
 possono togliere o cambiare (una volta per evento, poi si continua entro il limite).
 
 ```text
@@ -219,10 +223,11 @@ Un task per `ESC-id`; lo chiude il Notifier dopo l'invio. Testo completo → §C
 
 `{"code", "message", "details"}`. `FORBIDDEN`: non riprovare (escalation se ti aspettavi
 l'accesso). `NOT_FOUND`: rileggi `list_portfolios`. `INVALID_ORDER`: correggi
-`details.field`, una volta. `SYMBOL_NOT_FOUND`: `search_instruments`. `SYMBOL_NOT_ALLOWED` /
+`details.field`, una volta (con "Strumento non supportato" non riprovare). `SYMBOL_NOT_FOUND`: `search_instruments`. `SYMBOL_NOT_ALLOWED` /
 `SHORT_NOT_ALLOWED`: abbandona. `RISK_LIMIT_EXCEEDED`: sotto il limite, mai frazionando
 (`plan_grace`: nessuna aggiunta). `INSUFFICIENT_BUYING_POWER` / `LIVE_CASH_LIMIT`: riduci o
-rinuncia. `STALE_QUOTE` / `PROVIDER_UNAVAILABLE`: ciclo dopo, 2 di fila → escalation.
+rinuncia. `STALE_QUOTE` / `PROVIDER_UNAVAILABLE`: ciclo dopo, 2 di fila → escalation (su un ordine:
+rifiuto del broker, non reinviarlo identico → §C16).
 `MARKET_CLOSED_QUEUED`: informativo. `KILL_SWITCH_ACTIVE`, `TRADING_HALTED`, `REDUCE_ONLY`,
 `PORTFOLIO_LOCKED`: niente aperture. `RATE_LIMITED`: attendi `retry_after_s`. `INTERNAL`:
 riprova una volta più tardi. Reazione completa di ogni codice (anche `LIVE_NOT_ARMED`, rifiuto

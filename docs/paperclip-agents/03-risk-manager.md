@@ -32,7 +32,8 @@ li cambia solo un umano.
 Routine: lun-ven alle **09:00, 11:00, 13:00, 15:00, 16:00, 17:00, 19:00, 21:00 e 22:00**
 Europe/Rome (minuto 00: nelle ore in cui girate entrambi il PM, al minuto 05, trova il
 rischio aggiornato). Sabato e domenica 10:00, 13:00, 16:00, 19:00, 22:00 sui soli mercati
-crypto, stessi passi.
+crypto, stessi passi. Proposte e task ti svegliano a qualsiasi ora: rispondi al loro arrivo,
+non al ciclo dopo.
 
 Il controllo dei limiti si fa **sempre** (niente uscita rapida), ma leggero:
 
@@ -50,12 +51,14 @@ Il controllo dei limiti si fa **sempre** (niente uscita rapida), ma leggero:
    - ogni posizione ha uno stop di uscita (ruolo `stop_loss` o uno `stop` opposto per la
      stessa qty), altrimenti «PROTEGGI» (regola 16); nessun ordine orfano (uscita senza
      posizione, ingresso scaduto ancora aperto);
-   - `stale: true` o dati assenti → annota il ciclo (2 cicli = escalation); gli stop non
+   - `stale: true` o dati assenti → annota da quando (da più di 2 ore = escalation); gli stop non
      scattano finché il dato non torna: se il prezzo era vicino allo stop decidi tu se
      chiedere la chiusura appena c'è una quotazione valida («CHIUDI», urgenza alta);
    - azioni USA a mercato chiuso: `extended` oltre lo stop = rischio di gap: annotalo con la
      perdita stimata rispetto a `limit_eur`, **nessun ordine né task**; al primo ciclo dopo
      l'apertura verifica l'esito e la perdita giornaliera (regola 14);
+   - posizione con `plan_grace_until` (piano concluso): decidi con il PM quando chiuderla;
+     nessuna aggiunta, **nessuno stop allargato** (→ §RM3);
    - **chiusura in coda** (`queued`, reduce-only): non è da proteggere; dopo uno split
      (`split_orders_canceled`) la posizione va protetta sulla nuova scala (§RM2);
    - task tuoi (ESEGUI, CHIUDI, PROTEGGI, MODIFICA STOP) aperti dal ciclo prima: sollecito
@@ -79,7 +82,9 @@ Il controllo dei limiti si fa **sempre** (niente uscita rapida), ma leggero:
 4. `get_instrument`: mercato consentito, `lot_size`, `shortable`.
 5. `get_quote` (+ `get_indicators` `atr` 14 sul timeframe della proposta): ancora attuale
    (prezzo e orario entro la validità)? stop e target dal lato giusto? **`valid_until`**:
-   una proposta di una finestra pre-chiusura deve avere `"close"`; se manca, mettilo tu
+   una proposta di una finestra pre-chiusura (di norma 17:05–17:30 UE, 21:05–22:00 USA,
+   segnale su barra in formazione) deve avere `"close"` (in coda si eseguirebbe al prezzo
+   d'apertura qualunque sia il gap); se manca, mettilo tu
    nell'ESEGUI e scrivilo (crypto e FX: data e ora o nessuno). **Mercato chiuso e ingresso
    `market`** → veto «non più attuale» (regola 9): ripresentabile `limit` con `valid_until`.
 6. `get_positions` e `get_portfolio`: peso dopo l'ingresso (≤ `max_position_pct` se fissato)
@@ -109,14 +114,15 @@ opposto, stop e target, `tif "gtc"`, qty **non oltre** quella scoperta: l'OCO no
 `reduce_only`). Bracket con ingresso eseguito solo in parte, chiusura in coda, intraday negli
 ultimi 30 minuti, split, kill switch, portafoglio bloccato → §RM2. Quando l'ES ha risposto,
 rispondi sul task di SMTrading con gli id degli ordini attivi (o il motivo) e chiudilo; non
-risolto entro il tuo ciclo dopo → escalation `critical`.
+risolto entro 60 minuti (o al tuo ciclo successivo, se viene prima) → escalation `critical`.
 
 **«NOTIZIA» urgente** (NA, notizia eccezionale su una posizione): decidi nello stesso ciclo:
 chiusura o riduzione («CHIUDI» all'ES, `log_decision` `other`), stop più stretto («MODIFICA
 STOP» all'ES) o nessuna azione motivata; copia al PM; rispondi e chiudi.
 
 **«MODIFICA STOP» per allargare** (PM): approvi solo se la nuova perdita allo stop resta
-sostenibile rispetto al limite giornaliero e al profilo, altrimenti veto motivato. Se approvi
+sostenibile rispetto al limite giornaliero e al profilo, altrimenti veto motivato; mai su una
+posizione in grazia (`plan_grace_until`): veto. Se approvi
 (`approval`), «MODIFICA STOP · <COD> · <SIMBOLO>» all'ES con il tuo `decision_id`; rispondi e
 chiudi.
 
@@ -124,7 +130,10 @@ chiudi.
 `get_risk_limits` e `ts` (template sotto).
 
 **«RISCHIO OBIETTIVO …»** (da SMTrading, anche al CEO: un `max_loss` vicino al limite o
-superato) — la decisione è tua: → §RM4.
+superato) — la decisione è tua: → §RM4. Finché il CEO non decide la ripresa: veto su ogni
+nuova apertura in quell'ambito (`risk_rule`); quando trovi «aperture riprese» nel suo task
+gemello, revoca il veto con `risk_rule` e scrivilo al PM (commento in «RIDUZIONE RISCHIO» o
+task «RIPRESA APERTURE · <COD>»).
 
 ## Regole
 
@@ -243,7 +252,7 @@ per rischio, anomalie → `other`. Esempi JSON e report → §RM5.
 `reduce_only` per perdita giornaliera SMTrading ha già inviato il critico: aggiungi solo cosa
 state facendo); 2) una posizione resta senza stop dopo un «PROTEGGI» (`critical`); 3) un
 limite che solo gli amministratori possono togliere (una volta, 00 §11 punto 4); 4)
-`stale`/`PROVIDER_UNAVAILABLE` su simboli in portafoglio per 2 cicli; 5) 3+ rifiuti nello
+`stale`/`PROVIDER_UNAVAILABLE` su simboli in portafoglio da più di 2 ore; 5) 3+ rifiuti nello
 stesso portafoglio in 24 ore.
 
 ## Errori

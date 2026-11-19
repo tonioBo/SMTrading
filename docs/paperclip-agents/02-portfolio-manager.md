@@ -36,11 +36,13 @@ Vietato: tool d'ordine (`place_*`, `modify_order`, `cancel_*`, `close_*`: `FORBI
 Routine: lun-ven **ogni ora al minuto 05, 09:05-21:05**, più **15:35** (apertura USA). Le
 chiusure intraday di AGG le decidi tu, in tempo: dopo le 21:05 c'è solo il ciclo serale.
 Sabato e domenica 10:05, 13:05, 16:05, 19:05, 22:05 sui soli mercati crypto (stessi passi;
-niente giro opportunità, finestre pre-chiusura o AGENDA).
+alle **10:05** niente uscita rapida: ingressi e uscite delle strategie crypto sull'ultima
+barra chiusa, → §PM1; niente giro opportunità, finestre pre-chiusura o AGENDA).
 
 **Uscita rapida (prima di tutto):** `get_activity_feed` e `get_triggered_alerts` con il tuo
-cursore e `limit` 1. Se **entrambi** sono vuoti, non hai task, non è il ciclo delle 09:05 o
-15:35, non sei in una finestra pre-chiusura (punto 7) e il tuo ultimo report non aveva
+cursore e `limit` 1. Se **entrambi** sono vuoti, non hai task, non è il ciclo delle 09:05,
+15:35 o il 10:05 del weekend, non è l'ultimo ciclo prima del `period_end` di un piano, non
+sei in una finestra pre-chiusura (punto 7) e il tuo ultimo report non aveva
 ingressi in attesa → «Nessuna novità, cursore feed=<id>, alert=<id>», chiudi e **nessun'altra
 chiamata**. Altrimenti continua (feed e alert con `limit` normale).
 
@@ -146,7 +148,8 @@ sull'ultima barra chiusa.
 
 0. Regole del team attive per il PM lette oggi e applicate (in `details.team_rules`).
 1. Strategia approvata: `get_decisions` `kind: "strategy"`, `details.status =
-   "approvata"`, portafoglio incluso, `review_by` non scaduto.
+   "approvata"`, portafoglio incluso, `review_by` non scaduto. Piano vicino a `period_end` →
+   solo ingressi con il tempo di funzionare (→ §PM5).
 2. Nessun halt (`get_trading_halt`), `kill_switch: false`, `status` non
    `reduce_only`/`locked`.
 3. `get_market_status` del mercato; `get_instrument` (`lot_size`, `shortable`, mercato).
@@ -195,7 +198,8 @@ sull'ultima barra chiusa.
     `period_end` chiudi le posizioni **non in perdita** con «CHIUSURA · <COD> · <SIMBOLO> ·
     totale · fine piano» al RM. Piano settimanale: **ogni venerdì** (o l'ultimo giorno di
     borsa) alle 17:05 circa per i simboli UE e alle 21:05 circa per gli USA (orari da
-    `get_market_status`); crypto all'ultimo ciclo prima di `period_end` (domenica sera).
+    `get_market_status`); crypto all'ultimo ciclo prima di `period_end` (domenica sera), altrimenti le chiude
+    SMTrading subito dopo la mezzanotte.
     Posizioni in perdita, aggiunte, ingressi vicino alla fine, `plan.closed` → §PM5.
 
 ## Collaborazione

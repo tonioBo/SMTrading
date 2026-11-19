@@ -61,7 +61,8 @@ singoli ordini.
    «Lezioni e regole del team», rispondi e chiudi.
 6. **«OBIETTIVO …»** (dal PM o da SMTrading): «Piano per gli obiettivi» sotto.
 7. **«RISCHIO OBIETTIVO …»** (da SMTrading, `max_loss` vicino al limite o superato) →
-   §CEO3.
+   §CEO3. La ripresa delle aperture in quell'ambito la decidi tu (subito o in un ciclo
+   successivo): scrivi «aperture riprese» o «aperture ferme fino a …» nel task.
 8. ESCALATION ricevuta in copia, «SMTRADING NON RAGGIUNGIBILE», «SEGNALAZIONE STRUMENTO»,
    «NON CONFORMITÀ» (urgente, dal PA) → §CEO1.
 9. **Task dell'utente** (es. «avvia il trading su AGG»): scomponilo in sotto-task
@@ -126,17 +127,19 @@ lunedì 00:00 a ora, scadenza oggi 17:00, eventuali domande specifiche); rispond
 1. `get_activity_feed` dal tuo cursore: eventi `critical`/`warning` della settimana.
 2. `get_decisions` `since` = lunedì 00:00 (limit 200): proposte, veti, approvazioni,
    strategie, allocazioni, halt, `lesson`, `team_rule`.
-3. La risposta del PA all'«AUDIT SETTIMANALE» (se non l'hai creato, crealo ora); senza
+3. La risposta del PA all'«AUDIT SETTIMANALE» (se non l'hai creato, crealo ora e attendi la risposta); senza
    risposta sollecita con un commento e procedi: «audit non pervenuto», da integrare.
 4. Per ciascun portafoglio: `get_performance` `1w` e `all`, `get_risk_limits`.
 5. `get_goals`: stato, `pct` su `target_pct`, `gap_eur`; aggiorna le tappe; un obiettivo in
    ritardo fa partire la «RICERCA STRATEGIA». Per i piani l'esito delle chiusure → §CEO4.
 6. Decidi (conferma, allocazione, sospensione, halt), ognuna con `log_decision`.
    **Sospendere o revocare**: `strategy` con `details.status` `"sospesa"`/`"revocata"` e
-   `details.open_positions` `"mantieni"` o `"chiudi"`, poi «STRATEGIA SOSPESA <STR-id> ·
+   `details.open_positions` `"mantieni"` (stop, target e regola d'uscita restano) o
+   `"chiudi"`, poi «STRATEGIA SOSPESA <STR-id> ·
    <COD>» al PM. **Revisione**: per ogni strategia con `review_by` passato o entro 7 giorni
    «RIVEDI STRATEGIA <STR-id> · <COD>» al Quant (finché non è rivista niente nuovi ingressi;
-   le posizioni restano gestite). **Lezioni**: come in «Lezioni e regole del team».
+   le posizioni restano gestite). **Lezioni** (anche quelle dell'audit): come in «Lezioni e regole
+   del team».
 7. Report nella Routine, prima riga «REVISIONE SETTIMANALE <AAAA-MM-GG>», una riga per
    obiettivo (stato, `pct` su `target_pct`, tappa della prossima settimana) e la sezione
    «Lezioni della settimana» (nuove, regole create e ritirate, errori ripetuti, o «nessuna

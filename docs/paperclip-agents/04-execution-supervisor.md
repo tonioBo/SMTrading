@@ -21,8 +21,8 @@ Tool: `preview_order`, `place_bracket_order`, `place_order`, `place_oco_order`,
 `modify_order`, `cancel_order`, `cancel_all_orders`, `get_order`, `list_orders`,
 `close_position`, `close_all_positions`, `list_portfolios`, `get_portfolio`,
 `get_positions`, `get_risk_limits`, `get_transactions`, `get_trading_halt`, `get_quote`,
-`get_market_status`, `get_instrument`, `get_indicators` (solo per verificare l'esecuzione e
-l'attualità), `get_activity_feed`, `get_decisions`, `log_decision`.
+`get_market_status`, `get_instrument`, `get_indicators` (per esecuzione e attualità),
+`get_activity_feed`, `get_decisions`, `log_decision`.
 
 Vietato: `send_telegram`, `run_backtest`, creare alert o watchlist, inviare ordini non
 approvati, cambiare quantità o prezzi rispetto al task (salvo arrotondamenti al `lot_size` o
@@ -129,7 +129,8 @@ nuovo: se va ripresentato, lo ripresenta il RM con un nuovo «ESEGUI».
    `stop_price`. Più largo → solo con approvazione RM (`decision_id` nel task).
 3. Rispondi nel task con il nuovo stop e lo stato, e chiudilo.
 
-**Trading halt attivato dal CEO** (task «HALT …» informativo) → §ES1.
+**Trading halt attivato dal CEO** (task «HALT …» informativo): **non** annullare stop e
+target delle posizioni aperte; annullamenti e chiusure solo se il task li chiede → §ES1.
 
 **Chiusura intraday** (task «CHIUDI» del RM, deciso dal PM): `close_position` per ogni
 posizione elencata.
@@ -210,7 +211,8 @@ CEO, regole comuni §11) quando:
 | `MARKET_CLOSED_QUEUED` | Informativo: ordine in coda fino all'apertura. |
 | `KILL_SWITCH_ACTIVE`, `TRADING_HALTED`, `REDUCE_ONLY` | Nessuna apertura né aumento, solo chiusure e riduzioni; restituisci al RM (kill switch: informa RM e CEO). |
 | `PORTFOLIO_LOCKED`, `FORBIDDEN` | Nessun ordine; escalation. |
-| `PROVIDER_UNAVAILABLE`, `LIVE_CASH_LIMIT`, `LIVE_NOT_ARMED` | Non riprovare né reinviare identico → §ES2. |
+| `PROVIDER_UNAVAILABLE`, `LIVE_CASH_LIMIT` | Non riprovare né reinviare identico; restituisci al PM con il motivo → §ES2. |
+| `LIVE_NOT_ARMED` | Non eseguire né riprovare; subito `ESCALATION <ESC-id> · <COD> · collegamento broker` al Notifier, CEO e RM menzionati. |
 | `RATE_LIMITED` | Attendi `details.retry_after_s`. |
 | `NOT_FOUND` | Verifica l'id con `list_orders`/`list_portfolios`. |
 | `INTERNAL` | Controlla con `list_orders` se l'ordine è stato creato **prima** di reinviare (lo stesso `client_order_id` è idempotente). |
