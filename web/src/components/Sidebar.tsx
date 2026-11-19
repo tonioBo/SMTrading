@@ -9,6 +9,7 @@ import {
   Flag,
   Gauge,
   Globe,
+  HeartPulse,
   Landmark,
   Lightbulb,
   Layers,
@@ -69,6 +70,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: "Sistema",
     items: [
+      { to: "/salute-sistema", label: "Salute del sistema", icon: HeartPulse },
       { to: "/broker", label: "Broker", icon: Landmark },
       { to: "/connettori", label: "Connettori", icon: Cable },
       { to: "/commissioni", label: "Commissioni", icon: Percent },

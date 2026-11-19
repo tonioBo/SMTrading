@@ -25,6 +25,7 @@ import Risk from "@/pages/Risk";
 import Settings from "@/pages/Settings";
 import Signals from "@/pages/Signals";
 import Strategies from "@/pages/Strategies";
+import SystemHealth from "@/pages/SystemHealth";
 
 export const routes: RouteObject[] = [
   { path: "/login", element: <Login />, errorElement: <RouteError /> },
@@ -60,6 +61,7 @@ export const routes: RouteObject[] = [
           { path: "log-mcp", element: <McpLog /> },
           { path: "registro-attivita", element: <ActivityLog /> },
           { path: "impostazioni", element: <Settings /> },
+          { path: "salute-sistema", element: <SystemHealth /> },
           { path: "*", element: <Navigate to="/" replace /> },
         ],
       },

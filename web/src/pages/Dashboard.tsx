@@ -9,6 +9,7 @@ import { EquityHistoryCard } from "@/components/EquityHistoryCard";
 import { GoalBar } from "@/components/GoalBar";
 import { GoalParts } from "@/components/GoalParts";
 import { HaltBanner } from "@/components/HaltBanner";
+import { HealthBadge } from "@/components/HealthBadge";
 import { KillSwitchButton } from "@/components/KillSwitchButton";
 import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
@@ -390,8 +391,11 @@ export default function Dashboard() {
   return (
     <div>
       <PageHeader title="Dashboard">
-        <LiveIndicator live={live} updatedAt={dataUpdatedAt} />
-        <KillSwitchButton />
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+          <HealthBadge />
+          <LiveIndicator live={live} updatedAt={dataUpdatedAt} />
+          <KillSwitchButton />
+        </div>
       </PageHeader>
       <HaltBanner />
       {isError && <p className="text-loss">Impossibile caricare la dashboard</p>}
