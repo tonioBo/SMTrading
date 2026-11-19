@@ -5,6 +5,7 @@ import { useGoalsProgress } from "@/api/hooks/goals";
 import { useOpenPositions } from "@/api/hooks/positions";
 import { useSignals } from "@/api/hooks/signals";
 import type { Dashboard as DashboardData, DashboardConnector, GoalProgress, MarginAlert } from "@/api/types";
+import { DataTable, type Column } from "@/components/DataTable";
 import { EquityHistoryCard } from "@/components/EquityHistoryCard";
 import { GoalBar } from "@/components/GoalBar";
 import { GoalParts } from "@/components/GoalParts";
@@ -22,7 +23,6 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatDateTime, formatMoney, formatQty } from "@/lib/format";
 import { comparisonText, formatDay, goalScopeLabel, goalTargetLabel, lossText, STATUS_TONE } from "@/lib/goals";
 import { closestSignals } from "@/lib/signals";
@@ -339,6 +339,28 @@ function ModeCounts({ counts }: { counts: DashboardData["mode_counts"] }) {
   );
 }
 
+type DashboardPortfolio = DashboardData["portfolios"][number];
+
+const portfolioColumns: Column<DashboardPortfolio>[] = [
+  {
+    key: "name",
+    header: "Nome",
+    primary: true,
+    cell: (p) => (
+      <>
+        <Link to={`/portafogli/${p.id}`} className="text-accent hover:underline">
+          {p.name}
+        </Link>
+        <PortfolioModeBadge mode={p.mode} liveState={p.live_state} label={p.mode_label} className="ml-2" />
+        {p.error && <span className="ml-2 text-xs font-normal text-loss">valutazione non disponibile</span>}
+        {p.stale_symbols.length > 0 && <span className="ml-2 text-xs font-normal text-warn">quotazioni non aggiornate</span>}
+      </>
+    ),
+  },
+  { key: "equity", header: "Equity", align: "right", cell: (p) => <Money value={p.equity_eur} /> },
+  { key: "pnl", header: "P&L del giorno", align: "right", cell: (p) => <Pnl value={p.day_pnl_eur} pct={p.day_pnl_pct} /> },
+];
+
 function PortfolioTable({ portfolios }: { portfolios: DashboardData["portfolios"] }) {
   return (
     <Card>
@@ -346,39 +368,7 @@ function PortfolioTable({ portfolios }: { portfolios: DashboardData["portfolios"
         <CardTitle>Portafogli</CardTitle>
       </CardHeader>
       <CardContent>
-        {portfolios.length === 0 ? (
-          <p className="text-sm text-muted">Nessun portafoglio</p>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Nome</TableHead>
-                <TableHead className="text-right">Equity</TableHead>
-                <TableHead className="text-right">P&amp;L del giorno</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {portfolios.map((p) => (
-                <TableRow key={p.id}>
-                  <TableCell>
-                    <Link to={`/portafogli/${p.id}`} className="text-accent hover:underline">
-                      {p.name}
-                    </Link>
-                    <PortfolioModeBadge mode={p.mode} liveState={p.live_state} label={p.mode_label} className="ml-2" />
-                    {p.error && <span className="ml-2 text-xs text-loss">valutazione non disponibile</span>}
-                    {p.stale_symbols.length > 0 && <span className="ml-2 text-xs text-warn">quotazioni non aggiornate</span>}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <Money value={p.equity_eur} />
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <Pnl value={p.day_pnl_eur} pct={p.day_pnl_pct} />
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
+        <DataTable aria-label="Portafogli" columns={portfolioColumns} rows={portfolios} rowKey={(p) => p.id} empty="Nessun portafoglio" />
       </CardContent>
     </Card>
   );

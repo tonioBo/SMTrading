@@ -18,6 +18,8 @@ export interface Column<T> {
   primary?: boolean;
   /** phone cards: left out (e.g. a detail the desktop table shows next to the title) */
   hideOnMobile?: boolean;
+  /** phone cards: a long value (a text) under its label, on the full width */
+  mobileFull?: boolean;
 }
 
 interface Props<T> {
@@ -105,12 +107,19 @@ function Cards<T>({ columns, rows, rowKey, loading, empty, skeletonRows, ariaLab
                 </div>
               ))}
               <dl className="grid grid-cols-[minmax(0,auto)_minmax(0,1fr)] gap-x-3 gap-y-1.5">
-                {rest.map((c) => (
-                  <div key={c.key} className="contents">
-                    <dt className="text-muted">{c.mobileLabel ?? c.header}</dt>
-                    <dd className="min-w-0 break-words text-right">{c.cell(row)}</dd>
-                  </div>
-                ))}
+                {rest.map((c) =>
+                  c.mobileFull ? (
+                    <div key={c.key} className="col-span-2 min-w-0">
+                      <dt className="text-muted">{c.mobileLabel ?? c.header}</dt>
+                      <dd className="min-w-0 break-words">{c.cell(row)}</dd>
+                    </div>
+                  ) : (
+                    <div key={c.key} className="contents">
+                      <dt className="text-muted">{c.mobileLabel ?? c.header}</dt>
+                      <dd className="min-w-0 break-words text-right">{c.cell(row)}</dd>
+                    </div>
+                  ),
+                )}
               </dl>
             </li>
           ))

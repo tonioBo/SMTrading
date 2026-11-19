@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { LineChart, type ChartLine } from "@/components/LineChart";
+import { resetViewport, setViewportWidth } from "@/test/viewport";
 
 const T = Date.UTC(2026, 10, 16, 9);
 const H = 3_600_000;
@@ -34,5 +35,20 @@ describe("LineChart scale", () => {
   it("marks a goal below the series with a down arrow", () => {
     chart([series("AGG", [3, 4, 5, 4.5]), goal(2)]);
     expect(screen.getByTestId("edge-goal")).toHaveTextContent("+2% ↓");
+  });
+});
+
+describe("LineChart width", () => {
+  afterEach(() => resetViewport());
+
+  it("fills its box and shows fewer time labels on a phone", () => {
+    setViewportWidth(1280);
+    const { unmount } = render(<LineChart lines={[series("AGG", [0, 1, 2, 3])]} formatValue={pct} formatTick={pct} axisTime="day" ariaLabel="Andamento" />);
+    expect(screen.getByTestId("line-chart").className).toContain("w-full");
+    expect(screen.getByTestId("x-labels").children).toHaveLength(5);
+    unmount();
+    setViewportWidth(375);
+    chart([series("AGG", [0, 1, 2, 3])]);
+    expect(screen.getByTestId("x-labels").children).toHaveLength(3);
   });
 });

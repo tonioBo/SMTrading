@@ -6,6 +6,7 @@ import { POSITIONS_REFRESH_MS } from "@/api/hooks/positions";
 import type { OpenPosition, OpenPositionsResponse } from "@/api/types";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
+import { resetViewport, setViewportWidth } from "@/test/viewport";
 
 vi.mock("@/lib/ws", async (orig) => ({
   ...(await orig<typeof import("@/lib/ws")>()),
@@ -129,6 +130,22 @@ describe("Positions", () => {
     const [, msft, eni] = within(pru).getAllByRole("row");
     expect(within(msft).getByText("In chiusura piano")).toBeInTheDocument();
     expect(within(eni).queryByText(/In chiusura piano/)).toBeNull();
+  });
+
+  it("on a phone every position is a card: symbol first, then labelled values", async () => {
+    setViewportWidth(390);
+    try {
+      renderApp("/posizioni");
+      const list = await screen.findByRole("list", { name: "Posizioni Portafoglio Aggressivo" });
+      expect(screen.queryByRole("table")).not.toBeInTheDocument();
+      const card = within(list).getAllByRole("listitem")[0];
+      expect(card.firstElementChild).toHaveTextContent("AMZN");
+      expect(within(card).getByText("Rischio allo stop")).toBeInTheDocument();
+      expect(within(card).getByText("7,75 €")).toBeInTheDocument();
+      expect(within(card).getByText("🟢 protetta")).toBeInTheDocument();
+    } finally {
+      resetViewport();
+    }
   });
 
   it("shows the empty state", async () => {

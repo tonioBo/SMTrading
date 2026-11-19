@@ -66,6 +66,7 @@ const agentColumns: Column<AgentResultRow>[] = [
   {
     key: "name",
     header: "Agente",
+    primary: true,
     sortValue: (r) => r.name,
     cell: (r) => (
       <div>
@@ -153,6 +154,7 @@ const strategyColumns: Column<StrategyResultRow>[] = [
   {
     key: "ref",
     header: "Strategia",
+    primary: true,
     sortValue: (r) => r.ref ?? "~",
     cell: (r) => (
       <div>

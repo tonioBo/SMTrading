@@ -360,11 +360,11 @@ function OutboxSection() {
   const failed = useTelegram().data?.outbox.failed ?? 0;
   const titleId = useId();
   const columns: Column<OutboxItem>[] = [
-    { key: "ts", header: "Data", cell: (m) => <span className="num whitespace-nowrap">{formatDateTime(m.created_at)}</span> },
+    { key: "ts", header: "Data", primary: true, cell: (m) => <span className="num whitespace-nowrap">{formatDateTime(m.created_at)}</span> },
     { key: "source", header: "Origine", cell: (m) => (m.source === "system" ? "Sistema" : (m.agent ?? "Agente")) },
     { key: "category", header: "Tipo", cell: (m) => CATEGORY[m.category] ?? m.category },
     { key: "level", header: "Livello", cell: (m) => LEVEL[m.level] ?? m.level },
-    { key: "text", header: "Testo", cell: (m) => <TextCell text={m.text} /> },
+    { key: "text", header: "Testo", mobileFull: true, cell: (m) => <TextCell text={m.text} /> },
     {
       key: "status",
       header: "Stato",
@@ -445,14 +445,14 @@ export function DecisionsSection() {
   const set = (field: keyof DecisionFilters) => (e: { target: { value: string } }) => setFilters((f) => ({ ...f, [field]: e.target.value }));
   const rows = data?.pages.flatMap((p) => p.items);
   const columns: Column<Decision>[] = [
-    { key: "ts", header: "Data", cell: (d) => <span className="num whitespace-nowrap">{formatDateTime(d.created_at)}</span> },
+    { key: "ts", header: "Data", primary: true, cell: (d) => <span className="num whitespace-nowrap">{formatDateTime(d.created_at)}</span> },
     { key: "agent", header: "Agente", cell: (d) => d.agent ?? "—" },
     { key: "portfolio", header: "Portafoglio", cell: (d) => d.portfolio ?? "—" },
     { key: "kind", header: "Tipo", cell: (d) => DECISION_KIND[d.kind] ?? d.kind },
     { key: "outcome", header: "Esito", cell: (d) => (d.outcome ? (DECISION_OUTCOME[d.outcome] ?? d.outcome) : "—") },
-    { key: "subject", header: "Oggetto", cell: (d) => (d.subject ? <TextCell text={d.subject} /> : "—") },
-    { key: "summary", header: "Sintesi", cell: (d) => <TextCell text={d.summary} /> },
-    { key: "reason", header: "Motivo", cell: (d) => (d.reason ? <TextCell text={d.reason} /> : "—") },
+    { key: "subject", header: "Oggetto", mobileFull: true, cell: (d) => (d.subject ? <TextCell text={d.subject} /> : "—") },
+    { key: "summary", header: "Sintesi", mobileFull: true, cell: (d) => <TextCell text={d.summary} /> },
+    { key: "reason", header: "Motivo", mobileFull: true, cell: (d) => (d.reason ? <TextCell text={d.reason} /> : "—") },
     { key: "symbols", header: "Simboli", cell: (d) => (d.symbols.length ? <span className="font-mono text-xs">{d.symbols.join(", ")}</span> : "—") },
   ];
   return (

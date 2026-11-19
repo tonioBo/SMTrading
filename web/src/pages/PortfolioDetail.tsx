@@ -137,6 +137,7 @@ function Positions({ portfolioId, liveState }: { portfolioId: string; liveState?
     {
       key: "symbol",
       header: "Simbolo",
+      primary: true,
       sortValue: (p) => p.symbol,
       cell: (p) => (
         <>
@@ -256,6 +257,7 @@ function Orders({ portfolio, readOnly }: { portfolio: Portfolio; readOnly: boole
     {
       key: "symbol",
       header: "Simbolo",
+      primary: true,
       sortValue: (o) => o.symbol,
       cell: (o) => (
         <>
