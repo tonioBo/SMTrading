@@ -177,6 +177,8 @@ export interface Portfolio {
   /** set while archived: hidden, read-only, skipped by every job */
   archived_at?: string | null;
   archived_by?: string | null;
+  /** false: left out of the totals and of the total goals / piano (`portfolios.in_totals`) */
+  in_totals?: boolean;
   /** only in a save response: set when the name has a word the agents should not see */
   name_warning?: string | null;
 }
@@ -200,6 +202,7 @@ export interface PortfolioPatch {
   slippage_bps?: number;
   risk_profile_id?: string | null;
   timezone?: string;
+  in_totals?: boolean;
 }
 
 export interface PositionValuation {

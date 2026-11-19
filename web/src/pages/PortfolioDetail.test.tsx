@@ -947,6 +947,33 @@ describe("PortfolioDetail", () => {
     expect(screen.queryByRole("button", { name: /Usa le commissioni di/ })).not.toBeInTheDocument();
   });
 
+  it("«Conteggiato nei totali»: saved on change", async () => {
+    const user = await openTab("Impostazioni");
+    const box = await screen.findByRole("checkbox", { name: "Conteggiato nei totali e negli obiettivi complessivi" });
+    expect(box).toBeChecked();
+    await user.click(box);
+    await waitFor(() => expect(patches).toEqual([{ in_totals: false }]));
+  });
+
+  it("«Conteggiato nei totali»: the API's refusal is shown", async () => {
+    current = { ...portfolio, in_totals: false };
+    server.use(
+      http.patch("*/api/portfolios/p1", async ({ request }) => {
+        patches.push(await request.json());
+        return HttpResponse.json(
+          { code: "INVALID_ORDER", message: "«Alfa» ha già il suo piano «mensile»: lo coprirebbero due piani", details: { field: "in_totals" } },
+          { status: 400 },
+        );
+      }),
+    );
+    const user = await openTab("Impostazioni");
+    const box = await screen.findByRole("checkbox", { name: "Conteggiato nei totali e negli obiettivi complessivi" });
+    expect(box).not.toBeChecked();
+    await user.click(box);
+    expect(await screen.findByText("«Alfa» ha già il suo piano «mensile»: lo coprirebbero due piani")).toBeInTheDocument();
+    expect(patches).toEqual([{ in_totals: true }]);
+  });
+
   it("shows a server refusal next to its field", async () => {
     server.use(
       http.patch("*/api/portfolios/p1", async ({ request }) => {

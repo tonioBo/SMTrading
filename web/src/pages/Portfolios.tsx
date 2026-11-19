@@ -36,6 +36,14 @@ const baseColumns: Column<Portfolio>[] = [
           {p.name}
         </Link>
         <PortfolioModeBadge mode={p.mode} liveState={p.live_state} label={p.mode_label} className="ml-2" />
+        {p.in_totals === false && (
+          <span
+            className="ml-2 inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted"
+            title="Non conteggiato nei totali e negli obiettivi complessivi"
+          >
+            fuori dai totali
+          </span>
+        )}
         {p.valuation_error && <span className="ml-2 text-xs text-loss">valutazione non disponibile</span>}
       </>
     ),

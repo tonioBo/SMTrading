@@ -155,6 +155,36 @@ describe("historyLines with the goals list", () => {
     expect(historyLines(history(), "pct", true).some((l) => l.key === "total")).toBe(false);
   });
 
+  it("a portfolio out of the totals is drawn but left out of the «Totale» and of the total goal's base", () => {
+    const h = withGoals();
+    const p3 = {
+      id: "p4",
+      name: "Sfida",
+      in_totals: false,
+      series: [
+        { ts: "2026-11-10T08:00:00Z", equity_eur: "500.00" },
+        { ts: "2026-11-16T11:55:00Z", equity_eur: "600.00" },
+      ],
+      first_eur: "500.00",
+      last_eur: "600.00",
+      change_eur: "100.00",
+      change_pct: "20.00",
+      goal: null,
+    };
+    h.portfolios = [...h.portfolios, p3];
+    const eur = historyLines(h, "eur", false);
+    expect(eur.map((l) => l.key)).toEqual(["p1", "p2", "p4", "total", "goal-g1", "goal-g2"]);
+    expect(eur.find((l) => l.key === "total")!.points.map((p) => p.v)).toEqual([1250, 1245]);
+    const pct = historyLines(h, "pct", false);
+    // base = 250 + 1000 (the counted portfolios' first points): 1279.08 / 1250 - 1
+    expect(pct.find((l) => l.key === "goal-g1")!.points[0].v).toBeCloseTo(2.3264, 4);
+    expect(totalChange(h)).toEqual({ change_eur: "-5.00", change_pct: "-0.40" });
+    // only one counted portfolio left: no «Totale»
+    h.portfolios = h.portfolios.filter((p) => p.id !== "p2");
+    expect(historyLines(h, "eur", false).some((l) => l.key === "total")).toBe(false);
+    expect(totalChange(h)).toBeNull();
+  });
+
   it("goals without data, or whose period ended before the shown points, are skipped", () => {
     const h = withGoals();
     h.goals = [goalLine({ base_eur: null, target_eur: null }), goalLine({ goal_id: "g9", period_end: "2026-11-09T23:00:00Z" })];

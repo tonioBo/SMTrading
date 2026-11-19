@@ -105,6 +105,7 @@ async def _list_portfolios(ctx: ToolCtx) -> list[dict]:
             "name": p.name,
             "base_currency": p.base_currency,
             "status": p.status,
+            "in_totals": p.in_totals,
             **await _mode_field(ctx, p, links.get(p.broker_link_id), hide=hide),
             "permission": permission,
         }
@@ -113,8 +114,8 @@ async def _list_portfolios(ctx: ToolCtx) -> list[dict]:
 
 
 async def portfolio_snapshot(ctx: ToolCtx, portfolio_id: str | None) -> dict:
-    """get_portfolio: valuation_dto + status, reduce_only_reason, leverage and the day
-    P&L (equity - today's day_open equity - net deposits since it, EUR and %; None
+    """get_portfolio: valuation_dto + status, in_totals, reduce_only_reason, leverage and
+    the day P&L (equity - today's day_open equity - net deposits since it, EUR and %; None
     without a day_open). External cash flows are not P&L, as in risk.daily_loss."""
     portfolio = await _readable_portfolio(ctx, portfolio_id)
     valuation = await _valuation(ctx, portfolio)
@@ -122,6 +123,7 @@ async def portfolio_snapshot(ctx: ToolCtx, portfolio_id: str | None) -> dict:
     return {
         **valuation_dto(valuation),
         "status": portfolio.status,
+        "in_totals": portfolio.in_totals,
         **await _mode_field(ctx, portfolio),
         "reduce_only_reason": portfolio.reduce_only_reason,
         "leverage": portfolio.leverage,
@@ -249,14 +251,17 @@ def register(mcp: MCPServer) -> None:
     @mcp.tool(structured_output=False)
     async def list_portfolios() -> CallToolResult:
         """The portfolios this agent may use: [{id, name, base_currency, status,
-        permission}] where permission is "read" or "trade" (trade implies read)."""
+        in_totals, permission}] where permission is "read" or "trade" (trade implies
+        read); in_totals false: the portfolio is left out of the team's totals and of the
+        total goals (it has only its own goals)."""
         return await run_tool("list_portfolios", {}, _list_portfolios)
 
     @mcp.tool(structured_output=False)
     async def get_portfolio(portfolio_id: str) -> CallToolResult:
         """Mark-to-market valuation of a portfolio (EUR, cents): cash, equity_eur,
         exposure_eur, margin requirements, buying_power_eur, margin_level, positions,
-        stale_symbols, plus status, reduce_only_reason, leverage and the day P&L
+        stale_symbols, plus status, in_totals (false: left out of the team's totals and of
+        the total goals), reduce_only_reason, leverage and the day P&L
         (day_pnl_eur / day_pnl_pct vs today's day_open equity, net of deposits and
         withdrawals; null before the day_open is taken)."""
         params = {"portfolio_id": portfolio_id}

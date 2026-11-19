@@ -453,6 +453,21 @@ async def test_archived_portfolio_is_invisible_to_agents(mcp_server, mcp_call, b
         )) == 0
 
 
+async def test_portfolio_in_totals_is_visible_to_agents(mcp_server, mcp_call, book):
+    """list_portfolios / get_portfolio carry `in_totals` (false: out of the totals)."""
+    url, token = mcp_server.url, mcp_server.token
+    async with _Db(mcp_server.db_url) as s:
+        await agents.assign_portfolio(s, mcp_server.agent_id, book["other_id"], "read")
+        (await s.get(Portfolio, book["other_id"])).in_totals = False
+        await s.commit()
+    is_error, listed = await mcp_call(url, token, "list_portfolios")
+    assert not is_error
+    assert {p["name"]: p["in_totals"] for p in listed} == {"Demo": True, "Other": False}
+    for pid, expected in ((mcp_server.demo_id, True), (book["other_id"], False)):
+        is_error, got = await mcp_call(url, token, "get_portfolio", {"portfolio_id": str(pid)})
+        assert not is_error and got["in_totals"] is expected
+
+
 async def _set_hide_mode(db_url, on):
     from sqlalchemy.dialects.postgresql import insert
 

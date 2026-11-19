@@ -119,7 +119,8 @@ reduce-only inviato al broker. Un portafoglio archiviato e' invisibile all'agent
 Passa i numeri come stringhe per mantenere la precisione esatta (es. `"qty": "0.1"`).
 Gli agenti non possono creare portafogli, depositare, prelevare o modificare i limiti.
 
-- `list_portfolios`: i portafogli utilizzabili dall'agente, con il permesso (`read`/`trade`).
+- `list_portfolios`: i portafogli utilizzabili dall'agente, con il permesso (`read`/`trade`)
+  e `in_totals` (falso: il portafoglio è fuori dai totali e dagli obiettivi complessivi).
   I portafogli archiviati dall'amministratore non compaiono e, cercati per id, danno
   `NOT_FOUND` (l'assegnazione resta e torna valida quando vengono ripristinati).
   Il campo `mode` (anche in `get_portfolio`) indica la modalita': `simulazione` (nessun broker
@@ -130,7 +131,7 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
   portafogli (simulazione/paper)») o con `PUT /api/settings/app` (`{"mcp_hide_mode": false}`);
   portale e Telegram mostrano sempre la modalita'. Le descrizioni dei tool non citano la simulazione
   dei portafogli (i backtest sono «test su dati storici»).
-- `get_portfolio`: valutazione mark-to-market (EUR): equity, esposizione, margini, potere d'acquisto, posizioni, P&L del giorno.
+- `get_portfolio`: valutazione mark-to-market (EUR): equity, esposizione, margini, potere d'acquisto, posizioni, P&L del giorno, `in_totals`.
 - `get_positions`: posizioni aperte con prezzo medio, mark e P&L non realizzato; le posizioni
   USA hanno anche `extended` (come in `get_quote`).
 - `get_transactions`: movimenti del ledger del portafoglio, dal piu' recente, con filtri e paginazione (`before_seq`).

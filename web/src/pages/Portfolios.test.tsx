@@ -48,7 +48,7 @@ const server = setupServer(
   http.get("*/api/portfolios", ({ request }) =>
     HttpResponse.json([
       portfolio("p1", "Alfa", { equity_eur: "12345.6", day_pnl_eur: "-50", day_pnl_pct: "-0.4", leverage: "2.5" }),
-      portfolio("p2", "Beta", { status: "reduce_only", equity_eur: null, day_pnl_eur: null, valuation_error: "NO_QUOTE" }),
+      portfolio("p2", "Beta", { status: "reduce_only", equity_eur: null, day_pnl_eur: null, valuation_error: "NO_QUOTE", in_totals: false }),
       ...(new URL(request.url).searchParams.get("include_archived") === "1"
         ? [portfolio("p9", "Vecchio", { status: "archived", archived_at: "2026-11-13T10:00:00Z", archived_by: "admin@example.com" })]
         : []),
@@ -107,6 +107,9 @@ describe("Portfolios", () => {
     expect(within(table).getByText("2,50×")).toBeInTheDocument();
     expect(within(table).getByText("Solo riduzione")).toBeInTheDocument();
     expect(within(table).getByText("valutazione non disponibile")).toBeInTheDocument();
+    // only «Beta» is left out of the totals
+    expect(within(table).getAllByText("fuori dai totali")).toHaveLength(1);
+    expect(within(table).getByText("fuori dai totali").closest("tr")).toHaveTextContent("Beta");
   });
 
   it("sorts by name when the header is clicked", async () => {

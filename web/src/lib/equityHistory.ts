@@ -41,9 +41,13 @@ export function totalPoints(series: ChartPoint[][], unit: Unit): ChartPoint[] {
   return out;
 }
 
-/** The «Totale» row of the legend: Σ change over Σ first (the portfolios with data). */
+/** A portfolio counted in the totals (`in_totals` not false). */
+const inTotals = (p: { in_totals?: boolean }) => p.in_totals !== false;
+
+/** The «Totale» row of the legend: Σ change over Σ first (the portfolios with data counted
+ * in the totals). */
 export function totalChange(data: EquityHistory): { change_eur: string; change_pct: string | null } | null {
-  const counted = data.portfolios.filter((p) => p.series.length > 0 && p.first_eur != null && p.change_eur != null);
+  const counted = data.portfolios.filter((p) => inTotals(p) && p.series.length > 0 && p.first_eur != null && p.change_eur != null);
   if (counted.length < 2) return null;
   const cents = (v: string) => Math.round(Number(v) * 100);
   const change = counted.reduce((sum, p) => sum + cents(p.change_eur!), 0);
@@ -59,12 +63,13 @@ function flat(key: string, label: string, tag: string, color: string, v: number,
 
 /**
  * The chart lines of a response: each portfolio (in € or % since its first point), the
- * «Totale» of the portfolios (dashboard with more than one: `totalPoints`, bold), then
+ * «Totale» of the portfolios counted in the totals (dashboard with more than one:
+ * `totalPoints`, bold; a portfolio with `in_totals` false is drawn but not summed), then
  * the goals, dashed and labelled, from the period start (or the first point) to now (or
  * the period end).
  * - Dashboard: the `goals` list only (the weekly goal is its total goal there, so the
  *   per-portfolio weekly `goal` would duplicate it). A total goal is drawn against the
- *   «Totale»: in % relative to the shown portfolios' total at their first points, in €
+ *   «Totale»: in % relative to the counted portfolios' total at their first points, in €
  *   at its target; a portfolio goal in the portfolio's colour.
  * - Portfolio detail: the portfolio's weekly `goal` («Sett.» and «1s»: the list leaves the
  *   total goals out there) and its own goals from the list.
@@ -76,6 +81,8 @@ export function historyLines(data: EquityHistory, unit: Unit, single: boolean): 
   const end = Date.parse(data.end);
   const lines: ChartLine[] = [];
   const firsts = new Map<string, ChartPoint>();
+  /** the first points of the portfolios counted in the totals: the total goals' base */
+  const countedFirsts: ChartPoint[] = [];
   const names = new Map<string, string>();
   const eurSeries: ChartPoint[][] = [];
   data.portfolios
@@ -83,11 +90,12 @@ export function historyLines(data: EquityHistory, unit: Unit, single: boolean): 
     .forEach((p, i) => {
       const color = single ? ACCENT : SERIES_COLORS[i % SERIES_COLORS.length];
       const eur: ChartPoint[] = p.series.map((s) => ({ t: Date.parse(s.ts), v: Number(s.equity_eur) }));
-      eurSeries.push(eur);
+      if (inTotals(p)) eurSeries.push(eur);
       const points = unit === "pct" ? toPctPoints(eur) : eur;
       if (points.length === 0) return;
       lines.push({ key: p.id, label: p.name, color, points });
       firsts.set(p.id, eur[0]);
+      if (inTotals(p)) countedFirsts.push(eur[0]);
       names.set(p.id, p.name);
       if (!single || !p.goal) return;
       const target = Number(p.goal.target_eur);
@@ -128,8 +136,8 @@ export function historyLines(data: EquityHistory, unit: Unit, single: boolean): 
     const to = Math.min(Date.parse(g.period_end), end);
     const tag = goalTargetLabel(g.kind, g.target_pct, g.benchmark);
     if (g.scope === "total") {
-      if (single || firsts.size === 0 || (unit !== "pct" && !hasTotal)) return null;
-      const all = [...firsts.values()];
+      if (single || countedFirsts.length === 0 || (unit !== "pct" && !hasTotal)) return null;
+      const all = countedFirsts;
       const base = all.reduce((sum, p) => sum + p.v, 0);
       const from = Math.max(Date.parse(g.period_start), Math.min(...all.map((p) => p.t)));
       const text = `${g.name} ${tag}`;

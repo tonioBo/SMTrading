@@ -117,6 +117,42 @@ function SettingsForm({
   );
 }
 
+/**
+ * «Conteggiato nei totali e negli obiettivi complessivi» (`in_totals`), saved on change:
+ * unchecked, the portfolio is left out of the dashboard totals, the «Totale» line and the
+ * total goals / piano. The API refuses re-counting a portfolio already under its own piano
+ * while a total piano is active: its message is shown.
+ */
+function InTotalsToggle({ portfolio }: { portfolio: Portfolio }) {
+  const patch = usePatchPortfolio(portfolio.id);
+  const checked = portfolio.in_totals !== false;
+  return (
+    <div className="mt-4 space-y-1.5 border-t border-border pt-4">
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={patch.isPending}
+          onChange={(e) =>
+            patch.mutate(
+              { in_totals: e.target.checked },
+              { onSuccess: () => toast.success(e.target.checked ? "Conteggiato nei totali" : "Escluso dai totali") },
+            )
+          }
+          className="h-4 w-4 accent-[rgb(var(--accent))]"
+        />
+        Conteggiato nei totali e negli obiettivi complessivi
+      </label>
+      <p className="text-xs text-muted">Se tolto, il portafoglio resta visibile ma non entra nei totali della dashboard né negli obiettivi complessivi.</p>
+      {patch.error && (
+        <p role="alert" className="text-sm text-loss">
+          {errorMessage(patch.error)}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function PortfolioSettings({ portfolio }: { portfolio: Portfolio }) {
   // remount with the saved values once the portfolio is refetched after a save
   const key = FIELDS.map((f) => initialForm(portfolio)[f]).join("\u0000");
@@ -134,6 +170,7 @@ export function PortfolioSettings({ portfolio }: { portfolio: Portfolio }) {
           nameWarning={nameWarning}
           onSaved={(saved) => setNameWarning(saved.name_warning ?? null)}
         />
+        <InTotalsToggle portfolio={portfolio} />
       </CardContent>
     </Card>
   );

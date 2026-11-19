@@ -37,6 +37,9 @@ export interface EquityHistoryPortfolio {
   change_eur: string | null;
   change_pct: string | null;
   goal: EquityHistoryGoal | null;
+  /** false: left out of the totals (`portfolios.in_totals`): no part of the «Totale» line
+   * nor of the total goals' base */
+  in_totals?: boolean;
 }
 
 /** An active goal whose current period overlaps the range (every range): dashboard =
