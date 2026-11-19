@@ -63,6 +63,7 @@ class FillIn:
     ts: datetime
     costs: dict[str, Decimal]  # currency -> amount
     strategy: str | None = None  # of the fill's order (set later on the trades)
+    fill_id: uuid.UUID | None = None
 
 
 @dataclass
@@ -84,6 +85,8 @@ class Trade:
     exit_value: Decimal = Decimal(0)
     realized: Decimal = Decimal(0)  # gross, instrument currency
     costs: dict[str, Decimal] = field(default_factory=dict)
+    # (fill, the part of its qty that is this trade's, "entry" | "exit"), in time order
+    legs: list[tuple["FillIn", Decimal, str]] = field(default_factory=list)
 
     @property
     def entry_price(self) -> Decimal:
@@ -141,6 +144,7 @@ def fifo_trades(fills: Iterable[FillIn]) -> list[Trade]:
                 t.open_qty -= closed
                 t.open_value -= lot.price * closed
                 t.add_costs(f.costs, closed, f.qty)
+                t.legs.append((f, closed, "exit"))
                 lot.qty -= closed * sign
                 left += closed * sign
                 if lot.qty == 0:
@@ -164,6 +168,7 @@ def fifo_trades(fills: Iterable[FillIn]) -> list[Trade]:
             t.entry_value += f.price * abs(left)
             t.closed_at = None
             t.add_costs(f.costs, abs(left), f.qty)
+            t.legs.append((f, abs(left), "entry"))
             queue.append(_Lot(t, left, f.price))
     trades.sort(key=lambda t: (t.opened_at, str(t.portfolio_id), t.symbol))
     return trades
@@ -247,16 +252,22 @@ def _money(v: Decimal | None) -> Decimal | None:
     return None if v is None else quantize_money(v, EUR)
 
 
-async def _fills(session: AsyncSession,
+async def _fills(session: AsyncSession, *, portfolio_id: uuid.UUID | None = None,
+                 symbol: str | None = None,
                  ) -> tuple[list[FillIn], dict[uuid.UUID, Portfolio], dict[uuid.UUID, Order]]:
-    rows = (await session.execute(
-        select(Fill, Order, Portfolio, Instrument.currency)
-        .join(Order, Order.id == Fill.order_id)
-        .join(Portfolio, Portfolio.id == Fill.portfolio_id)
-        .join(Instrument, Instrument.symbol == Fill.symbol)
-        .where(Portfolio.status != PortfolioStatus.archived)
-        .order_by(Fill.created_at, Fill.id)
-    )).all()
+    """The fills of the non-archived portfolios (only `portfolio_id`'s / `symbol`'s when
+    given: FIFO lots are per portfolio+symbol, so a scoped load gives the same trades)."""
+    q = (select(Fill, Order, Portfolio, Instrument.currency)
+         .join(Order, Order.id == Fill.order_id)
+         .join(Portfolio, Portfolio.id == Fill.portfolio_id)
+         .join(Instrument, Instrument.symbol == Fill.symbol)
+         .where(Portfolio.status != PortfolioStatus.archived)
+         .order_by(Fill.created_at, Fill.id))
+    if portfolio_id is not None:
+        q = q.where(Fill.portfolio_id == portfolio_id)
+    if symbol is not None:
+        q = q.where(Fill.symbol == symbol)
+    rows = (await session.execute(q)).all()
     if not rows:
         return [], {}, {}
     fx_fees: dict[uuid.UUID, dict[str, Decimal]] = defaultdict(dict)
@@ -279,7 +290,7 @@ async def _fills(session: AsyncSession,
         out.append(FillIn(
             order_id=o.id, client_order_id=o.client_order_id, portfolio_id=p.id,
             symbol=f.symbol, currency=ccy, side=f.side, qty=f.qty, price=f.price,
-            ts=f.created_at, costs=costs,
+            ts=f.created_at, costs=costs, fill_id=f.id,
         ))
     return out, portfolios, orders
 
