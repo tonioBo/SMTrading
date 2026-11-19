@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Select, String, func, select
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Select, String, func, select, true
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -52,11 +52,19 @@ class Portfolio(Base):
     # "locked" and the reason the live one replaced); the TOTP resume restores it
     live_prior_status: Mapped[str | None] = mapped_column(String(16))
     live_prior_reason: Mapped[str | None] = mapped_column(String(64))
+    # false: left out of the total (the goals on the total, the dashboard totals); its own
+    # goals work as usual (a time-boxed experiment beside the team's portfolios)
+    in_totals: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
 
 
 def live_portfolio_ids() -> Select:
     """The ids of the portfolios that are not archived (for `.in_()` filters)."""
     return select(Portfolio.id).where(Portfolio.status != PortfolioStatus.archived)
+
+
+def total_portfolio_ids() -> Select:
+    """The ids of the portfolios counted in the total: not archived and `in_totals`."""
+    return live_portfolio_ids().where(Portfolio.in_totals.is_(True))
 
 
 def ensure_not_archived(portfolio: Portfolio) -> Portfolio:

@@ -618,3 +618,31 @@ async def test_0035_plan_close_round_trip(fresh_db):
     assert await query(column) == [] and await query(table) == [(None,)]
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
     assert await query(table) == [("plan_closures",)]
+
+
+async def test_0036_portfolio_in_totals_round_trip(fresh_db):
+    """0036: portfolios.in_totals, true by default; the downgrade drops it."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    async def query(sql: str):
+        engine = make_engine(fresh_db)
+        async with engine.begin() as conn:
+            result = await conn.execute(text(sql))
+            rows = result.all() if result.returns_rows else []
+        await engine.dispose()
+        return rows
+
+    column = ("select data_type, column_default from information_schema.columns"
+              " where table_name = 'portfolios' and column_name = 'in_totals'")
+    await query("insert into portfolios (id, name, base_currency, leverage,"
+                " maintenance_margin_pct, warning_margin_pct, slippage_bps, status, timezone)"
+                " values (gen_random_uuid(), 'tot', 'EUR', 1, 50, 75, 0, 'active',"
+                " 'Europe/Rome')")
+    assert await query(column) == [("boolean", "true")]
+    assert await query("select in_totals from portfolios where name = 'tot'") == [(True,)]
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "-1")
+    assert await query(column) == []
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    assert await query("select in_totals from portfolios where name = 'tot'") == [(True,)]
