@@ -38,6 +38,7 @@ from smtrading.engine.quotesource import FakeQuoteSource
 from smtrading.engine.service import (
     PlaceOrderRequest,
     cancel_order,
+    close_position,
     modify_order,
     place_bracket_order,
     place_order,
@@ -1847,3 +1848,105 @@ async def test_canceled_day_order_is_not_renewed(maker, redis, qs):
     assert (await _order(maker, oid)).status == OrderStatus.expired
     await _sync(maker, redis, qs, now=WEDNESDAY_OPEN).tick()
     assert len(BROKER.placed) == 1
+
+
+# -- piani and closes on a broker-linked portfolio (plan-close review) -------------------
+
+
+async def _held_at_broker(maker, redis, qs, sync) -> uuid.UUID:
+    """A linked portfolio long 10 AAPL, filled at the broker (b1)."""
+    pid, _ = await _linked_portfolio(maker)
+    await _place(maker, redis, qs, pid)
+    await sync.tick()
+    BROKER.set("b1", "filled", 10, "100")
+    await sync.tick()
+    return pid
+
+
+async def _plan_row(maker, pid, symbol="AAPL") -> None:
+    from datetime import date
+
+    from smtrading.goals.models import Goal, PlanClosure
+
+    async with maker() as s:
+        held = await s.get(Position, (pid, symbol))
+        g = Goal(name=f"piano-{uuid.uuid4().hex[:6]}", horizon="week", recurring=True,
+                 scope="portfolio", portfolio_id=pid, kind="min", target_pct=D(2),
+                 active=True, closes_positions=True,
+                 plan_since=datetime(2026, 11, 1, tzinfo=UTC), start_date=date(2026, 11, 2))
+        s.add(g)
+        await s.flush()
+        s.add(PlanClosure(
+            goal_id=g.id, period_start=date(2026, 11, 2), period_end=date(2026, 11, 8),
+            ended_at=datetime(2026, 11, 8, 23, 0, tzinfo=UTC), portfolio_id=pid,
+            symbol=symbol, qty=TEN, opened_at=held.opened_at, state="pending", grace_days=1,
+            attempts=0))
+        await s.commit()
+
+
+async def test_an_addition_in_plan_closing_is_never_sent(maker, redis, qs):
+    sync = _sync(maker, redis, qs)
+    pid = await _held_at_broker(maker, redis, qs, sync)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, qty=D(5),
+                       limit_price=D("95"))  # placed before the end, not sent yet
+    await _plan_row(maker, pid)
+    await sync.tick()
+    o = await _order(maker, oid)
+    assert (o.status, o.reject_code) == (OrderStatus.rejected, ErrorCode.RISK_LIMIT_EXCEEDED)
+    assert "being closed at the end of a plan" in o.reject_message
+    assert [p[0] for p in BROKER.placed] == ["b1"]
+
+
+async def test_an_addition_in_plan_closing_at_the_broker_is_canceled(maker, redis, qs):
+    from smtrading.activity.models import Activity
+
+    sync = _sync(maker, redis, qs)
+    pid = await _held_at_broker(maker, redis, qs, sync)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, qty=D(5),
+                       limit_price=D("95"))
+    await sync.tick()
+    assert (await _order(maker, oid)).broker_order_id == "b2"
+    await _plan_row(maker, pid)
+    await sync.tick()  # read, cancel requested, canceled in the same pass
+    assert BROKER.canceled == ["b2"]
+    assert (await _order(maker, oid)).status == OrderStatus.canceled
+    async with maker() as s:
+        act = await s.scalar(select(Activity).where(Activity.type == "plan.orders_canceled"))
+    assert act.portfolio_id == pid and act.summary.startswith("AAPL: annullato 1 ordine")
+
+
+async def test_the_plan_closer_cancels_an_addition_at_the_broker(maker, redis, qs):
+    from smtrading.goals.plan_closer import PlanCloser
+
+    sync = _sync(maker, redis, qs)
+    pid = await _held_at_broker(maker, redis, qs, sync)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, qty=D(5),
+                       limit_price=D("95"))
+    await sync.tick()
+    await _plan_row(maker, pid)
+    await PlanCloser(maker, qs, redis, clock=Clock(SATURDAY), tz="Europe/Rome").tick()
+    o = await _order(maker, oid)
+    assert (o.status, o.broker_status) == (OrderStatus.pending, BrokerState.CANCEL_REQUESTED)
+    await sync.tick()
+    assert BROKER.canceled == ["b2"]
+    assert (await _order(maker, oid)).status == OrderStatus.canceled
+
+
+async def test_full_close_cancels_a_standalone_stop_at_the_broker(maker, redis, qs):
+    """CHIUDI on a linked portfolio: the stop placed alone (not reduce-only) is canceled
+    at the broker, so it neither holds the quantity nor opens a short once flat."""
+    sync = _sync(maker, redis, qs)
+    pid = await _held_at_broker(maker, redis, qs, sync)
+    stop = await _place(maker, redis, qs, pid, type=OrderType.stop, side=OrderSide.sell,
+                        stop_price=D("90"))
+    await sync.tick()
+    assert (await _order(maker, stop)).broker_order_id == "b2"
+    async with maker() as s:
+        close = await close_position(s, qs, pid, "AAPL", now=OPEN)
+        await s.commit()
+        await dispatch_post_commit(s, redis)
+    assert (await _order(maker, stop)).broker_status == BrokerState.CANCEL_REQUESTED
+    await sync.tick()
+    assert "b2" in BROKER.canceled
+    assert (await _order(maker, stop)).status == OrderStatus.canceled
+    assert (await _order(maker, close.id)).broker_order_id == "b3"

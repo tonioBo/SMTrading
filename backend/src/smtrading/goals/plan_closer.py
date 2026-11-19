@@ -8,6 +8,11 @@ Each run:
    portfolios open at the end (not opened after it, not already in another piano's
    closing) gets a `plan_closures` row `pending`; one «plan.ended» activity per portfolio
    with positions and one Telegram summary to the owner (category goals);
+   then, at every run, each open row (pending, grace, closing) first has the symbol's
+   resting orders that would add to the position or turn it (an entry placed before the
+   end, a fractional entry renewed every session at the broker; never an exit) canceled
+   (`engine.cancel_plan_additions`, «plan.orders_canceled» activity): the fill-time and
+   send-time checks refuse them anyway (`goals.plans`);
 2. each `pending` row, once its market is open and a fresh quote is at hand: not in loss
    (unrealized P&L ≥ 0 at the mark) → closed with `engine.close_position` (source
    system); in loss → `grace` until `grace_deadline` («plan.grace» activity);
@@ -19,10 +24,10 @@ A row is never closed while another order closing the position is in flight (a m
 order or a triggered stop on the closing side, e.g. the agents' CHIUDI queued for the
 open or still at the broker): a second full-size close at the broker could sell twice
 (BrokerSync clamps a reduce-only order to the position, not to the other open sells);
-the row waits for the next run. With the close, the symbol's other resting orders on the
-closing side that are not reduce-only (a PROTEGGI OCO, a stop placed alone) are canceled
-too (`close_position` cancels the bracket exits only): once flat they would open the
-opposite position, and at the broker they hold the quantity the close needs.
+the row waits for the next run. With the close, `close_position` cancels the symbol's
+bracket exits and its other resting orders on the closing side that are not reduce-only
+(a PROTEGGI OCO, a stop placed alone): once flat they would open the opposite position,
+and at the broker they hold the quantity the close needs.
 A position flat (or reopened: another `opened_at`) before SMTrading acts is `closed` by
 the agents, with no message. A closed market waits for the open; a missing or stale quote
 skips the row until the next run (never closed blind). A refused close is rolled back
@@ -54,14 +59,13 @@ from smtrading.common.errors import SMTError
 from smtrading.engine.models import (
     FILLABLE_STATUSES,
     OPEN_STATUSES,
-    BrokerState,
     Order,
     OrderSide,
     OrderStatus,
     OrderType,
 )
 from smtrading.engine.quotesource import QuoteSource
-from smtrading.engine.service import cancel_orders, close_position
+from smtrading.engine.service import cancel_plan_additions, close_position
 from smtrading.events import discard_post_commit, dispatch_post_commit
 from smtrading.goals.models import Goal, PlanClosure
 from smtrading.goals.plans import (
@@ -194,6 +198,11 @@ class PlanCloser:
         async with self._sm() as session:
             ids = [r.id for r in await open_closures(session)]
         for row_id in ids:
+            try:
+                await self._additions(row_id)
+            except Exception:
+                log.warning("plan closing: canceling the additions of row %s failed",
+                            row_id, exc_info=True)
             try:
                 await self._step(row_id, now)
             except Exception:
@@ -388,20 +397,38 @@ class PlanCloser:
                 | Order.status.in_((OrderStatus.triggered, OrderStatus.partially_filled)))
             .limit(1)) is not None
 
-    async def _cancel_resting(self, session: AsyncSession, row: PlanClosure,
-                              close: Order) -> None:
-        """The symbol's open resting orders on the close's side, not reduce-only, other
-        than the close (module docstring)."""
-        resting = list(await session.scalars(
-            select(Order).where(
+    async def _additions(self, row_id: int) -> None:
+        async with self._sm() as session:
+            try:
+                async with session.begin():
+                    loaded = await self._load(session, row_id)
+                    if loaded is None:
+                        return
+                    row, _, _, position = loaded
+                    if (position is None or position.qty == 0
+                            or position.opened_at != row.opened_at):
+                        return  # the step marks it closed
+                    await self._cancel_additions(session, row)
+            except BaseException:
+                discard_post_commit(session)
+                raise
+            await dispatch_post_commit(session, self._redis)
+
+    async def _cancel_additions(self, session: AsyncSession, row: PlanClosure) -> None:
+        """The symbol's resting orders that would add to the position (module docstring);
+        the portfolio is locked only when there are candidates."""
+        def candidates():
+            return (select(Order).where(
                 Order.portfolio_id == row.portfolio_id, Order.symbol == row.symbol,
-                Order.side == close.side, Order.id != close.id,
                 Order.status.in_(FILLABLE_STATUSES), Order.reduce_only.is_not(True))
-            .order_by(Order.created_at, Order.id)
-            .with_for_update(of=Order).execution_options(populate_existing=True)))
-        await cancel_orders(session, [o for o in resting
-                                      if o.broker_status != BrokerState.CANCEL_REQUESTED],
-                            by="system")
+                .order_by(Order.created_at, Order.id))
+        if await session.scalar(candidates().with_only_columns(Order.id).limit(1)) is None:
+            return
+        await lock_live_portfolio(session, row.portfolio_id)
+        orders = list(await session.scalars(
+            candidates().with_for_update(of=Order)
+            .execution_options(populate_existing=True)))
+        await cancel_plan_additions(session, orders)
 
     async def _close(self, row_id: int, now: datetime) -> None:
         async with self._sm() as session:
@@ -423,7 +450,6 @@ class PlanCloser:
                     order = await close_position(
                         session, self._qs, row.portfolio_id, row.symbol, source="system",
                         now=now, redis=self._redis)
-                    await self._cancel_resting(session, row, order)
                     row.state, row.order_id, row.last_error = "closing", order.id, None
                     position = await session.get(Position, (row.portfolio_id, row.symbol),
                                                  populate_existing=True)

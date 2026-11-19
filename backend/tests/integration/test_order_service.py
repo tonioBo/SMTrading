@@ -882,3 +882,112 @@ async def test_valid_until_replay_and_reuse(db_session, qs, p):
         await place_order(
             db_session, qs, _limit(p, valid_until="close", client_order_id="vu-2"), now=OPEN)
     assert plain.valid_until is None and plain.expires_at is None
+
+
+# -- closes cancel the standalone exits (a PROTEGGI OCO, a stop alone) ------------------
+
+TEN_ = D(10)
+
+
+async def _exits(db_session, qs, p, *, qty=TEN_, stop_qty=TEN_, now=OPEN):
+    """A PROTEGGI OCO (target 220, stop 180) and a stop placed alone, none reduce-only."""
+    oco = await place_oco_order(
+        db_session, qs,
+        _req(p, side=OrderSide.sell, type=OrderType.limit, qty=qty, limit_price=D(220)),
+        _req(p, side=OrderSide.sell, type=OrderType.stop, qty=qty, stop_price=D(180)),
+        now=now)
+    stop = await place_order(
+        db_session, qs,
+        _req(p, side=OrderSide.sell, type=OrderType.stop, qty=stop_qty, stop_price=D(170)),
+        now=now)
+    return [*oco, stop]
+
+
+async def _exit_activities(db_session, p):
+    from smtrading.activity.models import Activity
+
+    await db_session.flush()
+    return list(await db_session.scalars(
+        select(Activity).where(Activity.portfolio_id == p.id,
+                               Activity.type == "order.exits_canceled")))
+
+
+async def test_full_close_cancels_the_standalone_exits(db_session, qs, p):
+    """CHIUDI: once flat, an OCO or a stop that is not reduce-only would open a short."""
+    await place_order(db_session, qs, _req(p), now=OPEN)
+    exits = await _exits(db_session, qs, p)
+    other = await place_order(  # the other side: not an exit, kept
+        db_session, qs, _req(p, type=OrderType.limit, limit_price=D(150)), now=OPEN)
+
+    close = await close_position(db_session, qs, p.id, "AAPL", now=OPEN)
+
+    assert close.status == OrderStatus.filled
+    for o in (*exits, other):
+        await db_session.refresh(o)
+    assert {o.status for o in exits} == {OrderStatus.canceled}
+    assert other.status == OrderStatus.pending
+    [act] = await _exit_activities(db_session, p)
+    assert "3 ordini di uscita" in act.summary and "simul" not in act.summary.lower()
+    assert await _position(db_session, p.id, "AAPL") == 0
+
+
+async def test_full_close_with_the_kill_switch_on_cancels_the_exits(db_session, qs, p):
+    from smtrading.risk.settings import set_kill_switch
+
+    await place_order(db_session, qs, _req(p), now=OPEN)
+    exits = await _exits(db_session, qs, p)
+    await set_kill_switch(db_session, True)
+    close = await close_position(db_session, qs, p.id, "AAPL", now=OPEN)
+    assert close.status == OrderStatus.filled
+    for o in exits:
+        await db_session.refresh(o)
+    assert {o.status for o in exits} == {OrderStatus.canceled}
+
+
+async def test_close_all_positions_cancels_the_standalone_exits(db_session, qs, p):
+    await place_order(db_session, qs, _req(p), now=OPEN)
+    exits = await _exits(db_session, qs, p)
+    await close_all_positions(db_session, qs, p.id, now=OPEN)
+    for o in exits:
+        await db_session.refresh(o)
+    assert {o.status for o in exits} == {OrderStatus.canceled}
+
+
+async def test_partial_close_cancels_only_the_oversized_exits(db_session, qs, p):
+    """Close 6 of 10: the OCO for 10 (both legs) goes, the stop for 4 stays."""
+    await place_order(db_session, qs, _req(p), now=OPEN)
+    tp, sl, stop = await _exits(db_session, qs, p, stop_qty=D(4))
+    await close_position(db_session, qs, p.id, "AAPL", D(6), now=OPEN)
+    for o in (tp, sl, stop):
+        await db_session.refresh(o)
+    assert (tp.status, sl.status, stop.status) == (
+        OrderStatus.canceled, OrderStatus.canceled, OrderStatus.pending)
+    [act] = await _exit_activities(db_session, p)
+    assert act.summary.startswith("Chiusura parziale di AAPL: annullati 2 ordini")
+    assert act.data["remaining"] == "4"
+
+
+async def test_partial_close_queued_cancels_the_oversized_exits_at_once(db_session, qs, p):
+    """Market closed: the partial close waits for the open; the oversized OCO is already
+    canceled (left alone it would sell 10 of the 4 left)."""
+    await place_order(db_session, qs, _req(p), now=OPEN)
+    tp, sl, stop = await _exits(db_session, qs, p, qty=D(4), stop_qty=D(10))
+    close = await close_position(db_session, qs, p.id, "AAPL", D(6), now=SATURDAY)
+    assert close.status == OrderStatus.queued
+    for o in (tp, sl, stop):
+        await db_session.refresh(o)
+    assert (tp.status, sl.status, stop.status) == (
+        OrderStatus.pending, OrderStatus.pending, OrderStatus.canceled)
+
+
+async def test_full_close_cancels_a_closing_side_entry_and_its_held_exits(db_session, qs, p):
+    """A resting sell bracket entry on a long: flat, it would open a short."""
+    await place_order(db_session, qs, _req(p), now=OPEN)
+    entry, tp, sl = await place_bracket_order(
+        db_session, qs, _req(p, side=OrderSide.sell, type=OrderType.limit,
+                             limit_price=D(230)),
+        take_profit=D(200), stop_loss=D(240), now=OPEN)
+    await close_position(db_session, qs, p.id, "AAPL", now=OPEN)
+    for o in (entry, tp, sl):
+        await db_session.refresh(o)
+    assert {entry.status, tp.status, sl.status} == {OrderStatus.canceled}

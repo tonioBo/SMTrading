@@ -29,7 +29,10 @@ best-effort: errors are logged and never stop order processing.
 
 execute_fill enforces the portfolio status and the kill switch again at fill time (I3),
 so a resting order of a portfolio locked or set reduce_only after placement is rejected
-with that code; a reduce_only order with nothing left to reduce is canceled there.
+with that code; a reduce_only order with nothing left to reduce is canceled there. So is
+a resting order that would add to a position of an ended «piano» still being closed (or
+turn it to the other side): rejected RISK_LIMIT_EXCEEDED, `reason: plan_grace` in the
+`order.rejected` notification (goals.plans).
 
 Broker-managed orders (broker_link_id set) are never filled or triggered here: BrokerSync
 applies the broker's fills. Only one never sent (`to_send`, no send attempted) can expire
@@ -571,6 +574,8 @@ class OrderProcessor:
                 payload={
                     "order_id": order.id, "symbol": order.symbol, "code": str(error.code),
                     "message": error.message,
+                    **({"reason": error.details["reason"]}
+                       if error.details and error.details.get("reason") else {}),
                 },
             )
             await _untrack_if_idle(session, order.symbol)

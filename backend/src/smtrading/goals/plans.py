@@ -9,8 +9,11 @@ A piano closes the positions open at the end of its period (`goals.periods`):
   Friday, each closing at 22:00 UTC; outside the calendars' window Monday to Friday too;
 - the grace deadline is the close of the Nth session (CRYPTO: the end + N days)
   (`grace_deadline`).
-The worker job (`goals.plan_closer`) applies them; the risk check refuses to increase a
-position of an ended piano still open (`risk.checks`)."""
+The worker job (`goals.plan_closer`) applies them. A position of an ended piano still
+open (pending, grace, closing) takes no addition: no order that would increase it or turn
+it to the other side (`adds_to`), refused with `plan_grace_error` by the risk check
+(`risk.checks`), again at fill time (`engine.execution`) and before a send to the broker
+(`brokers.sync`); the job cancels the resting ones (`goals.plan_closer`)."""
 
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -20,6 +23,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.goals.models import Goal, PlanClosure
 from smtrading.goals.periods import Period, goal_period, previous_period
 from smtrading.instruments.market_hours import CALENDARS, local_date, session_on
@@ -30,6 +34,7 @@ GRACE_MIN, GRACE_MAX = 1, 10
 _FX_CLOSE = time(22, 0, tzinfo=UTC)
 _MAX_SCAN_DAYS = 60  # calendar days scanned looking for the Nth session
 OPEN_STATES = ("pending", "grace", "closing")
+PLAN_GRACE = "plan_grace"
 
 
 def grace_days(horizon: str, period: Period) -> int:
@@ -129,3 +134,26 @@ async def open_closures(session: AsyncSession,
 def grace_until(row: PlanClosure | None) -> datetime | None:
     """The `plan_grace_until` of a position: its grace deadline while in grace."""
     return row.deadline if row is not None and row.state == "grace" else None
+
+
+def adds_to(held: Decimal, buy: bool, qty: Decimal | None) -> bool:
+    """An order of `qty` (None: a notional order) on the buy (`buy`) or sell side would
+    increase the position `held`, open one from flat, or turn it to the other side (long
+    1, sell 3: short 2). A notional order is judged by its side alone."""
+    if qty is None:
+        return held == 0 or (held > 0) == buy
+    after = held + qty if buy else held - qty
+    return abs(after) > abs(held) or (held != 0 and after != 0 and (after > 0) != (held > 0))
+
+
+def plan_grace_error(row: PlanClosure, symbol: str) -> SMTError:
+    """The refusal of an addition to a position of an ended piano (RISK_LIMIT_EXCEEDED,
+    details {reason: plan_grace, symbol, deadline}; deadline null before its first
+    session)."""
+    deadline = row.deadline.isoformat() if row.deadline else None
+    until = f"until {deadline}" if deadline else "until its market's first session"
+    return SMTError(
+        ErrorCode.RISK_LIMIT_EXCEEDED,
+        f"{symbol} is being closed at the end of a plan ({until}): no additions and no "
+        "reversal to the opposite side",
+        {"reason": PLAN_GRACE, "symbol": symbol, "deadline": deadline})

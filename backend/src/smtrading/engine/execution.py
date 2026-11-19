@@ -21,7 +21,10 @@ that opens/adds (open), posted together in one TRADE journal:
   (PORTFOLIO_LOCKED); a reduce_only portfolio only fills purely reducing fills
   (REDUCE_ONLY); with the kill switch on, a fill that opens exposure is refused
   (KILL_SWITCH_ACTIVE), and so it is while a trading halt covers the portfolio
-  (TRADING_HALTED, risk.halts);
+  (TRADING_HALTED, risk.halts); a fill that would increase a position of an ended
+  «piano» still being closed, or turn it to the other side, is refused (RISK_LIMIT_EXCEEDED,
+  details reason `plan_grace`, goals.plans): a resting entry placed before the end never
+  adds to it;
 - a reduce_only order (Ruling R22: closes, bracket exits) is clamped to |position|; with
   nothing to reduce (flat, or held on the order's side) it is canceled with reason
   `nothing_to_reduce` and no journal;
@@ -72,6 +75,7 @@ from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.events import queue_event, queue_track, queue_untrack
 from smtrading.fees.calculator import FeeRuleData, compute_fx_fee, compute_trade_fee
 from smtrading.fees.resolver import load_rules, resolve_rule
+from smtrading.goals.plans import adds_to, open_closure, plan_grace_error
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, Journal, JournalType
 from smtrading.ledger.service import LineSpec, get_balance, get_or_create_account, post_journal
@@ -104,21 +108,49 @@ def broker_live(order: Order) -> bool:
     )
 
 
+async def _held(session: AsyncSession, portfolio_id: UUID, symbol: str) -> Decimal:
+    return await session.scalar(
+        select(AccountBalance.balance)
+        .join(Account, AccountBalance.account_id == Account.id)
+        .where(Account.portfolio_id == portfolio_id, Account.asset == symbol,
+               Account.kind == AccountKind.position)
+    ) or Decimal(0)
+
+
+async def _check_plan(session: AsyncSession, portfolio_id: UUID, symbol: str) -> None:
+    """A position of an ended piano still being closed takes no addition (goals.plans)."""
+    closing = await open_closure(session, portfolio_id, symbol)
+    if closing is not None:
+        raise plan_grace_error(closing, symbol)
+
+
+async def plan_refusal(session: AsyncSession, order: Order) -> SMTError | None:
+    """The plan_grace refusal of an open order whose rest would add to (or turn) a
+    position of an ended piano still being closed; None for any other order (reduce_only
+    ones included: they never add)."""
+    if order.reduce_only:
+        return None
+    held = await _held(session, order.portfolio_id, order.symbol)
+    remaining = None if order.qty is None else order.qty - (order.filled_qty or Decimal(0))
+    if remaining is not None and remaining <= 0:
+        return None
+    if not adds_to(held, order.side == OrderSide.buy, remaining):
+        return None
+    closing = await open_closure(session, order.portfolio_id, order.symbol)
+    return None if closing is None else plan_grace_error(closing, order.symbol)
+
+
 async def broker_send_check(
     session: AsyncSession, portfolio: Portfolio, order: Order, *, clamp: bool = True,
     status_checks: bool = True,
 ) -> bool:
     """The fill-time local checks for an order about to be sent to the broker (the same
     the simulator applies at fill, I3): raises PORTFOLIO_LOCKED / REDUCE_ONLY /
-    KILL_SWITCH_ACTIVE / TRADING_HALTED; for a reduce_only order clamps qty to the position and returns
-    False when there is nothing to reduce (`clamp=False`: an order already at the broker,
-    qty left as is). The caller holds the portfolio lock."""
-    held = await session.scalar(
-        select(AccountBalance.balance)
-        .join(Account, AccountBalance.account_id == Account.id)
-        .where(Account.portfolio_id == portfolio.id, Account.asset == order.symbol,
-               Account.kind == AccountKind.position)
-    ) or Decimal(0)
+    KILL_SWITCH_ACTIVE / TRADING_HALTED, and RISK_LIMIT_EXCEEDED (plan_grace) for an order
+    that would add to a position of an ended piano; for a reduce_only order clamps qty to
+    the position and returns False when there is nothing to reduce (`clamp=False`: an
+    order already at the broker, qty left as is). The caller holds the portfolio lock."""
+    held = await _held(session, portfolio.id, order.symbol)
     buy = order.side == OrderSide.buy
     closing = held != 0 and (held > 0) != buy
     remaining = None if order.qty is None else order.qty - (order.filled_qty or Decimal(0))
@@ -133,6 +165,8 @@ async def broker_send_check(
     )
     if status_checks:  # skipped for a margin liquidation (always goes)
         await _check_status(session, portfolio, reducing, order.symbol)
+        if not reducing:
+            await _check_plan(session, portfolio.id, order.symbol)
     return True
 
 
@@ -578,6 +612,8 @@ async def execute_fill(
     reducing = split.reducing
     if journal_type != JournalType.LIQUIDATION and not broker:
         await _check_status(session, portfolio, split.reducing, symbol)
+        if not split.reducing:  # adds to the position or turns it (a flip)
+            await _check_plan(session, portfolio.id, symbol)
     if after < 0 and not buy and not broker:
         await _check_short_allowed(session, portfolio, instrument)
 

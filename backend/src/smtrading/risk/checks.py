@@ -20,8 +20,10 @@ uses unrounded values (valuation *_raw fields, Ruling R8).
   and before the risk limits (order notional, position weight, buying power). With
   `live_effects=False` (a preview, a modify) the fuse never trips the portfolio.
 - «Piani» (`goals.plans`): a position of an ended piano still being closed (pending,
-  grace, closing) cannot grow: RISK_LIMIT_EXCEEDED with details {reason: "plan_grace",
-  symbol, deadline} (deadline null before its first session).
+  grace, closing) cannot grow nor turn to the other side (long 1, sell 3), even when
+  |after| <= |before|: RISK_LIMIT_EXCEEDED with details {reason: "plan_grace", symbol,
+  deadline} (deadline null before its first session). A reduce_only order is clamped
+  first, so it never flips.
 """
 
 from dataclasses import dataclass
@@ -38,7 +40,7 @@ from smtrading.engine.pricing import QuoteView, fill_price, notional_to_qty
 from smtrading.engine.quotesource import QuoteSource
 from smtrading.fees.calculator import compute_trade_fee
 from smtrading.fees.resolver import FeeQuote, load_rules, resolve_rule
-from smtrading.goals.plans import open_closure
+from smtrading.goals.plans import adds_to, open_closure, plan_grace_error
 from smtrading.instruments.models import Instrument
 from smtrading.instruments.service import validate_price, validate_quantity
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
@@ -226,17 +228,11 @@ async def _run(
             "valuation uses cached quotes for " + ", ".join(valuation.stale_symbols),
         )
 
-    if increases:
+    if qty > 0 and adds_to(before, side == OrderSide.buy, qty):  # a flip included
         closing = await open_closure(session, portfolio.id, instrument.symbol)
         if closing is not None:
-            until = (f"until {closing.deadline.isoformat()}" if closing.deadline
-                     else "until its market's first session")
-            raise _Reject(
-                ErrorCode.RISK_LIMIT_EXCEEDED,
-                f"{instrument.symbol} is being closed at the end of a plan ({until}): "
-                "no additions",
-                {"reason": "plan_grace", "symbol": instrument.symbol,
-                 "deadline": closing.deadline.isoformat() if closing.deadline else None})
+            e = plan_grace_error(closing, instrument.symbol)
+            raise _Reject(e.code, e.message, e.details)
 
     # 6-7: reduce-only and short permission
     if portfolio.status == PortfolioStatus.reduce_only and not reduces:

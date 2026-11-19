@@ -26,7 +26,14 @@ parameters returns that order; a stored rejection is raised again (M5).
 
 Reduce-only (Ruling R22): closing orders and bracket exits are `reduce_only`; at fill
 they are clamped to the position, or canceled when there is nothing to reduce. Closing a
-position also cancels that symbol's open bracket exits in the portfolio (Ruling R16).
+position also cancels that symbol's open bracket exits in the portfolio (Ruling R16),
+and its other resting orders on the closing side that are not reduce-only (a PROTEGGI
+OCO, a stop or limit placed alone: `cancel_closing_side`): after a full close all of
+them (once flat they would open the opposite position, and at the broker they hold the
+quantity the close needs); after a partial close those whose open quantity exceeds what
+is left, an OCO group as a whole (canceled rather than resized: a resize at the broker is
+a cancel and a new send, and the agents re-protect the rest with a new OCO). One
+`order.exits_canceled` activity says which.
 
 Broker routing (Rulings R3, R7): in a portfolio linked to an enabled broker, an order the
 adapter can take (`routable`) is not executed here: after the local checks it is stored
@@ -69,12 +76,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from smtrading.activity.mapping import ActivityDraft
+from smtrading.activity.models import ActivityLevel
+from smtrading.activity.service import record_activity
 from smtrading.brokers.models import BrokerLink
 from smtrading.brokers.service import open_adapter
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.engine.execution import broker_live, execute_fill, hand_to_broker
+from smtrading.common.money import decimal_to_str
+from smtrading.engine.execution import broker_live, execute_fill, hand_to_broker, plan_refusal
 from smtrading.engine.models import (
     BROKER_LIQUIDATION_REASON,
+    FILLABLE_STATUSES,
     LIQUIDATION_ROLE,
     OPEN_STATUSES,
     BrokerState,
@@ -1105,13 +1117,96 @@ async def _cancel_exits(
     return exits
 
 
+async def _cancel_with_held_children(session: AsyncSession, orders: list[Order],
+                                    by: str) -> None:
+    """Cancel these locked open orders; a bracket entry canceled here (not at the broker)
+    takes its held exits with it. One canceled at the broker leaves them to BrokerSync's
+    final state (a partly filled entry keeps them for the filled quantity)."""
+    await _cancel(session, orders, by)
+    for o in orders:
+        if o.status == OrderStatus.canceled:
+            await cancel_held_children(session, o, by=by)
+
+
+async def cancel_closing_side(
+    session: AsyncSession, portfolio_id: UUID, symbol: str, side: OrderSide, *,
+    remaining: Decimal, exclude: UUID | None, by: str, agent_id: str | None = None,
+) -> list[Order]:
+    """With a close on `side` (module docstring): cancel the symbol's open resting orders
+    on that side that are not reduce-only, other than `exclude` (the close) and those
+    already being canceled: all of them when `remaining` (what the close leaves) is 0,
+    else those whose open quantity exceeds it (an OCO group as a whole). The caller holds
+    the portfolio lock. Returns the canceled orders."""
+    candidates = [o for o in await session.scalars(
+        select(Order).where(
+            Order.portfolio_id == portfolio_id, Order.symbol == symbol,
+            Order.side == side, Order.status.in_(FILLABLE_STATUSES),
+            Order.reduce_only.is_not(True),
+        ).order_by(Order.created_at, Order.id)
+        .with_for_update().execution_options(populate_existing=True)
+    ) if o.id != exclude and o.broker_status != BrokerState.CANCEL_REQUESTED]
+
+    def exceeds(o: Order) -> bool:
+        return o.qty is None or o.qty - (o.filled_qty or Decimal(0)) > remaining
+
+    groups = {o.oco_group_id for o in candidates if exceeds(o) and o.oco_group_id}
+    orders = [o for o in candidates
+              if remaining <= 0 or exceeds(o) or o.oco_group_id in groups]
+    if not orders:
+        return []
+    await _cancel_with_held_children(session, orders, by)
+    if remaining <= 0:
+        summary = (f"Chiusura di {symbol}: annullati anche {len(orders)} ordini di uscita "
+                   "non reduce-only (a posizione chiusa aprirebbero quella opposta)")
+    else:
+        summary = (f"Chiusura parziale di {symbol}: annullati {len(orders)} ordini di "
+                   f"uscita con quantità oltre la posizione restante "
+                   f"({decimal_to_str(remaining)}): riproteggi la quantità restante")
+    record_activity(session, ActivityDraft(
+        "order.exits_canceled", ActivityLevel.info, False, summary,
+        {"symbol": symbol, "order_ids": [o.id for o in orders],
+         "remaining": decimal_to_str(remaining),
+         "by": by}),
+        portfolio_id=portfolio_id, agent_id=agent_id)
+    return orders
+
+
+async def cancel_plan_additions(session: AsyncSession, orders: list[Order], *,
+                                by: str = "system") -> list[Order]:
+    """Of these open orders (locked, with their portfolio), cancel those that would add
+    to a position of an ended «piano» still being closed, or turn it (goals.plans,
+    `plan_refusal`): one `plan.orders_canceled` activity per symbol. Returns them."""
+    blocked = [o for o in orders
+               if o.status in FILLABLE_STATUSES
+               and o.broker_status != BrokerState.CANCEL_REQUESTED
+               and await plan_refusal(session, o) is not None]
+    if not blocked:
+        return []
+    await _cancel_with_held_children(session, blocked, by)
+    by_symbol: dict[tuple[UUID, str], list[Order]] = {}
+    for o in blocked:
+        by_symbol.setdefault((o.portfolio_id, o.symbol), []).append(o)
+    for (portfolio_id, symbol), group in by_symbol.items():
+        what = ("annullato 1 ordine che aumenterebbe" if len(group) == 1
+                else f"annullati {len(group)} ordini che aumenterebbero")
+        record_activity(session, ActivityDraft(
+            "plan.orders_canceled", ActivityLevel.info, False,
+            f"{symbol}: {what} la posizione in chiusura a fine piano "
+            "(nessuna aggiunta né inversione)",
+            {"symbol": symbol, "order_ids": [o.id for o in group], "reason": "plan_grace",
+             "by": by}),
+            portfolio_id=portfolio_id, agent_id=group[0].agent_id)
+    return blocked
+
+
 async def _close(
     session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, symbol: str,
     held: Decimal, qty: Decimal | None, *, source: str, agent_id: str | None,
     now: datetime | None, redis=None,
 ) -> tuple[Order, bool]:
     """A reduce_only market order against `held` (Ruling R22); unless it is rejected,
-    the symbol's open bracket exits are canceled (Ruling R16)."""
+    the symbol's open bracket exits are canceled (Ruling R16), and its resting orders on
+    the closing side that are not reduce-only (`cancel_closing_side`)."""
     size = abs(held)
     if qty is None:
         qty = size
@@ -1127,6 +1222,8 @@ async def _close(
     order, created = await _place(session, qs, req, now, redis)
     if order.status != OrderStatus.rejected:
         await _cancel_exits(session, portfolio_id, symbol, by=source)
+        await cancel_closing_side(session, portfolio_id, symbol, side, remaining=size - qty,
+                                  exclude=order.id, by=source, agent_id=agent_id)
     return order, created
 
 
@@ -1136,7 +1233,8 @@ async def close_position(
     now: datetime | None = None, redis=None,
 ) -> Order:
     """Reduce-only market order on the opposite side for |position| (or `qty` <=
-    |position|); the symbol's open bracket exits are canceled (Ruling R16)."""
+    |position|); the symbol's open bracket exits are canceled (Ruling R16), and its
+    standalone exits that the close leaves oversized (`cancel_closing_side`)."""
     await lock_live_portfolio(session, portfolio_id)
     symbol = (await get_instrument(session, symbol)).symbol
     held = (await _position_balances(session, portfolio_id, symbol)).get(symbol)

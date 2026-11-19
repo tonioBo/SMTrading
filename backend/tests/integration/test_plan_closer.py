@@ -24,6 +24,7 @@ from smtrading.engine.service import (
     PlaceOrderRequest,
     close_position,
     modify_order,
+    place_bracket_order,
     place_oco_order,
     place_order,
 )
@@ -430,3 +431,129 @@ async def test_protection_and_stop_changes_pass_in_grace(sm, qs):
         discard_post_commit(s)
         await s.commit()
     assert moved.stop_price == D(185) and moved.status != OrderStatus.rejected
+
+
+# -- resting additions, flips (review fixes) ---------------------------------------------
+
+
+async def _resting(sm, qs, pid, symbol, side, type, qty, *, now=BOUGHT, **kw):
+    async with sm() as s:
+        o = await place_order(s, qs, PlaceOrderRequest(
+            portfolio_id=pid, symbol=symbol, side=side, type=type, qty=D(qty), **kw),
+            now=now)
+        discard_post_commit(s)
+        await s.commit()
+        return o.id
+
+
+async def _status(sm, oid) -> OrderStatus:
+    async with sm() as s:
+        return (await s.get(Order, oid)).status
+
+
+async def test_period_end_cancels_the_resting_additions_not_the_exits(sm, qs):
+    """Entries placed before the end (a limit buy, a bracket entry with its held exits)
+    are canceled by the first run; the exits of the position are kept. Kill switch on."""
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, "AAPL", 10)
+    entry = await _resting(sm, qs, pid, "AAPL", OrderSide.buy, OrderType.limit, 5,
+                           limit_price=D(150))
+    async with sm() as s:
+        bracket = await place_bracket_order(
+            s, qs, PlaceOrderRequest(portfolio_id=pid, symbol="AAPL", side=OrderSide.buy,
+                                     type=OrderType.limit, qty=D(3), limit_price=D(160)),
+            take_profit=D(220), stop_loss=D(140), now=BOUGHT)
+        discard_post_commit(s)
+        await s.commit()
+    exit_ = await _resting(sm, qs, pid, "AAPL", OrderSide.sell, OrderType.stop, 10,
+                           stop_price=D(170))
+    qs.set_quote("AAPL", D("190.00"), D("190.10"), D("190.05"))  # in loss: grace later
+    await _plan(sm)
+    async with sm() as s:
+        await set_kill_switch(s, True)
+        await s.commit()
+    await _job(sm, qs, Clock(SUNDAY_NIGHT)).tick()  # NASDAQ closed: cancels anyway
+    assert await _status(sm, entry) == OrderStatus.canceled
+    assert {await _status(sm, o.id) for o in bracket} == {OrderStatus.canceled}
+    assert await _status(sm, exit_) == OrderStatus.pending
+    feed = await _feed(sm)
+    canceled = [t for k, t in feed if k == "plan.orders_canceled"]
+    assert canceled == [("AAPL: annullati 2 ordini che aumenterebbero la posizione in "
+                         "chiusura a fine piano (nessuna aggiunta né inversione)")]
+    before = len(await _feed(sm))
+    await _job(sm, qs, Clock(HOLIDAY)).tick()  # nothing more to cancel
+    assert len(await _feed(sm)) == before
+
+
+async def _row(sm, pid, symbol, state="grace"):
+    """A plan_closures row written directly (the job's cancel pass not run yet)."""
+    gid = await _plan(sm)
+    async with sm() as s:
+        s.add(PlanClosure(
+            goal_id=gid, period_start=date(2027, 1, 11), period_end=date(2027, 1, 17),
+            ended_at=datetime(2027, 1, 17, 23, 0, tzinfo=UTC), portfolio_id=pid,
+            symbol=symbol, qty=D("0.1"), opened_at=None, state=state, grace_days=1,
+            attempts=0, deadline=DEADLINE if state == "grace" else None))
+        await s.commit()
+
+
+async def _processor_tick(sm, qs, symbol, bid, ask, now):
+    from smtrading.engine.processor import OrderProcessor
+
+    qs.set_quote(symbol, D(bid), D(ask), D(bid))
+    qs.at = now
+    try:
+        quote = (await qs.get_quotes([symbol]))[symbol]
+        await OrderProcessor(sm, None, qs, clock=lambda: now).on_tick(symbol, quote)
+    finally:
+        qs.at = None
+
+
+async def test_a_resting_entry_filling_in_plan_closing_is_rejected(sm, qs):
+    """Defensive check at fill time: the entry is rejected (plan_grace), nothing added."""
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, "BTC-USD", "0.1")
+    entry = await _resting(sm, qs, pid, "BTC-USD", OrderSide.buy, OrderType.limit, "0.05",
+                           limit_price=D(49000))
+    await _row(sm, pid, "BTC-USD")
+    await _processor_tick(sm, qs, "BTC-USD", "48900", "48910", TUESDAY)
+    async with sm() as s:
+        o = await s.get(Order, entry)
+        note = await s.scalar(select(Activity).where(Activity.type == "order.rejected"))
+    assert (o.status, o.reject_code) == (OrderStatus.rejected, ErrorCode.RISK_LIMIT_EXCEEDED)
+    assert "being closed at the end of a plan" in o.reject_message
+    assert note.data["reason"] == "plan_grace"
+    assert await _qty(sm, pid, "BTC-USD") == D("0.1")
+
+
+async def test_an_exit_that_would_flip_in_plan_closing_is_rejected(sm, qs):
+    """Long 0.1 and a sell stop for 0.15 (not reduce-only): short 0.05 is smaller than the
+    long, but a reversal: refused at fill time."""
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, "BTC-USD", "0.1")
+    stop = await _resting(sm, qs, pid, "BTC-USD", OrderSide.sell, OrderType.stop, "0.1",
+                          stop_price=D(45000))
+    async with sm() as s:
+        await s.execute(update(Order).where(Order.id == stop).values(qty=D("0.15")))
+        await s.commit()
+    await _row(sm, pid, "BTC-USD")
+    await _processor_tick(sm, qs, "BTC-USD", "44900", "44910", TUESDAY)
+    async with sm() as s:
+        o = await s.get(Order, stop)
+    assert (o.status, o.reject_code) == (OrderStatus.rejected, ErrorCode.RISK_LIMIT_EXCEEDED)
+    assert await _qty(sm, pid, "BTC-USD") == D("0.1")
+
+
+async def test_a_flip_is_refused_at_placement_in_plan_closing(sm, qs):
+    """Long 0.1, sell 0.15 (short 0.05: |after| < |before|) is a reversal: refused; a
+    plain reduction passes."""
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, "BTC-USD", "0.1")
+    await _row(sm, pid, "BTC-USD")
+    with pytest.raises(SMTError) as e:
+        await _buy(sm, qs, pid, "BTC-USD", "0.15", now=TUESDAY, side=OrderSide.sell)
+    assert e.value.code == ErrorCode.RISK_LIMIT_EXCEEDED
+    assert {k: e.value.details[k] for k in ("reason", "symbol", "deadline")} == {
+        "reason": "plan_grace", "symbol": "BTC-USD", "deadline": DEADLINE.isoformat()}
+    await _buy(sm, qs, pid, "BTC-USD", "0.05", now=TUESDAY, side=OrderSide.sell)
+    assert await _qty(sm, pid, "BTC-USD") == D("0.05")

@@ -10,7 +10,7 @@ skips its passes. `sending` orders are only reclaimed by the first pass after ta
 the lock (startup recovery).
 
 - `to_send` (never attempted): once the market is open, the local checks run again
-  (locked/reduce-only portfolio, kill switch; not for liquidation orders). The order is
+  (locked/reduce-only portfolio, kill switch, piani; not for liquidation orders). The order is
   claimed (`sending`, `broker_sent_at`, committed) and only then sent. A broker
   rejection rejects the order (PROVIDER_UNAVAILABLE + broker message) and notifies.
   Ruling R10: nothing falls back to the simulator on a linked portfolio: an order the
@@ -92,6 +92,12 @@ knows which order requests passed the gate (they reached its inner transport):
 - `_must_stop`: an order found at the broker on a link no longer armed/dry run, or with
   the kill switch on (not flatten), is canceled.
 
+«Piani» (goals.plans): an order that would add to a position of an ended piano still
+being closed, or turn it, is never sent (rejected RISK_LIMIT_EXCEEDED, plan_grace, by the
+send-time checks); one already at the broker is canceled when read (`cancel_plan_additions`,
+«plan.orders_canceled» activity), like an adopted one that must not proceed. Its fills
+before the cancel stand (they happened at the broker).
+
 `reconcile` compares the broker's positions with ours; it never corrects anything (a
 difference is recorded in the activity feed; it is sent to Telegram only when it
 differs from the portfolio's previous reconciliation).
@@ -156,7 +162,12 @@ from smtrading.engine.models import (
 )
 from smtrading.engine.prefetch import prefetch_portfolio
 from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
-from smtrading.engine.service import cancel_held_children, order_closed, reject_broker_order
+from smtrading.engine.service import (
+    cancel_held_children,
+    cancel_plan_additions,
+    order_closed,
+    reject_broker_order,
+)
 from smtrading.events import (
     discard_post_commit,
     dispatch_post_commit,
@@ -1332,6 +1343,8 @@ class BrokerSync:
             BrokerState.CANCEL_REQUESTED, BrokerState.REPLACE_REQUESTED
         ):
             order.broker_status = bo.status
+            if await cancel_plan_additions(session, [order]):  # canceled in this pass
+                self._followups.append(order.id)
 
     async def _after_fill(self, session: AsyncSession, order: Order) -> None:
         """A filled order: its OCO siblings at the broker are canceled in this pass."""

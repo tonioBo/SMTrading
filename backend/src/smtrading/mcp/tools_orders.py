@@ -352,8 +352,10 @@ def register(mcp: MCPServer) -> None:
         portfolio_id: str, symbol: str, qty: Num = None
     ) -> CallToolResult:
         """Close a position (or `qty` of it) with a reduce_only market order on the
-        opposite side; the symbol's open bracket exits are canceled. Returns the order.
-        Needs trade."""
+        opposite side; the symbol's open bracket exits are canceled, and its exits that
+        are not reduce_only (an OCO, a stop placed alone): all of them on a full close,
+        those larger than the quantity left on a partial one (activity
+        order.exits_canceled). Returns the order. Needs trade."""
         params = {"portfolio_id": portfolio_id, "symbol": symbol, "qty": qty}
 
         async def fn(ctx: ToolCtx) -> Any:
