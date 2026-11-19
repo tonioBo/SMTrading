@@ -140,7 +140,8 @@ solo su task. Fuso orario delle Routine: **Europe/Rome**.
 |---|---|---|---|
 | Risk Manager | «Sentinella rischio (oraria)»: lun-ven alle 9, 11, 13, 15, 16, 17, 19, 21, 22 | `0 9,11,13,15,16,17,19,21,22 * * 1-5` | «Esegui il ciclo programmato (sentinella rischio) delle tue istruzioni.» |
 | Risk Manager | «Sentinella rischio (weekend, crypto)»: sab-dom 10, 13, 16, 19, 22 | `0 10-22/3 * * 0,6` | «Esegui il ciclo programmato (sentinella rischio) delle tue istruzioni. È fine settimana: sono aperti solo i mercati crypto.» |
-| Portfolio Manager | «Sentinella portafogli (oraria)»: ogni ora, lun-ven, 09:05-21:05, più 15:35 | `5 9-21 * * 1-5` e `35 15 * * 1-5` | «Esegui il ciclo programmato (sentinella) delle tue istruzioni.» |
+| Portfolio Manager | «Sentinella portafogli (oraria)»: ogni ora, lun-ven, 09:05-21:05 | `5 9-21 * * 1-5` | «Esegui il ciclo programmato (sentinella) delle tue istruzioni.» |
+| Portfolio Manager | «Ciclo apertura USA (15:35)»: lun-ven 15:35 | `35 15 * * 1-5` | «Esegui il ciclo delle 15:35 (apertura USA, ora di Roma) delle tue istruzioni: è un ciclo completo, niente uscita rapida. Controlla ingressi e uscite di strategia di tutte le posizioni aperte.» |
 | Portfolio Manager | «Sentinella portafogli (weekend, crypto)»: sab-dom 10:05, 13:05, 16:05, 19:05, 22:05 | `5 10-22/3 * * 0,6` | «Esegui il ciclo programmato (sentinella) delle tue istruzioni. È fine settimana: sono aperti solo i mercati crypto.» |
 | Portfolio Manager | «Chiusura USA (serale)»: lun-ven 22:15 | `15 22 * * 1-5` | «Esegui il ciclo «Chiusura USA (serale)» delle tue istruzioni.» |
 | News Analyst | «Scansione pre-mercato 08:30» | `30 8 * * 1-5` | «Esegui la scansione pre-mercato delle 08:30.» |
