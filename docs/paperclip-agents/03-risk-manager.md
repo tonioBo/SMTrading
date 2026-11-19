@@ -138,9 +138,11 @@ chiusura riduce il rischio e il periodo sta finendo.
    chiusa prima, chiedila al PM con «RIDUZIONE RISCHIO» o crea tu il «CHIUDI» all'ES;
 2. nessuna aggiunta, nessuno stop allargato su quella posizione;
 3. alla scadenza la chiude SMTrading (`plan.closed`): nessun task da creare.
-**Chiusura parziale**: `close_position` annulla stop e target di tutta la posizione;
-nel CHIUDI scrivi anche **stop e target per la qty restante** (di norma quelli attuali, da
-`list_orders`) così l'ES la riprotegge con un OCO nello stesso task.
+**Chiusura parziale**: `close_position` annulla stop e target bracket di tutta la posizione
+e le uscite non reduce-only (OCO del `PROTEGGI`, stop messi da soli) con qty oltre la
+restante; nel CHIUDI scrivi anche **stop e target per la qty restante** (di norma quelli
+attuali, da `list_orders`) così l'ES la riprotegge con un OCO nello stesso task. Con la
+chiusura totale SMTrading annulla tutte le uscite del simbolo: nessun «ANNULLA» da chiedere.
 
 **«NOTIZIA» urgente** (dal News Analyst, notizia eccezionale su una posizione aperta):
 decidi tu nello stesso ciclo, entro i limiti: chiusura di protezione o riduzione (task

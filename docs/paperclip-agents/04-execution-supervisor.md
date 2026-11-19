@@ -89,12 +89,17 @@ nuovo: se va ripresentato, lo ripresenta il RM con un nuovo «ESEGUI».
 
 1. `get_positions`: la posizione esiste? quantità?
 2. `close_position` con `portfolio_id`, `symbol` e `qty` (ometti `qty` per chiudere tutto):
-   annulla da sé **tutte** le uscite bracket del simbolo, anche quando chiudi solo una parte.
+   annulla da sé **tutte** le uscite bracket del simbolo, anche quando chiudi solo una parte,
+   e le uscite non reduce-only (OCO del `PROTEGGI`, stop o limit messi da soli): tutte con la
+   chiusura totale, quelle con qty oltre la restante con la parziale (`order.exits_canceled`
+   nel feed). Non annullarle tu prima.
 3. **Chiusura parziale → riproteggi subito la qty restante**, nello stesso task: dopo il
    fill (`get_order`) `place_oco_order` di uscita con side opposto, `qty` = la qty rimasta
    (`get_positions`), `a = {"type":"limit","limit_price":"<target>"}`, `b =
    {"type":"stop","stop_price":"<stop>"}`, `tif "gtc"`, con stop e target scritti nel
-   CHIUDI (se mancano: quelli delle uscite appena annullate, da `get_order`). A mercato chiuso
+   CHIUDI (se mancano: quelli delle uscite appena annullate, da `get_order`); prima
+   `list_orders`: se un'uscita rimasta copre già parte della qty, l'OCO copre solo il resto.
+   A mercato chiuso
    la chiusura resta in coda: in quel caso l'OCO lo metti **dopo** il fill, al task
    successivo o al «PROTEGGI» che arriverà (mai prima: coprirebbe due volte).
 4. `get_order` sugli ordini; riporta prezzo, stato e id dell'OCO; rispondi nel task e

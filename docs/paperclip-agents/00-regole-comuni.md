@@ -371,7 +371,12 @@ Portfolio Manager rivaluta gli ingressi delle strategie al suo ciclo successivo.
    separate.
 2. `close_position` (anche **parziale**) **annulla tutti gli stop e target bracket** del
    simbolo in quel portafoglio: dopo una chiusura parziale la qty restante è **senza
-   protezione** finché non si mette un nuovo OCO di uscita.
+   protezione** finché non si mette un nuovo OCO di uscita. Annulla anche le uscite **non
+   reduce-only** del simbolo dallo stesso lato (l'OCO di un `PROTEGGI`, uno stop o un limit
+   messi da soli): con la chiusura **totale** tutte (a posizione chiusa aprirebbero quella
+   opposta); con la **parziale** quelle con qty oltre la qty restante (un OCO con entrambe
+   le gambe), mentre quelle che stanno nella qty restante restano. Nel feed
+   `order.exits_canceled` dice quante.
 3. Una chiusura a mercato chiuso resta in coda (`queued`) fino all'apertura; i suoi stop e
    target sono già annullati: la posizione appare senza stop, ma **non va coperta con un
    OCO** (alla chiusura l'OCO, che non è reduce-only, aprirebbe una posizione opposta).
@@ -410,8 +415,12 @@ Portfolio Manager rivaluta gli ingressi delle strategie al suo ciclo successivo.
    calendario): settimana 1, mese 3, trimestre 5, anno 10, date fissate il 10% della durata
    (da 1 a 10). Per la settimana la grazia è la seduta del **lunedì** successivo. La scadenza
    è la chiusura dell'ultima seduta di grazia; SMTrading chiude nell'ultimo quarto d'ora.
-6. **Nessuna aggiunta** a una posizione di un piano concluso: SMTrading rifiuta l'aumento con
-   `RISK_LIMIT_EXCEEDED`, `details.reason = "plan_grace"` (con `symbol` e `deadline`).
+6. **Nessuna aggiunta** a una posizione di un piano concluso, **né inversione** (long 1,
+   vendita 3 = short 2): SMTrading rifiuta l'ordine con `RISK_LIMIT_EXCEEDED`,
+   `details.reason = "plan_grace"` (con `symbol` e `deadline`). A fine periodo **annulla da
+   sé gli ordini aperti che aumenterebbero quelle posizioni** (ingressi in attesa, anche al
+   broker; mai le uscite): `plan.orders_canceled` nel feed. Un ordine del genere rimasto
+   aperto viene rifiutato quando scatterebbe (`order.rejected`, stesso motivo).
 7. Vicino alla fine il PM apre solo ingressi che hanno il tempo di funzionare prima di
    `period_end`; il periodo successivo di un piano che si ripete parte normalmente.
 8. SMTrading non chiude mai senza una quotazione fresca e a mercato chiuso aspetta
@@ -420,8 +429,8 @@ Portfolio Manager rivaluta gli ingressi delle strategie al suo ciclo successivo.
    suo esito. Con la sua chiusura annulla anche gli ordini di uscita non reduce-only del
    simbolo (l'OCO del `PROTEGGI`, uno stop da solo): a posizione chiusa aprirebbero
    quella opposta.
-9. Nel feed: `plan.ended` (riepilogo dei simboli), `plan.grace` (simbolo, scadenza),
-   `plan.closed` (chiusa da SMTrading). SMTrading avvisa da sé gli umani su Telegram: il
+9. Nel feed: `plan.ended` (riepilogo dei simboli), `plan.orders_canceled` (ingressi
+   annullati), `plan.grace` (simbolo, scadenza), `plan.closed` (chiusa da SMTrading). SMTrading avvisa da sé gli umani su Telegram: il
    Notifier non lo ripete.
 
 ## 8. Regole di comportamento

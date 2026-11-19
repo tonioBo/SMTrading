@@ -329,8 +329,11 @@ precedente), al ciclo delle **09:05** fai prima i suoi punti 1-2 sull'ultima bar
     2. le posizioni **in perdita** le lasci entrare in grazia (`plan_grace_until`): le chiudi
        tu quando ha senso (ritorno al pareggio, uscita della strategia, stop), sempre con
        «CHIUSURA» al RM, prima della scadenza; dopo la scadenza le chiude SMTrading;
-    3. **nessuna aggiunta** a una posizione in grazia (SMTrading la rifiuta con
-       `RISK_LIMIT_EXCEEDED`, `details.reason = "plan_grace"`);
+    3. **nessuna aggiunta** né inversione su una posizione del piano concluso (SMTrading la
+       rifiuta con `RISK_LIMIT_EXCEEDED`, `details.reason = "plan_grace"`); gli ingressi
+       ancora aperti su quei simboli a fine periodo li annulla SMTrading
+       (`plan.orders_canceled`): non serve un «ANNULLA», non riproporli finché la
+       posizione è in chiusura;
     4. vicino alla fine proponi solo ingressi che hanno il tempo di funzionare prima di
        `period_end` (orizzonte della strategia, distanza del target): scrivilo nella proposta;
     5. `plan.closed` nel feed = posizione chiusa da SMTrading: si libera il posto nella
