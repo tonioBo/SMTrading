@@ -462,6 +462,39 @@ non in catalogo lo aggiunge se supera i controlli (massimo 25 aggiunte al giorno
 agente); spenta, un simbolo sconosciuto è `SYMBOL_NOT_FOUND`. L'origine di ogni strumento
 è visibile in tabella.
 
+### Campagne e resoconto (pagina *Campagne*)
+
+Una **campagna** è una prova con un nome e un periodo che raggruppa dei portafogli (stato
+*bozza*, *attiva* o *conclusa*). *Nuova campagna* (solo admin) guida in quattro passi:
+
+1. **Nome e date** (la fine è anche la fine dei piani della campagna) e note;
+2. **Portafogli**: nuovi (nome, capitale, valuta, profilo di rischio) o esistenti, ognuno
+   facoltativamente su un conto **paper/demo** già creato in *Broker* (con «Prova
+   collegamento»); i collegamenti a denaro reale non sono mai proposti e sono rifiutati,
+   come i portafogli già collegati a denaro reale. Un portafoglio sta in una sola campagna
+   aperta;
+3. **Obiettivi** dai modelli: per ogni portafoglio quelli della campagna (minimo, perdita
+   massima, battere un indice, dal giorno di inizio a quello di fine) e i modelli della
+   pagina *Obiettivi*; le regole sono quelle degli obiettivi (al massimo un piano per
+   portafoglio; con il piano settimanale sul totale attivo nessun obiettivo di portafoglio
+   può essere un piano);
+4. **Riepilogo** e conferma («Crea e avvia» o «Salva come bozza»): tutto viene creato in
+   un'unica operazione, se qualcosa non va non resta nulla a metà.
+
+*Chiudi campagna* mostra posizioni e ordini aperti, lo stato della chiusura dei piani e
+quali portafogli si possono archiviare (le regole dell'archivio valgono: con ordini aperti
+o un broker collegato non si archivia), poi conclude la campagna e offre il **resoconto
+finale**. Le campagne non sono visibili agli agenti: la fine della campagna arriva loro
+dagli obiettivi.
+
+Il **Resoconto** (PDF, anche per chi ha la sola lettura) si scarica da ogni campagna o dal
+pulsante *Resoconto* di *Dashboard*, *Portafogli* e *Campagne* per qualsiasi periodo e
+portafogli: rendimento per portafoglio e totale con il confronto con SPY, QQQ e VWCE (dai
+campioni degli obiettivi «battere un indice»: senza obiettivi di quel tipo «dati non
+disponibili»), grafico dell'andamento, operazioni con P&L realizzato e costi, risultati per
+strategia, esito degli obiettivi, costi degli agenti (di tutto il team), lezioni, regole
+del team e decisioni rilevanti del periodo. Depositi e prelievi non sono neutralizzati.
+
 ### Archivio portafogli
 
 *Portafogli → Archivia* congela un portafoglio (serve non avere ordini aperti, non essere
