@@ -618,3 +618,24 @@ async def test_0035_plan_close_round_trip(fresh_db):
     assert await query(column) == [] and await query(table) == [(None,)]
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
     assert await query(table) == [("plan_closures",)]
+
+
+async def test_0036_reconciliation_checks_round_trip(fresh_db):
+    """0036: reconciliation_checks (plan 21); reversible."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    async def query(sql: str):
+        engine = make_engine(fresh_db)
+        async with engine.begin() as conn:
+            rows = (await conn.execute(text(sql))).all()
+        await engine.dispose()
+        return rows
+
+    table = "select to_regclass('reconciliation_checks')::text"
+    assert await query(table) == [("reconciliation_checks",)]
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0035")
+    assert await query(table) == [(None,)]
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    assert await query(table) == [("reconciliation_checks",)]
