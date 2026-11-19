@@ -41,6 +41,8 @@ ALL_TOOLS = {
     "set_trading_halt", "get_trading_halt",
     # goals
     "get_goals",
+    # instructions appendix
+    "get_instructions_appendix",
 }
 
 

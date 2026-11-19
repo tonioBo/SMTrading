@@ -16,6 +16,10 @@ Allowlist (documented, not scanned):
 - market data provider names come from the real providers in production; the fixture's
   fake source is given a real provider name ("yahoo"); in the `etoro_source` flavor
   quotes and bars come from the real eToro provider on the fake eToro server.
+- the instructions appendix (get_instructions_appendix): text the admins write in the
+  portal, like the names above; the seeded one is checked line by line with
+  `has_fingerprint` (tests/unit/test_agent_docs_appendix.py, test_mcp_instructions_appendix)
+  since the raw pattern flags plain Italian words such as «testo».
 """
 
 import dataclasses

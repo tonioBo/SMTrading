@@ -13,6 +13,7 @@ from smtrading.mcp import (
     tools_activity,
     tools_alerts,
     tools_backtest,
+    tools_docs,
     tools_goals,
     tools_halt,
     tools_market,
@@ -26,7 +27,7 @@ from smtrading.mcp.runtime import reject_arguments
 SERVER_NAME = "SMTrading"
 _TOOL_MODULES = (
     tools_portfolio, tools_orders, tools_market, tools_alerts, tools_watch, tools_backtest,
-    tools_activity, tools_telegram, tools_halt, tools_goals, resources,
+    tools_activity, tools_telegram, tools_halt, tools_goals, tools_docs, resources,
 )
 # tools whose audit row must not keep the raw arguments (also when the schema rejects them)
 _AUDIT_PARAMS = {
