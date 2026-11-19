@@ -7,6 +7,7 @@ import smtrading.agents.models
 import smtrading.backtest.models
 import smtrading.brokers.live.models
 import smtrading.brokers.models
+import smtrading.campaigns.models
 import smtrading.connectors.models
 import smtrading.engine.models
 import smtrading.fees.models
