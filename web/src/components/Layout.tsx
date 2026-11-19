@@ -1,4 +1,4 @@
-import { LogOut, Menu, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Eye, LogOut, Menu, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useLogout, useMe } from "@/api/hooks/auth";
@@ -141,7 +141,7 @@ export function Layout() {
   }
 
   return (
-    <div className="flex h-screen">
+    <div className="flex h-dvh overflow-hidden">
       <aside
         className={cn(
           "hidden shrink-0 flex-col border-r border-border transition-[width] md:flex",
@@ -165,7 +165,7 @@ export function Layout() {
       </aside>
       <MobileDrawer open={drawerOpen} onClose={closeDrawer} returnFocus={hamburger} />
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 items-center justify-end gap-3 border-b border-border px-4 md:px-6">
+        <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center justify-end gap-2 border-b border-border bg-bg px-3 sm:gap-3 md:px-6">
           <Button
             ref={hamburger}
             variant="ghost"
@@ -182,20 +182,21 @@ export function Layout() {
           <KillSwitchIndicator />
           <ThemeToggle />
           {me.data.role === "viewer" && (
-            <Badge variant="outline" title="Puoi vedere tutto; puoi solo disattivare il denaro reale e attivare il kill-switch">
-              Sola lettura
+            <Badge variant="outline" className="gap-1 whitespace-nowrap" title="Puoi vedere tutto; puoi solo disattivare il denaro reale e attivare il kill-switch">
+              <Eye className="h-3.5 w-3.5 sm:hidden" aria-hidden />
+              <span className="max-sm:sr-only">Sola lettura</span>
             </Badge>
           )}
-          <span className="hidden text-sm text-muted sm:inline">{me.data.email}</span>
-          <Button variant="ghost" size="sm" onClick={onLogout} disabled={logout.isPending}>
+          <span className="hidden truncate text-sm text-muted lg:inline">{me.data.email}</span>
+          <Button variant="ghost" size="sm" onClick={onLogout} disabled={logout.isPending} aria-label="Esci" title="Esci">
             <LogOut />
-            Esci
+            <span className="max-sm:sr-only">Esci</span>
           </Button>
         </header>
         <NewVersionBanner />
         <ModeBanner />
         <PaperclipBanner />
-        <main className="flex-1 overflow-auto p-4 md:p-6">
+        <main className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-3 sm:p-4 md:p-6">
           <Outlet />
         </main>
       </div>

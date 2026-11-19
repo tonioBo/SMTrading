@@ -8,6 +8,7 @@ import { setTheme, THEME_KEY } from "@/theme";
 import { setOwnBuild } from "@/lib/buildVersion";
 import { SIDEBAR_KEY } from "@/lib/sidebarState";
 import { commonHandlers } from "@/test/handlers";
+import { resetViewport, setViewportWidth } from "@/test/viewport";
 
 vi.mock("@/lib/ws", async (orig) => ({
   ...(await orig<typeof import("@/lib/ws")>()),
@@ -35,6 +36,7 @@ afterEach(() => {
   setTheme("dark");
   setOwnBuild("");
   localStorage.removeItem(SIDEBAR_KEY);
+  resetViewport();
 });
 afterAll(() => server.close());
 
@@ -57,6 +59,7 @@ describe("Layout", () => {
       "Notifiche",
       "Decisioni e lezioni",
       "Log MCP",
+      "Salute del sistema",
       "Broker",
       "Connettori",
       "Commissioni",
@@ -69,6 +72,7 @@ describe("Layout", () => {
     const groups = within(nav).getAllByRole("group");
     expect(groups.map((g) => g.getAttribute("aria-label"))).toEqual(["Trading", "Agenti", "Sistema"]);
     expect(within(groups[2]).getByRole("link", { name: "Broker" })).toBeInTheDocument();
+    expect(within(groups[2]).getAllByRole("link")[0]).toHaveTextContent("Salute del sistema"); // first of «Sistema»
     const logo = screen.getByTestId("app-logo"); // brand mark next to the name, decorative
     expect(logo).toHaveAttribute("aria-hidden", "true");
     expect(logo.parentElement).toHaveTextContent("SMTrading");
@@ -151,6 +155,29 @@ describe("Layout", () => {
     await user.click(within(menu()!).getByRole("link", { name: "Rischio e margine" }));
     await vi.waitFor(() => expect(router.state.location.pathname).toBe("/rischio"));
     expect(menu()).not.toBeInTheDocument();
+  });
+
+  it("on a phone: compact sticky header, drawer with «Salute del sistema», no sideways page scroll", async () => {
+    setViewportWidth(375);
+    const user = userEvent.setup();
+    const { router } = renderApp("/");
+    const open = await screen.findByRole("button", { name: "Apri menu" });
+    const header = open.closest("header")!;
+    expect(header.className).toContain("sticky");
+    // icon-only controls keep their names; the kill-switch state stays readable to screen readers
+    expect(within(header).getByRole("button", { name: "Esci" })).toBeInTheDocument();
+    expect(await within(header).findByText("Trading attivo")).toHaveClass("max-sm:sr-only");
+    // the page scrolls only vertically: wide content scrolls inside its own box
+    const main = screen.getByRole("main");
+    expect(main.className).toContain("overflow-x-hidden");
+    expect(main.className).toContain("min-w-0");
+    await user.click(open);
+    const menu = screen.getByRole("navigation", { name: "Navigazione principale (menu)" });
+    const sistema = within(menu).getByRole("group", { name: "Sistema" });
+    await user.click(within(sistema).getByRole("link", { name: "Salute del sistema" }));
+    await vi.waitFor(() => expect(router.state.location.pathname).toBe("/salute-sistema"));
+    expect(screen.queryByRole("navigation", { name: "Navigazione principale (menu)" })).not.toBeInTheDocument();
+    expect(open).toHaveFocus(); // focus back on the hamburger
   });
 
   it("offers a reload when the server runs another build", async () => {
