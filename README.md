@@ -463,6 +463,22 @@ non in catalogo lo aggiunge se supera i controlli (massimo 25 aggiunte al giorno
 agente); spenta, un simbolo sconosciuto è `SYMBOL_NOT_FOUND`. L'origine di ogni strumento
 è visibile in tabella.
 
+Ogni strumento ha **settore** (11 settori in italiano, oppure ETF / Crypto / Cambi),
+**industria** (per gli ETF il tipo: azionario, obbligazionario, materie prime, leva e
+inverso, monetario) e **indici** di appartenenza, letti una volta dai provider e scritti nei
+CSV del catalogo (`scripts/enrich_catalog.py`): il seed riempie solo i valori mancanti, le
+modifiche dell'admin restano. La pagina offre la **ricerca istantanea** (simbolo, nome,
+settore, industria, indice; frecce e Invio aprono la scheda), la **scheda strumento**
+(prezzo e variazione, grafico giornaliero / orario, RSI, medie 20/50, ATR, prossimi
+risultati e dividendi, nostre posizioni e ordini, strategie e segnali, watchlist degli
+agenti, notizie), i **filtri** per classe, mercato, settore, indice e i filtri rapidi (in
+portafoglio, nelle watchlist, usati da strategie, con segnale attivo, aggiunti di recente),
+la **mappa dei settori** e i **titoli più mossi** di un universo (S&P 500, NASDAQ-100, FTSE
+MIB, DAX, CAC, MDAX, crypto, watchlist e posizioni), calcolati dalla chiusura precedente con
+richieste a blocchi (Alpaca, Yahoo) solo a pagina aperta, in cache 5 minuti. Filtri,
+ordinamento e universo restano memorizzati nel browser. Solo informativo: la mappa non
+entra mai nelle decisioni di trading.
+
 ### Archivio portafogli
 
 *Portafogli → Archivia* congela un portafoglio (serve non avere ordini aperti, non essere
