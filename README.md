@@ -148,8 +148,9 @@ Funzionamento:
 - Pagina **Riconciliazione** (Sistema): per ogni portafoglio collegato (prova o denaro
   reale) posizioni, liquidità e ordini aperti di SMTrading contro il conto del broker, con
   stato, voci, storico e *Riconcilia ora* (amministratori). Il worker la ripete ogni 15
-  minuti durante le sedute e una volta dopo la chiusura USA, solo in lettura (nessun
-  ordine inviato o annullato). Una differenza che resta per 2 controlli di fila manda un
+  minuti durante le sedute, una volta dopo la chiusura USA e, il sabato e la domenica,
+  ogni 2 ore se un portafoglio collegato ha posizioni crypto; sempre solo in lettura
+  (nessun ordine inviato o annullato). Una differenza che resta per 2 controlli di fila manda un
   avviso Telegram (categoria sistema, una volta al giorno per voce) e una voce nel feed
   degli agenti del portafoglio: decide il Risk Manager, nulla si corregge da sé. Un broker
   che non risponde dà «non verificabile», senza avvisi.

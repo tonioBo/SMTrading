@@ -449,6 +449,51 @@ def test_due_every_15_minutes_in_session_and_once_after_the_us_close():
     assert due(saturday, {"after_close_day": "2026-11-13"}) == (False, None)
 
 
+def test_due_every_2_hours_on_the_weekend_with_linked_crypto():
+    saturday = datetime(2026, 11, 14, 15, 0, tzinfo=UTC)
+    state = {"after_close_day": "2026-11-13", "last_run_at": (saturday - timedelta(hours=1)).isoformat()}
+    assert due(saturday, state) == (False, None)  # no crypto: nothing on the weekend
+    assert due(saturday, state, weekend_crypto=True) == (False, None)  # 1 h ago
+    state["last_run_at"] = (saturday - timedelta(hours=2)).isoformat()
+    assert due(saturday, state, weekend_crypto=True) == (True, None)
+    sunday_night = datetime(2026, 11, 15, 22, 30, tzinfo=UTC)  # 23:30 Rome, still Sunday
+    assert due(sunday_night, state, weekend_crypto=True) == (True, None)
+    monday_night = datetime(2026, 11, 16, 3, 0, tzinfo=UTC)  # no session, not the weekend
+    assert due(monday_night, {"after_close_day": "2026-11-13"}, weekend_crypto=True) == (
+        False, None)
+    # in session the 15-minute rhythm stays
+    assert due(T0, {"last_run_at": (T0 - timedelta(minutes=15)).isoformat()},
+               weekend_crypto=True) == (True, None)
+
+
+async def test_job_runs_on_the_weekend_only_with_a_linked_crypto_position(maker, qs):
+    from smtrading.positions.models import Position
+
+    pid, _ = await _linked(maker)
+    saturday = datetime(2026, 11, 14, 15, 0, tzinfo=UTC)
+    async with maker() as s:  # Friday's after-close run already done
+        s.add(AppSetting(key=job_module.STATE_KEY, value={
+            "after_close_day": "2026-11-13",
+            "last_run_at": (saturday - timedelta(hours=3)).isoformat()}))
+        await s.commit()
+    clock = Clock(saturday)
+    assert await ReconciliationJob(maker, qs, None, clock=clock).tick() is False
+    async with maker() as s:  # a crypto position on the linked portfolio
+        s.add(Position(portfolio_id=pid, symbol="BTC-USD", qty=D("0.01"), avg_price=D(60000)))
+        await s.commit()
+    assert await ReconciliationJob(maker, qs, None, clock=clock).tick() is True
+    clock.now = saturday + timedelta(hours=1)
+    assert await ReconciliationJob(maker, qs, None, clock=clock).tick() is False
+    clock.now = saturday + timedelta(hours=2)
+    assert await ReconciliationJob(maker, qs, None, clock=clock).tick() is True
+    async with maker() as s:  # an archived portfolio does not count
+        await s.execute(update(Portfolio).where(Portfolio.id == pid)
+                        .values(status=PortfolioStatus.archived))
+        await s.commit()
+    clock.now = saturday + timedelta(hours=5)
+    assert await ReconciliationJob(maker, qs, None, clock=clock).tick() is False
+
+
 async def test_job_persists_its_state_across_restarts(maker, qs):
     await _linked(maker)
     clock = Clock(T0)
