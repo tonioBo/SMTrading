@@ -7,10 +7,11 @@ map and the movers. Read-only (a viewer can read it).
 - `GET /api/instruments/facets` → {sectors: [{sector, count}], indices: [{code, label,
   count}], universes: [{code, label}], sector_list, etf_types}.
 - `GET /api/instruments/{symbol}/overview` → {instrument, market_status, positions,
-  open_orders, watchlists, strategies, signals}: database only (signals from the cached
-  «Segnali» answer, null when there is none).
+  open_orders, fills, watchlists, strategies, signals}: database only (signals from the
+  cached «Segnali» answer, null when there is none; `fills`: our latest FILLS_LIMIT
+  executions on it, newest first, for the chart markers).
 - `GET /api/instruments/{symbol}/market?timeframe=1d|1h` → {quote, day_change, bars:
-  [{ts, close}], indicators: {rsi14, sma20, sma50, atr14, close}, news, next_earnings,
+  [{ts, open, high, low, close, volume}], indicators: {rsi14, sma20, sma50, atr14, close}, news, next_earnings,
   next_dividend, errors: {part: code}}: each part independent (a failing provider only
   nulls its part), cached MARKET_TTL_S.
 - `GET /api/markets/day-changes?symbols=A,B` (at most 100) → {symbol: {last, prev_close,
@@ -19,6 +20,10 @@ map and the movers. Read-only (a viewer can read it).
   {universe, label, as_of, total, covered, sectors: [{sector, count, avg_change_pct, up,
   down, members}], gainers, losers}: day changes of the universe from the batch calls
   (MarketDataRouter.get_day_changes), cached SNAPSHOT_TTL_S; computed only when asked.
+- `GET /api/instruments/{symbol}/bars?timeframe=1d|1h&start=&end=` → {symbol, timeframe,
+  bars: [{ts, open, high, low, close, volume}], error}: the closed bars of a window (the
+  «Diario operazioni» trade chart), at most BARS_MAX_DAYS[timeframe] days, cached
+  MARKET_TTL_S; a provider failure answers no bars and its code.
 Numbers are strings.
 """
 
@@ -38,7 +43,7 @@ from smtrading.admin.common import _invalid
 from smtrading.admin.routes_signals import cached_signals
 from smtrading.agents.models import Agent
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.engine.models import OPEN_STATUSES, Order
+from smtrading.engine.models import OPEN_STATUSES, Fill, Order
 from smtrading.instruments import explore
 from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
@@ -59,7 +64,10 @@ MARKET_TTL_S = 60
 SNAPSHOT_TTL_S = 300
 PARTIAL_TTL_S = 60
 SNAPSHOT_KEY = "markets:snapshot:v1:"
-MARKET_KEY = "markets:sheet:v1:"
+MARKET_KEY = "markets:sheet:v2:"  # v2: OHLCV bars
+BARS_KEY = "markets:bars:v1:"
+BARS_MAX_DAYS = {"1h": 60, "1d": 3 * 366}
+FILLS_LIMIT = 100
 DAILY_BARS = 260  # SMA 50 and a long RSI warm-up; the 1d chart shows the last CHART_BARS
 CHART_BARS = 120
 NEWS_LIMIT = 8
@@ -160,6 +168,12 @@ async def overview(symbol: str, session: DbSession, redis: RedisClient) -> dict:
         select(Order, Portfolio.name).join(Portfolio, Portfolio.id == Order.portfolio_id)
         .where(Order.symbol == sym, Order.status.in_(OPEN_STATUSES), live)
         .order_by(Order.created_at.desc()).limit(50))).all()
+    fills = (await session.execute(
+        select(Fill, Order.role, Portfolio.name)
+        .join(Order, Order.id == Fill.order_id)
+        .join(Portfolio, Portfolio.id == Fill.portfolio_id)
+        .where(Fill.symbol == sym, live)
+        .order_by(Fill.created_at.desc()).limit(FILLS_LIMIT))).all()
     watch = (await session.execute(
         select(Agent.name, Watchlist.name).join(Watchlist, Watchlist.agent_id == Agent.id)
         .join(WatchlistItem, WatchlistItem.watchlist_id == Watchlist.id)
@@ -204,6 +218,12 @@ async def overview(symbol: str, session: DbSession, redis: RedisClient) -> dict:
              "status": o.status, "created_at": o.created_at}
             for o, name in orders
         ],
+        "fills": [
+            {"id": f.id, "order_id": f.order_id, "portfolio_id": f.portfolio_id,
+             "portfolio_name": name, "side": f.side, "qty": f.qty, "price": f.price,
+             "role": role, "ts": f.created_at}
+            for f, role, name in fills
+        ],
         "watchlists": [{"agent": a, "watchlist": w} for a, w in watch],
         "strategies": strategies,
         "decisions": [
@@ -212,6 +232,11 @@ async def overview(symbol: str, session: DbSession, redis: RedisClient) -> dict:
         ],
         "signals": signals,
     })
+
+
+def _bar_dto(b) -> dict:
+    return {"ts": b.ts, "open": b.open, "high": b.high, "low": b.low, "close": b.close,
+            "volume": b.volume}
 
 
 def _last(values: list) -> Any:
@@ -287,7 +312,7 @@ async def market(
         "symbol": sym, "timeframe": timeframe,
         "quote": quote_dto(q) if q is not None else None,
         "day_change": _day_change_dto(dc) if dc is not None else None,
-        "bars": [{"ts": b.ts, "close": b.close} for b in shown or []],
+        "bars": [_bar_dto(b) for b in shown or []],
         "indicators": ind,
         "news": [{"id": n.id, "ts": n.ts, "headline": n.headline, "url": n.url,
                   "source": n.source} for n in (news or [])[:NEWS_LIMIT]],
@@ -295,6 +320,44 @@ async def market(
         "next_dividend": first("dividend"),
         "errors": errors,
         "as_of": datetime.now(UTC),
+    })
+    await _cache_set(redis, key, body, MARKET_TTL_S)
+    return body
+
+
+def _when(value: str, field: str) -> datetime:
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise _invalid(field, f"{field} non è una data ISO") from exc
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+
+
+@router.get("/instruments/{symbol}/bars")
+async def bars(
+    symbol: str, request: Request, session: DbSession, redis: RedisClient,
+    start: str, end: str, timeframe: str = "1d",
+) -> dict:
+    if timeframe not in BARS_MAX_DAYS:
+        raise _invalid("timeframe", "timeframe deve essere 1d o 1h")
+    t0, t1 = _when(start, "start"), _when(end, "end")
+    if t1 <= t0:
+        raise _invalid("end", "end deve essere dopo start")
+    if t1 - t0 > timedelta(days=BARS_MAX_DAYS[timeframe]):
+        raise _invalid("start", f"al massimo {BARS_MAX_DAYS[timeframe]} giorni di barre {timeframe}")
+    instr = await _instrument(session, symbol)
+    sym = instr.symbol
+    # minute precision in the key: a page reloaded within the minute hits the cache
+    key = f"{BARS_KEY}{sym}:{timeframe}:{t0:%Y%m%d%H%M}:{t1:%Y%m%d%H%M}"
+    if (hit := await _cache_get(redis, key)) is not None:
+        return hit
+    r = _router(request)
+    errors: dict[str, str] = {}
+    got = await _part(errors, "bars", r.get_bars(sym, Timeframe(timeframe), t0, t1))
+    body = to_jsonable({
+        "symbol": sym, "timeframe": timeframe,
+        "bars": [_bar_dto(b) for b in got or []],
+        "error": errors.get("bars"),
     })
     await _cache_set(redis, key, body, MARKET_TTL_S)
     return body

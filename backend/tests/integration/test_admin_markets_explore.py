@@ -232,6 +232,7 @@ async def test_overview(admin):
                                "qty": "2", "avg_price": "180", "opened_at": None}]
     assert [(x["side"], x["type"], x["stop_price"]) for x in o["open_orders"]] == [
         ("sell", "stop", "150")]
+    assert o["fills"] == []
     assert o["watchlists"] == [] and o["strategies"] == []
     assert o["market_status"]["market"] == "NASDAQ"
     nvda = (await admin.client.get("/api/instruments/NVDA/overview")).json()
@@ -241,6 +242,64 @@ async def test_overview(admin):
     eni = (await admin.client.get("/api/instruments/ENI.MI/overview")).json()
     assert eni["watchlists"] == [{"agent": "CEO", "watchlist": "Europa"}]
     assert (await admin.client.get("/api/instruments/NOPE/overview")).status_code == 404
+
+
+async def test_overview_fills(admin):
+    """Our executions on the symbol, newest first, with the order's role (chart markers)."""
+    from smtrading.engine.models import OrderSide, OrderType
+    from smtrading.engine.service import PlaceOrderRequest, close_position, place_order
+    from smtrading.events import discard_post_commit
+    from smtrading.portfolios.service import create_portfolio
+
+    opened = datetime(2026, 11, 10, 15, 0, tzinfo=UTC)  # Tuesday: NASDAQ open
+    admin.qs.set_fx("EUR", "USD", D("1.25"))
+    admin.qs.set_quote("MSFT", D("399"), D("400"), None)
+    async with admin.sm() as s:
+        p = await create_portfolio(s, name="Aggressivo", initial_cash=D(20000))
+        await place_order(s, admin.qs, PlaceOrderRequest(
+            portfolio_id=p.id, symbol="MSFT", side=OrderSide.buy, type=OrderType.market,
+            qty=D(10)), now=opened)
+        discard_post_commit(s)
+        await s.commit()
+    admin.qs.set_quote("MSFT", D("419"), D("420"), None)
+    async with admin.sm() as s:
+        await close_position(s, admin.qs, p.id, "MSFT", D(4), now=opened)
+        discard_post_commit(s)
+        await s.commit()
+    o = (await admin.client.get("/api/instruments/MSFT/overview")).json()
+    assert [(f["side"], f["qty"], f["price"], f["portfolio_name"]) for f in o["fills"]] == [
+        ("sell", "4", "419", "Aggressivo"), ("buy", "10", "400", "Aggressivo")]
+    assert o["fills"][1]["portfolio_id"] == str(p.id) and o["fills"][1]["ts"]
+    assert (await admin.client.get("/api/instruments/AAPL/overview")).json()["fills"] == []
+
+
+async def test_bars_window(admin):
+    """The closed bars of a window (the trade chart), OHLCV, validated and bounded."""
+    t0 = datetime(2026, 11, 2, tzinfo=UTC)
+    admin.qs.set_bars("AAPL", [Bar(t0 + timedelta(hours=i), D(100 + i), D(102 + i),
+                                   D(99 + i), D(101 + i), D(1000 + i)) for i in range(48)])
+    r = await admin.client.get("/api/instruments/aapl/bars", params={
+        "timeframe": "1h", "start": "2026-11-02T10:00:00Z", "end": "2026-11-02T13:00:00+00:00"})
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert b["symbol"] == "AAPL" and b["timeframe"] == "1h" and b["error"] is None
+    assert [x["open"] for x in b["bars"]] == ["110", "111", "112"]
+    assert b["bars"][0] == {"ts": "2026-11-02T10:00:00+00:00", "open": "110", "high": "112",
+                            "low": "109", "close": "111", "volume": "1010"}
+    # a symbol without data: no bars and the provider's code
+    r = await admin.client.get("/api/instruments/MSFT/bars", params={
+        "start": "2026-10-01T00:00:00Z", "end": "2026-11-01T00:00:00Z"})
+    assert r.status_code == 200 and r.json()["bars"] == []
+    assert r.json()["error"] == "SYMBOL_NOT_FOUND"
+    for bad in ({"timeframe": "5m"}, {"start": "ieri"}, {"end": "2026-11-01T00:00:00Z"},
+                {"timeframe": "1h", "start": "2026-08-01T00:00:00Z"}):
+        params = {"timeframe": "1h", "start": "2026-11-02T00:00:00Z",
+                  "end": "2026-11-03T00:00:00Z", **bad}
+        r = await admin.client.get("/api/instruments/AAPL/bars", params=params)
+        assert r.status_code == 400, (bad, r.text)
+    r = await admin.client.get("/api/instruments/NOPE/bars", params={
+        "start": "2026-11-02T00:00:00Z", "end": "2026-11-03T00:00:00Z"})
+    assert r.status_code == 404
 
 
 async def test_market_sheet(admin):
@@ -257,6 +316,8 @@ async def test_market_sheet(admin):
     m = r.json()
     assert m["quote"]["last"] == "200" and m["day_change"]["change_pct"] == "5.26"
     assert len(m["bars"]) == 80 and m["bars"][-1]["close"] == "179"
+    assert {k: m["bars"][-1][k] for k in ("open", "high", "low", "volume")} == {
+        "open": "179", "high": "180", "low": "178", "volume": "1"}
     ind = m["indicators"]
     assert ind["close"] == "179" and ind["sma20"] == "169.5" and ind["sma50"] == "154.5"
     assert D(ind["rsi14"]) == 100 and ind["atr14"] is not None
