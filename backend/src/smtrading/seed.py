@@ -18,7 +18,7 @@ from smtrading.common.db import get_sessionmaker
 from smtrading.common.logsetup import configure_logging
 from smtrading.connectors.service import seed_connectors
 from smtrading.fees.models import FeeRule, FeeScope, FeeSide
-from smtrading.instruments.catalog import seed_catalog
+from smtrading.instruments.catalog import backfill_metadata, seed_catalog
 from smtrading.portfolios.models import Portfolio
 from smtrading.portfolios.service import create_portfolio
 from smtrading.risk.models import AppSetting, InterestKind, InterestRate, RiskProfile, SystemState
@@ -66,6 +66,8 @@ async def run_seed(
     # the curated catalog, insert-only: a fresh install gets the catalog values for every
     # symbol; rows already in a database (incl. the 12 pre-catalog ones) are left as they are
     await seed_catalog(session)
+    # sector / industry / indices of the rows that predate them: only NULLs are filled
+    await backfill_metadata(session)
 
     if await session.scalar(
         select(FeeRule.id).where(FeeRule.name == DEFAULT_FEE_RULE_NAME).limit(1)

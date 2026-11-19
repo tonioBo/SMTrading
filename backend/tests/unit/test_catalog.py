@@ -7,6 +7,7 @@ import pytest
 from smtrading.instruments.catalog import CATALOG_DIR, load_catalog, parse_row
 from smtrading.instruments.market_hours import MARKETS
 from smtrading.instruments.models import AssetClass
+from smtrading.instruments.taxonomy import EQUITY_SECTORS, ETF_TYPES, INDICES, SECTORS
 
 ROWS = load_catalog()
 _SUFFIX_MARKET = {".MI": "MTA", ".DE": "XETRA", ".PA": "EURONEXT_PARIS"}
@@ -85,14 +86,17 @@ def test_parse_row_rejects_bad_values():
     for field, bad in [("market", "LSE"), ("asset_class", "bond"), ("currency", "usd"),
                        ("lot_size", "0"), ("tick_size", "-1"), ("tick_size", "x"),
                        ("shortable", "yes"), ("symbol", "aapl"), ("name", ""),
-                       ("provider_symbols", "alpaca")]:
+                       ("provider_symbols", "alpaca"), ("sector", "Technology"),
+                       ("indices", "SP500;XX"), ("indices", "DAX;DAX"),
+                       ("industry", "x" * 129)]:
         with pytest.raises(ValueError):
             parse_row({**good, field: bad}, "t")
 
 
 def test_load_catalog_rejects_duplicates(tmp_path):
-    header = "symbol,name,market,asset_class,currency,lot_size,tick_size,shortable,provider_symbols"
-    line = "AAPL,Apple,NASDAQ,us_equity,USD,1,0.01,true,"
+    header = ("symbol,name,market,asset_class,currency,lot_size,tick_size,shortable,"
+              "provider_symbols,sector,industry,indices")
+    line = "AAPL,Apple,NASDAQ,us_equity,USD,1,0.01,true,,Tecnologia,,SP500;NDX"
     (tmp_path / "a.csv").write_text(f"{header}\n{line}\n")
     (tmp_path / "b.csv").write_text(f"{header}\n{line}\n")
     with pytest.raises(ValueError, match="duplicate"):
@@ -100,3 +104,44 @@ def test_load_catalog_rejects_duplicates(tmp_path):
     (tmp_path / "b.csv").write_text("symbol,name\nX,Y\n")
     with pytest.raises(ValueError, match="columns"):
         load_catalog.__wrapped__(tmp_path)
+
+
+def test_parse_row_metadata():
+    good = {
+        "symbol": "AAPL", "name": "Apple", "market": "NASDAQ", "asset_class": "us_equity",
+        "currency": "USD", "lot_size": "1", "tick_size": "0.01", "shortable": "true",
+        "provider_symbols": "", "sector": "Tecnologia", "industry": "Consumer Electronics",
+        "indices": "SP500;NDX",
+    }
+    row = parse_row(good, "t")
+    assert (row.sector, row.industry, row.indices) == (
+        "Tecnologia", "Consumer Electronics", ("SP500", "NDX"))
+    assert row.values()["indices"] == ["SP500", "NDX"]
+    bare = parse_row({**good, "sector": "", "industry": "", "indices": ""}, "t")
+    assert (bare.sector, bare.industry, bare.indices) == (None, None, ())
+
+
+def test_catalog_sectors_and_indices():
+    """Every row has a sector; stocks a GICS-like one and an industry, ETFs an asset
+    type; the index lists are complete (S&P 500 has 503 lines: share classes)."""
+    for r in ROWS:
+        assert r.sector in SECTORS, r.symbol
+        if r.asset_class == AssetClass.crypto:
+            assert r.sector == "Crypto"
+        elif r.asset_class == AssetClass.forex:
+            assert r.sector == "Cambi"
+        elif r.sector == "ETF":
+            assert r.industry in ETF_TYPES, r.symbol
+            assert not r.indices, r.symbol
+        else:
+            assert r.sector in EQUITY_SECTORS and r.industry, r.symbol
+    count = {c: sum(c in r.indices for r in ROWS) for c in INDICES}
+    assert count["SP500"] >= 500 and count["NDX"] >= 100
+    assert count["FTSEMIB"] == 40 and count["DAX"] == 40 and count["CAC40"] >= 39
+    assert count["MDAX"] >= 40
+    by = {r.symbol: r for r in ROWS}
+    assert by["AAPL"].indices == ("SP500", "NDX") and by["AAPL"].sector == "Tecnologia"
+    assert by["ISP.MI"].indices == ("FTSEMIB",) and by["ISP.MI"].sector == "Finanza"
+    assert by["SAP.DE"].indices == ("DAX",) and by["MC.PA"].indices == ("CAC40",)
+    assert by["TQQQ"].industry == "Leva e inverso" and by["GLD"].industry == "Materie prime"
+    assert by["AGG"].industry == "Obbligazionario" and by["SWDA.MI"].industry == "Azionario"
