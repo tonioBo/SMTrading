@@ -49,6 +49,7 @@ describe("Layout", () => {
       "Posizioni",
       "Strategie",
       "Obiettivi",
+      "Campagne",
       "Mercati",
       "Agenti",
       "Istruzioni agenti",

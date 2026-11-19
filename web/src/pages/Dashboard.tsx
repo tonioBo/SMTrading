@@ -12,6 +12,7 @@ import { HaltBanner } from "@/components/HaltBanner";
 import { KillSwitchButton } from "@/components/KillSwitchButton";
 import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
+import { ReportButton } from "@/components/ReportDialog";
 import { Pct } from "@/components/Pct";
 import { Pnl } from "@/components/Pnl";
 import { GapRiskBadge } from "@/components/ExtendedHours";
@@ -391,7 +392,10 @@ export default function Dashboard() {
     <div>
       <PageHeader title="Dashboard">
         <LiveIndicator live={live} updatedAt={dataUpdatedAt} />
-        <KillSwitchButton />
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <ReportButton />
+          <KillSwitchButton />
+        </div>
       </PageHeader>
       <HaltBanner />
       {isError && <p className="text-loss">Impossibile caricare la dashboard</p>}

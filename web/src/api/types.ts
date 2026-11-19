@@ -1722,3 +1722,90 @@ export interface GoalProgress {
   /** each counted portfolio's share, by name (absent from older servers) */
   parts?: GoalPart[];
 }
+
+// --- campaigns («Campagne», plan 21) ------------------------------------------------
+
+export type CampaignStatus = "bozza" | "attiva" | "conclusa";
+
+export interface CampaignPortfolio {
+  id: string;
+  name: string;
+  status: PortfolioStatus;
+  base_currency: string;
+  /** created by the campaign wizard (false: an existing portfolio) */
+  created: boolean;
+  broker_link_name: string | null;
+  broker_kind: string | null;
+}
+
+/** `GET /api/campaigns`: a named test run grouping portfolios over a period. */
+export interface Campaign {
+  id: string;
+  name: string;
+  start_date: string;
+  end_date: string;
+  notes: string | null;
+  status: CampaignStatus;
+  created_by: string | null;
+  created_at: string;
+  closed_at: string | null;
+  closed_by: string | null;
+  portfolios: CampaignPortfolio[];
+  goals: Goal[];
+}
+
+/** A portfolio of the wizard: an existing one (`portfolio_id`) or a new one. */
+export interface CampaignPortfolioSpec {
+  key: string;
+  portfolio_id?: string;
+  name?: string;
+  initial_cash?: string;
+  base_currency?: string;
+  risk_profile_id?: string | null;
+  /** a paper/demo link only (real-money links are refused) */
+  broker_link_id?: string | null;
+}
+
+export interface CampaignGoalSpec extends GoalCreate {
+  portfolio_key: string;
+}
+
+export interface CampaignCreate {
+  name: string;
+  start_date: string;
+  end_date: string;
+  notes?: string | null;
+  status?: "bozza" | "attiva";
+  portfolios: CampaignPortfolioSpec[];
+  goals: CampaignGoalSpec[];
+}
+
+/** `POST /api/campaigns/templates`: a ready goal of the wizard's third step. */
+export interface CampaignTemplate {
+  key: string;
+  label: string;
+  portfolio_key: string;
+  /** pre-selected in the wizard (the campaign's own minimum and maximum loss) */
+  recommended: boolean;
+  body: GoalCreate;
+}
+
+export interface CampaignCloseCheck {
+  campaign_id: string;
+  status: CampaignStatus;
+  open_positions: number;
+  open_orders: number;
+  portfolios: {
+    id: string;
+    name: string;
+    status: PortfolioStatus;
+    archived: boolean;
+    broker_link_name: string | null;
+    positions: { symbol: string; qty: string }[];
+    open_orders: { id: string; symbol: string; side: string; type: string; status: string; qty: string | null }[];
+    can_archive: boolean;
+    /** why it cannot be archived now (the archive rules' message) */
+    archive_blocker: string | null;
+  }[];
+  plans: (PlanState & { goal_name: string | null })[];
+}

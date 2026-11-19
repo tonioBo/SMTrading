@@ -14,6 +14,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Pnl } from "@/components/Pnl";
 import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
 import { PortfolioStatusBadge } from "@/components/PortfolioStatusBadge";
+import { ReportButton } from "@/components/ReportDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -272,6 +273,7 @@ export default function Portfolios() {
             />
             <label htmlFor={toggleId}>Mostra archiviati</label>
           </div>
+          <ReportButton />
           <AdminOnly>
             <Button onClick={() => setCreating(true)}>
               <Plus />
