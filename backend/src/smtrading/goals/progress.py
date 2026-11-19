@@ -179,14 +179,16 @@ class PortfolioPeriod:
 
 async def portfolio_periods(session: AsyncSession, period: Period, now: datetime,
                             zone: ZoneInfo,
-                            portfolio_ids: list[UUID] | None = None) -> list[PortfolioPeriod]:
-    """(start, current) of every live portfolio (or of the live ones of `portfolio_ids`)
-    with a snapshot in `period` up to `now`."""
+                            portfolio_ids: list[UUID] | None = None, *,
+                            include_archived: bool = False) -> list[PortfolioPeriod]:
+    """(start, current) of every live portfolio (or of the live ones of `portfolio_ids`;
+    archived ones too with `include_archived`: a report of a concluded campaign) with a
+    snapshot in `period` up to `now`."""
     start_ts = local_midnight(period.start, zone)
     end_ts = local_midnight(period.end + timedelta(days=1), zone)
     if now < start_ts:
         return []
-    ids_stmt = live_portfolio_ids()
+    ids_stmt = select(Portfolio.id) if include_archived else live_portfolio_ids()
     if portfolio_ids is not None:
         ids_stmt = ids_stmt.where(Portfolio.id.in_(portfolio_ids))
     out = []
@@ -218,14 +220,17 @@ async def portfolio_periods(session: AsyncSession, period: Period, now: datetime
 
 
 async def period_progress(session: AsyncSession, goal: Goal, period: Period, now: datetime,
-                          zone: ZoneInfo, portfolio_name: str | None) -> dict[str, Any]:
+                          zone: ZoneInfo, portfolio_name: str | None, *,
+                          include_archived: bool = False) -> dict[str, Any]:
     """The progress of `goal` over `period` at `now` (the Progress of the contract, with
-    Decimals, dates and datetimes)."""
+    Decimals, dates and datetimes); `include_archived` counts an archived portfolio of a
+    portfolio goal too (reports)."""
     local = now.astimezone(zone)
     today = local.date()
     weeks = await portfolio_periods(
         session, period, now, zone,
-        None if goal.scope == "total" else [goal.portfolio_id])
+        None if goal.scope == "total" else [goal.portfolio_id],
+        include_archived=include_archived and goal.scope != "total")
     target = goal.target_pct
     start = sum((w.start for w in weeks), Decimal(0)) if weeks else None
     current = sum((w.current for w in weeks), Decimal(0)) if weeks else None

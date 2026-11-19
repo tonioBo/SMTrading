@@ -210,12 +210,19 @@ def _named(lesson: Decision) -> set[str]:
     return {" ".join(v.casefold().split()) for v in raw if isinstance(v, str)} - _EVERYONE
 
 
-async def _strategies(session: AsyncSession, qs: QuoteSource, since: datetime | None
+async def _strategies(session: AsyncSession, qs: QuoteSource, since: datetime | None,
+                      *, until: datetime | None = None,
+                      portfolio_ids: list[uuid.UUID] | None = None,
                       ) -> tuple[list[StrategyResult], dict[uuid.UUID, str | None]]:
-    """The strategies' rows and the agent of each order executed in the period."""
-    fills, portfolios, orders = await _fills(session)
-    executed = {f.order_id: orders[f.order_id].agent_id for f in fills
-                if since is None or f.ts >= since}
+    """The strategies' rows and the agent of each order executed in the period (from
+    `since`, before `until` when given; the fills of `portfolio_ids` only when given,
+    archived ones included: `reports.period`)."""
+    fills, portfolios, orders = await _fills(session, portfolio_ids)
+
+    def within(ts: datetime) -> bool:
+        return (since is None or ts >= since) and (until is None or ts < until)
+
+    executed = {f.order_id: orders[f.order_id].agent_id for f in fills if within(f.ts)}
     trades = fifo_trades(fills)
     if not trades:
         return [], executed
@@ -232,9 +239,8 @@ async def _strategies(session: AsyncSession, qs: QuoteSource, since: datetime | 
         groups[t.strategy].append(t)
     out = []
     for ref, items in groups.items():
-        opened = [t for t in items if since is None or t.opened_at >= since]
-        closed = [t for t in items if t.closed_at is not None
-                  and (since is None or t.closed_at >= since)]
+        opened = [t for t in items if within(t.opened_at)]
+        closed = [t for t in items if t.closed_at is not None and within(t.closed_at)]
         open_pos = {(t.portfolio_id, t.symbol) for t in items if t.open_qty}
         if not (opened or closed or open_pos):
             continue

@@ -247,14 +247,18 @@ def _money(v: Decimal | None) -> Decimal | None:
     return None if v is None else quantize_money(v, EUR)
 
 
-async def _fills(session: AsyncSession,
+async def _fills(session: AsyncSession, portfolio_ids: Iterable[uuid.UUID] | None = None,
                  ) -> tuple[list[FillIn], dict[uuid.UUID, Portfolio], dict[uuid.UUID, Order]]:
+    """Every fill of the non-archived portfolios, or of `portfolio_ids` (archived ones
+    included: a report of a concluded campaign), oldest first."""
+    where = (Portfolio.status != PortfolioStatus.archived if portfolio_ids is None
+             else Portfolio.id.in_(list(portfolio_ids)))
     rows = (await session.execute(
         select(Fill, Order, Portfolio, Instrument.currency)
         .join(Order, Order.id == Fill.order_id)
         .join(Portfolio, Portfolio.id == Fill.portfolio_id)
         .join(Instrument, Instrument.symbol == Fill.symbol)
-        .where(Portfolio.status != PortfolioStatus.archived)
+        .where(where)
         .order_by(Fill.created_at, Fill.id)
     )).all()
     if not rows:
