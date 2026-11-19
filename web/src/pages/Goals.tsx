@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { DataTable, type Column } from "@/components/DataTable";
 import { normalizeAmount, toInputDecimal } from "@/lib/decimal";
 import { errorField, errorMessage } from "@/lib/errors";
 import { formatDateTime, formatMoney } from "@/lib/format";
@@ -518,71 +518,69 @@ function GoalCard({
 function InactiveGoals({ goals, onEdit }: { goals: Goal[]; onEdit: (g: Goal) => void }) {
   const admin = useIsAdmin();
   const patch = usePatchGoal();
+  const columns: Column<Goal>[] = [
+    {
+      key: "name",
+      header: "Nome",
+      primary: true,
+      cell: (g) => (
+        <span className="font-medium">
+          {g.name}
+          {g.closes_positions && (
+            <StatusBadge tone="neutral" className="ml-2">
+              Piano
+            </StatusBadge>
+          )}
+        </span>
+      ),
+    },
+    { key: "target", header: "Obiettivo", className: "num", cell: (g) => goalTargetLabel(g.kind, g.target_pct, g.benchmark) },
+    { key: "scope", header: "Ambito", cell: (g) => goalScopeLabel(g) },
+    { key: "period", header: "Periodo", cell: (g) => horizonLabel(g) },
+    { key: "updated", header: "Modificato", className: "whitespace-nowrap text-xs text-muted", cell: (g) => formatDateTime(g.updated_at) },
+    {
+      key: "actions",
+      header: "",
+      mobileLabel: admin ? "Azioni" : "",
+      align: "right",
+      hideOnMobile: !admin,
+      cell: (g) =>
+        admin && (
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button size="sm" variant="ghost" aria-label={`Modifica ${g.name}`} onClick={() => onEdit(g)}>
+              <Pencil />
+              Modifica
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              aria-label={`Riattiva ${g.name}`}
+              disabled={patch.isPending || g.portfolio_archived}
+              title={g.portfolio_archived ? "il portafoglio è archiviato" : undefined}
+              onClick={() =>
+                patch.mutate(
+                  { id: g.id, body: { active: true } },
+                  {
+                    onSuccess: () => toast.success("Obiettivo riattivato"),
+                    onError: (err) => toast.error(errorMessage(err)),
+                  },
+                )
+              }
+            >
+              <RotateCcw />
+              Riattiva
+            </Button>
+          </div>
+        ),
+    },
+  ];
   return (
     <Card>
       <CardHeader className="pb-2">
         <CardTitle>Disattivati</CardTitle>
       </CardHeader>
       <CardContent>
-        <Table aria-label="Obiettivi disattivati">
-          <TableHeader>
-            <TableRow>
-              <TableHead>Nome</TableHead>
-              <TableHead>Obiettivo</TableHead>
-              <TableHead>Ambito</TableHead>
-              <TableHead>Periodo</TableHead>
-              <TableHead>Modificato</TableHead>
-              <TableHead />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {goals.map((g) => (
-              <TableRow key={g.id}>
-                <TableCell className="font-medium">
-                  {g.name}
-                  {g.closes_positions && (
-                    <StatusBadge tone="neutral" className="ml-2">
-                      Piano
-                    </StatusBadge>
-                  )}
-                </TableCell>
-                <TableCell className="num">{goalTargetLabel(g.kind, g.target_pct, g.benchmark)}</TableCell>
-                <TableCell>{goalScopeLabel(g)}</TableCell>
-                <TableCell>{horizonLabel(g)}</TableCell>
-                <TableCell className="whitespace-nowrap text-xs text-muted">{formatDateTime(g.updated_at)}</TableCell>
-                <TableCell className="text-right">
-                  {admin && (
-                    <div className="flex justify-end gap-2">
-                      <Button size="sm" variant="ghost" aria-label={`Modifica ${g.name}`} onClick={() => onEdit(g)}>
-                        <Pencil />
-                        Modifica
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        aria-label={`Riattiva ${g.name}`}
-                        disabled={patch.isPending || g.portfolio_archived}
-                        title={g.portfolio_archived ? "il portafoglio è archiviato" : undefined}
-                        onClick={() =>
-                          patch.mutate(
-                            { id: g.id, body: { active: true } },
-                            {
-                              onSuccess: () => toast.success("Obiettivo riattivato"),
-                              onError: (err) => toast.error(errorMessage(err)),
-                            },
-                          )
-                        }
-                      >
-                        <RotateCcw />
-                        Riattiva
-                      </Button>
-                    </div>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+        <DataTable aria-label="Obiettivi disattivati" columns={columns} rows={goals} rowKey={(g) => g.id} />
       </CardContent>
     </Card>
   );

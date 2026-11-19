@@ -1,7 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiDownload, apiFetch, saveBlob } from "@/api/client";
 import { appSettingsKey } from "@/api/hooks/risk";
-import type { AppSettings, BackupFile, HandoffWatchdog, PreopenCheck, VerifyBalancesResult, VerifyChainResult, WeeklyGoal } from "@/api/types";
+import type { AppSettings, BackupFile, HandoffWatchdog, PreopenCheck, SystemHealth, VerifyBalancesResult, VerifyChainResult, WeeklyGoal } from "@/api/types";
+
+export const systemHealthKey = ["system-health"] as const;
+
+/** «Salute del sistema» (the api caches it 30 s): refreshed every minute. */
+export function useSystemHealth() {
+  return useQuery({
+    queryKey: systemHealthKey,
+    queryFn: () => apiFetch<SystemHealth>("/api/system-health"),
+    refetchInterval: 60_000,
+  });
+}
 
 export function useBackups() {
   return useQuery({ queryKey: ["backups"], queryFn: () => apiFetch<BackupFile[]>("/api/system/backups") });

@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { useOpenPositions } from "@/api/hooks/positions";
 import type { OpenPosition, OpenPositionsPortfolio, ProtectiveLeg } from "@/api/types";
+import { DataTable, type Column } from "@/components/DataTable";
 import { ExtendedPositionLine, GapRiskBadge } from "@/components/ExtendedHours";
 import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
@@ -9,7 +10,6 @@ import { PortfolioModeBadge } from "@/components/PortfolioModeBadge";
 import { ProtectionBadge } from "@/components/ProtectionBadge";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatDateTime, formatDecimal, formatMoney, formatQty } from "@/lib/format";
 import { journalLink } from "@/lib/trades";
 import { cn } from "@/lib/utils";
@@ -49,12 +49,15 @@ function PlanBadge({ p }: { p: OpenPosition }) {
   );
 }
 
-function PositionRow({ p }: { p: OpenPosition }) {
-  return (
-    <TableRow>
-      <TableCell>
+const positionColumns: Column<OpenPosition>[] = [
+  {
+    key: "symbol",
+    header: "Simbolo",
+    primary: true,
+    cell: (p) => (
+      <div>
         <div className="font-medium">{p.symbol}</div>
-        {p.name && <div className="text-xs text-muted">{p.name}</div>}
+        {p.name && <div className="text-xs font-normal text-muted">{p.name}</div>}
         <Link
           to={journalLink({ portfolio_id: p.portfolio_id, symbol: p.symbol, outcome: "open" })}
           className="block text-xs text-accent hover:underline"
@@ -62,40 +65,52 @@ function PositionRow({ p }: { p: OpenPosition }) {
         >
           Diario
         </Link>
-      </TableCell>
-      <TableCell className="num text-right">{`${p.side === "short" ? "short " : ""}${formatQty(p.qty)}`}</TableCell>
-      <TableCell className="num text-right">{price(p.avg_price, p.currency)}</TableCell>
-      <TableCell className="num text-right">
+      </div>
+    ),
+  },
+  { key: "qty", header: "Quantità", align: "right", className: "num", cell: (p) => `${p.side === "short" ? "short " : ""}${formatQty(p.qty)}` },
+  { key: "avg", header: "Prezzo medio", align: "right", className: "num", cell: (p) => price(p.avg_price, p.currency) },
+  {
+    key: "last",
+    header: "Ultimo",
+    align: "right",
+    className: "num",
+    cell: (p) => (
+      <>
         {price(p.last, p.currency)}
-        {p.stale && <span className="ml-1 text-xs text-warn" title="ultima quotazione in memoria">*</span>}
+        {p.stale && (
+          <span className="ml-1 text-xs text-warn" title="ultima quotazione in memoria">
+            *
+          </span>
+        )}
         <ExtendedPositionLine ext={p.extended} currency={p.currency} />
-      </TableCell>
-      <TableCell className="text-right">
-        <Money value={p.value_eur} />
-      </TableCell>
-      <TableCell className="text-right">
-        <Pnl value={p.pnl_eur} pct={p.pnl_pct} />
-      </TableCell>
-      <TableCell>
-        <Leg leg={p.stop} currency={p.currency} />
-      </TableCell>
-      <TableCell>
-        <Leg leg={p.target} currency={p.currency} />
-      </TableCell>
-      <TableCell className="num text-right">{p.distance_to_stop_pct == null ? "—" : `${formatDecimal(p.distance_to_stop_pct, 2)}%`}</TableCell>
-      <TableCell className="text-right">
-        <Money value={p.risk_at_stop_eur} />
-      </TableCell>
-      <TableCell>
-        <div className="flex flex-wrap gap-1">
-          <ProtectionBadge protection={p.protection} />
-          {p.extended_beyond_stop && <GapRiskBadge side={p.side} />}
-          <PlanBadge p={p} />
-        </div>
-      </TableCell>
-    </TableRow>
-  );
-}
+      </>
+    ),
+  },
+  { key: "value", header: "Valore", align: "right", cell: (p) => <Money value={p.value_eur} /> },
+  { key: "pnl", header: "P/L", align: "right", cell: (p) => <Pnl value={p.pnl_eur} pct={p.pnl_pct} /> },
+  { key: "stop", header: "Stop", cell: (p) => <Leg leg={p.stop} currency={p.currency} /> },
+  { key: "target", header: "Target", cell: (p) => <Leg leg={p.target} currency={p.currency} /> },
+  {
+    key: "distance",
+    header: "Distanza dallo stop",
+    align: "right",
+    className: "num",
+    cell: (p) => (p.distance_to_stop_pct == null ? "—" : `${formatDecimal(p.distance_to_stop_pct, 2)}%`),
+  },
+  { key: "risk", header: "Rischio allo stop", align: "right", cell: (p) => <Money value={p.risk_at_stop_eur} /> },
+  {
+    key: "protection",
+    header: "Protezione",
+    cell: (p) => (
+      <div className="flex flex-wrap justify-end gap-1 sm:justify-start">
+        <ProtectionBadge protection={p.protection} />
+        {p.extended_beyond_stop && <GapRiskBadge side={p.side} />}
+        <PlanBadge p={p} />
+      </div>
+    ),
+  },
+];
 
 function PortfolioCard({ t, rows }: { t: OpenPositionsPortfolio; rows: OpenPosition[] }) {
   return (
@@ -120,28 +135,7 @@ function PortfolioCard({ t, rows }: { t: OpenPositionsPortfolio; rows: OpenPosit
         </div>
       </CardHeader>
       <CardContent>
-        <Table aria-label={`Posizioni ${t.portfolio_name}`}>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Simbolo</TableHead>
-              <TableHead className="text-right">Quantità</TableHead>
-              <TableHead className="text-right">Prezzo medio</TableHead>
-              <TableHead className="text-right">Ultimo</TableHead>
-              <TableHead className="text-right">Valore</TableHead>
-              <TableHead className="text-right">P/L</TableHead>
-              <TableHead>Stop</TableHead>
-              <TableHead>Target</TableHead>
-              <TableHead className="text-right">Distanza dallo stop</TableHead>
-              <TableHead className="text-right">Rischio allo stop</TableHead>
-              <TableHead>Protezione</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((p) => (
-              <PositionRow key={p.symbol} p={p} />
-            ))}
-          </TableBody>
-        </Table>
+        <DataTable aria-label={`Posizioni ${t.portfolio_name}`} columns={positionColumns} rows={rows} rowKey={(p) => p.symbol} empty="Nessuna posizione" />
       </CardContent>
     </Card>
   );

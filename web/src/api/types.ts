@@ -1314,6 +1314,8 @@ export interface AgentCostRow {
   subscription_usd: string;
   other_usd: string;
   runs: number;
+  /** the Paperclip model the agent is configured with now (null: not known) */
+  model?: string | null;
   orders: number;
   portfolios: { id: string; name: string; permission: string; return_pct: string | null }[];
 }
@@ -1327,6 +1329,7 @@ export interface AgentCosts {
   unmatched: { paperclip_agent_id: string; name: string | null; api_usd: string; subscription_usd: string; other_usd: string }[];
   /** the current month (whatever the period): billed spend = API + other, never the subscription */
   month: AgentCostMonth;
+  models?: AgentCostModels;
 }
 
 export interface AgentCostMonth {
@@ -2067,4 +2070,135 @@ export interface StrategyExpectationsResponse {
   as_of: string;
   min_trades: number;
   strategies: StrategyExpectation[];
+}
+
+/** GET /api/system-health («Salute del sistema»), cached 30 s by the api. */
+export type HealthStatus = "ok" | "attenzione" | "problema" | "spento";
+
+export interface HealthSectionBase {
+  status: HealthStatus;
+  label: string;
+  summary: string;
+  /** what is wrong, in plain Italian (empty when ok) */
+  reasons: string[];
+}
+
+export interface HealthJob {
+  name: string;
+  status: HealthStatus;
+  note: string | null;
+  started_at: string | null;
+  last_tick_at: string | null;
+  interval_s: number | null;
+  crashes: number;
+  last_crash_at: string | null;
+  last_error: string | null;
+}
+
+export interface HealthProvider {
+  name: string;
+  status: HealthStatus;
+  health: string;
+  last_error: string | null;
+  last_checked_at: string | null;
+}
+
+export interface HealthQuoteClass {
+  asset_class: string;
+  symbols: number;
+  fresh: number;
+  stale: number;
+  /** market closed: an old quote is expected */
+  closed: number;
+  threshold_s: number;
+  stale_symbols: string[];
+}
+
+export interface HealthCycleRoutine {
+  routine: string | null;
+  agent: string | null;
+  expected: number;
+  day_total: number;
+  done: number;
+  completed: number;
+}
+
+export interface HealthCycles {
+  day: string;
+  read_at: string | null;
+  error: string | null;
+  expected: number;
+  day_total: number;
+  done: number;
+  missing: number;
+  routines: HealthCycleRoutine[];
+  invalid_cron: string[];
+}
+
+export interface SystemHealth {
+  status: HealthStatus;
+  reasons: string[];
+  checked_at: string;
+  version: { build: string; built_at: string | null; api_started_at: string | null; worker_started_at: string | null };
+  sections: {
+    services: HealthSectionBase & { heartbeat_age_s?: number | null; worker_started_at?: string | null; jobs?: HealthJob[] };
+    providers: HealthSectionBase & { providers?: HealthProvider[] };
+    quotes: HealthSectionBase & { classes?: HealthQuoteClass[] };
+    paperclip: HealthSectionBase & {
+      reader?: { enabled: boolean; last_ok_at?: string | null; last_error?: string | null; consecutive_errors?: number; isolation?: string };
+    };
+    cycles: HealthSectionBase & { cycles?: HealthCycles };
+    watchdog: HealthSectionBase & { warnings?: { at: string | null; text: string }[] };
+    telegram: HealthSectionBase & {
+      pending?: number;
+      failed_24h?: number;
+      paused?: boolean;
+      configured?: boolean;
+      oldest_pending_at?: string | null;
+      oldest_pending_age_s?: number | null;
+    };
+    costs: HealthSectionBase & { today_usd?: string; month?: AgentCostMonth };
+    mcp: HealthSectionBase & { calls?: number; errors?: number; internal?: number; by_code?: { code: string; count: number }[] };
+  };
+}
+
+/** «Costi agenti» → «Per modello» (decimals as strings, USD). */
+export interface ModelCostRow {
+  model: string;
+  billed_usd: string;
+  api_usd: string;
+  subscription_usd: string;
+  other_usd: string;
+  runs: number;
+  /** runs without a model in Paperclip: the agent's configured model at the time */
+  derived_runs: number;
+  billed_per_run_usd: string | null;
+  /** with the value of the runs included in the subscription */
+  full_per_run_usd: string | null;
+  agents: string[];
+}
+
+export interface ModelChange {
+  agent_id: string;
+  name: string;
+  from: string;
+  to: string;
+  at: string;
+}
+
+export interface AgentCostModels {
+  rows: ModelCostRow[];
+  agents: { paperclip_agent_id: string; name: string; model: string | null; since: string | null }[];
+  /** newest first */
+  changes: ModelChange[];
+  updated_at: string | null;
+}
+
+export interface ModelCompare {
+  at: string;
+  days: number;
+  before: { from: string; to: string; models: ModelCostRow[] };
+  after: { from: string; to: string; models: ModelCostRow[] };
+  /** a model's day of `at` with runs on both sides: left out */
+  straddling: { agent: string; model: string; runs: number }[];
 }

@@ -49,6 +49,8 @@ def _mock(router, policies=None, agents=None):
     router.get(f"{API}/tools/policies").mock(return_value=httpx.Response(
         200, json={"policies": policies if policies is not None else [POLICY]}))
     router.get(f"{API}/heartbeat-runs").mock(return_value=httpx.Response(200, json=[]))
+    router.get(f"{API}/routines").mock(return_value=httpx.Response(200, json=[]))
+    router.get(f"{API}/issues").mock(return_value=httpx.Response(200, json=[]))
     router.get(f"{BASE}/api/cli-auth/me").mock(
         return_value=httpx.Response(200, json={"userId": "u1", "keyId": "k1"}))
     router.get(f"{BASE}/api/board-api-keys").mock(return_value=httpx.Response(200, json=[
@@ -340,3 +342,52 @@ async def test_agent_costs_month_block(admin):
     month = (await admin.client.get("/api/agent-costs")).json()["month"]
     assert month["budget_usd"] is None and month["spent_pct"] is None
     assert month["projected_pct"] is None
+
+
+async def test_agent_costs_per_model_and_compare(admin):
+    """«Per modello»: spend, runs and cost per run per model, each agent's model now, the
+    model changes, and the before/after view around a change."""
+    from smtrading.paperclip import model_costs
+
+    trader = await _agent(admin.sm, "Trader")
+    await _configure(admin)
+    zone = ZoneInfo(get_settings().tz)
+    now = datetime.now(UTC)
+    change = (now - timedelta(days=1)).replace(microsecond=0)
+    before, after = change - timedelta(hours=2), change + timedelta(hours=2)
+    runs = [{"id": "r1", "agentId": "pa1", "startedAt": before.isoformat(),
+             "usageJson": {"costUsd": 2, "billingType": "metered_api", "model": "opus"}},
+            {"id": "r2", "agentId": "pa1", "startedAt": after.isoformat(),
+             "usageJson": {"costUsd": 0.5, "billingType": "metered_api", "model": "sonnet"}},
+            {"id": "r3", "agentId": "pa1", "startedAt": now.isoformat(),
+             "usageJson": {"costUsd": 0.5, "billingType": "metered_api", "model": "sonnet"}}]
+    state = {"buckets": model_costs.bucket_runs(runs, get_settings().tz, {}, truncated=False),
+             "agents": {"pa1": {"name": "trader", "history": [
+                 {"model": "opus", "since": None},
+                 {"model": "sonnet", "since": change.isoformat()}]}},
+             "changes": [{"agent_id": "pa1", "name": "trader", "from": "opus",
+                          "to": "sonnet", "at": change.isoformat()}],
+             "updated_at": now.isoformat()}
+    async with admin.sm() as s:
+        await model_costs.save_models(s, state)
+        await s.commit()
+    body = (await admin.client.get("/api/agent-costs", params={"period": "week"})).json()
+    rows = {r["model"]: r for r in body["models"]["rows"]}
+    assert rows["opus"]["runs"] == 1 and Decimal(rows["opus"]["billed_usd"]) == 2
+    assert Decimal(rows["sonnet"]["billed_per_run_usd"]) == Decimal("0.5")
+    assert body["models"]["agents"][0]["model"] == "sonnet"
+    assert body["models"]["changes"][0]["to"] == "sonnet"
+    (row,) = [a for a in body["agents"] if a["agent_id"] == str(trader.id)]
+    assert row["model"] == "sonnet"
+
+    r = await admin.client.get("/api/agent-costs/compare")  # default: the last change
+    assert r.status_code == 200, r.text
+    cmp = r.json()
+    assert [m["model"] for m in cmp["before"]["models"]] == ["opus"]
+    assert [(m["model"], m["runs"]) for m in cmp["after"]["models"]] == [("sonnet", 2)]
+    local = change.astimezone(zone).replace(tzinfo=None).isoformat(timespec="minutes")
+    r = await admin.client.get("/api/agent-costs/compare", params={"at": local, "days": 3})
+    assert r.status_code == 200 and r.json()["days"] == 3
+    for bad in ({"at": "nope"}, {"days": 0}, {"at": (now + timedelta(days=1)).isoformat()}):
+        assert (await admin.client.get("/api/agent-costs/compare", params=bad)).status_code \
+            == 400

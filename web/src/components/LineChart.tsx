@@ -1,5 +1,6 @@
 import { useMemo, useState, type PointerEvent } from "react";
 import { nearestIndex, niceTicks, timeLabel, type ChartPoint } from "@/lib/lineChart";
+import { useIsNarrow } from "@/lib/media";
 
 export interface ChartLine {
   key: string;
@@ -30,6 +31,7 @@ interface Props {
 const W = 1000; // the SVG's own units: stretched to the box (non-scaling strokes)
 const H = 1000;
 const X_TICKS = 5;
+const X_TICKS_NARROW = 3; // a phone: fewer time labels, so they never overlap
 
 /**
  * Hand-made SVG line chart (no chart library): several series on one time axis, y grid
@@ -38,6 +40,7 @@ const X_TICKS = 5;
  */
 export function LineChart({ lines, formatValue, formatTick, axisTime, ariaLabel }: Props) {
   const [hoverT, setHoverT] = useState<number | null>(null);
+  const xCount = useIsNarrow() ? X_TICKS_NARROW : X_TICKS;
   const geo = useMemo(() => {
     const all = lines.flatMap((l) => l.points);
     let t0 = Math.min(...all.map((p) => p.t));
@@ -54,7 +57,7 @@ export function LineChart({ lines, formatValue, formatTick, axisTime, ariaLabel 
     const v1 = ticks[ticks.length - 1];
     const x = (t: number) => ((t - t0) / (t1 - t0)) * W;
     const y = (v: number) => H - ((v - v0) / (v1 - v0)) * H;
-    const xTicks = Array.from({ length: X_TICKS }, (_, i) => t0 + ((t1 - t0) * (i + 0.5)) / X_TICKS);
+    const xTicks = Array.from({ length: xCount }, (_, i) => t0 + ((t1 - t0) * (i + 0.5)) / xCount);
     /** a reference line outside the scale: drawn as a label at the top or bottom edge */
     const outside = (l: ChartLine): "up" | "down" | null => {
       if (!l.reference || l.points.length === 0) return null;
@@ -63,7 +66,7 @@ export function LineChart({ lines, formatValue, formatTick, axisTime, ariaLabel 
       return null;
     };
     return { t0, t1, ticks, step: ticks.length > 1 ? ticks[1] - ticks[0] : 1, x, y, xTicks, outside };
-  }, [lines]);
+  }, [lines, xCount]);
 
   const data = lines.filter((l) => !l.reference && l.points.length > 0);
   const hover = useMemo(() => {
@@ -94,7 +97,7 @@ export function LineChart({ lines, formatValue, formatTick, axisTime, ariaLabel 
         ))}
       </div>
       {/* x labels */}
-      <div className="absolute bottom-0 left-14 right-2 h-5">
+      <div className="absolute bottom-0 left-14 right-2 h-5" data-testid="x-labels">
         {geo.xTicks.map((t) => (
           <span key={t} className="num absolute -translate-x-1/2 whitespace-nowrap" style={{ left: pct(geo.x(t), W) }}>
             {timeLabel(t, axisTime)}

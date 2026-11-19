@@ -19,6 +19,27 @@ export const FEE_PRESETS: BrokerFeePreset[] = [
   { broker_kind: "etoro_live", broker: "eToro", entries: ETORO },
 ];
 
+const okSection = (label: string, summary: string) => ({ status: "ok", label, summary, reasons: [] });
+
+/** GET /api/system-health with every section ok. */
+export const HEALTH_OK = {
+  status: "ok",
+  reasons: [],
+  checked_at: "2026-11-19T10:00:00Z",
+  version: { build: "abc123", built_at: null, api_started_at: "2026-11-19T08:00:00Z", worker_started_at: "2026-11-19T08:00:05Z" },
+  sections: {
+    services: { ...okSection("Servizi", "Tutti i servizi rispondono"), heartbeat_age_s: 3, jobs: [] },
+    providers: { ...okSection("Fornitori di dati", "1 fornitori attivi, tutti ok"), providers: [] },
+    quotes: { ...okSection("Quotazioni", "Nessun simbolo in posizioni o liste"), classes: [] },
+    paperclip: { ...okSection("Lettura di Paperclip", "Lettura regolare"), reader: { enabled: true } },
+    cycles: { ...okSection("Cicli agenti di oggi", "0 cicli partiti su 0 attesi finora (0 nella giornata)") },
+    watchdog: { ...okSection("Passaggi mancanti", "Nessun passaggio mancante oggi"), warnings: [] },
+    telegram: { ...okSection("Telegram", "0 in coda, nessun errore"), pending: 0, failed_24h: 0 },
+    costs: { ...okSection("Costi agenti", "Oggi 0 $, proiezione del mese 0 $"), today_usd: "0" },
+    mcp: { ...okSection("Errori MCP", "Nessuna chiamata nell'ultima ora"), calls: 0, errors: 0, internal: 0, by_code: [] },
+  },
+};
+
 /** Requests every authenticated page makes (Layout, halt, mode and Paperclip banners): mocked once for all page tests. */
 export const commonHandlers = [
   http.get("*/api/dashboard/modes", () => HttpResponse.json({ simulazione: 1, paper: 0, reale: 0 })),
@@ -49,6 +70,8 @@ export const commonHandlers = [
   http.get("*/api/signals", () => HttpResponse.json({ as_of: "2026-11-16T12:00:00Z", portfolios: [] })),
   // «Impostazioni → Utenti» (admins): an empty list unless a test overrides it
   http.get("*/api/users", () => HttpResponse.json([])),
+  // Dashboard «Salute del sistema» badge: everything ok unless a test overrides it
+  http.get("*/api/system-health", () => HttpResponse.json(HEALTH_OK)),
   // link flows and the portfolio «Commissioni»: the brokers' fee presets
   http.get("*/api/brokers/fee-presets", () => HttpResponse.json(FEE_PRESETS)),
 ];

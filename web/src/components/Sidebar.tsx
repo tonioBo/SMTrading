@@ -10,6 +10,7 @@ import {
   FlaskConical,
   Gauge,
   Globe,
+  HeartPulse,
   Landmark,
   Lightbulb,
   Layers,
@@ -74,6 +75,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: "Sistema",
     items: [
+      { to: "/salute-sistema", label: "Salute del sistema", icon: HeartPulse },
       { to: "/broker", label: "Broker", icon: Landmark },
       { to: "/riconciliazione", label: "Riconciliazione", icon: Scale },
       { to: "/connettori", label: "Connettori", icon: Cable },

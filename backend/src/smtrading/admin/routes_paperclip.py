@@ -24,7 +24,7 @@ from smtrading.agents.service import write_audit
 from smtrading.common.config import get_settings
 from smtrading.engine.models import Order
 from smtrading.mcp.dto import to_jsonable
-from smtrading.paperclip import budget
+from smtrading.paperclip import budget, model_costs
 from smtrading.paperclip.client import PaperclipClient, PaperclipError
 from smtrading.paperclip.config import (
     KEY_PREFIX,
@@ -261,6 +261,13 @@ async def get_agent_costs(session: DbSession, period: str = Query("day")) -> dic
         .order_by(AgentCostDay.paperclip_agent_id)
     )).all()
     agents = await smt_agents(session)
+    models = await model_costs.load_models(session)
+    current = model_costs.current_models(models)
+    model_of: dict[uuid.UUID, set[str]] = {}
+    for c in current:
+        smt = match_agent(c["paperclip_agent_id"], c["name"], agents, cfg.agent_map)
+        if smt is not None and c["model"]:
+            model_of.setdefault(smt.id, set()).add(c["model"])
     by_agent: dict[uuid.UUID, list] = {a.id: [] for a in agents}
     unmatched = []
     for pid, name, api, sub, other, runs in costs:
@@ -285,13 +292,47 @@ async def get_agent_costs(session: DbSession, period: str = Query("day")) -> dic
             "subscription_usd": sum((m[2] for m in matched), start=Decimal(0)),
             "other_usd": sum((m[3] for m in matched), start=Decimal(0)),
             "runs": int(sum(m[4] for m in matched)),
+            "model": ", ".join(sorted(model_of.get(a.id, set()))) or None,
             "orders": orders.get(str(a.id), 0),
             "portfolios": await _portfolios(session, a.id, perf_period),
         })
     return to_jsonable({"currency": "USD", "from": from_, "to": to,
                         "last_read_at": state["last_ok_at"], "agents": rows,
                         "unmatched": unmatched,
-                        "month": await _month(session, to, cfg, state, agents)})
+                        "month": await _month(session, to, cfg, state, agents),
+                        "models": {"rows": model_costs.by_model(models, from_, to),
+                                   "agents": current,
+                                   "changes": list(reversed(models.get("changes") or [])),
+                                   "updated_at": models.get("updated_at")}})
+
+
+COMPARE_MAX_DAYS = 30
+
+
+@router.get("/agent-costs/compare")
+async def compare_agent_costs(session: DbSession, at: str | None = Query(None),
+                              days: int = Query(7)) -> dict:
+    """Per model, the `days` days before `at` against the time after it (default `at`:
+    the last model change seen; a local time without an offset is in the app's zone)."""
+    if not 1 <= days <= COMPARE_MAX_DAYS:
+        raise _invalid("days", f"days va da 1 a {COMPARE_MAX_DAYS}")
+    zone = ZoneInfo(get_settings().tz)
+    models = await model_costs.load_models(session)
+    if at is None:
+        changes = models.get("changes") or []
+        if not changes:
+            raise _invalid("at", "nessun cambio di modello registrato: indica data e ora")
+        at = changes[-1]["at"]
+    try:
+        when = datetime.fromisoformat(at)
+    except ValueError:
+        raise _invalid("at", "data e ora non valide") from None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=zone)
+    now = datetime.now(UTC)
+    if when > now:
+        raise _invalid("at", "data e ora nel futuro")
+    return to_jsonable(model_costs.compare(models, when, days, get_settings().tz, now))
 
 
 async def _month(session: AsyncSession, today, cfg, state: dict, agents: list[SmtAgent]

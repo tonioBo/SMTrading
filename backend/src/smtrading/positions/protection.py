@@ -76,6 +76,7 @@ from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.positions.models import Position
 from smtrading.risk.models import AppSetting
 from smtrading.telegram.outbox import enqueue
+from smtrading.worker.jobstate import job_tick
 
 log = logging.getLogger(__name__)
 
@@ -412,6 +413,7 @@ class ProtectionAlarm:
         while True:  # the first check at once (after the worker's startup gate)
             try:
                 await self.tick()
+                await job_tick()  # «Salute del sistema»: last pass
             except Exception:
                 log.warning("protection check failed; retrying in %ss", self._interval_s,
                             exc_info=True)

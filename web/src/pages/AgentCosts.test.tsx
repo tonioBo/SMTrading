@@ -36,8 +36,21 @@ function costs(period: string): AgentCosts {
     ],
     unmatched: [{ paperclip_agent_id: "pc-9", name: "Sconosciuto", api_usd: "3", subscription_usd: "0", other_usd: "0.1" }],
     month,
+    models: {
+      rows: [modelRow("claude-opus", "4.00", 2, 1), modelRow("claude-sonnet", "0.90", 3, 0)],
+      agents: [{ paperclip_agent_id: "pc-1", name: "analista", model: "claude-sonnet", since: "2026-11-19T08:38:00Z" }],
+      changes: [{ agent_id: "pc-1", name: "analista", from: "claude-opus", to: "claude-sonnet", at: "2026-11-19T08:38:00Z" }],
+      updated_at: "2026-11-19T10:00:00Z",
+    },
   };
 }
+
+function modelRow(model: string, billed: string, runs: number, derived: number) {
+  const per = (Number(billed) / runs).toFixed(4);
+  return { model, billed_usd: billed, api_usd: billed, subscription_usd: "0", other_usd: "0", runs, derived_runs: derived, billed_per_run_usd: per, full_per_run_usd: per, agents: ["analista"] };
+}
+
+let compares: string[] = [];
 
 let month: AgentCosts["month"];
 function baseMonth(): AgentCosts["month"] {
@@ -70,6 +83,17 @@ const server = setupServer(
     periods.push(period);
     return HttpResponse.json(costs(period));
   }),
+  http.get("*/api/agent-costs/compare", ({ request }) => {
+    const q = new URL(request.url).searchParams;
+    compares.push(`${q.get("at")}|${q.get("days")}`);
+    return HttpResponse.json({
+      at: "2026-11-19T08:38:00+00:00",
+      days: Number(q.get("days")),
+      before: { from: "2026-11-12", to: "2026-11-19T08:38:00+00:00", models: [modelRow("claude-opus", "4.00", 2, 0)] },
+      after: { from: "2026-11-19T08:38:00+00:00", to: "2026-11-19T10:00:00+00:00", models: [modelRow("claude-sonnet", "1.00", 4, 0)] },
+      straddling: [],
+    });
+  }),
 );
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 beforeEach(() => {
@@ -78,6 +102,7 @@ beforeEach(() => {
 afterEach(() => {
   server.resetHandlers();
   periods = [];
+  compares = [];
 });
 afterAll(() => server.close());
 
@@ -89,6 +114,7 @@ describe("AgentCosts", () => {
     const table = await screen.findByRole("table", { name: "Costi per agente" });
     expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual([
       "Agente",
+      "Modello",
       "A consumo API ($)",
       "Incluso nell'abbonamento ($)",
       "Altro ($)",
@@ -143,5 +169,28 @@ describe("AgentCosts", () => {
     const agenti = within(nav).getByRole("group", { name: "Agenti" });
     const labels = within(agenti).getAllByRole("link").map((a) => a.textContent);
     expect(labels.slice(0, 3)).toEqual(["Agenti", "Istruzioni agenti", "Costi agenti"]);
+  });
+
+  it("per model: spend, runs, cost per run, each agent's model now and before/after the last change", async () => {
+    const user = userEvent.setup();
+    renderApp("/costi-agenti");
+    const region = await screen.findByRole("region", { name: "Per modello" });
+    const table = within(region).getByRole("table", { name: "Costi per modello" });
+    const opus = within(table).getByRole("row", { name: /claude-opus/ });
+    expect(opus).toHaveTextContent("4,00 $");
+    expect(opus).toHaveTextContent("2*"); // a run with the model derived from the configuration
+    expect(within(table).getByRole("row", { name: /claude-sonnet/ })).toHaveTextContent("0,300 $");
+    expect(within(region).getByRole("list", { name: "Modello di ogni agente" })).toHaveTextContent("analistaclaude-sonnet");
+    const agents = screen.getByRole("table", { name: "Costi per agente" });
+    expect(within(agents).getAllByRole("columnheader")[1]).toHaveTextContent("Modello");
+
+    // the comparison starts at the last change (19/11 09:38 Rome time), 7 days
+    const cmp = screen.getByRole("region", { name: "Prima e dopo un cambio" });
+    await waitFor(() => expect(compares).toContain("2026-11-19T09:38|7"));
+    expect(await within(cmp).findByRole("status")).toHaveTextContent("Costo per esecuzione dopo il cambio: -87,50%");
+    expect(within(cmp).getByRole("group", { name: "Prima" })).toHaveTextContent("2,00 $ per esecuzione");
+    expect(within(cmp).getByRole("group", { name: "Dopo" })).toHaveTextContent("0,250 $ per esecuzione");
+    await user.selectOptions(within(cmp).getByLabelText("Giorni da confrontare"), "14");
+    await waitFor(() => expect(compares).toContain("2026-11-19T09:38|14"));
   });
 });

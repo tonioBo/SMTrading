@@ -44,6 +44,7 @@ from smtrading.telegram.details import open_positions_lines
 from smtrading.telegram.outbox import enqueue
 from smtrading.telegram.quiet import QUIET_START
 from smtrading.telegram.render import PREFIX, split_message
+from smtrading.worker.jobstate import job_tick
 
 log = logging.getLogger(__name__)
 
@@ -372,6 +373,7 @@ class SummaryScheduler:
     async def run(self) -> None:
         while True:
             await self.tick()
+            await job_tick()  # «Salute del sistema»: last pass
             await asyncio.sleep(self._tick_s)
 
     async def tick(self) -> None:

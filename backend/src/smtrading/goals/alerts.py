@@ -65,6 +65,7 @@ from smtrading.paperclip.client import PaperclipError
 from smtrading.paperclip.config import PaperclipConfig, load_config
 from smtrading.paperclip.issues import RISK_MANAGER, PaperclipIssues, find_agent_id
 from smtrading.telegram.outbox import enqueue
+from smtrading.worker.jobstate import job_tick
 
 log = logging.getLogger(__name__)
 
@@ -268,6 +269,7 @@ class GoalAlerts:
         while True:
             try:
                 await self.tick()
+                await job_tick()  # «Salute del sistema»: last pass
             except Exception:
                 log.warning("goal alerts failed; retrying in %ss", self._interval_s,
                             exc_info=True)

@@ -42,6 +42,7 @@ from smtrading.admin.routes_risk import router as risk_router
 from smtrading.admin.routes_signals import router as signals_router
 from smtrading.admin.routes_strategies import router as strategies_router
 from smtrading.admin.routes_system import router as system_router
+from smtrading.admin.routes_system_health import router as system_health_router
 from smtrading.admin.routes_telegram import router as telegram_router
 from smtrading.admin.routes_trades import router as trades_router
 from smtrading.admin.routes_users import router as users_router
@@ -97,7 +98,7 @@ BUILD_HEADER = "X-SMT-Build"
 
 def build_id() -> str:
     """Set at image build (git sha or timestamp); the web bundle embeds the same id."""
-    return os.environ.get("SMT_BUILD_ID") or "dev"
+    return os.environ.get("SMT_BUILD_ID") or os.environ.get("SMTRADING_VERSION") or "dev"
 
 
 class _BuildHeader:
@@ -215,6 +216,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(explore_router)  # /instruments/search before /instruments/{symbol}
     app.include_router(markets_router)
     app.include_router(system_router)
+    app.include_router(system_health_router)
     app.include_router(dashboard_router)
     app.include_router(goals_router)
     app.include_router(campaigns_router)

@@ -8,6 +8,10 @@
 3. Errors: one critical message at the third consecutive failed read, none after it until
    a read succeeds.
 4. Board key expiry: one notice 7 days before `expiresAt` (none when there is no expiry).
+4a. Models and cycles: the runs per model (`paperclip.model_costs`) and the routines with
+   their latest executions (`paperclip.cycles`), both best-effort (a failed read of the
+   routines keeps the stored ones and is shown on «Salute del sistema», never counted
+   as a reader error).
 4b. Monthly budget: the company's `budgetMonthlyCents` (best-effort: a failed read keeps
    the stored value) and one Telegram alert per month per threshold (`paperclip.budget`).
 5. Agent sessions: after an MCP tool catalog change the idle agents' sessions are reset
@@ -32,13 +36,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from smtrading.common.config import get_settings
 from smtrading.mcp.catalog import tool_catalog_fingerprint
-from smtrading.paperclip import budget
+from smtrading.paperclip import budget, cycles, model_costs
 from smtrading.paperclip.client import MAX_RUNS, PaperclipClient, PaperclipError
 from smtrading.paperclip.config import PaperclipConfig, load_config, load_state, save_state
 from smtrading.paperclip.costs import _amount, daily_costs
 from smtrading.paperclip.models import AgentCostDay
 from smtrading.paperclip.sessions import SessionClientFactory, SessionRefresher
 from smtrading.telegram.outbox import enqueue
+from smtrading.worker.jobstate import job_tick
 
 log = logging.getLogger(__name__)
 
@@ -182,6 +187,7 @@ class PaperclipReader:
         while True:
             try:
                 await self.tick()
+                await job_tick()  # «Salute del sistema»: last pass
             except Exception:
                 log.warning("paperclip read failed; retrying in %ss", self._interval_s,
                             exc_info=True)
@@ -226,16 +232,25 @@ class PaperclipReader:
             runs = await client.heartbeat_runs(MAX_RUNS)
             policies = await client.tool_policies()
             try:
-                names = {str(a.get("id")): str(a.get("name"))
-                         for a in await client.agents() if a.get("id") and a.get("name")}
+                agents = await client.agents()
             except PaperclipError:
-                names = {}  # the id stands for the name
+                agents = []  # the id stands for the name
+            names = {str(a.get("id")): str(a.get("name"))
+                     for a in agents if a.get("id") and a.get("name")}
+            try:
+                routines: list[dict] | None = await client.routines()
+                executions = await client.routine_executions(cycles.EXECUTIONS_LIMIT)
+                routines_error = None
+            except PaperclipError as e:
+                routines, executions, routines_error = None, [], e.message
             expiry_known, expires_at = await _key_expiry(client)
             try:
                 company: dict | None = await client.company()
             except PaperclipError:
                 company = None  # the stored budget is kept
         return {"runs": runs, "policies": isolation_policies(policies), "names": names,
+                "agents": agents, "routines": routines, "executions": executions,
+                "routines_error": routines_error,
                 "expiry_known": expiry_known, "expires_at": expires_at, "company": company}
 
     async def _record_error(self, message: str) -> None:
@@ -255,6 +270,10 @@ class PaperclipReader:
         async with self._sm() as session, session.begin():
             state = await load_state(session, for_update=True)
             await _upsert_costs(session, fetched["runs"], fetched["names"])
+            await model_costs.record_models(
+                session, fetched["runs"], fetched.get("agents") or [], tz=get_settings().tz,
+                now=now, truncated=len(fetched["runs"]) >= MAX_RUNS)
+            await _record_cycles(session, fetched, now)
             if state["error_alerted"]:
                 await enqueue(session, source="system", category="system", level="info",
                               text=RECOVERED_TEXT)
@@ -322,6 +341,18 @@ class PaperclipReader:
         await enqueue(session, source="system", category="system", level="warning",
                       text=expiry_text(expires))
         state["expiry_alerted"] = expires_at
+
+
+async def _record_cycles(session: AsyncSession, fetched: dict[str, Any], now: datetime) -> None:
+    state = await cycles.load_cycles(session)
+    if fetched.get("routines") is None:
+        state["error"] = fetched.get("routines_error")
+    else:
+        state.update(routines=cycles.normalize_routines(fetched["routines"]),
+                     executions=cycles.normalize_executions(fetched.get("executions") or [],
+                                                            now),
+                     read_at=now.isoformat(), error=None)
+    await cycles.save_cycles(session, state)
 
 
 def _cents(value: Any) -> float | None:

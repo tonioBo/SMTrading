@@ -148,6 +148,18 @@ class PaperclipClient:
         body = await self._get(self._company_path("issues"), {"limit": limit})
         return [i for i in unwrap_list(body, "issues") if isinstance(i, dict)]
 
+    async def routines(self) -> list[dict]:
+        """The company's routines with their triggers (cron expression, time zone)."""
+        body = await self._get(self._company_path("routines"))
+        return [r for r in unwrap_list(body, "routines") if isinstance(r, dict)]
+
+    async def routine_executions(self, limit: int) -> list[dict]:
+        """The latest routine execution issues (`originId` = the routine)."""
+        body = await self._get(self._company_path("issues"), {
+            "originKind": "routine_execution", "includeRoutineExecutions": "true",
+            "limit": limit})
+        return [i for i in unwrap_list(body, "issues") if isinstance(i, dict)]
+
     async def issue_comments(self, issue_id: str) -> list[dict]:
         body = await self._get(f"/api/issues/{quote(str(issue_id), safe='')}/comments")
         return [c for c in unwrap_list(body, "comments") if isinstance(c, dict)]
