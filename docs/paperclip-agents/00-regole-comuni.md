@@ -142,11 +142,10 @@ secondi (per un ordine appena inviato usa `get_order`). Cursore perso o rifiutat
   stop e target del simbolo (la qty restante va riprotetta); una chiusura in coda non si
   copre con un OCO; stop e target solo in seduta regolare e mai su quotazioni vecchie;
   split e altri casi → §C10.
-- **Piani**: il PM chiude le posizioni **non in perdita** nelle finestre pre-chiusura
-  dell'**ultima seduta prima di `period_end`** (settimana: il **venerdì**; crypto: l'ultimo
-  ciclo), con `CHIUSURA` → RM → ES; quelle **in perdita** vanno in grazia
-  (`plan_grace_until`), poi le chiude SMTrading; **nessuna aggiunta né inversione**
-  (`RISK_LIMIT_EXCEEDED`, `plan_grace`). Regole complete → §C11.
+- **Piani**: il PM chiude **tutte** le posizioni, **anche in perdita**, nelle finestre
+  pre-chiusura dell'**ultima seduta prima di `period_end`** (settimana: il **venerdì**;
+  crypto: l'ultimo ciclo), con `CHIUSURA` → RM → ES; le rimaste le chiude SMTrading alla
+  prima seduta utile; **nessuna aggiunta né inversione**. → §C11.
 
 ## 8. Regole di comportamento
 

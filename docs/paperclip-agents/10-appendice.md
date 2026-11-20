@@ -359,42 +359,39 @@ Portfolio Manager rivaluta gli ingressi delle strategie al suo ciclo successivo.
 ## §C11 · Piani: regole complete
 
 1. Un **piano** è un obiettivo con `closes_positions: true` (`get_goals`): le posizioni dei
-   suoi portafogli aperte a `period_end` (fine dell'ultimo giorno, ora italiana) si chiudono.
-   Un piano sul totale copre tutti i portafogli; al massimo un piano per portafoglio. I
-   piani li fissano gli umani; l'obiettivo `settimanale` sul totale è un piano.
-   `plan_end_actions` dice cosa succede e i giorni di grazia.
-2. **Prima la squadra**: il PM chiude le posizioni non in perdita nelle finestre
-   pre-chiusura dell'**ultima seduta del mercato prima di `period_end`**, con il flusso
-   normale `CHIUSURA` → RM → ES. Settimana (lunedì-domenica): l'ultima seduta è il
-   **venerdì** (o il giorno prima se il venerdì è chiuso; orari reali da
-   `get_market_status`). Crypto: all'ultimo ciclo prima di `period_end` (domenica sera
-   per la settimana).
-3. Una posizione **non in perdita** ancora aperta a fine periodo la chiude SMTrading alla
-   prima seduta aperta del suo mercato (ordine a mercato reduce-only).
-4. Una posizione **in perdita** a fine periodo entra nel **periodo di grazia**
-   (`get_positions` → `plan_grace_until`): PM e RM decidono quando chiuderla (ritorno al
-   pareggio, uscita della strategia, stop); alla scadenza SMTrading chiude quella ancora aperta.
-5. Giorni di grazia (sedute del mercato del simbolo dopo `period_end`; crypto giorni di
-   calendario): settimana 1, mese 3, trimestre 5, anno 10, date fissate il 10% della durata
-   (da 1 a 10). Per la settimana la grazia è la seduta del **lunedì** successivo. La scadenza
-   è la chiusura dell'ultima seduta di grazia; SMTrading chiude nell'ultimo quarto d'ora.
-6. **Nessuna aggiunta** a una posizione di un piano concluso, **né inversione** (long 1,
-   vendita 3 = short 2): SMTrading rifiuta l'ordine con `RISK_LIMIT_EXCEEDED`,
-   `details.reason = "plan_grace"` (con `symbol` e `deadline`). A fine periodo **annulla da
-   sé gli ordini aperti che aumenterebbero quelle posizioni** (ingressi in attesa, anche al
-   broker; mai le uscite): `plan.orders_canceled` nel feed. Un ordine del genere rimasto
-   aperto viene rifiutato quando scatterebbe (`order.rejected`, stesso motivo).
-7. Vicino alla fine il PM apre solo ingressi che hanno il tempo di funzionare prima di
-   `period_end`; il periodo successivo di un piano che si ripete parte normalmente.
-8. SMTrading non chiude mai senza una quotazione fresca e a mercato chiuso aspetta
-   l'apertura; le chiusure passano anche con kill switch e halt (riducono). Non chiude se
-   c'è già una chiusura in corso del simbolo (un `CHIUDI` in coda o al broker): aspetta il
-   suo esito. Con la sua chiusura annulla anche gli ordini di uscita non reduce-only del
-   simbolo (l'OCO del `PROTEGGI`, uno stop da solo): a posizione chiusa aprirebbero
-   quella opposta.
-9. Nel feed: `plan.ended` (riepilogo dei simboli), `plan.orders_canceled` (ingressi
-   annullati), `plan.grace` (simbolo, scadenza), `plan.closed` (chiusa da SMTrading). SMTrading avvisa da sé gli umani su Telegram: il
-   Notifier non lo ripete.
+   suoi portafogli aperte a `period_end` (fine dell'ultimo giorno, ora italiana) si chiudono
+   **tutte**, in utile o in perdita. Un piano sul totale copre tutti i portafogli; al
+   massimo un piano per portafoglio. I piani li fissano gli umani; l'obiettivo
+   `settimanale` sul totale è un piano. `plan_end_actions` dice cosa fare.
+2. **Prima la squadra**: nelle finestre pre-chiusura dell'**ultima seduta del mercato prima
+   di `period_end`** il PM manda «CHIUSURA · <COD> · <SIMBOLO> · totale · fine piano» per
+   **ogni** posizione aperta dei portafogli coperti, **anche in perdita**; il RM approva
+   nello stesso ciclo, senza veto; l'ES esegue. Settimana (lunedì-domenica): l'ultima seduta
+   è il **venerdì** (o il giorno prima se il venerdì è chiuso; orari reali da
+   `get_market_status`): routine delle 17:05 per l'UE e delle 21:05 per gli USA. Crypto:
+   all'ultimo ciclo prima di `period_end` (domenica sera per la settimana).
+3. Una posizione ancora aperta a fine periodo, in utile o in perdita, la chiude SMTrading
+   alla prima seduta aperta del suo mercato (ordine a mercato reduce-only; crypto: subito
+   dopo `period_end`). Fino ad allora `get_positions` → `plan_closing: true`.
+4. **Nessuna aggiunta** a una posizione di un piano concluso, **né inversione** (long 1,
+   vendita 3 = short 2), né stop allargato: SMTrading rifiuta l'ordine con
+   `RISK_LIMIT_EXCEEDED`, `details.reason = "plan_grace"` (nome storico) e `symbol`,
+   messaggio «posizione in chiusura per fine piano». A fine periodo **annulla da sé gli
+   ordini aperti che aumenterebbero quelle posizioni** (ingressi in attesa, anche al broker;
+   mai le uscite): `plan.orders_canceled` nel feed. Un ordine del genere rimasto aperto
+   viene rifiutato quando scatterebbe (`order.rejected`, stesso motivo).
+5. Vicino alla fine il PM apre solo ingressi che hanno il tempo di funzionare e di essere
+   chiusi prima di `period_end`; il periodo successivo di un piano che si ripete parte
+   normalmente.
+6. SMTrading non chiude mai su una quotazione vecchia o sospetta (aspetta quella buona) e a
+   mercato chiuso aspetta l'apertura; le chiusure passano anche con kill switch e halt
+   (riducono). Non chiude se c'è già una chiusura in corso del simbolo (un `CHIUDI` in coda
+   o al broker): aspetta il suo esito. Con la sua chiusura annulla anche gli ordini di
+   uscita non reduce-only del simbolo (l'OCO del `PROTEGGI`, uno stop da solo): a posizione
+   chiusa aprirebbero quella opposta.
+7. Nel feed: `plan.ended` (riepilogo dei simboli), `plan.orders_canceled` (ingressi
+   annullati), `plan.closed` (chiusa da SMTrading). SMTrading avvisa da sé gli umani su
+   Telegram: il Notifier non lo ripete.
 
 ## §C12 · Regole di comportamento: testo completo (uscite frazionarie rinviate dal broker)
 
@@ -573,8 +570,6 @@ torna. Al ritorno: ciclo completo di recupero (§6).
 - **Kill switch**: blocco globale delle aperture deciso da un umano.
 - **Trading halt**: blocco delle aperture impostato dal CEO con `set_trading_halt` o dagli amministratori umani (§7); errore `TRADING_HALTED`.
 - **Piano**: obiettivo con `closes_positions: true`: a fine periodo le posizioni si chiudono (§7).
-- **Periodo di grazia**: i giorni di mercato concessi a una posizione in perdita a fine piano
-  (`plan_grace_until`), senza aggiunte, poi SMTrading la chiude.
 - **Stale**: quotazione troppo vecchia (`stale`, `stale_symbols`, `STALE_QUOTE`).
 - **R** / **R:R**: rischio per operazione (distanza ingresso-stop × quantità) e rapporto
   rendimento/rischio (distanza take profit / distanza stop).
@@ -700,12 +695,12 @@ un obiettivo minimo passa «in ritardo» si tratta come «OBIETTIVO» qui sopra.
 Regole in Regole comuni §7 «Piani». I piani li fissano gli umani: tu non ne scegli né ne
 modifichi nessuno.
 
-1. Sei informato: leggi `plan.ended`, `plan.grace` e `plan.closed` nel feed; nessun task
-   da creare per questo, salvo un disaccordo PM/RM su una posizione in grazia (arbitri tu).
+1. Sei informato: leggi `plan.ended` e `plan.closed` nel feed; nessun task da creare per
+   questo.
 2. Nelle tappe settimanali tieni conto che a `period_end` le posizioni del piano si chiudono:
    niente tappe che contano su posizioni oltre la fine.
 3. Nella revisione del venerdì, per ogni piano: l'esito dell'ultimo periodo concluso
-   (posizioni chiuse dalla squadra, da SMTrading, in grazia e fino a quando) e, per quello
+   (posizioni chiuse dalla squadra o da SMTrading) e, per quello
    che finisce domenica, le posizioni che il PM chiude nelle finestre pre-chiusura di oggi.
 
 ## §CEO5 · Template completi, esempi di log_decision, errori ed esempio di report
@@ -895,15 +890,13 @@ RISCHI
 
 13. **Piani** (Regole comuni §7 «Piani»; `get_goals` → `closes_positions: true`, `period_end`):
     1. nelle finestre pre-chiusura dell'**ultima seduta** prima di `period_end` (mercato del
-       simbolo) chiudi le posizioni del piano **non in perdita** con «CHIUSURA · <COD> ·
+       simbolo) chiudi **tutte** le posizioni del piano, **in utile o in perdita**, con «CHIUSURA · <COD> ·
        <SIMBOLO> · totale · fine piano» al RM. Piano settimanale: **ogni venerdì** (o
        l'ultimo giorno di borsa della settimana) nella finestra UE (di norma 17:05) per i
        simboli UE e nella finestra USA (di norma 21:05) per i simboli USA, orari reali da
-       `get_market_status`; crypto all'ultimo ciclo prima di `period_end` (domenica sera),
-       altrimenti le chiude SMTrading subito dopo la mezzanotte;
-    2. le posizioni **in perdita** le lasci entrare in grazia (`plan_grace_until`): le chiudi
-       tu quando ha senso (ritorno al pareggio, uscita della strategia, stop), sempre con
-       «CHIUSURA» al RM, prima della scadenza; dopo la scadenza le chiude SMTrading;
+       `get_market_status`; crypto all'ultimo ciclo prima di `period_end` (domenica sera);
+    2. non aspettare un recupero: niente eccezioni per le posizioni in perdita; quelle
+       rimaste aperte (`plan_closing: true`) le chiude SMTrading alla prima seduta utile;
     3. **nessuna aggiunta** né inversione su una posizione del piano concluso (SMTrading la
        rifiuta con `RISK_LIMIT_EXCEEDED`, `details.reason = "plan_grace"`); gli ingressi
        ancora aperti su quei simboli a fine periodo li annulla SMTrading
@@ -1104,19 +1097,17 @@ restante; nel CHIUDI scrivi anche **stop e target per la qty restante** (di norm
 attuali, da `list_orders`) così l'ES la riprotegge con un OCO nello stesso task. Con la
 chiusura totale SMTrading annulla tutte le uscite del simbolo: nessun «ANNULLA» da chiedere.
 
-## §RM3 · CHIUSURA di fine piano e posizioni in grazia
+## §RM3 · CHIUSURA di fine piano
 
 **«CHIUSURA» dal PM**: verifica posizione e motivo, `log_decision` `approval`, nuovo task
 «CHIUDI · <COD> · <SIMBOLO>» assegnato all'ES; rispondi nel task CHIUSURA e chiudilo.
-Una «CHIUSURA … · fine piano» (Regole comuni §7 «Piani») la approvi nello stesso ciclo: la
-chiusura riduce il rischio e il periodo sta finendo.
+Una «CHIUSURA … · fine piano» (Regole comuni §7 «Piani») la approvi nello stesso ciclo,
+**anche in perdita**: nessun veto, la chiusura riduce il rischio e il periodo sta finendo.
 
-**Posizioni in grazia di un piano** (`get_positions` → `plan_grace_until`): a ogni tuo ciclo
-1. decidi tu, con il PM, quando chiudere una posizione in perdita in grazia (ritorno al
-   pareggio, uscita della strategia, stop, rischio di gap prima della scadenza): se la vuoi
-   chiusa prima, chiedila al PM con «RIDUZIONE RISCHIO» o crea tu il «CHIUDI» all'ES;
-2. nessuna aggiunta, nessuno stop allargato su quella posizione;
-3. alla scadenza la chiude SMTrading (`plan.closed`): nessun task da creare.
+**Posizioni di un piano concluso** (`get_positions` → `plan_closing: true`): nessuna
+aggiunta, nessuno stop allargato; se nell'ultima seduta il PM non ha mandato la CHIUSURA,
+crea tu il «CHIUDI» all'ES finché il mercato è aperto; altrimenti la chiude SMTrading alla
+prima seduta utile (`plan.closed`): nessun task da creare.
 
 ## §RM4 · «RISCHIO OBIETTIVO …» (task da SMTrading)
 

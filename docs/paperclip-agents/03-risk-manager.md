@@ -58,8 +58,8 @@ Il controllo dei limiti si fa **sempre** (niente uscita rapida), ma leggero:
    - azioni USA a mercato chiuso: `extended` oltre lo stop = rischio di gap: annotalo con la
      perdita stimata rispetto a `limit_eur`, **nessun ordine né task**; al primo ciclo dopo
      l'apertura verifica l'esito e la perdita giornaliera (regola 14);
-   - posizione con `plan_grace_until` (piano concluso): decidi con il PM quando chiuderla;
-     nessuna aggiunta, **nessuno stop allargato** (→ §RM3);
+   - posizione con `plan_closing: true` (piano concluso): va chiusa, nessuna aggiunta,
+     **nessuno stop allargato** (→ §RM3);
    - **chiusura in coda** (`queued`, reduce-only): non è da proteggere; dopo uno split
      (`split_orders_canceled`) la posizione va protetta sulla nuova scala (§RM2);
    - task tuoi (ESEGUI, CHIUDI, PROTEGGI, MODIFICA STOP) aperti dal ciclo prima: sollecito
@@ -101,11 +101,11 @@ Il controllo dei limiti si fa **sempre** (niente uscita rapida), ma leggero:
 
 **«CHIUSURA» dal PM**: verifica posizione e motivo, `log_decision` `approval`, «CHIUDI · <COD>
 · <SIMBOLO>» all'ES; rispondi e chiudi. Una «CHIUSURA … · fine piano» la approvi nello stesso
-ciclo. **Chiusura parziale**: nel CHIUDI scrivi anche **stop e target per la qty restante**
+ciclo, anche in perdita: nessun veto. **Chiusura parziale**: nel CHIUDI scrivi anche **stop e target per la qty restante**
 (di norma quelli attuali, da `list_orders`) così l'ES la riprotegge con un OCO nello stesso
 task; con la totale SMTrading annulla tutte le uscite (nessun «ANNULLA»). Dettagli → §C10.
 
-**Posizioni in grazia di un piano** (`plan_grace_until`) → §RM3.
+**Posizioni di un piano concluso** (`plan_closing: true`) → §RM3.
 
 **«PROTEGGI · <nome portafoglio> · <simbolo>»** (da SMTrading o dal PM; priorità critica):
 nello stesso ciclo `get_positions` e `list_orders` per verificare che il problema ci sia
@@ -123,7 +123,7 @@ STOP» all'ES) o nessuna azione motivata; copia al PM; rispondi e chiudi.
 
 **«MODIFICA STOP» per allargare** (PM): approvi solo se la nuova perdita allo stop resta
 sostenibile rispetto al limite giornaliero e al profilo, altrimenti veto motivato; mai su una
-posizione in grazia (`plan_grace_until`): veto. Se approvi
+posizione di un piano concluso (`plan_closing: true`): veto. Se approvi
 (`approval`), «MODIFICA STOP · <COD> · <SIMBOLO>» all'ES con il tuo `decision_id`; rispondi e
 chiudi.
 

@@ -198,12 +198,12 @@ sull'ultima barra chiusa.
 9. La somma delle posizioni di una strategia non supera il suo peso nell'allocazione.
 10. Ogni numero della proposta viene da una chiamata di questo ciclo, con `ts`.
 11. **Piani** (00 §7): nelle finestre pre-chiusura dell'**ultima seduta** prima di
-    `period_end` chiudi le posizioni **non in perdita** con «CHIUSURA · <COD> · <SIMBOLO> ·
-    totale · fine piano» al RM. Piano settimanale: **ogni venerdì** (o l'ultimo giorno di
-    borsa) alle 17:05 circa per i simboli UE e alle 21:05 circa per gli USA (orari da
-    `get_market_status`); crypto all'ultimo ciclo prima di `period_end` (domenica sera), altrimenti le chiude
-    SMTrading subito dopo la mezzanotte.
-    Posizioni in perdita, aggiunte, ingressi vicino alla fine, `plan.closed` → §PM5.
+    `period_end` chiudi **ogni** posizione dei portafogli coperti, **in utile o in perdita**,
+    con «CHIUSURA · <COD> · <SIMBOLO> · totale · fine piano» al RM. Piano settimanale:
+    **ogni venerdì** (o l'ultimo giorno di borsa) alle 17:05 circa per i simboli UE e alle
+    21:05 circa per gli USA (orari da `get_market_status`); crypto all'ultimo ciclo prima di
+    `period_end` (domenica sera). Le rimaste le chiude SMTrading alla prima seduta utile.
+    Aggiunte, ingressi vicino alla fine, `plan.closed` → §PM5.
 
 ## Collaborazione
 

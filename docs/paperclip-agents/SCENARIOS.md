@@ -63,9 +63,9 @@ Principi applicati (decisioni del titolare del 18/11, `00` §2 e §4):
 | C7 | Chiusura chiesta a mercato chiuso (22:15, weekend) | ES, poi allarme di protezione → RM | nessun OCO sopra una chiusura in coda; PROTEGGI chiuso con l'id della chiusura | chiusura `queued` fino all'apertura, uscite già annullate, allarme «senza stop» | **Lacuna corretta**: `00` §7 «Posizioni» 3, `03` PROTEGGI, `04` PROTEGGI 1 |
 | C8 | Posizione intraday AGG a fine giornata | PM (ultimo ciclo ≥ 30 min prima), RM (riserva) | CHIUSURA entro 16:05 UE / 21:05 USA (orari reali); negli ultimi 30 min PROTEGGI → CHIUDI invece dell'OCO | allarme `tif day` negli ultimi 30 min | **Lacuna corretta**: `02` regola 5, `03` sentinella 7 e PROTEGGI |
 | C9 | Chiusura discrezionale (tesi invalidata, notizia) | PM | CHIUSURA al RM | — | Coperto: `02` regola 10 |
-| C10 | Piano in scadenza (`closes_positions: true`, ultima seduta prima di `period_end`) | PM, finestre pre-chiusura | CHIUSURA «fine piano» delle posizioni non in perdita → RM approva → CHIUDI all'ES; ingressi solo con il tempo di funzionare | — | Coperto: `00` §7 «Piani» 2 e 7, `02` regola 13, `03` CHIUSURA, `#47` |
-| C11 | Posizione in perdita a fine piano (grazia) | PM, RM (`plan_grace_until`, `plan.grace`) | PM/RM decidono quando chiuderla prima della scadenza; nessuna aggiunta | rifiuta gli aumenti (`RISK_LIMIT_EXCEEDED`, `plan_grace`); giorni di grazia per orizzonte | Coperto: `00` §7 «Piani» 4-6, `02` regola 13, `03` «Posizioni in grazia», `#48` |
-| C12 | Chiusura automatica di fine piano | SMTrading; PM, RM, CEO (feed `plan.closed`) | nessuna azione; il PM rivaluta gli ingressi della strategia; il CEO lo riporta nella revisione del venerdì | chiude a mercato (reduce-only) le non in perdita alla prima seduta e le altre alla scadenza; aspetta l'apertura, mai senza quotazione fresca; Telegram agli umani | Coperto: `00` §7 «Piani» 3, 8-9, `01` «Piani», `#49` |
+| C10 | Piano in scadenza (`closes_positions: true`, ultima seduta prima di `period_end`) | PM, finestre pre-chiusura (17:05 UE, 21:05 USA; crypto ultimo ciclo) | CHIUSURA «fine piano» di **ogni** posizione, in utile o in perdita → RM approva senza veto → CHIUDI all'ES; ingressi solo con il tempo di funzionare | — | Coperto: `00` §7 «Piani», §C11 2 e 5, `02` regola 11, §PM5, `03` CHIUSURA, `#47` |
+| C11 | Posizione di un piano concluso ancora aperta (anche in perdita) | PM, RM (`plan_closing: true`, `plan.ended`) | nessuna aggiunta, inversione né stop allargato; a mercato aperto il RM può mandare il CHIUDI | rifiuta gli aumenti (`RISK_LIMIT_EXCEEDED`, `plan_grace`, «posizione in chiusura per fine piano»); annulla gli ingressi aperti | Coperto: §C11 3-4, §PM5, §RM3, `#48` |
+| C12 | Chiusura automatica di fine piano | SMTrading; PM, RM, CEO (feed `plan.closed`) | nessuna azione; il PM rivaluta gli ingressi della strategia; il CEO lo riporta nella revisione del venerdì | chiude a mercato (reduce-only) ogni posizione rimasta, in utile o in perdita, alla prima seduta utile; aspetta l'apertura e una quotazione buona (mai vecchia o sospetta); Telegram agli umani | Coperto: §C11 3, 6-7, §CEO4, `#49` |
 
 ## D. Posizioni e strategie particolari
 
@@ -183,7 +183,6 @@ decide e su quale base (scritto nei file indicati):
 | Short tattico su PRU | **CEO** e **RM** (eccezionale) | carattere prudente | `00` §4 |
 | Ripresa dopo `LIVE_NOT_ARMED` | **ES/RM** al giorno di borsa successivo | esito di `preview_order` e dell'invio | `00` §12 |
 | Lezioni trasformate in regole del team, loro ritiro | **CEO** (chiunque registra le lezioni) | lezioni, audit, risultati; mai oltre profilo, kill switch, halt | `00` §9, `01`, `08` |
-| Quando chiudere una posizione in grazia di un piano | **PM** e **RM** (entro la scadenza) | pareggio, uscita della strategia, stop, gap | `00` §7 «Piani», `02` regola 13, `03` |
 
 Limiti che **non** sono decisioni del team (gli agenti informano una volta e lavorano entro
 il limite, senza attendere): kill switch, halt degli amministratori, blocco del portafoglio,
