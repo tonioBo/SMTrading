@@ -745,8 +745,8 @@ async def test_0039_instrument_metadata_round_trip(fresh_db):
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
 
 
-async def test_0040_research_runs_round_trip(fresh_db):
-    """0040: research_runs; reversible (one step back)."""
+async def test_0041_research_runs_round_trip(fresh_db):
+    """0041: research_runs; reversible (one step back)."""
     import asyncio
 
     from smtrading.common.db import make_engine
@@ -759,7 +759,7 @@ async def test_0040_research_runs_round_trip(fresh_db):
         return got
 
     assert await table() == "research_runs"
-    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0039")
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0040")
     assert await table() is None
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
     assert await table() == "research_runs"

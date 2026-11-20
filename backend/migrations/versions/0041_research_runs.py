@@ -4,14 +4,14 @@ lifecycle columns; `kind` walk_forward | param_sweep | portfolio, `spec` the req
 
 Downgrade: the table is dropped (older code does not read it).
 
-Revision ID: 0040
+Revision ID: 0041
 """
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0040"
-down_revision = "0039"
+revision = "0041"
+down_revision = "0040"
 branch_labels = None
 depends_on = None
 
