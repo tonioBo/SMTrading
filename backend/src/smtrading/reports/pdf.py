@@ -281,6 +281,10 @@ class _Writer:
         names = ", ".join(p["name"] + (" (archiviato)" if p["archived"] else "")
                           for p in d["portfolios"]) or "nessuno"
         self.text(f"Portafogli: {names}", 9)
+        outside = (d.get("outside_totals") or {}).get("portfolios") or []
+        if outside:
+            self.text("Fuori dai totali (pagina a parte, non sommati qui): "
+                      + ", ".join(p["name"] for p in outside), 9)
         self.text(f"Generato il {when(d['generated_at'], self.zone)} "
                   f"(ora di {d['timezone']})", 8, color=MUTED)
 
@@ -421,6 +425,32 @@ class _Writer:
         self.table(["Data", "Tipo", "Agente", "Portafoglio", "Decisione"], rows,
                    [18, 26, 28, 26, 84], "LLLLL")
 
+    def outside_totals(self) -> None:
+        """The portfolios left out of the totals (`in_totals` false), on a page of their
+        own: never summed with the report's numbers."""
+        section = self.data.get("outside_totals") or {}
+        items = section.get("portfolios") or []
+        if not items:
+            return
+        self.pdf.add_page()
+        self.heading("Portafogli fuori dai totali")
+        self.text("Questi portafogli non sono conteggiati nei totali del resoconto né negli "
+                  "obiettivi sul totale: i loro numeri sono qui a parte.", 8.5, color=MUTED)
+        rows = [[p["name"], money(p["start_eur"]), money(p["end_eur"]),
+                 signed_money(p["change_eur"]), pct(p["return_pct"]),
+                 pct(p["max_drawdown_pct"])] for p in items]
+        t = section["total"]
+        rows.append(["Totale fuori dai totali", money(t["start_eur"]), money(t["end_eur"]),
+                     signed_money(t["change_eur"]), pct(t["return_pct"]),
+                     pct(t["max_drawdown_pct"])])
+        self.table(["Portafoglio", "Inizio", "Fine", "Variazione", "Rend.", "Max DD"], rows,
+                   [52, 28, 28, 28, 23, 23], "LRRRRR")
+        ops = section["operations"]
+        self.text(f"Esecuzioni nel periodo: {ops['fills']} - operazioni chiuse: "
+                  f"{ops['trades_closed']} - P&L realizzato "
+                  f"{signed_money(ops['realized_pnl_eur'])}, costi {money(ops['costs_eur'])}.",
+                  8.5)
+
     def render(self) -> bytes:
         self.cover()
         self.summary()
@@ -431,6 +461,7 @@ class _Writer:
         self.costs()
         self.lessons()
         self.decisions()
+        self.outside_totals()
         return bytes(self.pdf.output())
 
 
@@ -445,7 +476,8 @@ def _verdict(diff: Decimal | None) -> str:
 
 
 def render_pdf(data: dict[str, Any]) -> bytes:
-    """The PDF bytes of a `reports.period.period_report` result."""
+    """The PDF bytes of a `reports.period.period_report` result (with an optional
+    `outside_totals`, a `reports.period.portfolio_section`: a page of its own)."""
     return _Writer(data).render()
 
 

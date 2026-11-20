@@ -364,7 +364,17 @@ function OutboxSection() {
     { key: "source", header: "Origine", cell: (m) => (m.source === "system" ? "Sistema" : (m.agent ?? "Agente")) },
     { key: "category", header: "Tipo", cell: (m) => CATEGORY[m.category] ?? m.category },
     { key: "level", header: "Livello", cell: (m) => LEVEL[m.level] ?? m.level },
-    { key: "text", header: "Testo", mobileFull: true, cell: (m) => <TextCell text={m.text} /> },
+    {
+      key: "text",
+      header: "Testo",
+      mobileFull: true,
+      cell: (m) => (
+        <div>
+          {m.document_name && <p className="text-xs text-muted">📎 {m.document_name}</p>}
+          <TextCell text={m.text} />
+        </div>
+      ),
+    },
     {
       key: "status",
       header: "Stato",

@@ -281,6 +281,25 @@ async def _decisions(session: AsyncSession, ids: list[UUID], names: dict[UUID, s
     return out
 
 
+async def portfolio_section(session: AsyncSession, qs: QuoteSource, *, start: date,
+                            end: date, portfolio_ids: list[UUID], now: datetime,
+                            zone: ZoneInfo) -> dict[str, Any]:
+    """The per-portfolio part of a report (`portfolios`, `total` over them, `operations`)
+    for other portfolios than the report's: the weekly PDF's page of the portfolios left
+    out of the totals."""
+    check_range(start, end)
+    portfolios = await _portfolios(session, portfolio_ids) if portfolio_ids else []
+    ids = [p.id for p in portfolios]
+    names = {p.id: p.name for p in portfolios}
+    start_ts = local_midnight(start, zone)
+    end_ts = min(local_midnight(end + timedelta(days=1), zone), now)
+    today = now.astimezone(zone).date()
+    days = [start + timedelta(days=i) for i in range((min(end, today) - start).days + 1)]
+    per_portfolio, total = await _equity(session, portfolios, start_ts, end_ts, days, zone)
+    return {"portfolios": per_portfolio, "total": total,
+            "operations": await _operations(session, qs, ids, names, start_ts, end_ts)}
+
+
 async def period_report(session: AsyncSession, qs: QuoteSource, *, start: date, end: date,
                         portfolio_ids: list[UUID] | None, now: datetime, zone: ZoneInfo,
                         campaign: dict[str, Any] | None = None,

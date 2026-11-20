@@ -605,6 +605,17 @@ delle attività e nei riepiloghi.
   il riepilogo giornaliero e quello settimanale mostrano una riga «🎯» per ogni obiettivo
   attivo (settimana, mese, trimestre, anno o date fissate) con l'avanzamento del periodo, e
   il giorno dopo la fine di un periodo una riga «🏁» con l'esito.
+- **Resoconto settimanale in PDF** (attivo di default, il venerdì alle 22:30, dopo la
+  chiusura USA e il giro del PM delle 22:15; giorno e orario si cambiano): il *Resoconto*
+  della settimana, da lunedì alle 00:00 a quel momento, inviato nel gruppo come documento
+  PDF con una breve didascalia (settimana, P&L totale in € e %, obiettivo settimanale
+  raggiunto sì/no, costo degli agenti). Il resoconto somma solo i portafogli conteggiati
+  nei totali; quelli fuori dai totali sono in una pagina a parte, «Portafogli fuori dai
+  totali». Uno solo per settimana, anche dopo un riavvio; se il worker era fermo o
+  Telegram non era pronto parte entro 24 ore dall'orario, poi la settimana è saltata (un
+  WARNING nel log). Un PDF oltre i 20 MB non si invia: arriva la sola didascalia, con
+  l'invito a scaricarlo dal pulsante *Resoconto*. Il file resta nella coda solo finché
+  non è inviato.
 - **«🧭 Decisioni di oggi»** nel riepilogo delle 18:00 (e «della settimana» nel
   settimanale): le decisioni registrate dagli agenti con `log_decision`, per tipo, una riga
   ciascuna con esito, oggetto, portafoglio e motivo (campi `outcome`, `subject`, `reason`).

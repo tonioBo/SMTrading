@@ -727,6 +727,30 @@ async def test_app_settings_weekly_goal_and_preopen(admin):
     assert (await c.get("/api/settings/app")).json() == body
 
 
+async def test_app_settings_weekly_report_pdf(admin):
+    """«Resoconto settimanale in PDF»: on by default, Friday 22:30; the worker reads it."""
+    from smtrading.telegram.weekly_report_settings import load_weekly_report_settings
+
+    c = admin.client
+    got = (await c.get("/api/settings/app")).json()
+    assert got["weekly_report_pdf"] == {"on": True, "weekday": 4, "at": "22:30"}
+    r = await c.put("/api/settings/app", json={"weekly_report_pdf": {"weekday": 5,
+                                                                     "at": "09:00"}})
+    assert r.status_code == 200, r.text
+    assert r.json()["weekly_report_pdf"] == {"on": True, "weekday": 5, "at": "09:00"}
+    r = await c.put("/api/settings/app", json={"weekly_report_pdf": {"on": False}})
+    body = r.json()
+    assert body["weekly_report_pdf"] == {"on": False, "weekday": 5, "at": "09:00"}
+    async with admin.sm() as s:
+        stored = await load_weekly_report_settings(s)
+    assert (stored.on, stored.weekday, stored.at.isoformat()) == (False, 5, "09:00:00")
+    for bad in ({"weekly_report_pdf": {"weekday": 7}}, {"weekly_report_pdf": {"weekday": -1}},
+                {"weekly_report_pdf": {"weekday": "4"}}, {"weekly_report_pdf": {"at": "25:00"}},
+                {"weekly_report_pdf": {"on": "si"}}):
+        assert (await c.put("/api/settings/app", json=bad)).status_code == 400, bad
+    assert (await c.get("/api/settings/app")).json() == body
+
+
 # --- kill switch ---------------------------------------------------------------------
 
 

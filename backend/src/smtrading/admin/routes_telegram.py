@@ -93,7 +93,7 @@ def _source_agent(source: str) -> UUID | None:
 async def _outbox_dtos(session: AsyncSession, rows: list[TelegramOutbox]) -> list[dict]:
     names = await _agent_names(session, {a for r in rows if (a := _source_agent(r.source))})
     fields = ("id", "source", "category", "level", "text", "status", "attempts", "last_error",
-              "created_at", "sent_at")
+              "created_at", "sent_at", "document_name")
     return [
         {**{f: to_jsonable(getattr(r, f)) for f in fields},
          "agent": names.get(_source_agent(r.source))}  # type: ignore[arg-type]
