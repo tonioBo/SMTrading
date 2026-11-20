@@ -368,3 +368,20 @@ async def test_other_agent_without_notify(env):
         await s.commit()
     err, res = await env["call"]("send_telegram", {"text": "ciao"}, token=token)
     assert err and res["code"] == "FORBIDDEN"
+
+
+async def test_send_telegram_one_good_morning_per_day(env):
+    """A second «Buongiorno – piano di oggi» on the same local day is refused (20/11: the
+    09:05 cycle sent a duplicate); other messages still go out."""
+    await _configure(env)
+    await _set_notify(env)
+    first = "Buongiorno – piano di oggi 20/11\nNotizie: …"
+    err, res = await env["call"]("send_telegram", {"text": first})
+    assert not err, res
+    err, res = await env["call"]("send_telegram", {"text": "Buongiorno – piano di oggi 20/11\nbis"})
+    assert err and res["code"] == "INVALID_ORDER"
+    assert res["details"]["reason"] == "already_sent_today"
+    assert "già stato inviato" in res["message"]
+    err, res = await env["call"]("send_telegram", {"text": "Altro messaggio"})
+    assert not err, res
+    assert len(await _outbox(env)) == 2
