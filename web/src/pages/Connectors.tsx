@@ -11,9 +11,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { errorMessage } from "@/lib/errors";
-import { buildConnectorPatch, emptyFields, isScalar, isSecret } from "@/lib/connectorPatch";
+import { budgetText, buildConnectorPatch, emptyFields, isScalar, isSecret } from "@/lib/connectorPatch";
 import { formatDateTime } from "@/lib/format";
 import { AdminFieldset } from "@/components/AdminOnly";
+import { QuotaBars } from "@/components/QuotaBars";
 
 const ASSET_CLASS_LABELS: Record<AssetClass, string> = {
   us_equity: "Azioni USA",
@@ -50,6 +51,9 @@ function ConnectorCard({ connector }: { connector: Connector }) {
   const patch = usePatchConnector();
   const test = useTestConnector();
   const [rate, setRate] = useState(String(connector.rate_limit_per_min ?? ""));
+  const [hourly, setHourly] = useState(budgetText(connector, "per_hour"));
+  const [daily, setDaily] = useState(budgetText(connector, "per_day"));
+  const quota = connector.quota;
   const [fields, setFields] = useState<Record<string, string>>({});
   const [removed, setRemoved] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
@@ -58,7 +62,7 @@ function ConnectorCard({ connector }: { connector: Connector }) {
   const keys = [...Object.keys(connector.config_masked).filter((k) => isScalar(connector.config_masked[k])), ...emptyFields(connector)];
 
   function save() {
-    const { patch: body, error: err } = buildConnectorPatch(connector, { rate, fields, removed });
+    const { patch: body, error: err } = buildConnectorPatch(connector, { rate, fields, removed, hourly, daily });
     setError(err);
     if (err || Object.keys(body).length === 0) return;
     patch.mutate(
@@ -145,6 +149,44 @@ function ConnectorCard({ connector }: { connector: Connector }) {
             <FormField label="Limite richieste al minuto">
               <Input value={rate} inputMode="numeric" onChange={(e) => setRate(e.target.value)} />
             </FormField>
+            {quota && (
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <FormField label="Quota oraria">
+                    <Input
+                      value={hourly}
+                      inputMode="numeric"
+                      placeholder={quota.defaults.per_hour ? `predefinita ${quota.defaults.per_hour}` : "nessuna"}
+                      onChange={(e) => setHourly(e.target.value)}
+                    />
+                  </FormField>
+                  <FormField label="Quota giornaliera">
+                    <Input
+                      value={daily}
+                      inputMode="numeric"
+                      placeholder={quota.defaults.per_day ? `predefinita ${quota.defaults.per_day}` : "nessuna"}
+                      onChange={(e) => setDaily(e.target.value)}
+                    />
+                  </FormField>
+                </div>
+                <QuotaBars name={connector.name} quota={quota} />
+                {quota.demoted_reason === "429" && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={patch.isPending}
+                    onClick={() => patch.mutate({ name: connector.name, patch: { clear_quota_block: true } })}
+                  >
+                    Riattiva subito
+                  </Button>
+                )}
+                <p className="text-xs text-muted">
+                  Vuoto: valore predefinito; 0: nessuna quota. Oltre il 90% della quota il fornitore viene usato per ultimo fino al reset (giornaliero alle 00:00 UTC).
+                  Quote {quota.note}.
+                </p>
+              </div>
+            )}
             {connector.name === "etoro" && <EtoroGuide />}
             {connector.name === "alpaca" && (
               <p className="text-xs text-muted">Le stesse chiavi del conto Alpaca (Paper va bene).</p>

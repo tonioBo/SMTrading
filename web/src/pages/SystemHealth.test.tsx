@@ -114,3 +114,38 @@ describe("SystemHealth", () => {
     expect(within(sistema).getAllByRole("link")[0]).toHaveTextContent("Salute del sistema");
   });
 });
+
+describe("SystemHealth price quality and quotas", () => {
+  it("shows the suspect quotes and the providers' quota bars", async () => {
+    body = {
+      ...HEALTH_OK,
+      status: "attenzione",
+      reasons: ["NVDA: prezzo non confermato da 16 min"],
+      sections: {
+        ...HEALTH_OK.sections,
+        price_quality: {
+          status: "attenzione", label: "Qualità dei prezzi", summary: "NVDA: prezzo non confermato da 16 min",
+          reasons: ["NVDA: prezzo non confermato da 16 min"], suspects_1h: 3, suspects_24h: 7,
+          top_symbols: [{ symbol: "NVDA", count: 5 }], by_reason: [{ reason: "jump", label: "salto improvviso", count: 6 }],
+          by_provider: [], current: [{ symbol: "NVDA", since: "2026-11-19T09:44:00Z", age_s: 960 }],
+        },
+        quotas: {
+          status: "attenzione", label: "Quota delle fonti", summary: "twelvedata: quota giornaliera al 95%",
+          reasons: ["twelvedata: quota giornaliera al 95%, usato per ultimo fino al reset"], note: "da verificare",
+          providers: [{ name: "twelvedata", quota: {
+            per_min: 8, per_hour: null, per_day: 800, used_minute: 0, used_hour: 10, used_day: 760, pct_minute: 0, pct_hour: null,
+            pct_day: 95, demoted: true, demoted_reason: "day", demoted_until: "2026-11-20T00:00:00Z", resets_at: "2026-11-20T00:00:00Z",
+          } }],
+        },
+      },
+    };
+    renderApp("/salute-sistema");
+    const pq = await screen.findByRole("region", { name: "Qualità dei prezzi" });
+    expect(within(pq).getByText("NVDA (da 16 min)")).toBeInTheDocument();
+    expect(within(pq).getByText("NVDA 5")).toBeInTheDocument();
+    expect(within(within(pq).getByRole("list", { name: "Classificazioni nelle 24 ore" })).getByText(/salto improvviso/)).toBeInTheDocument();
+    const q = screen.getByRole("region", { name: "Quota delle fonti" });
+    expect(within(q).getByRole("progressbar", { name: "Al giorno (UTC) twelvedata" })).toHaveAttribute("aria-valuenow", "95");
+    expect(within(q).getByText(/quota giornaliera quasi esaurita/)).toBeInTheDocument();
+  });
+});

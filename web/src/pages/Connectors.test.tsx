@@ -121,6 +121,62 @@ describe("reorder", () => {
   });
 });
 
+const QUOTA = {
+  per_min: 8, per_hour: null, per_day: 800, used_minute: 2, used_hour: 40, used_day: 760,
+  pct_minute: 25, pct_hour: null, pct_day: 95, demoted: true, demoted_reason: "429", demoted_until: "2026-11-21T00:00:00Z",
+  resets_at: "2026-11-21T00:00:00Z", defaults: { per_min: 8, per_hour: null, per_day: 800 }, custom: [],
+  note: "da verificare: i valori predefiniti sono quelli dei piani gratuiti pubblicati",
+};
+
+describe("Connectors quotas", () => {
+  it("shows the usage bars, edits the budgets and lifts a 429 demotion", async () => {
+    server.use(
+      http.get("*/api/connectors", () => HttpResponse.json([connector({ quota: QUOTA })])),
+      http.patch("*/api/connectors/:name", async ({ request }) => {
+        patches.push({ name: "twelvedata", body: (await request.json()) as Record<string, unknown> });
+        return HttpResponse.json(connector({ quota: QUOTA }));
+      }),
+    );
+    const user = userEvent.setup();
+    renderApp("/connettori");
+    const card = await screen.findByLabelText("Connettore twelvedata");
+    expect(within(card).getByRole("progressbar", { name: "Al giorno (UTC) twelvedata" })).toHaveAttribute("aria-valuenow", "95");
+    expect(within(card).getByRole("progressbar", { name: "Al minuto twelvedata" })).toHaveAttribute("aria-valuenow", "25");
+    expect(within(card).queryByRole("progressbar", { name: "All'ora twelvedata" })).not.toBeInTheDocument();
+    expect(within(card).getByText(/ha risposto 429/)).toBeInTheDocument();
+    expect(within(card).getByLabelText("Quota giornaliera")).toHaveAttribute("placeholder", "predefinita 800");
+    expect(within(card).getByText(/da verificare/)).toBeInTheDocument();
+
+    await user.type(within(card).getByLabelText("Quota giornaliera"), "5000");
+    await user.type(within(card).getByLabelText("Quota oraria"), "0");
+    await user.click(within(card).getByRole("button", { name: "Salva" }));
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0].body).toEqual({ hourly_budget: 0, daily_budget: 5000 });
+
+    await user.click(within(card).getByRole("button", { name: "Riattiva subito" }));
+    await waitFor(() => expect(patches).toHaveLength(2));
+    expect(patches[1].body).toEqual({ clear_quota_block: true });
+  });
+
+  it("an emptied custom budget goes back to the default; a bad one is refused", async () => {
+    server.use(http.get("*/api/connectors", () =>
+      HttpResponse.json([connector({ quota: { ...QUOTA, per_day: 300, custom: ["per_day"], demoted: false, demoted_reason: null } })])));
+    const user = userEvent.setup();
+    renderApp("/connettori");
+    const card = await screen.findByLabelText("Connettore twelvedata");
+    const daily = within(card).getByLabelText("Quota giornaliera");
+    expect(daily).toHaveValue("300");
+    await user.clear(daily);
+    await user.type(daily, "x");
+    await user.click(within(card).getByRole("button", { name: "Salva" }));
+    expect(await within(card).findByRole("alert")).toHaveTextContent("Quota non valida");
+    await user.clear(daily);
+    await user.click(within(card).getByRole("button", { name: "Salva" }));
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0].body).toEqual({ daily_budget: null });
+  });
+});
+
 describe("Connectors", () => {
   it("does not send an untouched masked key, and sends a typed one", async () => {
     const user = userEvent.setup();
