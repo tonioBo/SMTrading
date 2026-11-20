@@ -629,3 +629,41 @@ async def test_alpaca_connector_needs_key_id_and_secret_key(admin):
     r = await c.post("/api/connectors/alpaca/test")
     assert r.status_code == 400
     assert r.json()["message"] == "configurazione incompleta: inserisci Secret Key"
+
+
+async def test_connector_quotas_editable_with_usage(admin):
+    from redis.asyncio import Redis
+
+    from smtrading.marketdata import quota
+
+    c = admin.client
+    redis = Redis.from_url(admin.redis_url)
+    try:
+        await quota.count(redis, "twelvedata", 40)
+        rows = {x["name"]: x for x in (await c.get("/api/connectors")).json()}
+        td = rows["twelvedata"]["quota"]
+        assert (td["per_min"], td["per_hour"], td["per_day"]) == (8, None, 800)
+        assert td["defaults"] == {"per_min": 8, "per_hour": None, "per_day": 800}
+        assert td["used_day"] == 40 and td["pct_day"] == 5.0 and td["custom"] == []
+        assert "da verificare" in td["note"]
+        assert rows["yahoo"]["quota"]["per_hour"] == 2000
+
+        r = await c.patch("/api/connectors/twelvedata",
+                          json={"daily_budget": 5000, "hourly_budget": 0})
+        assert r.status_code == 200, r.text
+        q = r.json()["quota"]
+        assert (q["per_day"], q["per_hour"], q["custom"]) == (5000, None, ["per_day", "per_hour"])
+        r = await c.patch("/api/connectors/twelvedata", json={"daily_budget": None})
+        assert r.json()["quota"]["per_day"] == 800  # back to the default
+        assert r.json()["quota"]["custom"] == ["per_hour"]
+        assert (await c.patch("/api/connectors/twelvedata",
+                              json={"daily_budget": -1})).status_code == 400
+
+        await quota.block(redis, "twelvedata", quota.Budget(8, None, 800))
+        rows = {x["name"]: x for x in (await c.get("/api/connectors")).json()}
+        assert rows["twelvedata"]["quota"]["demoted_reason"] == "429"
+        r = await c.patch("/api/connectors/twelvedata", json={"clear_quota_block": True})
+        assert r.json()["quota"]["demoted"] is False
+    finally:
+        await redis.flushdb()
+        await redis.aclose()

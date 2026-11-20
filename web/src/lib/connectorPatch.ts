@@ -11,10 +11,17 @@ export function emptyFields(connector: Connector): string[] {
   return [...new Set(wanted)].filter((k) => !(k in connector.config_masked));
 }
 
+/** The text a quota field starts from: the admin's value ("0" = none), "" for the default. */
+export function budgetText(connector: Connector, key: "per_hour" | "per_day"): string {
+  const q = connector.quota;
+  if (!q || !q.custom.includes(key)) return "";
+  return String(q[key] ?? 0);
+}
+
 /** The PATCH body for what the user changed: untouched masked secrets are left out (the server keeps them). */
 export function buildConnectorPatch(
   connector: Connector,
-  edits: { rate: string; fields: Record<string, string>; removed: Set<string> },
+  edits: { rate: string; fields: Record<string, string>; removed: Set<string>; hourly?: string; daily?: string },
 ): { patch: ConnectorPatch; error: string | null } {
   const patch: ConnectorPatch = {};
   const rate = edits.rate.trim();
@@ -22,6 +29,16 @@ export function buildConnectorPatch(
     const n = Number(rate);
     if (!/^\d+$/.test(rate) || n < 1) return { patch, error: "Limite di richieste non valido" };
     patch.rate_limit_per_min = n;
+  }
+  for (const [text, key, field] of [
+    [edits.hourly, "per_hour", "hourly_budget"],
+    [edits.daily, "per_day", "daily_budget"],
+  ] as const) {
+    if (text === undefined) continue;
+    const value = text.trim();
+    if (value === budgetText(connector, key)) continue;
+    if (value !== "" && !/^\d+$/.test(value)) return { patch, error: "Quota non valida" };
+    patch[field] = value === "" ? null : Number(value);
   }
   const config: Record<string, unknown> = {};
   let dirty = false;

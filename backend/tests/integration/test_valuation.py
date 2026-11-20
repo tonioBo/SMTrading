@@ -365,3 +365,23 @@ async def test_missing_quote_without_a_cached_one_raises(db_session, qs, aapl, r
         await value_portfolio(db_session, qs, p.id, redis=redis)
     assert e.value.code == ErrorCode.PROVIDER_UNAVAILABLE
     assert e.value.details == {"symbol": "AAPL"}
+
+
+async def test_suspect_quote_marked_at_the_last_accepted_price_and_flagged(
+        db_session, qs, aapl, redis):
+    """Plan 25: an unconfirmed jump never moves the equity (NVDA-like fake +36%)."""
+    from smtrading.marketdata.quality import QuoteGuard
+    from smtrading.marketdata.types import Quote
+
+    qs.set_quote("ENI.MI", D(15), D(15), None)
+    p = await _two_positions(db_session, "V-suspect")
+    qs.set_quote("AAPL", D(272), D(272), D(272), suspect="jump")
+    await QuoteGuard(redis).accepted([Quote("AAPL", None, None, D(200), datetime.now(UTC), "x")])
+
+    v = await value_portfolio(db_session, qs, p.id, redis=redis)
+    marks = {pos.symbol: (pos.mark, pos.stale) for pos in v.positions}
+    assert marks == {"AAPL": (D(200), True), "ENI.MI": (D(15), False)}
+    assert v.stale_symbols == ["AAPL"]
+    v = await value_portfolio(db_session, qs, p.id)  # no redis: as is, still flagged
+    assert {pos.symbol: pos.mark for pos in v.positions}["AAPL"] == D(272)
+    assert v.stale_symbols == ["AAPL"]

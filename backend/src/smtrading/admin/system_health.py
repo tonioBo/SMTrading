@@ -9,6 +9,11 @@ Every section is built from data the system already keeps, nothing is called out
 - quote freshness: the cached quote (Redis) of every open position's and watchlist's
   symbol against the «quota vecchia» threshold of its asset class, only while its market
   is open (a closed market's quote is old by design);
+- price quality: the quote quality guard's counters (marketdata.quality, Redis): suspect
+  quotes of the last hour and 24 h, the top symbols, the classifications by reason and
+  provider, the symbols whose quotes are unconfirmed right now;
+- provider quotas: per enabled provider, the calls of this minute, hour and UTC day
+  against its budgets (marketdata.quota), and whether it is demoted;
 - Paperclip: the reader state (last read, errors, isolation), the agent cycles of the
   day (`paperclip.cycles`) and the hand-off watchdog warnings of the day;
 - Telegram: the outbox (pending, failed in the last 24 h, oldest pending);
@@ -43,7 +48,9 @@ from smtrading.common.heartbeat import heartbeat_age_s
 from smtrading.connectors.models import Connector
 from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
+from smtrading.marketdata import quality, quota
 from smtrading.marketdata.cache import read_quote_meta
+from smtrading.marketdata.registry import PROVIDERS
 from smtrading.paperclip import budget, cycles, model_costs
 from smtrading.paperclip.config import load_config as load_paperclip_config
 from smtrading.paperclip.config import load_state as load_paperclip_state
@@ -74,7 +81,7 @@ RECENT_CRASH_S = 15 * 60
 JOB_INTERVALS: dict[str, float] = {
     "health checks": 300, "job scheduler": 30, "paperclip reader": 300,
     "hand-off watchdog": 300, "protection alarm": 300, "goal alerts": 300,
-    "telegram summaries": 30,
+    "telegram summaries": 30, "price quality alarm": 60,
 }
 LATE_FACTOR = 3  # a pass later than 3 intervals is late
 GATED_JOBS = ("protection alarm", "goal alerts", "plan closer", "pre-open check",
@@ -271,6 +278,91 @@ async def quotes_section(session: AsyncSession, redis, now: datetime) -> dict[st
     summary = (f"{len(items)} simboli, quotazioni aggiornate" if not stale
                else f"{stale} quotazioni vecchie su {len(items)} simboli")
     return _section(status, summary, reasons, classes=rows)
+
+
+# -- price quality and provider quotas --------------------------------------------------
+
+REASON_LABELS = {quality.WIDE_SPREAD: "spread ampio", quality.JUMP: "salto improvviso",
+                 quality.DISAGREE: "fonti in disaccordo", quality.STALE: "quotazione vecchia"}
+TOP_SYMBOLS = 5
+
+
+def price_quality_section(events: dict[tuple[str, str, str], int],
+                          suspects: list[tuple[float, str, str, str]],
+                          running: dict[str, float], now: float) -> dict[str, Any]:
+    """`events`: (provider, symbol, reason) -> count (24 h); `suspects`: (epoch, provider,
+    symbol, reason) of the suspect quotes (24 h); `running`: symbol -> start of its current
+    suspect run. Attention when a run lasts more than SUSPECT_ALERT_AFTER_S."""
+    last_hour = [x for x in suspects if now - x[0] <= 3600]
+    top = Counter(x[2] for x in suspects).most_common(TOP_SYMBOLS)
+    by_reason = Counter()
+    by_provider: dict[str, Counter] = {}
+    for (provider, _, reason), n in events.items():
+        by_reason[reason] += n
+        by_provider.setdefault(provider, Counter())[reason] += n
+    current = [{"symbol": sym, "since": _iso(start), "age_s": round(now - start)}
+               for sym, start in sorted(running.items())]
+    late = [c for c in current if c["age_s"] > quality.SUSPECT_ALERT_AFTER_S]
+    reasons = [f"{c['symbol']}: prezzo non confermato da {_ago(c['age_s'])}" for c in late]
+    status = WARN if late else OK
+    if late:
+        summary = reasons[0]
+    elif current:
+        summary = f"{len(current)} simboli con prezzo da verificare ora"
+    elif suspects:
+        summary = (f"{len(last_hour)} quotazioni sospette nell'ultima ora, "
+                   f"{len(suspects)} nelle 24 ore")
+    else:
+        summary = "Nessuna quotazione sospetta nelle 24 ore"
+    return _section(
+        status, summary, reasons, suspects_1h=len(last_hour), suspects_24h=len(suspects),
+        top_symbols=[{"symbol": sym, "count": n} for sym, n in top],
+        by_reason=[{"reason": r, "label": REASON_LABELS.get(r, r), "count": n}
+                   for r, n in sorted(by_reason.items(), key=lambda kv: (-kv[1], kv[0]))],
+        by_provider=[{"provider": p, "counts": dict(sorted(c.items()))}
+                     for p, c in sorted(by_provider.items())],
+        current=current)
+
+
+async def price_quality(redis, now: datetime) -> dict[str, Any]:
+    ts = now.timestamp()
+    events = await quality.read_events(redis, ts)
+    suspects = await quality.read_suspects(redis, ts)
+    running = await quality.suspect_since(redis, sorted({x[2] for x in suspects}))
+    return price_quality_section(events, suspects, running, ts)
+
+
+def _demoted_text(name: str, q: dict[str, Any]) -> str:
+    if q["demoted_reason"] == quota.QUOTA_429:
+        return f"{name}: ha risposto 429 (quota esaurita), usato per ultimo fino al reset"
+    unit = "giornaliera" if q["demoted_reason"] == quota.DAY else "oraria"
+    pct = q["pct_day"] if q["demoted_reason"] == quota.DAY else q["pct_hour"]
+    return f"{name}: quota {unit} al {pct:g}%, usato per ultimo fino al reset"
+
+
+def quotas_section(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """`rows`: {name, quota (quota.usage_dto)} of the enabled providers."""
+    demoted = [r for r in rows if r["quota"]["demoted"]]
+    reasons = [_demoted_text(r["name"], r["quota"]) for r in demoted]
+    status = WARN if demoted else OK
+    summary = (reasons[0] if demoted else
+               f"{len(rows)} fornitori entro la quota" if rows else "Nessun fornitore attivo")
+    return _section(status, summary, reasons, providers=rows, note=quota.NOTE)
+
+
+async def quota_rows(session: AsyncSession, redis, now: datetime) -> list[dict[str, Any]]:
+    """The enabled, registered connectors with their quota block."""
+    connectors = [c for c in await session.scalars(select(Connector).order_by(Connector.name))
+                  if c.enabled and c.name in PROVIDERS]
+    overrides = await quota.load_overrides(session)
+    used = await quota.usage(redis, [c.name for c in connectors], now)
+    return [{"name": c.name, "quota": quota.usage_dto(
+        quota.budget_of(PROVIDERS[c.name], c.rate_limit_per_min, overrides.get(c.name)),
+        used.get(c.name), now)} for c in connectors]
+
+
+async def quotas(session: AsyncSession, redis, now: datetime) -> dict[str, Any]:
+    return quotas_section(await quota_rows(session, redis, now))
 
 
 # -- Paperclip --------------------------------------------------------------------------
@@ -475,7 +567,8 @@ LABELS = {
     "services": "Servizi", "providers": "Fornitori di dati", "quotes": "Quotazioni",
     "paperclip": "Lettura di Paperclip", "cycles": "Cicli agenti di oggi",
     "watchdog": "Passaggi mancanti", "telegram": "Telegram", "costs": "Costi agenti",
-    "mcp": "Errori MCP", "backup": "Backup",
+    "mcp": "Errori MCP", "backup": "Backup", "price_quality": "Qualità dei prezzi",
+    "quotas": "Quota delle fonti",
 }
 
 
@@ -560,6 +653,9 @@ async def system_health(session: AsyncSession, redis, *, now: datetime | None = 
                                         lambda: services_section(redis, now.timestamp()))
     sections["providers"] = await _guard(session, "providers", lambda: providers_section(session, now))
     sections["quotes"] = await _guard(session, "quotes", lambda: quotes_section(session, redis, now))
+    sections["price_quality"] = await _guard(session, "price_quality",
+                                             lambda: price_quality(redis, now))
+    sections["quotas"] = await _guard(session, "quotas", lambda: quotas(session, redis, now))
     enabled = False
     try:
         reader, cyc, enabled = await _paperclip(session, now, tz)

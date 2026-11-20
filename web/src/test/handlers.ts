@@ -37,6 +37,11 @@ export const HEALTH_OK = {
     telegram: { ...okSection("Telegram", "0 in coda, nessun errore"), pending: 0, failed_24h: 0 },
     costs: { ...okSection("Costi agenti", "Oggi 0 $, proiezione del mese 0 $"), today_usd: "0" },
     mcp: { ...okSection("Errori MCP", "Nessuna chiamata nell'ultima ora"), calls: 0, errors: 0, internal: 0, by_code: [] },
+    price_quality: {
+      ...okSection("Qualità dei prezzi", "Nessuna quotazione sospetta nelle 24 ore"),
+      suspects_1h: 0, suspects_24h: 0, top_symbols: [], by_reason: [], by_provider: [], current: [],
+    },
+    quotas: { ...okSection("Quota delle fonti", "0 fornitori entro la quota"), providers: [], note: "da verificare" },
   },
 };
 

@@ -20,6 +20,7 @@ from smtrading.admin.models import AdminUser
 from smtrading.agents.models import McpAuditLog
 from smtrading.common.config import get_settings
 from smtrading.common.heartbeat import HEARTBEAT_KEY
+from smtrading.connectors.models import Connector
 from smtrading.paperclip.models import AgentCostDay
 from smtrading.paperclip.watchdog import PREFIX
 from smtrading.telegram.models import TelegramOutbox
@@ -55,7 +56,7 @@ async def test_admin_and_viewer_read_the_health(admin):
     body = r.json()
     assert set(body["sections"]) == {"services", "providers", "quotes", "paperclip",
                                      "cycles", "watchdog", "telegram", "costs", "mcp",
-                                     "backup"}
+                                     "backup", "price_quality", "quotas"}
     # no worker heartbeat in the test: the services are a problem, and the reason says so
     assert body["status"] == "problema"
     assert "worker fermo: nessun battito" in body["reasons"]
@@ -131,3 +132,39 @@ async def test_outbox_oldest_pending_age(admin):
     body = (await admin.client.get("/api/system-health")).json()
     t = body["sections"]["telegram"]
     assert t["pending"] == 1 and t["oldest_pending_age_s"] >= 1700
+
+
+async def test_price_quality_and_quotas_sections(admin):
+    from smtrading.marketdata import quality, quota
+    from smtrading.marketdata.types import Quote
+
+    redis = await _redis(admin)
+    routes_system_health.clear_cache()
+    try:
+        async with admin.sm() as s:
+            (await s.get(Connector, "twelvedata")).enabled = True
+            await s.commit()
+        guard = quality.QuoteGuard(redis)
+        bad = Quote("NVDA", None, None, Decimal(150), datetime.now(UTC), "alpaca",
+                    suspect="jump")
+        await guard.suspected(bad)
+        await redis.set(quality.SINCE_KEY.format("NVDA"), str(time.time() - 20 * 60))
+        await guard.record([("alpaca", "NVDA", "wide_spread")])
+        await quota.count(redis, "twelvedata", 750)
+        body = (await admin.client.get("/api/system-health")).json()
+        pq = body["sections"]["price_quality"]
+        assert pq["label"] == "Qualità dei prezzi"
+        assert pq["status"] == "attenzione" and pq["suspects_1h"] == 1
+        assert pq["top_symbols"] == [{"symbol": "NVDA", "count": 1}]
+        assert pq["current"][0]["symbol"] == "NVDA"
+        assert "NVDA: prezzo non confermato da 20 min" in body["reasons"]
+        q = body["sections"]["quotas"]
+        assert q["label"] == "Quota delle fonti" and q["status"] == "attenzione"
+        td = next(r for r in q["providers"] if r["name"] == "twelvedata")["quota"]
+        assert (td["used_day"], td["per_day"], td["demoted_reason"]) == (750, 800, "day")
+        assert "twelvedata: quota giornaliera al 93.8%, usato per ultimo fino al reset" \
+            in q["reasons"]
+    finally:
+        await redis.flushdb()
+        await redis.aclose()
+        routes_system_health.clear_cache()

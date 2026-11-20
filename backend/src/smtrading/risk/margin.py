@@ -190,6 +190,10 @@ async def _closable_quote(
         return None
     if quote is None:
         return None
+    if quote.suspect is not None:  # marketdata.quality: not confirmed, never closed at it
+        log.warning("liquidation of %s/%s skipped: quote suspect (%s)", portfolio_id, symbol,
+                    quote.suspect)
+        return None
     threshold = await get_stale_threshold(session, instrument.asset_class)
     if (now - quote.ts).total_seconds() > threshold:
         log.warning("liquidation of %s/%s skipped: quote older than %ss",

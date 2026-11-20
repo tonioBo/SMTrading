@@ -303,7 +303,8 @@ class PlanCloser:
             threshold = await get_stale_threshold(session, instrument.asset_class)
             market, qty, avg = instrument.market, position.qty, position.avg_price
         quote = await self._quote(row.symbol)  # no transaction open
-        if quote is None or (now - quote.ts).total_seconds() > threshold:
+        if quote is None or (now - quote.ts).total_seconds() > threshold \
+                or quote.suspect is not None:  # marketdata.quality: not confirmed
             await self._note(row_id, "quote missing or not fresh", now, notify=False)
             return
         if row.state == "pending":

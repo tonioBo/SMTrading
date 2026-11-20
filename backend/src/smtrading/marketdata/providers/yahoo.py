@@ -345,6 +345,7 @@ class YahooProvider(DataProvider):
     asset_classes = frozenset(AssetClass)
     requires_key = False
     default_rate_limit_per_min = 60
+    default_hourly_budget = 2000  # unofficial API: a soft limit of our own
 
     def __init__(self, config: dict, http) -> None:
         super().__init__(config, http)

@@ -161,7 +161,7 @@ secondi (per un ordine appena inviato usa `get_order`). Cursore perso o rifiutat
    quantità intere; USA e crypto frazionarie (`lot_size`); uscite frazionarie rinviate
    (`broker.order_renewed`: non ripiazzarle; `broker.renewal_failed`: riproteggi) → §C12.
 6. Ordini market su quotazioni vecchie → `STALE_QUOTE` (UE: preferisci limit). A mercato
-   chiuso un ordine resta `queued`/`pending`: non è un errore.
+   chiuso `queued`/`pending` non è un errore.
 7. Per gli umani: task al Notifier («NOTIFICA · <tipo> · <COD|ALL>» o «ESCALATION», §11);
    mai token, id interni non necessari o dati personali.
 8. Simboli nuovi: prima `search_instruments` (max 25 nuovi al giorno per agente).
@@ -227,11 +227,11 @@ l'accesso). `NOT_FOUND`: rileggi `list_portfolios`. `INVALID_ORDER`: correggi
 `details.field`, una volta (con "Strumento non supportato" non riprovare). `SYMBOL_NOT_FOUND`: `search_instruments`. `SYMBOL_NOT_ALLOWED` /
 `SHORT_NOT_ALLOWED`: abbandona. `RISK_LIMIT_EXCEEDED`: sotto il limite, mai frazionando
 (`plan_grace`: nessuna aggiunta). `INSUFFICIENT_BUYING_POWER` / `LIVE_CASH_LIMIT`: riduci o
-rinuncia. `STALE_QUOTE` / `PROVIDER_UNAVAILABLE`: ciclo dopo, 2 di fila → escalation (su un ordine:
+rinuncia. `STALE_QUOTE` (anche `suspect_quote`) / `PROVIDER_UNAVAILABLE`: ciclo dopo, 2 di fila → escalation (su un ordine:
 rifiuto del broker, non reinviarlo identico → §C16).
 `MARKET_CLOSED_QUEUED`: informativo. `KILL_SWITCH_ACTIVE`, `TRADING_HALTED`, `REDUCE_ONLY`,
 `PORTFOLIO_LOCKED`: niente aperture. `RATE_LIMITED`: attendi `retry_after_s`. `INTERNAL`:
-riprova una volta più tardi. Reazione completa di ogni codice (anche `LIVE_NOT_ARMED`, rifiuto
+riprova una volta dopo. Reazione completa di ogni codice (anche `LIVE_NOT_ARMED`, rifiuto
 del broker) → §C16. **SMTrading non raggiungibile** (nessun `code`): riprova una volta, poi
 nessuna proposta, approvazione né ordine; rispondi e chiudi il task → §C17. Glossario →
 §C18.

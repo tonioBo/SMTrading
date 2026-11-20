@@ -9,6 +9,10 @@ Ruling R23 (I4): when the batch quote fetch fails, symbols are fetched one by on
 symbol still without a quote is marked with the last cached quote (marketdata cache,
 only when `redis` is given) and flagged `stale` (listed in `stale_symbols`). Only a
 symbol without any cached quote raises PROVIDER_UNAVAILABLE.
+
+A quote the quality guard marked `suspect` (marketdata.quality) is flagged `stale` too and,
+when `redis` is given and has one, marked at the symbol's last accepted price instead: a
+price jump nobody confirmed never moves the equity, the margin or the daily loss.
 """
 
 import logging
@@ -27,6 +31,7 @@ from smtrading.engine.quotesource import QuoteSource
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.marketdata.cache import read_quote
+from smtrading.marketdata.quality import MAX_SPREAD, last_accepted
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.models import Portfolio
 from smtrading.positions.models import Position
@@ -92,8 +97,9 @@ class PortfolioValuation:
 
 
 # a quote whose spread is wider than this share of its mid (after hours, thin books) is not
-# a fair mark: its mid can sit far from any real trade (e.g. NVDA bid 145.6 / ask 178.29)
-MAX_MARK_SPREAD = Decimal("0.01")
+# a fair mark: its mid can sit far from any real trade (e.g. NVDA bid 145.6 / ask 178.29);
+# the quote quality guard counts such quotes as `wide_spread` (one constant for both)
+MAX_MARK_SPREAD = MAX_SPREAD
 
 
 def mark_price(quote: Quote) -> Decimal:
@@ -149,6 +155,26 @@ async def _balances(
 
 
 async def _quotes(
+    qs: QuoteSource, symbols: list[str], redis, portfolio_id: UUID
+) -> tuple[dict[str, Quote], set[str]]:
+    quotes, stale = await _fetch_quotes(qs, symbols, redis, portfolio_id)
+    for sym, q in list(quotes.items()):
+        if q.suspect is None:
+            continue
+        stale.add(sym)
+        try:
+            ref = await last_accepted(redis, sym) if redis is not None else None
+        except Exception:
+            log.warning("last accepted price of %s unreadable", sym, exc_info=True)
+            ref = None
+        if ref is not None:
+            quotes[sym] = Quote(sym, None, None, ref, q.ts, q.provider, suspect=q.suspect)
+        log.warning("portfolio %s: %s quote suspect (%s), marked %s", portfolio_id, sym,
+                    q.suspect, "at the last accepted price" if ref is not None else "as is")
+    return quotes, stale
+
+
+async def _fetch_quotes(
     qs: QuoteSource, symbols: list[str], redis, portfolio_id: UUID
 ) -> tuple[dict[str, Quote], set[str]]:
     """(quotes, stale symbols): batch, then one by one, then the cache (Ruling R23)."""

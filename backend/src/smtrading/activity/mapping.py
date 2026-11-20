@@ -80,6 +80,8 @@ def _halt(p: dict) -> str:
     return f"Aperture sospese{where}: {_v(p, 'reason')}{tail}"
 
 
+QUOTE_SUSPECT_REASONS = {"jump": "salto improvviso", "disagree": "fonti in disaccordo"}
+
 # event type -> (level, direct, summary)
 _EVENTS: dict[str, tuple[ActivityLevel, bool, Callable[[dict], str]]] = {
     "order.accepted": (ActivityLevel.info, False,
@@ -93,6 +95,10 @@ _EVENTS: dict[str, tuple[ActivityLevel, bool, Callable[[dict], str]]] = {
                        lambda p: f"Ordine annullato: {_v(p, 'symbol')}"),
     "order.expired": (ActivityLevel.info, False,
                       lambda p: f"Ordine scaduto: {_v(p, 'symbol')}"),
+    "order.quote_suspect": (ActivityLevel.warning, False, lambda p: (
+        f"Ordine {_v(p, 'symbol')} in attesa: prezzo da verificare"
+        f" ({QUOTE_SUSPECT_REASONS.get(str(p.get('reason')), 'non confermato')}),"
+        " si esegue con la prossima quotazione affidabile")),
     "portfolio.reset": (ActivityLevel.info, False, _reset),
     "portfolio.cash": (ActivityLevel.info, False, _cash),
     "halt.set": (ActivityLevel.critical, True, _halt),

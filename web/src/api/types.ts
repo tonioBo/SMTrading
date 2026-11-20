@@ -673,6 +673,34 @@ export interface Connector {
   health_status: string; // ok | error | unknown
   last_error: string | null;
   last_checked_at: string | null;
+  /** budgets and usage of the provider (null: not implemented) */
+  quota?: ConnectorQuota | null;
+}
+
+/** A provider's budgets (null: none) and the calls counted this minute / hour / UTC day. */
+export interface ProviderQuota {
+  per_min: number | null;
+  per_hour: number | null;
+  per_day: number | null;
+  used_minute: number;
+  used_hour: number;
+  used_day: number;
+  pct_minute: number | null;
+  pct_hour: number | null;
+  pct_day: number | null;
+  /** tried after every other provider until the reset */
+  demoted: boolean;
+  demoted_reason: "429" | "day" | "hour" | null;
+  demoted_until: string | null;
+  /** next daily reset (00:00 UTC) */
+  resets_at: string;
+}
+
+export interface ConnectorQuota extends ProviderQuota {
+  defaults: { per_min: number | null; per_hour: number | null; per_day: number | null };
+  /** budgets set by the admin (the others are the defaults) */
+  custom: ("per_hour" | "per_day")[];
+  note: string;
 }
 
 /** PATCH merge: omitted secret = kept, null = removed, unchanged masked value = kept. */
@@ -680,6 +708,10 @@ export interface ConnectorPatch {
   enabled?: boolean;
   config?: Record<string, unknown>;
   rate_limit_per_min?: number;
+  /** null = back to the default, 0 = no budget */
+  hourly_budget?: number | null;
+  daily_budget?: number | null;
+  clear_quota_block?: boolean;
 }
 
 export interface ConnectorTestResult {
@@ -2153,6 +2185,16 @@ export interface HealthCycles {
   invalid_cron: string[];
 }
 
+export interface HealthPriceQuality {
+  suspects_1h: number;
+  suspects_24h: number;
+  top_symbols: { symbol: string; count: number }[];
+  by_reason: { reason: string; label: string; count: number }[];
+  by_provider: { provider: string; counts: Record<string, number> }[];
+  /** symbols whose quotes are unconfirmed right now */
+  current: { symbol: string; since: string | null; age_s: number }[];
+}
+
 export interface SystemHealth {
   status: HealthStatus;
   reasons: string[];
@@ -2187,6 +2229,8 @@ export interface SystemHealth {
       restore_age_s?: number | null;
       destinations?: { dir: string; files: number; error: string | null }[];
     };
+    price_quality?: HealthSectionBase & Partial<HealthPriceQuality>;
+    quotas?: HealthSectionBase & { providers?: { name: string; quota: ProviderQuota }[]; note?: string };
   };
 }
 

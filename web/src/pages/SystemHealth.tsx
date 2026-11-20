@@ -5,6 +5,7 @@ import { useSystemHealth } from "@/api/hooks/system";
 import type { HealthCycleRoutine, HealthJob, HealthProvider, HealthQuoteClass, HealthSectionBase, SystemHealth as SystemHealthData } from "@/api/types";
 import { DataTable, type Column } from "@/components/DataTable";
 import { PageHeader } from "@/components/PageHeader";
+import { QuotaBars } from "@/components/QuotaBars";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -147,6 +148,56 @@ function Quotes({ s }: { s: SystemHealthData["sections"]["quotes"] }) {
     <Section id="quotazioni" section={s}>
       {s.classes && s.classes.length > 0 && <DataTable aria-label="Quotazioni per classe" columns={quoteColumns} rows={s.classes} rowKey={(r) => r.asset_class} />}
       <p className="text-xs text-muted">Simboli delle posizioni aperte e delle liste; a mercato chiuso una quotazione vecchia è normale e non conta.</p>
+    </Section>
+  );
+}
+
+function PriceQuality({ s }: { s: NonNullable<SystemHealthData["sections"]["price_quality"]> }) {
+  const current = s.current ?? [];
+  const top = s.top_symbols ?? [];
+  const reasons = s.by_reason ?? [];
+  return (
+    <Section id="qualita-prezzi" section={s}>
+      <Facts
+        items={[
+          ["Sospette nell'ultima ora", <span key="h" className="num">{s.suspects_1h ?? 0}</span>],
+          ["Sospette nelle 24 ore", <span key="d" className="num">{s.suspects_24h ?? 0}</span>],
+          ["Da verificare ora", current.length ? current.map((c) => `${c.symbol} (da ${formatAge(c.age_s)})`).join(", ") : "nessuno"],
+          ["Simboli più colpiti", top.length ? top.map((t) => `${t.symbol} ${t.count}`).join(", ") : "—"],
+        ]}
+      />
+      {reasons.length > 0 && (
+        <ul className="flex flex-wrap gap-2 text-xs" aria-label="Classificazioni nelle 24 ore">
+          {reasons.map((r) => (
+            <li key={r.reason} className="rounded-md border border-border px-2 py-0.5">
+              {r.label} <span className="num">{r.count}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="text-xs text-muted">
+        Un prezzo con un salto improvviso o in disaccordo tra le fonti viene confrontato con le altre fonti; se nessuna lo conferma è «sospetto»: ordini e stop aspettano
+        una quotazione verificata.
+      </p>
+    </Section>
+  );
+}
+
+function Quotas({ s }: { s: NonNullable<SystemHealthData["sections"]["quotas"]> }) {
+  const rows = (s.providers ?? []).filter((p) => p.quota.per_hour || p.quota.per_day || p.quota.per_min);
+  return (
+    <Section id="quote-fonti" section={s} link={{ to: "/connettori", label: "Connettori" }}>
+      {rows.length > 0 && (
+        <ul className="space-y-3" aria-label="Quota per fornitore">
+          {rows.map((p) => (
+            <li key={p.name} className="space-y-1">
+              <span className="text-sm font-medium">{p.name}</span>
+              <QuotaBars name={p.name} quota={p.quota} />
+            </li>
+          ))}
+        </ul>
+      )}
+      {s.note && <p className="text-xs text-muted">Quote {s.note}.</p>}
     </Section>
   );
 }
@@ -359,6 +410,8 @@ export default function SystemHealth() {
             <div className="space-y-4">
               <Providers s={data.sections.providers} />
               <Quotes s={data.sections.quotes} />
+              {data.sections.price_quality && <PriceQuality s={data.sections.price_quality} />}
+              {data.sections.quotas && <Quotas s={data.sections.quotas} />}
             </div>
             <Paperclip s={data.sections.paperclip} />
             <Cycles s={data.sections.cycles} />

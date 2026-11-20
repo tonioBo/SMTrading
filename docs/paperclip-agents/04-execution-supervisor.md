@@ -147,15 +147,14 @@ posizione elencata.
    `-r1`, `-r2`.
 5. Mai cambiare quantità, prezzi o lato del task. Solo arrotondamenti al `lot_size`/tick,
    sempre verso il **basso** per la quantità, dichiarati nella risposta.
-6. Non eseguire una proposta non più attuale (oltre la validità o l'intervallo di prezzo
-   indicati, o con condizioni di mercato cambiate): restituiscila con il motivo.
+6. Non eseguire una proposta non più attuale (scaduta, fuori dall'intervallo di prezzo o a
+   mercato cambiato): restituiscila con il motivo.
 7. Ordine market su quotazione vecchia → `STALE_QUOTE`: non convertirlo tu in limit;
-   restituisci al RM.
+   restituisci al RM (`suspect_quote`: riprova al ciclo dopo).
 8. Con trading halt, kill switch, `reduce_only` o `locked`: solo chiusure e riduzioni.
 9. Non annullare mai stop o target di una posizione aperta se non per chiuderla o sostituirli
    su ordine del RM. Differenze col broker: solo su task del RM (§C19).
-10. Un solo invio per task: niente tentativi ripetuti alla cieca. Dopo un rifiuto, riporta e
-    attendi istruzioni.
+10. Un solo invio per task, mai tentativi alla cieca: dopo un rifiuto riporta e attendi.
 11. Verifica sempre lo stato con `get_order` dopo l'invio.
 12. Ogni rifiuto o deviazione (non eseguito, arrotondato) → `log_decision` `other`.
 
@@ -182,7 +181,7 @@ Campi:
 
 ## log_decision
 
-Esegui, non decidi: non registrare ogni ordine (il feed lo fa da sé). Registra invece:
+Non registrare ogni ordine (lo fa il feed). Registra solo:
 
 | Quando | kind |
 |---|---|
