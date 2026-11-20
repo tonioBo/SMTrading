@@ -112,6 +112,23 @@ def _allowed(strategy: str) -> dict[str, Any]:
             **(_VOLATILITY if strategy in _FILTERED else {})}
 
 
+def allowed_params(strategy: str) -> list[str]:
+    """The parameter names `strategy` accepts (INVALID_ORDER for an unknown strategy)."""
+    if strategy not in _DEFAULTS:
+        raise _invalid(f"unknown strategy {strategy!r}", field="strategy",
+                       allowed=list(STRATEGIES))
+    return list(_allowed(strategy))
+
+
+def normalize_value(strategy: str, name: str, value: Any) -> Any:
+    """One parameter value normalised like validate_params does (INVALID_ORDER if bad)."""
+    allowed = _allowed(strategy) if strategy in _DEFAULTS else {}
+    if name not in allowed:
+        raise _invalid(f"unknown parameter for {strategy}: {name!r}", field="grid",
+                       allowed=list(allowed))
+    return _norm(name, value, allowed[name])
+
+
 def validate_params(strategy: str, params: dict | None) -> dict[str, Any]:
     """Defaults merged with `params`, normalised (ints and Decimals); INVALID_ORDER if bad."""
     if strategy not in _DEFAULTS:

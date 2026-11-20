@@ -4,6 +4,11 @@ Cash is split equally between symbols. A signal computed at a bar's close execut
 next bar's open (buy_and_hold enters at the first bar's open) with slippage against the
 trader; the quantity is the largest whole number of lots affordable net of the fee. Open
 positions are marked at each bar's close and valued at the last close at the end.
+
+`trade_from` (research windows): the bars before it only warm the indicators up. Nothing
+executes before it (buy_and_hold enters at the first bar from it), the equity curve, the
+metrics and the exposure start there, and a signal of the last bar before it executes at
+its open, as it would have live. Without it every bar trades (the default).
 """
 
 from collections.abc import Mapping
@@ -46,7 +51,7 @@ def _affordable_lots(cash: Decimal, price: Decimal, lot: Decimal, rule: FeeRuleD
 
 def _simulate_symbol(
     symbol: str, bars: list[Bar], strategy: str, params: dict, cash0: Decimal,
-    rule: FeeRuleData, slip: Decimal, lot: Decimal,
+    rule: FeeRuleData, slip: Decimal, lot: Decimal, first: int = 0,
 ) -> tuple[dict[datetime, Decimal], list[dict], int]:
     sigs = strategies.signals(bars, strategy, params)
     immediate = strategy in strategies.IMMEDIATE
@@ -56,7 +61,12 @@ def _simulate_symbol(
     trades: list[dict] = []
     invested_bars = 0
     for i, bar in enumerate(bars):
-        act = sigs[i] if immediate else (sigs[i - 1] if i > 0 else "hold")
+        if i < first:
+            continue  # warm-up only
+        if immediate:
+            act = "buy" if i == first else "hold"
+        else:
+            act = sigs[i - 1] if i > 0 else "hold"
         if act == "buy" and qty == 0:
             price = bar.open * (1 + slip)
             lots = _affordable_lots(cash, price, lot, rule)
@@ -134,6 +144,7 @@ def run_backtest(
     initial_cash: Decimal, fee_rule: FeeRuleData | Mapping[str, FeeRuleData],
     slippage_bps: int,
     lot_by_symbol: dict[str, Decimal],
+    trade_from: datetime | None = None,
 ) -> dict:
     params = strategies.validate_params(strategy, params)
     need = strategies.min_bars(strategy, params)
@@ -147,17 +158,19 @@ def run_backtest(
     for sym in symbols:
         rule = fee_rule[sym] if isinstance(fee_rule, Mapping) else fee_rule
         bars = sorted(bars_by_symbol[sym], key=lambda b: b.ts)
-        if len(bars) < need:
+        first = 0 if trade_from is None else next(
+            (i for i, b in enumerate(bars) if b.ts >= trade_from), len(bars))
+        if len(bars) < need or first == len(bars):
             warnings.append(f"insufficient_data:{sym}")
-            curves[sym] = {b.ts: share for b in bars}
+            curves[sym] = {b.ts: share for b in bars[first:]}
             continue
         eq, tr, inv = _simulate_symbol(
             sym, bars, strategy, params, share, rule, slip,
-            lot_by_symbol.get(sym, Decimal(1)),
+            lot_by_symbol.get(sym, Decimal(1)), first,
         )
         curves[sym] = eq
         trades.extend(tr)
-        exposure.append(Decimal(inv) / len(bars) * 100)
+        exposure.append(Decimal(inv) / (len(bars) - first) * 100)
     trades.sort(key=lambda t: (t["entry_ts"], t["symbol"]))
 
     all_ts = sorted({ts for c in curves.values() for ts in c})
