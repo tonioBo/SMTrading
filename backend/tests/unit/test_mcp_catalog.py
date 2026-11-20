@@ -2,6 +2,7 @@
 input schema), independent of the registration order and stable across processes."""
 
 import asyncio
+import os
 import subprocess
 import sys
 
@@ -56,10 +57,19 @@ async def test_fingerprint_changes_with_description_schema_or_name():
         assert await catalog_fingerprint(_server(alpha, other)) != base
 
 
+def _child_env() -> dict[str, str]:
+    """A different hash seed, nothing else from the parent but how to find the package
+    (PYTHONPATH when the tests run from a source checkout / a shared virtualenv)."""
+    env = {"PYTHONHASHSEED": "123", "PATH": ""}
+    if os.environ.get("PYTHONPATH"):
+        env["PYTHONPATH"] = os.environ["PYTHONPATH"]
+    return env
+
+
 def test_smtrading_catalog_stable_across_processes():
     here = asyncio.run(tool_catalog_fingerprint())
     code = ("import asyncio; from smtrading.mcp.catalog import tool_catalog_fingerprint; "
             "print(asyncio.run(tool_catalog_fingerprint()))")
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                         check=True, env={"PYTHONHASHSEED": "123", "PATH": ""})
+                         check=True, env=_child_env())
     assert out.stdout.strip() == here

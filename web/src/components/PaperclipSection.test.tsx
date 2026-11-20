@@ -224,7 +224,9 @@ describe("PaperclipSection", () => {
 
   it("shows the read error and the expiry warning", async () => {
     config = baseConfig();
-    status = { ...baseStatus(), last_error: "HTTP 401", consecutive_errors: 2, key_expiring: true, key_expires_at: "2026-11-20T00:00:00Z" };
+    // relative to now, so the fixture never expires: in five days
+    const expires = new Date(Date.now() + 5 * 86_400_000).toISOString();
+    status = { ...baseStatus(), last_error: "HTTP 401", consecutive_errors: 2, key_expiring: true, key_expires_at: expires };
     renderApp("/impostazioni");
     const region = await section();
     expect(await within(region).findByText(/Errore di lettura: HTTP 401/)).toBeInTheDocument();
