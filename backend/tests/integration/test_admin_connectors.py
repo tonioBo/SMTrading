@@ -399,21 +399,23 @@ def test_dump_command_uses_database_url(monkeypatch):
     assert env["PGPASSWORD"] == "p@ss" and "p@ss" not in " ".join(argv)
 
 
-async def test_list_backups(admin, monkeypatch, tmp_path):
-    from smtrading.admin import routes_system
+async def test_list_backups(admin):
+    """The first destination's dumps, as the `backup` service last listed them."""
+    from smtrading.backup import service
 
-    monkeypatch.setattr(routes_system, "BACKUP_DIR", tmp_path / "missing")
     assert (await admin.client.get("/api/system/backups")).json() == []
-    monkeypatch.setattr(routes_system, "BACKUP_DIR", tmp_path)
-    (tmp_path / "smtrading-2026-11-12.sql.gz").write_bytes(b"a" * 10)
-    (tmp_path / "smtrading-2026-11-13.sql.gz").write_bytes(b"b" * 20)
-    (tmp_path / "notes.txt").write_text("ignored")
-    import os
-
-    os.utime(tmp_path / "smtrading-2026-11-12.sql.gz", (1_000_000, 1_000_000))
-    rows = (await admin.client.get("/api/system/backups")).json()
-    assert [(r["name"], r["size_bytes"]) for r in rows] == [
-        ("smtrading-2026-11-13.sql.gz", 20), ("smtrading-2026-11-12.sql.gz", 10)]
+    rows = [{"name": "smtrading-20261113-0330.dump", "size_bytes": 20,
+             "modified_at": "2026-11-13T02:31:00+00:00", "sha256": None, "config": True},
+            {"name": "smtrading-20261112-0330.dump", "size_bytes": 10,
+             "modified_at": "2026-11-12T02:31:00+00:00", "sha256": None, "config": True}]
+    async with admin.sm() as s, s.begin():
+        state = await service.load_state(s)
+        state["destinations"] = [{"dir": "/backups/local", "files": rows, "error": None},
+                                 {"dir": "/backups/onedrive", "files": [], "error": None}]
+        await service.save_state(s, state)
+    got = (await admin.client.get("/api/system/backups")).json()
+    assert [(r["name"], r["size_bytes"]) for r in got] == [
+        ("smtrading-20261113-0330.dump", 20), ("smtrading-20261112-0330.dump", 10)]
 
 
 async def test_connectors_markets_system_require_admin(admin):
@@ -428,7 +430,7 @@ async def test_connectors_markets_system_require_admin(admin):
         ("PATCH", "/api/instruments/AAPL"), ("GET", "/api/quotes?symbols=AAPL"),
         ("GET", "/api/markets/status"), ("GET", "/api/system/verify-chain"),
         ("GET", "/api/system/verify-balances"), ("POST", "/api/system/backup"),
-        ("GET", "/api/system/backups"),
+        ("GET", "/api/system/backups"), ("GET", "/api/backups"), ("POST", "/api/backups/run"),
     ):
         r = await c.request(method, url, json={} if method != "GET" else None)
         assert r.status_code == 401, url

@@ -65,7 +65,6 @@ services:
     ports:
       - "127.0.0.1:8000:8000"  # local only (spec); Paperclip uses the docker network
     volumes:
-      - backups:/backups:ro  # listed by GET /api/system/backups
       - ./agent-instructions:/agent-instructions  # AGENTS.md per agent, read by Paperclip (External mode)
 
   worker:
@@ -95,31 +94,36 @@ services:
       - api
     networks: [smtrading-net]
 
-  # Daily pg_dump | gzip into the `backups` volume; keeps 14 days.
+  # Automatic backups (smtrading.backup): every night at 03:30 (SMT_TZ) a pg_dump -Fc with
+  # its .sha256 and the restore bundle (agent instructions, compose file, .env.example; never
+  # .env or keys) into every BACKUP_DIRS folder (`;` separated, created when missing), kept
+  # 30 daily + 12 monthly; every Sunday at 04:00 a restore test into the throwaway database
+  # smtrading_restore_test (dropped afterwards). State in «Salute del sistema».
+  # Host folders: SMT_BACKUP_LOCAL_DIR and SMT_BACKUP_ONEDRIVE_DIR (spaces are fine).
   backup:
-    image: postgres:16
-    restart: unless-stopped
+    <<: *app
+    command: ["python", "-m", "smtrading.backup.main"]
     environment:
-      PGPASSWORD: ${POSTGRES_PASSWORD}
-    command:
-      - sh
-      - -c
-      - >-
-        while true; do
-        pg_dump -h postgres -U smtrading smtrading | gzip > /backups/smtrading-$$(date +%F).sql.gz;
-        find /backups -name "*.sql.gz" -mtime +14 -delete;
-        sleep 86400;
-        done
+      SMT_DATABASE_URL: postgresql+asyncpg://smtrading:${POSTGRES_PASSWORD}@postgres:5432/smtrading
+      SMT_REDIS_URL: redis://redis:6379/0
+      BACKUP_DIRS: /backups/local;/backups/onedrive
     volumes:
-      - backups:/backups
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks: [smtrading-net]
+      - type: bind
+        source: ${SMT_BACKUP_LOCAL_DIR:-/mnt/d/Backups/SMTrading}
+        target: /backups/local
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${SMT_BACKUP_ONEDRIVE_DIR:-/mnt/d/onedrive/OneDrive - SantoMagno/Founders - Founders/Backups/SMTrading}
+        target: /backups/onedrive
+        bind:
+          create_host_path: true
+      - ./agent-instructions:/agent-instructions:ro
+      - ./docker-compose.yml:/restore-config/docker-compose.yml:ro
+      - ./.env.example:/restore-config/.env.example:ro
 
 volumes:
   pgdata:
-  backups:
   web_certs:
 
 networks:

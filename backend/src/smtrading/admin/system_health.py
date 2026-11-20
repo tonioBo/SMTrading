@@ -14,6 +14,9 @@ Every section is built from data the system already keeps, nothing is called out
 - Telegram: the outbox (pending, failed in the last 24 h, oldest pending);
 - agent costs: today's billed spend and the month projection (`paperclip.budget`);
 - MCP: the calls of the last hour that ended in an error (internal errors apart);
+- backup: the record of the `backup` service (`backup.state`): the last fully ok backup
+  (older than 26 h: problema), the last run and the last restore test (failed or older
+  than 8 days: attenzione);
 - version: the build id baked into the image (SMT_BUILD_ID, else SMTRADING_VERSION), the
   build time (SMT_BUILT_AT) and the api and worker start (the last deploy).
 
@@ -34,6 +37,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.agents.models import McpAuditLog
+from smtrading.backup import service as backup_service
 from smtrading.common.config import get_settings
 from smtrading.common.heartbeat import heartbeat_age_s
 from smtrading.connectors.models import Connector
@@ -82,6 +86,8 @@ OUTBOX_WARN_S, OUTBOX_BAD_S = 10 * 60, 60 * 60
 MCP_WINDOW = timedelta(hours=1)
 MCP_ERROR_SHARE = Decimal("0.5")  # agent-side errors only matter when most calls fail
 MCP_MIN_CALLS = 10
+BACKUP_BAD_AGE_S = 26 * 3600
+RESTORE_WARN_AGE_S = 8 * 86400
 
 
 def worst(statuses: Iterable[str]) -> str:
@@ -401,6 +407,60 @@ def mcp_section(outcomes: list[str]) -> dict[str, Any]:
     return _section(status, summary, reasons, **data)
 
 
+# -- backup -----------------------------------------------------------------------------
+
+def _age_s(iso: str | None, now: datetime) -> float | None:
+    if not iso:
+        return None
+    try:
+        return (now - datetime.fromisoformat(iso)).total_seconds()
+    except (TypeError, ValueError):
+        return None
+
+
+def backup_section(state: dict[str, Any], now: datetime) -> dict[str, Any]:
+    last = state.get("last_backup") or None
+    restore = state.get("last_restore_test") or None
+    ok_age = _age_s(state.get("last_ok_at"), now)
+    restore_age = _age_s(restore.get("finished_at") if restore else None, now)
+    data = {"last_ok_at": state.get("last_ok_at"), "last_ok_name": state.get("last_ok_name"),
+            "last_ok_age_s": ok_age, "last_backup": last, "last_restore_test": restore,
+            "restore_age_s": restore_age,
+            "destinations": [{"dir": d.get("dir"), "files": len(d.get("files") or []),
+                              "error": d.get("error")}
+                             for d in state.get("destinations") or []]}
+    reasons: list[str] = []
+    status = OK
+    if ok_age is None:
+        status = BAD
+        reasons.append("nessun backup automatico riuscito registrato")
+    elif ok_age > BACKUP_BAD_AGE_S:
+        status = BAD
+        reasons.append(f"ultimo backup riuscito {_ago(ok_age)} fa")
+    if last and last.get("status") != backup_service.OK and (
+            ok_age is None or last.get("started_at", "") > (state.get("last_ok_at") or "")):
+        status = worst([status, WARN])
+        reasons.append(f"ultimo backup {last.get('status')}: {last.get('error') or ''}"
+                       .rstrip(": "))
+    if restore is None:
+        status = worst([status, WARN])
+        reasons.append("prova di ripristino mai eseguita")
+    elif restore.get("status") != backup_service.OK:
+        status = worst([status, WARN])
+        reasons.append(f"prova di ripristino non riuscita: {restore.get('error') or ''}"
+                       .rstrip(": "))
+    elif restore_age is not None and restore_age > RESTORE_WARN_AGE_S:
+        status = worst([status, WARN])
+        reasons.append(f"ultima prova di ripristino {_ago(restore_age)} fa")
+    summary = (f"Ultimo backup {_ago(ok_age)} fa, prova di ripristino riuscita"
+               if status == OK else reasons[0])
+    return _section(status, summary, reasons, **data)
+
+
+async def _backup(session: AsyncSession, now: datetime) -> dict[str, Any]:
+    return backup_section(await backup_service.load_state(session), now)
+
+
 # -- version ----------------------------------------------------------------------------
 
 def version_info(worker_started_at: str | None) -> dict[str, Any]:
@@ -415,7 +475,7 @@ LABELS = {
     "services": "Servizi", "providers": "Fornitori di dati", "quotes": "Quotazioni",
     "paperclip": "Lettura di Paperclip", "cycles": "Cicli agenti di oggi",
     "watchdog": "Passaggi mancanti", "telegram": "Telegram", "costs": "Costi agenti",
-    "mcp": "Errori MCP",
+    "mcp": "Errori MCP", "backup": "Backup",
 }
 
 
@@ -513,6 +573,7 @@ async def system_health(session: AsyncSession, redis, *, now: datetime | None = 
     sections["telegram"] = await _guard(session, "telegram", lambda: _telegram(session, now))
     sections["costs"] = await _guard(session, "costs", lambda: _costs(session, today))
     sections["mcp"] = await _guard(session, "mcp", lambda: _mcp(session, now))
+    sections["backup"] = await _guard(session, "backup", lambda: _backup(session, now))
     for key, s in sections.items():
         s["label"] = LABELS[key]
     status = worst(s["status"] for s in sections.values())

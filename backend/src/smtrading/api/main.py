@@ -19,6 +19,7 @@ from smtrading.admin.routes_agent_docs import router as agent_docs_router
 from smtrading.admin.routes_agent_results import router as agent_results_router
 from smtrading.admin.routes_agents import router as agents_router
 from smtrading.admin.routes_auth import router as auth_router
+from smtrading.admin.routes_backups import router as backups_router
 from smtrading.admin.routes_brokers import router as brokers_router
 from smtrading.admin.routes_campaigns import router as campaigns_router
 from smtrading.admin.routes_connectors import router as connectors_router
@@ -217,6 +218,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(markets_router)
     app.include_router(system_router)
     app.include_router(system_health_router)
+    app.include_router(backups_router)
     app.include_router(dashboard_router)
     app.include_router(goals_router)
     app.include_router(campaigns_router)

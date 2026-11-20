@@ -54,7 +54,8 @@ async def test_admin_and_viewer_read_the_health(admin):
     assert r.status_code == 200, r.text
     body = r.json()
     assert set(body["sections"]) == {"services", "providers", "quotes", "paperclip",
-                                     "cycles", "watchdog", "telegram", "costs", "mcp"}
+                                     "cycles", "watchdog", "telegram", "costs", "mcp",
+                                     "backup"}
     # no worker heartbeat in the test: the services are a problem, and the reason says so
     assert body["status"] == "problema"
     assert "worker fermo: nessun battito" in body["reasons"]

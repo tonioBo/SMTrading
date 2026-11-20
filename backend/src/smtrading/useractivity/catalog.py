@@ -133,6 +133,7 @@ LABELS: dict[str, str] = {
     "paperclip.baseline": "Riconferma regole di isolamento Paperclip",
     # system
     "system.backup": "Download del backup",
+    "system.backup_run": "Backup automatico avviato",
     "system.app_settings": "Impostazioni dell'app",
     # other
     "other.request": "Altra azione",
@@ -222,6 +223,7 @@ ROUTE_ACTIONS: dict[tuple[str, str], str] = {
     ("POST", "/api/market-closures"): "markets.closure_create",
     ("DELETE", "/api/market-closures/{closure_id}"): "markets.closure_delete",
     ("POST", "/api/system/backup"): "system.backup",
+    ("POST", "/api/backups/run"): "system.backup_run",
     ("PUT", "/api/telegram/config"): "telegram.config",
     ("POST", "/api/telegram/detect-chats"): "telegram.detect_chats",
     ("POST", "/api/telegram/test"): "telegram.test",
