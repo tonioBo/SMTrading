@@ -199,8 +199,13 @@ export function equitySeries(lines: ChartLine[], palette: Palette, single: boole
     .map((l) => {
       const color = cssColor(l.color, palette);
       const data = toSeriesData(l.points);
+      return { l, color, data };
+    })
+    // no finite point left: nothing to draw (and no price line at a made-up 0)
+    .filter(({ data }) => data.length > 0)
+    .map(({ l, color, data }): EquitySeries => {
       if (l.reference) {
-        return { key: l.key, kind: "goal", color, lineWidth: 1, data, priceLine: { price: data[0]?.value ?? 0, title: l.tag ?? l.label, color } };
+        return { key: l.key, kind: "goal", color, lineWidth: 1, data, priceLine: { price: data[0].value, title: l.tag ?? l.label, color } };
       }
       if (l.bold || l.thin) return { key: l.key, kind: "line", color, lineWidth: l.bold ? 3 : 1, data };
       return {

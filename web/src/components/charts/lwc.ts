@@ -6,7 +6,7 @@
  * notice). Touch: a horizontal drag pans, a pinch zooms, a vertical swipe scrolls the page.
  * Imported only by the lazily loaded chart components.
  */
-import { createChart, ColorType, CrosshairMode, LineStyle, type DeepPartial, type ChartOptions, type IChartApi, type Time } from "lightweight-charts";
+import { createChart, ColorType, CrosshairMode, LineStyle, type DeepPartial, type ChartOptions, type IChartApi, type ISeriesApi, type SeriesType, type Time } from "lightweight-charts";
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { crosshairLabel, tickLabel, withAlpha, type Palette } from "@/lib/chartTheme";
 import { useResize } from "@/components/charts/hooks";
@@ -62,6 +62,28 @@ function baseOptions(p: Palette, daily: boolean, height: number): DeepPartial<Ch
   };
 }
 
+/** The charts already removed (unmount): their series are gone with them. */
+const removedCharts = new WeakSet<IChartApi>();
+
+/** Whether `chart` is still alive (not removed on unmount). */
+export const isChartAlive = (chart: IChartApi) => !removedCharts.has(chart);
+
+/**
+ * Removes `series` from `chart` in an effect's cleanup. On unmount React runs the chart's
+ * own cleanup (`chart.remove()`, declared first) before the series' cleanups, and
+ * `removeSeries` on a removed chart throws «Value is undefined»: a removed chart is skipped.
+ */
+export function removeSeriesSafely(chart: IChartApi, series: readonly ISeriesApi<SeriesType>[]): void {
+  if (!isChartAlive(chart)) return;
+  for (const s of series) {
+    try {
+      chart.removeSeries(s);
+    } catch {
+      // already gone with its chart
+    }
+  }
+}
+
 /**
  * A Lightweight Chart in `ref` (null until mounted), its options applied again when `daily`,
  * the height or the palette (the theme) change.
@@ -80,6 +102,7 @@ export function useLwChart(
     setChart(c);
     return () => {
       setChart(null);
+      removedCharts.add(c);
       c.remove();
     };
   }, [ref]);

@@ -3,13 +3,14 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { HOURLY_RANGES, type EquityHistory, type EquityHistoryGoalLine } from "@/api/hooks/equityHistory";
 import { EquityHistoryCard } from "@/components/EquityHistoryCard";
 import { readPalette } from "@/lib/chartTheme";
 import { equitySeries, historyLines, toSeriesData, tooltipRows, totalChange, totalPoints } from "@/lib/equityHistory";
 import { createQueryClient } from "@/queryClient";
-import { charts, type FakeChart } from "@/test/lightweightCharts";
+import { REAL_HISTORY } from "@/test/fixtures/equityHistory";
+import { charts, FakeSeries, type FakeChart } from "@/test/lightweightCharts";
 
 const requests: URLSearchParams[] = [];
 
@@ -441,6 +442,49 @@ describe("EquityHistoryCard", () => {
     const tip = screen.getByRole("tooltip");
     expect(within(tip).getByText("1.245,00 €")).toBeInTheDocument();
     expect(within(tip).getByText("-5,00 € · -0,40%")).toBeInTheDocument();
+  });
+
+  it("the real responses: switching to a range not loaded yet (the chart unmounts while loading) does not crash, in % and €", async () => {
+    // the 20/11 «6h» crash: on unmount the chart was removed before its series («Value is undefined»)
+    server.use(
+      http.get("*/api/portfolios/equity-history", async ({ request }) => {
+        const range = new URL(request.url).searchParams.get("range") as keyof typeof REAL_HISTORY;
+        await new Promise((r) => setTimeout(r, 5));
+        return HttpResponse.json(REAL_HISTORY[range]);
+      }),
+    );
+    renderCard();
+    await drawn();
+    for (const [label, unit] of [["2h", "%"], ["6h", "%"], ["12h", "€"], ["6h", "€"], ["1g", "%"], ["6h", "%"]]) {
+      await userEvent.click(screen.getByRole("button", { name: unit }));
+      await userEvent.click(screen.getByRole("button", { name: label }));
+      await screen.findByRole("button", { name: label, pressed: true });
+      const c = await drawn();
+      expect(c.series.filter((s) => s.type === "Area")).toHaveLength(3);
+      expect(screen.getByText("Totale (obiettivi)")).toBeInTheDocument();
+      expect(screen.queryByText("Grafico non disponibile")).toBeNull();
+    }
+  });
+
+  it("data the chart refuses: «Grafico non disponibile» in the card, the rest of the page stays", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const setData = vi.spyOn(FakeSeries.prototype, "setData").mockImplementation(() => {
+      throw new Error("Value is undefined");
+    });
+    try {
+      server.use(http.get("*/api/portfolios/equity-history", () => HttpResponse.json(REAL_HISTORY["6h"])));
+      renderCard();
+      expect(await screen.findByText("Grafico non disponibile")).toBeInTheDocument();
+      expect(screen.getByRole("list", { name: "Legenda" })).toBeInTheDocument();
+      expect(charts.at(-1)!.series).toHaveLength(0); // what was added is taken away again
+      setData.mockRestore();
+      await userEvent.click(screen.getByRole("button", { name: "€" })); // another unit: tried again
+      await waitFor(() => expect(screen.queryByText("Grafico non disponibile")).toBeNull());
+      expect((await drawn()).series.length).toBeGreaterThan(0);
+    } finally {
+      setData.mockRestore();
+      error.mockRestore();
+    }
   });
 
   it("portfolio detail: one green area when up (stronger gradient), red when down; removed on unmount", async () => {

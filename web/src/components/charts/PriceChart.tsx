@@ -19,7 +19,7 @@ import {
 } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePalette } from "@/components/charts/hooks";
-import { customFormat, useLwChart } from "@/components/charts/lwc";
+import { customFormat, isChartAlive, removeSeriesSafely, useLwChart } from "@/components/charts/lwc";
 import type { PriceChartProps } from "@/components/charts/types";
 import { crosshairLabel, priceLabel, volumeLabel, withAlpha, type Palette } from "@/lib/chartTheme";
 import { hasVolume, type PriceLineKind } from "@/lib/priceChart";
@@ -103,8 +103,10 @@ export default function PriceChart({ candles, timeframe, volume = true, overlays
     }
     chart.timeScale().fitContent();
     return () => {
+      // on unmount the chart is already removed, with its series and markers
+      if (!isChartAlive(chart)) return;
       marks.detach();
-      created.forEach((s) => chart.removeSeries(s));
+      removeSeriesSafely(chart, created);
     };
   }, [chart, candles, overlays, lines, markers, palette, withVolume, narrow, formatPrice]);
 
@@ -112,7 +114,9 @@ export default function PriceChart({ candles, timeframe, volume = true, overlays
     if (!chart) return;
     const onMove = (param: MouseEventParams<Time>) => setHover(param.time == null ? null : Number(param.time));
     chart.subscribeCrosshairMove(onMove);
-    return () => chart.unsubscribeCrosshairMove(onMove);
+    return () => {
+      if (isChartAlive(chart)) chart.unsubscribeCrosshairMove(onMove);
+    };
   }, [chart]);
 
   const bar = (hover != null ? byTime.get(hover) : undefined) ?? candles[candles.length - 1];

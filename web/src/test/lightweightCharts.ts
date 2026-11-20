@@ -2,6 +2,9 @@
  * A stand-in for `lightweight-charts` in jsdom (no canvas): registered for every test in
  * setup.ts. It records what the components ask for (series with their options and data,
  * price lines, markers, panes) so tests can check it, and lets a test move the crosshair.
+ * It refuses what the real library refuses: data not strictly ascending by time, a value
+ * that is not a finite number, removing a series the chart does not have (also after
+ * `remove()`: «Value is undefined»).
  */
 type Handler = (param: { time?: number; point?: { x: number; y: number } }) => void;
 
@@ -18,12 +21,22 @@ export class FakeSeries {
     public pane: number,
   ) {}
   setData(data: unknown[]) {
+    let prev = -Infinity;
+    data.forEach((d, i) => {
+      const item = d as { time: number; value?: unknown; open?: unknown };
+      if (!(item.time > prev)) throw new Error(`Assertion failed: data must be asc ordered by time, index=${i}, time=${item.time}, prev time=${prev}`);
+      prev = item.time;
+      if ("value" in item && (typeof item.value !== "number" || !Number.isFinite(item.value))) {
+        throw new Error(`Assertion failed: ${this.type} series item data value must be a number, got=${typeof item.value}, value=${String(item.value)}`);
+      }
+    });
     this.data = data;
   }
   applyOptions(o: Record<string, unknown>) {
     this.options = { ...this.options, ...o };
   }
   createPriceLine(options: Record<string, unknown>) {
+    if (typeof options.price !== "number") throw new Error(`Assertion failed: the type of 'price' price line's property must be a number, got '${typeof options.price}'`);
     const line = { options };
     this.priceLines.push(line);
     return line;
@@ -51,6 +64,7 @@ export class FakeChart {
     return s;
   }
   removeSeries(s: FakeSeries) {
+    if (!this.series.includes(s)) throw new Error("Value is undefined");
     this.series = this.series.filter((x) => x !== s);
   }
   applyOptions(o: Record<string, unknown>) {
@@ -80,6 +94,7 @@ export class FakeChart {
   resize() {}
   remove() {
     this.removed = true;
+    this.series = [];
   }
 }
 

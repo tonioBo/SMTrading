@@ -6,9 +6,9 @@
 import { AreaSeries, LineSeries, LineStyle, type ISeriesApi, type LogicalRange, type MouseEventParams, type SeriesType, type Time, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePalette } from "@/components/charts/hooks";
-import { customFormat, useLwChart } from "@/components/charts/lwc";
+import { customFormat, isChartAlive, removeSeriesSafely, useLwChart } from "@/components/charts/lwc";
 import type { EquityChartProps } from "@/components/charts/types";
-import { equitySeries } from "@/lib/equityHistory";
+import { equitySeries, type EquitySeries } from "@/lib/equityHistory";
 import { timeLabel } from "@/lib/lineChart";
 import { useIsNarrow } from "@/lib/media";
 
@@ -20,12 +20,15 @@ export default function EquityChart({ lines, single, formatValue, rowsAt, daily,
   const [tip, setTip] = useState<{ t: number; x: number } | null>(null);
   const zoom = useRef<{ key: string; range: LogicalRange | null } | null>(null);
   const specs = useMemo(() => equitySeries(lines, palette, single), [lines, palette, single]);
+  /** the specs the library refused (setData threw): «Grafico non disponibile», not a crashed page */
+  const [failed, setFailed] = useState<EquitySeries[] | null>(null);
+  const broken = failed === specs;
 
   useEffect(() => {
     if (!chart) return;
     const created: ISeriesApi<SeriesType>[] = [];
     const priceFormat = customFormat(formatValue, 0.01);
-    for (const s of specs) {
+    const add = (s: EquitySeries) => {
       const data = s.data.map((p) => ({ time: p.time as UTCTimestamp, value: p.value }));
       if (s.kind === "area") {
         const a = chart.addSeries(AreaSeries, {
@@ -37,8 +40,8 @@ export default function EquityChart({ lines, single, formatValue, rowsAt, daily,
           priceLineVisible: false,
           lastValueVisible: single,
         });
-        a.setData(data);
         created.push(a);
+        a.setData(data);
       } else if (s.kind === "line") {
         const l = chart.addSeries(LineSeries, {
           color: s.color,
@@ -48,8 +51,8 @@ export default function EquityChart({ lines, single, formatValue, rowsAt, daily,
           lastValueVisible: s.lineWidth === 3,
           crosshairMarkerVisible: s.lineWidth === 3,
         });
-        l.setData(data);
         created.push(l);
+        l.setData(data);
       } else {
         // the goal: an invisible flat series (it keeps the target in the autoscale) and its line
         const g = chart.addSeries(LineSeries, {
@@ -61,20 +64,32 @@ export default function EquityChart({ lines, single, formatValue, rowsAt, daily,
           lastValueVisible: false,
           crosshairMarkerVisible: false,
         });
+        created.push(g);
         g.setData(data);
         if (s.priceLine) {
           g.createPriceLine({ price: s.priceLine.price, color: s.priceLine.color, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: s.priceLine.title });
         }
-        created.push(g);
       }
+    };
+    try {
+      specs.forEach(add);
+    } catch (e) {
+      // data the library refuses: this chart says so, the page goes on
+      console.error("Andamento: grafico non disponibile", e);
+      removeSeriesSafely(chart, created);
+      setFailed(specs);
+      return;
     }
     const ts = chart.timeScale();
     const kept = zoom.current?.key === resetKey ? zoom.current.range : null;
     if (kept) ts.setVisibleLogicalRange(kept);
     else ts.fitContent();
     return () => {
+      // on unmount useLwChart's cleanup (declared first) has already removed the chart and
+      // its series: removeSeries on it would throw «Value is undefined» (the «6h» crash)
+      if (!isChartAlive(chart)) return;
       zoom.current = { key: resetKey, range: ts.getVisibleLogicalRange() };
-      created.forEach((s) => chart.removeSeries(s));
+      removeSeriesSafely(chart, created);
     };
   }, [chart, specs, single, resetKey, formatValue]);
 
@@ -85,15 +100,22 @@ export default function EquityChart({ lines, single, formatValue, rowsAt, daily,
       else setTip({ t: Number(param.time) * 1000, x: param.point.x });
     };
     chart.subscribeCrosshairMove(onMove);
-    return () => chart.unsubscribeCrosshairMove(onMove);
+    return () => {
+      if (isChartAlive(chart)) chart.unsubscribeCrosshairMove(onMove);
+    };
   }, [chart]);
 
-  const rows = tip ? rowsAt(tip.t) : [];
+  const rows = tip && !broken ? rowsAt(tip.t) : [];
   const width = ref.current?.clientWidth ?? 0;
   const right = tip != null && width > 0 && tip.x > width / 2;
   return (
     <div className="relative w-full select-none" role="img" aria-label={ariaLabel} data-testid="equity-chart">
-      <div ref={ref} className="w-full" style={{ height }} />
+      <div ref={ref} className={broken ? "invisible w-full" : "w-full"} style={{ height }} />
+      {broken && (
+        <p className="absolute inset-0 flex items-center justify-center text-sm text-muted" role="status">
+          Grafico non disponibile
+        </p>
+      )}
       {tip && rows.length > 0 && (
         <div
           role="tooltip"
