@@ -17,18 +17,29 @@ win_rate_pct, avg_trade_pct, max_drawdown_pct, sharpe, total_return_pct}, live: 
 trades, open_trades, closed_trades, wins, win_rate_pct, avg_trade_pct, pnl_eur,
 max_drawdown_pct, max_drawdown_eur, trades_per_month, days}, verdict, reasons}]}
 (performance.expectations: «previsto contro reale»), cached like the results.
+
+`GET /api/strategies/research?kind=&limit=` → {runs: [run]}: the agents' research runs
+(walk-forward, parameter sweep, portfolio backtest), newest first, each with `summary`
+instead of the result (`research_runner.run_view`); kind walk_forward | param_sweep |
+portfolio, limit 1-200 (default 50). `GET /api/strategies/research/{id}` → the run with
+its full `result` (404 when unknown). Not cached (small, read on demand).
 """
 
 import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from redis.exceptions import RedisError
+from sqlalchemy import select
 
 from smtrading.admin.auth import DbSession, RedisClient, require_access
 from smtrading.admin.common import Quotes
+from smtrading.agents.models import Agent
+from smtrading.backtest.models import ResearchKind, ResearchRun
+from smtrading.backtest.research_runner import run_view
 from smtrading.mcp.dto import to_jsonable
 from smtrading.performance.expectations import MIN_TRADES, strategy_expectations
 from smtrading.performance.strategies import strategy_performance
@@ -76,3 +87,23 @@ async def expectations(session: DbSession, redis: RedisClient, qs: Quotes) -> di
     except RedisError:
         log.warning("strategy expectations cache write failed", exc_info=True)
     return body
+
+
+@router.get("/strategies/research")
+async def research_runs(session: DbSession, kind: ResearchKind | None = None,
+                        limit: int = Query(50, ge=1, le=200)) -> dict[str, Any]:
+    q = select(ResearchRun, Agent.name).outerjoin(Agent, Agent.id == ResearchRun.agent_id)
+    if kind is not None:
+        q = q.where(ResearchRun.kind == kind)
+    rows = (await session.execute(
+        q.order_by(ResearchRun.created_at.desc(), ResearchRun.id).limit(limit))).all()
+    return to_jsonable({"runs": [run_view(r, name, full=False) for r, name in rows]})
+
+
+@router.get("/strategies/research/{run_id}")
+async def research_run(run_id: UUID, session: DbSession) -> dict[str, Any]:
+    run = await session.get(ResearchRun, run_id)
+    if run is None:
+        raise HTTPException(404, "Analisi non trovata")
+    name = await session.scalar(select(Agent.name).where(Agent.id == run.agent_id))
+    return to_jsonable(run_view(run, name, full=True))

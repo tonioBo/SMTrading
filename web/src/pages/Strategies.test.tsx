@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { StrategiesPerformanceResponse, StrategyExpectationsResponse } from "@/api/types";
+import type { ResearchRun, ResearchRunsResponse, StrategiesPerformanceResponse, StrategyExpectationsResponse } from "@/api/types";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
 
@@ -94,6 +94,44 @@ const expectations: StrategyExpectationsResponse = {
   ],
 };
 
+const RUN_BASE = {
+  agent: "Quant Researcher", symbols: ["SPY"], timeframe: "1d", from_date: "2023-01-01T00:00:00Z",
+  to_date: "2025-12-31T00:00:00Z", initial_cash: "10000", portfolio_id: "p-agg", warnings: [], error: null,
+  created_at: "2026-11-19T10:00:00Z", started_at: "2026-11-19T10:00:01Z", finished_at: "2026-11-19T10:00:09Z",
+};
+const wfRun: ResearchRun = {
+  ...RUN_BASE, id: "wf1", kind: "walk_forward", strategy: "sma_cross", spec: {}, status: "completed",
+  summary: { verdict: "fragile", oos_metrics: { total_return_pct: "4.25", max_drawdown_pct: "7.5" }, stability_pct: "50" },
+};
+const research: ResearchRunsResponse = {
+  runs: [
+    {
+      ...RUN_BASE, id: "pf1", kind: "portfolio", strategy: null, status: "completed",
+      spec: { sleeves: [{ strategy: "sma_cross", symbols: ["SPY"] }, { strategy: "momentum", symbols: ["QQQ"] }] },
+      summary: { metrics: { total_return_pct: "12", max_drawdown_pct: "9", sharpe: "0.9" } },
+    },
+    {
+      ...RUN_BASE, id: "sw1", kind: "param_sweep", strategy: "donchian", spec: {}, status: "failed", error: "timeout after 600s",
+      summary: null,
+    },
+    wfRun,
+  ],
+};
+const wfDetail: ResearchRun = {
+  ...wfRun,
+  result: {
+    verdict: "fragile",
+    reasons: ["parametri migliori instabili (stabilità 50.0000%)"],
+    windows: [
+      {
+        window: 1, oos_from: "2024-06-01T00:00:00Z", oos_to: "2024-12-31T00:00:00Z", best_params: { fast: 10, slow: 50 },
+        is_metrics: { total_return_pct: "8" }, oos_metrics: { total_return_pct: "3.5", max_drawdown_pct: "4", sharpe: "0.7", trades: 6 },
+      },
+    ],
+    oos_equity: [],
+  },
+};
+
 let current: StrategiesPerformanceResponse = body;
 const server = setupServer(
   ...commonHandlers,
@@ -101,6 +139,8 @@ const server = setupServer(
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
   http.get("*/api/strategies/performance", () => HttpResponse.json(current)),
   http.get("*/api/strategies/expectations", () => HttpResponse.json(expectations)),
+  http.get("*/api/strategies/research", () => HttpResponse.json(research)),
+  http.get("*/api/strategies/research/wf1", () => HttpResponse.json(wfDetail)),
 );
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
@@ -172,5 +212,28 @@ describe("Strategies", () => {
     // the cards for small screens carry the same verdicts
     const cards = screen.getByRole("list", { name: "Previsto contro reale (schede)" });
     expect(within(cards).getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("lists the research runs and opens a walk-forward", async () => {
+    renderApp("/strategie");
+    await userEvent.click(await screen.findByRole("tab", { name: "Ricerca" }));
+    const table = await screen.findByRole("table", { name: "Analisi di ricerca" });
+    const [pf, sw, wf] = within(table).getAllByRole("row").slice(1);
+    expect(within(pf).getByText("Portafoglio di strategie")).toBeInTheDocument();
+    expect(within(pf).getByText("sma_cross + momentum")).toBeInTheDocument();
+    expect(pf).toHaveTextContent("12,0% · DD 9,0% · Sharpe 0,90");
+    expect(within(sw).getByText("fallita")).toBeInTheDocument();
+    expect(within(sw).getByText("timeout after 600s")).toBeInTheDocument();
+    expect(within(sw).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(wf).getByText("fragile")).toBeInTheDocument();
+    expect(wf).toHaveTextContent("fuori campione 4,3% · DD 7,5% · stabilità 50%");
+    expect(wf).toHaveTextContent("01/01/2023 – 31/12/2025 · 1d");
+    await userEvent.click(within(wf).getByRole("button", { name: "Dettaglio analisi Walk-forward sma_cross" }));
+    const windows = await screen.findByRole("table", { name: "Finestre del walk-forward" });
+    const [w1] = within(windows).getAllByRole("row").slice(1);
+    expect(w1).toHaveTextContent("fast 10 · slow 50");
+    expect(w1).toHaveTextContent("8,0%");
+    expect(w1).toHaveTextContent("3,5%");
+    expect(screen.getByText("parametri migliori instabili (stabilità 50.0000%)")).toBeInTheDocument();
   });
 });

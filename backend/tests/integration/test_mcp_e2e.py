@@ -35,6 +35,9 @@ ALL_TOOLS = {
     "delete_watchlist", "create_alert", "list_alerts", "delete_alert",
     # backtests
     "run_backtest", "get_backtest", "list_backtests",
+    # strategy research
+    "run_walk_forward", "run_param_sweep", "run_portfolio_backtest", "get_research",
+    "list_research",
     # decisions, activity feed, Telegram
     "log_decision", "get_decisions", "get_activity_feed", "send_telegram",
     # trading halt

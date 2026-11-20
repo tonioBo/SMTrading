@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Pnl } from "@/components/Pnl";
 import { StatusBadge, type StatusTone } from "@/components/StatusBadge";
 import { StrategyExpectations } from "@/components/StrategyExpectations";
+import { StrategyResearch } from "@/components/StrategyResearch";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -138,6 +139,7 @@ export default function Strategies() {
         <TabsList className="mb-4 flex-wrap">
           <TabsTrigger value="results">Risultati</TabsTrigger>
           <TabsTrigger value="expected">Previsto contro reale</TabsTrigger>
+          <TabsTrigger value="research">Ricerca</TabsTrigger>
         </TabsList>
         <TabsContent value="results">
           {isError && <p className="text-loss">Impossibile caricare i risultati delle strategie</p>}
@@ -183,6 +185,9 @@ export default function Strategies() {
         </TabsContent>
         <TabsContent value="expected">
           <StrategyExpectations />
+        </TabsContent>
+        <TabsContent value="research">
+          <StrategyResearch />
         </TabsContent>
       </Tabs>
     </div>

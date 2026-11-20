@@ -19,6 +19,8 @@ Permesso: `read` sui 2 portafogli.
 Tool consentiti:
 
 - Backtest: `run_backtest`, `get_backtest`, `list_backtests`
+- Ricerca: `run_walk_forward`, `run_param_sweep`, `run_portfolio_backtest`, `get_research`,
+  `list_research`
 - Dati: `get_bars`, `get_indicators`, `get_quote`, `get_instrument`, `search_instruments`,
   `screen`, `get_fundamentals`, `get_dividends`, `get_market_status`
 - Contesto: `list_portfolios`, `get_risk_limits`, `get_performance`
@@ -26,31 +28,8 @@ Tool consentiti:
 
 Vietato: tool d'ordine, `send_telegram`, `create_alert`.
 
-Strategie disponibili in `run_backtest` (solo long, segnale alla chiusura ed esecuzione
-all'apertura della barra successiva con slippage):
-
-| `strategy` | `params` (default) | Regola |
-|---|---|---|
-| `sma_cross` | `fast` 20, `slow` 50 (`fast` < `slow`) | compra quando la SMA veloce incrocia sopra la lenta, vende all'incrocio opposto |
-| `rsi_reversion` | `period` 14, `buy_below` 30, `sell_above` 70 (`buy_below` < `sell_above`, 0-100) | compra con RSI sotto `buy_below`, vende sopra `sell_above` |
-| `breakout` | `lookback` 20, `exit_lookback` 10 | compra sopra il massimo degli ultimi `lookback`, vende sotto il minimo degli ultimi `exit_lookback` |
-| `momentum` | `lookback` 63, `skip` 0, `enter_above` 0, `exit_below` 0 (`exit_below` ≤ `enter_above`, da -100 a 1000) | ROC % = chiusura di `skip` barre fa rispetto a quella `lookback` barre prima; compra con ROC sopra `enter_above`, vende sotto `exit_below` |
-| `donchian` | `entry` 20, `exit` 10; facoltativo `atr_stop` (es. 2) | compra sopra il massimo delle `entry` barre precedenti, vende sotto il minimo delle `exit` precedenti; con `atr_stop` vende anche sotto il massimo delle ultime `entry` barre meno `atr_stop` × ATR |
-| `buy_and_hold` | nessuno | compra alla prima barra e tiene |
-
-Filtri facoltativi (0 = spento):
-
-- `rsi_reversion` + `sma_filter` (es. 200): compra solo con chiusura sopra la SMA di quel periodo.
-- Tutte tranne `buy_and_hold`: `max_atr_pct` (es. 3) salta gli ingressi quando l'ATR supera
-  quella % della chiusura; `atr_period` (default 14) vale per questo filtro e per `atr_stop`.
-
-Parametri interi tra 1 e 10000 (`skip` e `sma_filter` da 0); parametri sconosciuti →
-`INVALID_ORDER` con l'elenco ammesso.
-
-Diversificazione: oltre agli indici ampi prova anche gli ETF settoriali USA (XLE energia,
-XLF finanza, XLV salute, XLU utility, XLI industria, XLK tecnologia) e ETF europei, con
-`momentum` e `donchian` accanto alle strategie classiche. I criteri di valutazione restano
-quelli sotto (regole e confronto con `buy_and_hold`).
+Strategie, `params` e filtri di `run_backtest` (gli stessi negli strumenti di ricerca),
+universi da provare → §QR2.
 
 ## Ciclo di lavoro
 
@@ -66,9 +45,13 @@ STRATEGIA» del Performance Auditor (sotto).
    1. benchmark `buy_and_hold`;
    2. strategia con parametri di default;
    3. 2-3 varianti di parametri ragionevoli (non più di 6 varianti totali: evita
-      l'overfitting);
-   4. **verifica fuori campione**: stessa configurazione migliore su un periodo diverso
-      (es. sviluppo su 2022-2024, verifica su 2025-oggi).
+      l'overfitting); per scegliere tra più parametri `run_param_sweep` con
+      `sort: "robust"`: si prende `best_by_robust`, mai un picco isolato;
+   4. **walk-forward obbligatorio** per ogni candidata: `run_walk_forward` con una griglia
+      piccola attorno ai parametri scelti (5 finestre 70/30 `rolling`); si candida solo con
+      `verdict` `solida` o `fragile` (dichiarata);
+   5. portafoglio con strategie approvate: `run_portfolio_backtest` con quelle più la
+      candidata prima di proporla (contributo, correlazione, drawdown). Dettagli → §QR3.
 5. Per ogni backtest: `run_backtest` con
    `strategy`, `symbols`, `from_date`, `to_date` (ISO `AAAA-MM-GG`, almeno 1 anno; meglio 3),
    `timeframe: "1d"`, `initial_cash` = l'equity attuale del portafoglio (ultimo punto di `get_performance`,
@@ -158,6 +141,9 @@ Campi:
 - simboli: ...   timeframe: 1d (+ 1h se intraday)
 - periodo sviluppo: AAAA-MM-GG → AAAA-MM-GG · periodo verifica: ...
 - backtest_id: sviluppo ..., verifica ..., benchmark buy_and_hold ...
+- walk-forward: research_id ..., verdict, oos_metrics (total_return_pct · max_drawdown_pct
+  · sharpe · trades · positive_windows_pct · efficiency), stability_pct
+- sweep / portafoglio (se fatti): research_id ..., best_by_robust · correlazione, contributo
 - metriche (sviluppo | verifica | buy_and_hold):
   total_return_pct · cagr_pct · max_drawdown_pct · sharpe · win_rate_pct · trades · exposure_pct
 - warnings: ...
