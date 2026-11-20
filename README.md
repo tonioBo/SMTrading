@@ -727,9 +727,11 @@ smtrading.backup.main`) lavora da solo finché Docker è acceso:
   ripristino): il servizio la esegue entro 15 secondi. *Impostazioni → Scarica backup
   ora* resta per un dump immediato scaricato dal browser.
 
-**La chiave di cifratura non è nei backup.** Le credenziali di connettori e broker sono
-nel database cifrate con `SMT_MASTER_KEY` (in `.env`): senza quella chiave un ripristino
-funziona ma le credenziali vanno reinserite. Il proprietario conserva `SMT_MASTER_KEY` (e
+**La chiave di cifratura non è nei backup.** Le credenziali di connettori e broker, il
+token del bot Telegram, la chiave board di Paperclip e i segreti TOTP (2FA) degli utenti
+sono nel database cifrati con `SMT_MASTER_KEY` (in `.env`): senza quella chiave un
+ripristino funziona ma le credenziali vanno reinserite e la 2FA azzerata
+(`users reset-totp`). Il proprietario conserva `SMT_MASTER_KEY` (e
 le altre voci di `.env`: `POSTGRES_PASSWORD`, admin, Telegram) **a parte**, per esempio in
 un gestore di password, mai nella cartella dei backup né in OneDrive in chiaro.
 
@@ -757,6 +759,75 @@ il database vero: `docker compose exec postgres createdb -U smtrading prova` e
 I log dei processi (`docker compose logs`) non contengono chiavi: le richieste HTTP verso i
 fornitori non sono registrate e un filtro maschera token, API key, password e credenziali
 `Authorization` in ogni riga.
+
+### Cambio della chiave master
+
+`SMT_MASTER_KEY` cifra (AES-GCM, chiave = sha256 della `SMT_MASTER_KEY`) tutto e solo
+questo: configurazioni dei connettori (`connectors.config_encrypted`), chiavi dei broker
+paper/demo e reali (`broker_links.config_encrypted`), segreti TOTP degli utenti
+(`admin_users.totp_secret_encrypted`), token del bot Telegram
+(`app_settings.telegram.token_enc`) e chiave board di Paperclip
+(`app_settings.paperclip.board_key_enc`). Non serve ad altro: le sessioni del portale sono
+identificativi casuali in Redis (non firmati), il token CSRF è casuale, le password sono
+hash argon2 senza «pepper», i token degli agenti non ne dipendono. **Dopo il cambio nessuno
+viene disconnesso, le password restano valide e la 2FA continua a funzionare** (anche i
+segreti TOTP vengono cifrati di nuovo).
+
+Lo strumento `python -m smtrading.devtools.rotate_master_key`, eseguito nel container
+`api`, legge la chiave attuale da `SMT_MASTER_KEY` e la nuova **solo** dalla variabile
+`SMT_NEW_MASTER_KEY` (mai dalla riga di comando). In un'unica transazione, con le righe
+bloccate, decifra ogni valore con la chiave attuale, lo cifra con la nuova, lo rilegge dal
+database e lo verifica con la nuova chiave:
+
+- `--dry-run` (predefinito): conteggi per campo, poi rollback: non scrive nulla;
+- `--apply`: salva solo se **tutti** i valori superano la verifica, con una riga di audit
+  `admin:master_key.rotate` (solo conteggi). Se anche un solo valore non si decifra con la
+  chiave attuale non cambia nulla: elenca campo e id di ciascuno (esito `refused`
+  nell'audit). Quella credenziale è già illeggibile per l'applicazione (risulta «da
+  reinserire»): reinseriscila dal portale, oppure, per un TOTP, `users reset-totp`, e
+  riprova;
+- `--generate`: stampa una nuova chiave casuale di 64 caratteri, e nient'altro.
+
+L'output non contiene mai chiavi, valori decifrati o cifrati: solo campi, conteggi e id.
+La nuova chiave deve avere almeno 32 caratteri, almeno 12 diversi, due tipi di carattere,
+niente spazi, ed essere diversa da quella attuale (codice di uscita 2 altrimenti).
+
+Procedura (dal PC, nella cartella del progetto):
+
+1. **Backup prima di tutto:**
+   `docker compose exec -T postgres pg_dump -U smtrading -Fc smtrading > "/mnt/d/Backups/SMTrading/prima-cambio-chiave-$(date +%Y%m%d-%H%M).dump"`.
+2. **Agenti fermi:** in Paperclip nessun agente al lavoro (come per un aggiornamento),
+   nessuno usa il portale. Poi `docker compose stop worker backup` (l'`api` resta accesa
+   per eseguire lo strumento).
+3. **Genera la nuova chiave:**
+   `docker compose exec api python -m smtrading.devtools.rotate_master_key --generate`.
+4. **Salvala in KeePass** come nuova voce («SMT_MASTER_KEY dal GG/MM/AAAA»). La voce con la
+   chiave attuale **non si cancella**: rinominala «SMT_MASTER_KEY fino al GG/MM/AAAA».
+5. **Passala alla shell senza lasciarla nella cronologia:**
+   `read -rs SMT_NEW_MASTER_KEY && export SMT_NEW_MASTER_KEY` (incolla, Invio: non si
+   vede nulla).
+6. **Prova:**
+   `docker compose exec -e SMT_NEW_MASTER_KEY api python -m smtrading.devtools.rotate_master_key --dry-run`.
+   Deve finire con `totale: N, verificati con la nuova chiave: N` e «prova (dry-run)».
+7. **Applica:** lo stesso comando con `--apply` («applicato: … (commit)»). Da questo
+   momento il database è cifrato con la nuova chiave: passa subito ai punti 8-9.
+8. **Aggiorna `.env`:** sostituisci il valore di `SMT_MASTER_KEY` con la nuova chiave
+   (`nano .env`, incolla), poi `unset SMT_NEW_MASTER_KEY`.
+9. **Riavvia** ricreando i container (un semplice `restart` non rilegge `.env`):
+   `docker compose up -d --force-recreate api worker backup`.
+10. **Verifica:** *Connettori* (stato dei connettori con chiave), *Broker* («Prova
+    collegamento» sui paper/demo, sezione «Denaro reale» senza chiavi illeggibili),
+    *Notifiche* (messaggio di prova Telegram), «Salute del sistema» (Paperclip letto,
+    backup), un accesso con 2FA da una finestra anonima; e
+    `docker compose logs --since 10m api worker | grep -iE "cannot be decrypted|unreadable"`
+    non deve mostrare nulla.
+11. **La vecchia chiave resta in KeePass** finché la verifica non è completa **e** finché
+    esistono backup fatti prima del cambio (fino a 12 mesi, vedi conservazione): un dump
+    precedente si ripristina con la vecchia chiave in `.env`, poi si ripete il cambio.
+
+Se dopo il riavvio qualcosa risulta illeggibile, controlla che in `.env` ci sia
+esattamente la nuova chiave (e ricrea i container); in ultima istanza ripristina il dump
+del punto 1 con la vecchia chiave in `.env`.
 
 ### Aggiornamenti
 
