@@ -770,3 +770,63 @@ async def test_valid_until_queued_market_order_expires_before_the_open(maker, re
     await _proc(maker, redis, qs, clock).sweep()
     assert (await _order(maker, oid)).status == OrderStatus.expired
     assert await _fills(maker, oid) == []
+
+
+# -- plan 25: suspect quotes (quality guard) ------------------------------------------------
+
+def _suspect_tick(qs, bid, ask, ts, reason="jump"):
+    qs.set_quote("AAPL", D(bid), D(ask), None, ts=ts, suspect=reason)
+    return qs._quotes["AAPL"]
+
+
+async def _activities(maker, kind):
+    from smtrading.activity.models import Activity
+
+    async with maker() as s:
+        return list(await s.scalars(select(Activity).where(Activity.type == kind)))
+
+
+async def test_stop_never_fires_on_a_suspect_quote(maker, redis, qs):
+    pid = await _portfolio(maker)
+    await _place(maker, redis, qs, pid)  # long 10
+    oid = await _place(
+        maker, redis, qs, pid, side=OrderSide.sell, type=OrderType.stop, stop_price=D("95.00")
+    )
+    clock = Clock(OPEN + timedelta(minutes=1))
+    proc = _proc(maker, redis, qs, clock, min_eval_interval_s=0)
+
+    assert await proc.on_tick("AAPL", _suspect_tick(qs, "60.00", "60.10", clock.now)) == 0
+    clock.advance(1)
+    assert await proc.on_tick("AAPL", _suspect_tick(qs, "60.00", "60.10", clock.now)) == 0
+    order = await _order(maker, oid)
+    assert order.status == OrderStatus.pending and not await _fills(maker, oid)
+    acts = await _activities(maker, "order.quote_suspect")
+    assert len(acts) == 1  # once per order and hour
+    assert acts[0].portfolio_id == pid and "prezzo da verificare" in acts[0].summary
+    assert "salto improvviso" in acts[0].summary
+
+    clock.advance(1)  # the next good quote: the stop fires there
+    assert await proc.on_tick("AAPL", _tick(qs, "94.00", "94.10", clock.now)) == 1
+    assert (await _order(maker, oid)).avg_fill_price == D("94.00")
+
+
+async def test_limit_and_sweep_wait_on_a_suspect_quote(maker, redis, qs):
+    pid = await _portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95.00"))
+    clock = Clock(OPEN + timedelta(minutes=1))
+    _suspect_tick(qs, "50.00", "50.10", clock.now, reason="disagree")
+    await _proc(maker, redis, qs, clock).sweep()
+    assert (await _order(maker, oid)).status == OrderStatus.pending
+    assert not await _fills(maker, oid)
+
+
+async def test_queued_market_order_waits_on_suspect_instead_of_rejecting(maker, redis, qs):
+    pid = await _portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, now=SATURDAY)
+    clock = Clock(MONDAY_OPEN + timedelta(minutes=11))
+    _suspect_tick(qs, "99.90", "100.00", clock.now)
+    await _proc(maker, redis, qs, clock).sweep()
+    assert (await _order(maker, oid)).status == OrderStatus.queued
+    _tick(qs, "99.90", "100.00", clock.now)
+    await _proc(maker, redis, qs, clock).sweep()
+    assert (await _order(maker, oid)).status == OrderStatus.filled

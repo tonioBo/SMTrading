@@ -44,6 +44,7 @@ from smtrading.goals.plans import adds_to, open_closure, plan_grace_error
 from smtrading.instruments.models import Instrument
 from smtrading.instruments.service import validate_price, validate_quantity
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
+from smtrading.marketdata.quality import SUSPECT_REASON
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.models import ARCHIVED_MESSAGE, Portfolio, PortfolioStatus
 from smtrading.risk.halts import covering_halt, halt_message
@@ -154,6 +155,9 @@ async def _estimate_price(
         threshold = await get_stale_threshold(session, instrument.asset_class)
         if (datetime.now(UTC) - quote.ts).total_seconds() > threshold:
             raise _Reject(ErrorCode.STALE_QUOTE, f"quote older than {threshold}s")
+        if quote.suspect is not None:  # marketdata.quality: not confirmed by a second source
+            raise _Reject(ErrorCode.STALE_QUOTE, "quote not confirmed yet, retry shortly",
+                          {"reason": SUSPECT_REASON})
     if order_type in _LIMIT_TYPES:
         return limit_price, quote
     if order_type == OrderType.stop:

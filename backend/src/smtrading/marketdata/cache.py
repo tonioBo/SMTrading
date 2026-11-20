@@ -86,6 +86,7 @@ async def write_quote(redis, q: Quote, *, fetched_at: datetime | None = None) ->
         "ts_us": str(ts_us),
         "provider": q.provider,
         "fetched_at": fetched.isoformat(),
+        "suspect": q.suspect or "",  # always written: a good quote clears the mark
     }
     flat = [x for kv in fields.items() for x in kv]
     script = redis.register_script(_WRITE_QUOTE_LUA)
@@ -118,6 +119,7 @@ async def read_quote_meta(redis, symbol: str) -> tuple[Quote, datetime] | None:
         last=dec("last"),
         ts=datetime.fromisoformat(h["ts"]),
         provider=h["provider"],
+        suspect=h.get("suspect") or None,
     )
     fetched = datetime.fromisoformat(h["fetched_at"]) if h.get("fetched_at") else q.ts
     if fetched.tzinfo is None:

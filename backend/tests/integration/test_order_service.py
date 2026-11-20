@@ -991,3 +991,26 @@ async def test_full_close_cancels_a_closing_side_entry_and_its_held_exits(db_ses
     for o in (entry, tp, sl):
         await db_session.refresh(o)
     assert {entry.status, tp.status, sl.status} == {OrderStatus.canceled}
+
+
+# -- plan 25: a suspect quote (quality guard) is never traded on --------------------------
+
+async def test_market_order_on_a_suspect_quote_is_refused_stale(db_session, qs, p):
+    qs.set_quote("AAPL", D("229.90"), D("230.00"), D("229.95"), suspect="jump")
+    preview = await preview_order(db_session, qs, _req(p), now=OPEN)
+    assert preview.code == ErrorCode.STALE_QUOTE
+    assert preview.details == {"reason": "suspect_quote"}
+    with pytest.raises(SMTError) as exc:
+        await place_order(db_session, qs, _req(p), now=OPEN)
+    assert exc.value.code == ErrorCode.STALE_QUOTE
+    assert exc.value.details["reason"] == "suspect_quote"
+    assert await db_session.scalar(select(func.count()).select_from(Fill)) == 0
+
+
+async def test_marketable_limit_on_a_suspect_quote_rests_pending(db_session, qs, p):
+    qs.set_quote("AAPL", D("150.00"), D("150.10"), D("150.05"), suspect="disagree")
+    order = await place_order(
+        db_session, qs, _req(p, type=OrderType.limit, limit_price=D("205.00")), now=OPEN
+    )
+    assert order.status == OrderStatus.pending
+    assert await db_session.scalar(select(func.count()).select_from(Fill)) == 0

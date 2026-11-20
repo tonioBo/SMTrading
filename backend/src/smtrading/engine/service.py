@@ -283,10 +283,13 @@ async def _lock_order(session: AsyncSession, order_id: UUID) -> Order:
 
 
 async def _try_quote(qs: QuoteSource, symbol: str) -> Quote | None:
+    """The quote to act on at placement; None when there is none or the quality guard
+    marked it suspect (no immediate fill or trigger on it: the processor waits)."""
     try:
-        return (await qs.get_quotes([symbol])).get(symbol)
+        quote = (await qs.get_quotes([symbol])).get(symbol)
     except SMTError:
         return None
+    return None if quote is not None and quote.suspect is not None else quote
 
 
 async def _bid_ask(

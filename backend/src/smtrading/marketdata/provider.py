@@ -34,6 +34,9 @@ class DataProvider:
     # (none declared: `requires_key` stands for one `api_key`)
     config_fields: ClassVar[tuple[str, ...]] = ()
     default_rate_limit_per_min: ClassVar[int] = 60
+    # the provider's own allowance beyond the minute (marketdata.quota): None = none known
+    default_hourly_budget: ClassVar[int | None] = None
+    default_daily_budget: ClassVar[int | None] = None
     # news tagged with bare tickers from any exchange (no listing check on the provider's
     # side): the router keeps an item for a symbol only when its text names the instrument
     news_tags_unverified: ClassVar[bool] = False

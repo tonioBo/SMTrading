@@ -98,6 +98,7 @@ class TwelveDataProvider(DataProvider):
     asset_classes = frozenset({AssetClass.eu_equity, AssetClass.forex, AssetClass.us_equity})
     requires_key = True
     default_rate_limit_per_min = 8
+    default_daily_budget = 800  # free plan: 800 credits/day, reset 00:00 UTC
 
     def _key(self) -> str:
         key = self.config.get("api_key")

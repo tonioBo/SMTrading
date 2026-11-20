@@ -9,6 +9,11 @@ restarted when the set changes. A failing stream reconnects with exponential bac
 it is down, its symbols are polled, as are symbols of classes without a stream provider.
 Polling skips symbols whose market is closed, refreshing them only every
 `closed_poll_every_s`.
+
+Every stream tick passes the router's quote quality guard (marketdata.quality) before it
+is written: a tick that jumps or disagrees with another provider is written marked
+`suspect` (fills and stops wait), and the symbol is polled through the router at once
+(at most every CONFIRM_EVERY_S), whose provider consensus confirms or replaces it.
 """
 
 import asyncio
@@ -40,6 +45,7 @@ CONNECTING = "connecting"
 CONNECTED = "connected"
 BACKOFF = "backoff"
 CLOSED_POLL_EVERY_S = 300
+CONFIRM_EVERY_S = 30
 
 
 def _source_key(source: str) -> str:
@@ -150,6 +156,8 @@ class StreamManager:
         self._unknown: set[str] = set()
         self._markets: dict[str, str] = {}  # tracked symbol -> instrument market
         self._last_poll: dict[str, datetime] = {}
+        self._confirming: dict[str, float] = {}  # symbol -> loop time of the last confirm
+        self._confirm_tasks: set[asyncio.Task] = set()
 
     # ---------------------------------------------------------------- public
 
@@ -306,6 +314,22 @@ class StreamManager:
             # our own cancellation
             await asyncio.wait(tasks)
 
+    def _confirm(self, symbol: str) -> None:
+        """Poll a suspect symbol through the router (provider consensus), in the
+        background, at most every CONFIRM_EVERY_S."""
+        now = asyncio.get_running_loop().time()
+        if now - self._confirming.get(symbol, -1e18) < CONFIRM_EVERY_S:
+            return
+        self._confirming[symbol] = now
+        task = asyncio.create_task(self._router.get_quotes([symbol], max_age_s=0))
+        self._confirm_tasks.add(task)
+        task.add_done_callback(self._confirmed)
+
+    def _confirmed(self, task: asyncio.Task) -> None:
+        self._confirm_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            log.warning("confirming a suspect quote failed: %s", task.exception())
+
     async def _run_stream(self, key: str, stream: _Stream) -> None:
         delay = 1.0
         while True:
@@ -319,6 +343,9 @@ class StreamManager:
                         if not delivered:
                             delivered = True
                             stream.state = CONNECTED
+                        q = await self._router.guard.check_stream(q, stream.asset_class)
+                        if q.suspect is not None:
+                            self._confirm(q.symbol)
                         try:
                             await write_quote(self._redis, q)
                         except Exception:

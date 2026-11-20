@@ -103,3 +103,12 @@ def test_summary_truncated_to_500():
     assert len(d.summary) == MAX_SUMMARY
     e = activity_for_event("order.rejected", {"symbol": "AAPL", "message": "y" * 2000})
     assert len(e.summary) == MAX_SUMMARY
+
+
+def test_order_waiting_on_a_suspect_quote_is_a_quiet_warning():
+    d = activity_for_event("order.quote_suspect", {"symbol": "NVDA", "reason": "jump"})
+    assert d.level == ActivityLevel.warning and d.direct is False
+    assert d.summary == ("Ordine NVDA in attesa: prezzo da verificare (salto improvviso),"
+                         " si esegue con la prossima quotazione affidabile")
+    other = activity_for_event("order.quote_suspect", {"symbol": "NVDA", "reason": "x"})
+    assert "(non confermato)" in other.summary

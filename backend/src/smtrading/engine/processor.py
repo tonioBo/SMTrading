@@ -13,6 +13,10 @@ Closed markets (Ruling R14): nothing is evaluated while `market_status(...).is_o
 false. A quote older than the asset class stale threshold is never acted on. Ruling R15:
 a queued market order still without a fresh quote (stale or missing) 10 minutes after
 the open is rejected with STALE_QUOTE. Orders past `expires_at` are left to the expiry.
+A quote the quality guard marked `suspect` (marketdata.quality: a jump or providers that
+disagree) is never acted on either: no fill, no trigger, no trailing update; the order
+waits for the next good quote (logged, and an `order.quote_suspect` activity at most once
+per order every SUSPECT_NOTE_EVERY).
 
 Each order runs in its own session and transaction. Evaluation first reads the order
 without locks; when there is something to do, the portfolio row and then the order row
@@ -99,6 +103,7 @@ log = logging.getLogger("smtrading.engine.processor")
 TICKS_PATTERN = "ticks:*"
 STALE_REJECT_AFTER_OPEN = timedelta(minutes=10)
 FAILING_SYMBOL_BACKOFF = timedelta(seconds=60)
+SUSPECT_NOTE_EVERY = timedelta(hours=1)
 REJECTING_CODES = frozenset({
     ErrorCode.INSUFFICIENT_BUYING_POWER, ErrorCode.SHORT_NOT_ALLOWED,
     ErrorCode.SYMBOL_NOT_FOUND, ErrorCode.INVALID_ORDER, ErrorCode.REDUCE_ONLY,
@@ -230,6 +235,7 @@ class OrderProcessor:
         self._margin: dict[str, set[UUID]] = {}  # symbol -> margin portfolios holding it
         self._margin_checked: dict[UUID, datetime] = {}
         self._margin_dirty: set[str] = set()  # ticked symbols with a margin check due
+        self._suspect_noted: dict[UUID, datetime] = {}  # order -> last suspect activity
 
     # -- loops -----------------------------------------------------------------------
 
@@ -520,6 +526,9 @@ class OrderProcessor:
                     order.symbol, f"no quote newer than {threshold}s since the market opened"
                 )
             return False  # wait for a fresh quote
+        if quote.suspect is not None:
+            self._note_suspect(session, order, quote, now)
+            return False  # wait for a confirmed quote
         bid, ask = effective_bid_ask(QuoteView(quote.bid, quote.ask, quote.last, quote.ts), spread)
         if _decide(order, bid, ask).action == TriggerAction.none:
             return False
@@ -557,6 +566,19 @@ class OrderProcessor:
             return False
         await _untrack_if_idle(session, order.symbol)
         return True
+
+    def _note_suspect(self, session: AsyncSession, order: Order, quote: Quote,
+                      now: datetime) -> None:
+        last = self._suspect_noted.get(order.id)
+        if last is not None and now - last < SUSPECT_NOTE_EVERY:
+            return
+        self._suspect_noted[order.id] = now
+        log.warning("order %s waits: suspect quote %s from %s (%s)", order.id, order.symbol,
+                    quote.provider, quote.suspect)
+        queue_event(session, "order.quote_suspect", {
+            "order_id": order.id, "portfolio_id": order.portfolio_id,
+            "agent_id": order.agent_id, "symbol": order.symbol, "reason": quote.suspect,
+        })
 
     async def _reject(self, order_id: UUID, error: SMTError) -> None:
         async with self._sm() as session:

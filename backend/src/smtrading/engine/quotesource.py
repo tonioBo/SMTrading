@@ -50,11 +50,11 @@ class FakeQuoteSource:
 
     def set_quote(
         self, symbol: str, bid: Decimal | None, ask: Decimal | None, last: Decimal | None,
-        ts: datetime | None = None,
+        ts: datetime | None = None, suspect: str | None = None,
     ) -> None:
         self._quotes[symbol] = Quote(
             symbol=symbol, bid=bid, ask=ask, last=last, ts=ts or datetime.now(UTC),
-            provider="fake",
+            provider="fake", suspect=suspect,
         )
 
     def set_fx(self, base: str, quote: str, rate: Decimal) -> None:

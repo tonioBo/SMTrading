@@ -27,6 +27,7 @@ from smtrading.instruments.closures import ClosureRefresher
 from smtrading.jobs.scheduler import JobScheduler
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.marketdata.streaming import StreamManager
+from smtrading.marketdata.suspect_alarm import SuspectAlarm
 from smtrading.paperclip.reader import PaperclipReader
 from smtrading.paperclip.watchdog import HandoffWatchdog
 from smtrading.positions.protection import ProtectionAlarm
@@ -207,6 +208,8 @@ async def run() -> None:
                                   lambda: StreamManager(router, redis, sessionmaker).run())
                     ),
                     tg.create_task(supervise("health checks", lambda: health_checks(router))),
+                    tg.create_task(supervise("price quality alarm",
+                                             lambda: SuspectAlarm(sessionmaker, redis).run())),
                     tg.create_task(
                         supervise("order processor",
                                   lambda: OrderProcessor(sessionmaker, redis, router).run())

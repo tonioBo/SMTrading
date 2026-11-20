@@ -29,6 +29,7 @@ from smtrading.connectors.service import (
     update_connector,
 )
 from smtrading.instruments.models import AssetClass
+from smtrading.marketdata import quota
 from smtrading.marketdata import router as _providers_loaded  # noqa: F401 - registers PROVIDERS
 from smtrading.marketdata.provider import ProviderUnsupported
 from smtrading.marketdata.registry import PROVIDERS
@@ -47,6 +48,10 @@ class ConnectorPatchIn(BaseModel):
     enabled: bool | None = None
     config: dict[str, Any] | None = None
     rate_limit_per_min: int | None = None
+    # provider quotas (marketdata.quota): null = back to the default, 0 = no budget
+    hourly_budget: int | None = None
+    daily_budget: int | None = None
+    clear_quota_block: bool = False  # end a 429 demotion now
 
 
 class PriorityIn(BaseModel):
@@ -71,7 +76,25 @@ async def _connector(session: DbSession, name: str) -> Connector:
     return c
 
 
-async def _dto(session: DbSession, c: Connector) -> dict[str, Any]:
+async def _quota(session: DbSession, redis, c: Connector, cls) -> dict[str, Any] | None:
+    """Budgets and usage (marketdata.quota); usage zero when Redis cannot be read."""
+    if cls is None:
+        return None
+    now = datetime.now(UTC)
+    override = (await quota.load_overrides(session)).get(c.name) or {}
+    try:
+        used = (await quota.usage(redis, [c.name], now)).get(c.name) if redis else None
+    except Exception:  # noqa: BLE001 - the page still shows the budgets
+        used = None
+    dto = quota.usage_dto(quota.budget_of(cls, c.rate_limit_per_min, override), used, now)
+    return {**dto, "defaults": {k: getattr(cls, attr, None) for k, attr in (
+                ("per_min", "default_rate_limit_per_min"), ("per_hour", "default_hourly_budget"),
+                ("per_day", "default_daily_budget"))},
+            "custom": sorted(k for k in ("per_hour", "per_day") if k in override),
+            "note": quota.NOTE}
+
+
+async def _dto(session: DbSession, c: Connector, redis=None) -> dict[str, Any]:
     cls = PROVIDERS.get(c.name)
     config = mask_config(await get_connector_config(session, c.name))
     requires_key = bool(cls and cls.requires_key)
@@ -98,12 +121,13 @@ async def _dto(session: DbSession, c: Connector) -> dict[str, Any]:
         "health_status": c.health_status,
         "last_error": c.last_error,
         "last_checked_at": to_jsonable(c.last_checked_at),
+        "quota": await _quota(session, redis, c, cls),
     }
 
 
 @router.get("/connectors")
-async def get_connectors(session: DbSession) -> list[dict]:
-    return [await _dto(session, c) for c in await list_connectors(session)]
+async def get_connectors(session: DbSession, redis: RedisClient) -> list[dict]:
+    return [await _dto(session, c, redis) for c in await list_connectors(session)]
 
 
 @router.patch("/connectors/{name}")
@@ -119,6 +143,14 @@ async def patch_connector(
     rate = body.rate_limit_per_min
     if rate is not None and not 1 <= rate <= MAX_RATE_LIMIT:
         raise _invalid("rate_limit_per_min", "limite di richieste fuori intervallo")
+    budgets = {}
+    for field_name, key in (("hourly_budget", "per_hour"), ("daily_budget", "per_day")):
+        if field_name not in fields:
+            continue
+        value = getattr(body, field_name)
+        if value is not None and not 0 <= value <= quota.MAX_BUDGET:
+            raise _invalid(field_name, "quota fuori intervallo")
+        budgets[key] = value
     async with _transaction(session, redis):
         config = None
         if body.config is not None:
@@ -126,7 +158,11 @@ async def patch_connector(
         await update_connector(
             session, name, enabled=body.enabled, config=config, rate_limit_per_min=rate
         )
-    return await _dto(session, c)
+        if budgets:
+            await quota.save_override(session, name, budgets)
+    if body.clear_quota_block:
+        await quota.unblock(redis, name)
+    return await _dto(session, c, redis)
 
 
 @router.post("/connectors/{name}/test")

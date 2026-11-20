@@ -44,6 +44,9 @@ class Quote:
     last: Decimal | None
     ts: datetime
     provider: str
+    # set by the router's quality guard (marketdata.quality) when the price could not be
+    # confirmed (a jump, or providers that disagree): money logic must not act on it
+    suspect: str | None = None
 
     def __post_init__(self) -> None:
         _normalize_utc(self, "ts")

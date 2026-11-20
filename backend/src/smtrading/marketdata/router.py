@@ -34,9 +34,10 @@ from smtrading.connectors.service import (
     list_connectors,
     record_health,
 )
+from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.instruments.service import canonical_symbol, get_instrument
-from smtrading.marketdata import serialization
+from smtrading.marketdata import quality, quota, serialization
 from smtrading.marketdata.bar_close import bar_is_closed, bars_cache_ttl
 from smtrading.marketdata.cache import (
     CACHE_TTL,
@@ -62,6 +63,7 @@ from smtrading.marketdata.types import (
     ScreenFilter,
     Timeframe,
 )
+from smtrading.risk.settings import get_stale_threshold
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +77,7 @@ BARS_CLOSED_MARKET_SLACK = timedelta(days=4)
 INSTANCE_MAX_AGE_S = 60
 RATE_LIMITED = "rate_limited"
 DAY_CHANGE_TTL_S = 300  # «Mappa dei settori» / «Titoli più mossi»: 5 minutes per symbol
+STALE_SETTINGS_TTL_S = 60  # the «quota vecchia» thresholds the quality guard counts with
 
 _MISS = object()
 
@@ -97,6 +100,7 @@ class _Slot:
     provider: DataProvider | None  # None: lacks the capability, or failed to build
     rate_limit: int
     build_error: str | None = None  # "Type: msg" when construction/config failed
+    budget: quota.Budget | None = None  # hourly/daily allowance (marketdata.quota)
 
 
 @dataclass
@@ -296,6 +300,8 @@ class MarketDataRouter:
         self._instances: dict[str, tuple[DataProvider, float]] = {}
         self._inflight: dict[str, asyncio.Task] = {}
         self._clock = time.monotonic
+        self.guard = quality.QuoteGuard(redis)
+        self._stale_s: tuple[float, dict[str, int]] | None = None
 
     # ---------------------------------------------------------------- infrastructure
 
@@ -316,6 +322,7 @@ class MarketDataRouter:
         self, session: AsyncSession, asset_class: AssetClass, capability: Capability
     ) -> list[_Slot]:
         slots: list[_Slot] = []
+        overrides: dict | None = None
         for name in await get_priorities(session, asset_class, capability):
             cls = PROVIDERS.get(name)
             if cls is None:
@@ -328,16 +335,40 @@ class MarketDataRouter:
                 if conn.rate_limit_per_min is not None
                 else cls.default_rate_limit_per_min
             )
+            if overrides is None:
+                overrides = await quota.load_overrides(session)
+            budget = quota.budget_of(cls, rate, overrides.get(name))
             if capability not in cls.capabilities:
-                slots.append(_Slot(name, None, rate))
+                slots.append(_Slot(name, None, rate, budget=budget))
                 continue
             try:
                 provider = await self._provider(session, name, cls)
             except Exception as e:  # noqa: BLE001 - bad config/constructor: fall back
-                slots.append(_Slot(name, None, rate, build_error=_describe(e)))
+                slots.append(_Slot(name, None, rate, build_error=_describe(e), budget=budget))
                 continue
-            slots.append(_Slot(name, provider, rate))
-        return slots
+            slots.append(_Slot(name, provider, rate, budget=budget))
+        return await self._demote(slots)
+
+    async def _demote(self, slots: list[_Slot]) -> list[_Slot]:
+        """Providers near their hourly/daily budget, or that answered 429, go last
+        (marketdata.quota): tried only when the others do not answer."""
+        names = [s.name for s in slots if s.provider is not None and s.budget is not None]
+        if len(names) < 2:
+            return slots
+        try:
+            used = await quota.usage(self._redis, names)
+        except Exception:
+            log.warning("quota usage unreadable; priorities unchanged", exc_info=True)
+            return slots
+        demoted = {
+            n for n in names
+            if used.get(n) is not None
+            and used[n].demoted(next(s.budget for s in slots if s.name == n)) is not None
+        }
+        if not demoted:
+            return slots
+        return [s for s in slots if s.name not in demoted] + [
+            s for s in slots if s.name in demoted]
 
     def _flight_done(self, key: str, task: asyncio.Task) -> None:
         self._inflight.pop(key, None)
@@ -425,12 +456,22 @@ class MarketDataRouter:
         return result
 
     async def _acquire(self, slot: _Slot, cost: int) -> bool:
-        """Rate-limit gate. A Redis failure fails open: the call proceeds."""
+        """Rate-limit gate. A Redis failure fails open: the call proceeds. An admitted
+        call is counted against the provider's quota (marketdata.quota)."""
         try:
-            return await acquire(self._redis, slot.name, slot.rate_limit, cost=cost)
+            ok = await acquire(self._redis, slot.name, slot.rate_limit, cost=cost)
         except Exception:
             log.warning("rate limiter unavailable for %s; proceeding", slot.name, exc_info=True)
             return True
+        if ok:
+            await quota.count(self._redis, slot.name, min(max(int(cost), 1), slot.rate_limit))
+        return ok
+
+    async def _quota_error(self, slot: _Slot, exc: BaseException, text: str) -> None:
+        """A 429: the provider is demoted for the rest of its period."""
+        if quota.is_quota_error(exc, text):
+            await quota.block(self._redis, slot.name,
+                              slot.budget or quota.Budget(slot.rate_limit, None, None))
 
     async def _attempt_uncached(
         self,
@@ -457,6 +498,7 @@ class MarketDataRouter:
             return _MISS
         except Exception as e:  # noqa: BLE001 - recorded, reported via PROVIDER_UNAVAILABLE
             outcome.errors[slot.name] = _describe(e)
+            await self._quota_error(slot, e, outcome.errors[slot.name])
             return _MISS
         finally:
             if coro is not None and hasattr(coro, "close"):
@@ -591,7 +633,39 @@ class MarketDataRouter:
             return q
         return None
 
+    async def _stale_thresholds(self) -> dict[str, int]:
+        """The «quota vecchia» thresholds by asset class, re-read every minute."""
+        now = self._clock()
+        if self._stale_s is None or now - self._stale_s[0] > STALE_SETTINGS_TTL_S:
+            async with self._sm() as session:
+                values = {str(ac): await get_stale_threshold(session, ac) for ac in AssetClass}
+            self._stale_s = (now, values)
+        return self._stale_s[1]
+
+    async def _note_quality(self, q: Quote, instr: _Instr, now: datetime) -> list[tuple]:
+        """The counted-only classes of an accepted quote: `wide_spread`, `stale`."""
+        events = []
+        if quality.is_wide(q):
+            events.append((q.provider, q.symbol, quality.WIDE_SPREAD))
+        try:
+            limit = (await self._stale_thresholds()).get(str(instr.asset_class))
+            if limit is not None and (now - q.ts).total_seconds() > limit \
+                    and (instr.market is None or market_status(instr.market, now).is_open):
+                events.append((q.provider, q.symbol, quality.STALE))
+        except Exception:
+            log.debug("stale check of %s skipped", q.symbol, exc_info=True)
+        return events
+
+    async def _store_quote(self, q: Quote) -> None:
+        try:
+            await write_quote(self._redis, q)
+        except Exception:
+            log.warning("quote cache write failed for %s", q.symbol, exc_info=True)
+
     async def _quotes(self, instrs: dict[str, _Instr], max_age_s: int) -> dict[str, Quote]:
+        """Cached quotes first, then the providers in priority order. Each provider quote
+        passes the quality guard (marketdata.quality): a `jump` or `disagree` one waits
+        for the next providers' consensus and, unconfirmed, is returned `suspect`."""
         result: dict[str, Quote] = {}
         now = datetime.now(UTC)
         for sym in instrs:
@@ -600,9 +674,22 @@ class MarketDataRouter:
                 result[sym] = q
 
         pending_all = {s: i for s, i in instrs.items() if s not in result}
+        guard = self.guard
+        contexts = await guard.contexts(sorted(pending_all))
         for asset_class, group in self._by_class(pending_all).items():
             outcome = _Outcome()  # per asset class: errors never mix across groups
             pending = {i.symbol: i for i in group}
+            contests: dict[str, quality.Contest] = {}
+            events: list[tuple] = []
+            accepted: list[Quote] = []
+
+            async def accept(q: Quote, pending=pending, events=events, accepted=accepted):
+                result[q.symbol] = q
+                del pending[q.symbol]
+                accepted.append(q)
+                events.extend(await self._note_quality(q, instrs[q.symbol], now))
+                await self._store_quote(q)
+
             for slot in await self._plan(asset_class, Capability.quote):
                 if not pending:
                     break
@@ -616,23 +703,46 @@ class MarketDataRouter:
                 got = await self._attempt(slot, outcome, call, batch=sent)
                 if got is _MISS:
                     continue
+                answered: set[str] = set()
                 for sym in list(pending):
                     q = got.get(sym)
                     if q is None:
                         continue
-                    if q.symbol != sym:
-                        q = replace(q, symbol=sym)
-                    result[sym] = q
-                    del pending[sym]
-                    try:
-                        await write_quote(self._redis, q)
-                    except Exception:
-                        log.warning("quote cache write failed for %s", sym, exc_info=True)
-                missing = sorted({s for s, _ in sent} & set(pending))
+                    answered.add(sym)
+                    if q.symbol != sym or q.suspect is not None:
+                        q = replace(q, symbol=sym, suspect=None)
+                    probs = quality.problems(q, asset_class, contexts.get(sym), guard.now())
+                    contest = contests.get(sym)
+                    if contest is None:
+                        if not probs:
+                            await accept(q)
+                            continue
+                        contests[sym] = quality.Contest([(q, probs)])
+                        continue
+                    decided = contest.offer(q, probs)
+                    if decided is None:
+                        continue
+                    winner, losers = decided
+                    for loser, reasons in losers:
+                        events.extend((loser.provider, sym, r) for r in reasons)
+                    if winner is not q:  # the first one, confirmed by this one
+                        accepted.append(q)
+                    del contests[sym]
+                    await accept(winner)
+                missing = sorted({s for s, _ in sent} - answered)
                 if missing:  # mappable, yet absent from the answer: a provider failure
                     outcome.errors[slot.name] = "missing: " + ",".join(missing)
-                if len(pending) > len(missing):  # the rest it cannot map
+                if set(pending) - {s for s, _ in sent}:  # the rest it cannot map
                     outcome.unsupported = True
+            for sym, contest in contests.items():  # no consensus: passed on as suspect
+                q = contest.suspect()
+                result[sym] = q
+                pending.pop(sym, None)
+                log.warning("suspect quote %s from %s (%s)", sym, q.provider, q.suspect)
+                await guard.suspected(q)
+                await self._store_quote(q)
+            await guard.accepted(accepted)
+            await guard.record(events)
             if pending:  # stop at the first failing group
                 raise outcome.error(
                     Capability.quote, {"asset_class": str(asset_class), "symbols": list(pending)}
@@ -704,6 +814,7 @@ class MarketDataRouter:
                             p.get_day_changes(chunk), _batch_timeout(len(chunk)))
                     except Exception as e:  # noqa: BLE001 - this chunk only, next provider
                         log.warning("day changes from %s failed: %s", slot.name, _describe(e))
+                        await self._quota_error(slot, e, _describe(e))
                         continue
                     for sym, _ in chunk:
                         dc = got.get(sym)

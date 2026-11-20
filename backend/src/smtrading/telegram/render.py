@@ -21,6 +21,7 @@ TITLES = {
     "order.rejected": "Ordine rifiutato",
     "order.canceled": "Ordine annullato",
     "order.expired": "Ordine scaduto",
+    "order.quote_suspect": "Ordine in attesa di un prezzo confermato",
     "kill_switch": "Kill switch",
     "halt.set": "Aperture sospese",
     "halt.cleared": "Aperture riattivate",
