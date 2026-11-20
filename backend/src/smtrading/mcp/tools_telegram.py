@@ -8,13 +8,16 @@ the text length; the text itself stays in the outbox.
 """
 
 import math
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from mcp.server.mcpserver import MCPServer
 from mcp.types import CallToolResult
 from sqlalchemy import func, select, text
 
 from smtrading.agents.models import Agent
+from smtrading.common.config import get_settings
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.mcp.runtime import ToolCtx, run_tool
 from smtrading.telegram.config import is_ready, load_config
@@ -50,6 +53,16 @@ async def _retry_after_s(ctx: ToolCtx, source: str) -> int:
     return max(1, min(AGENT_WINDOW_S, math.ceil(left)))
 
 
+GOOD_MORNING = "Buongiorno – piano di oggi"
+
+
+def _local_midnight() -> datetime:
+    """Today's 00:00 in the platform timezone, as an aware datetime."""
+    zone = ZoneInfo(get_settings().tz)
+    now = datetime.now(zone)
+    return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
 async def _send_telegram(ctx: ToolCtx, text_: Any, level: Any) -> dict:
     can_notify = await ctx.session.scalar(select(Agent.can_notify).where(Agent.id == ctx.agent_id))
     if not can_notify:
@@ -71,6 +84,21 @@ async def _send_telegram(ctx: ToolCtx, text_: Any, level: Any) -> dict:
             f"at most {MAX_PER_WINDOW} Telegram messages per {AGENT_WINDOW_S} s",
             {"retry_after_s": await _retry_after_s(ctx, source)},
         )
+    if body.lower().startswith(GOOD_MORNING.lower()):
+        sent = await ctx.session.scalar(
+            select(TelegramOutbox.id).where(
+                TelegramOutbox.category == "agent",
+                TelegramOutbox.status.notin_(("failed", "skipped")),
+                func.lower(TelegramOutbox.text).contains(GOOD_MORNING.lower()),
+                TelegramOutbox.created_at >= _local_midnight(),
+            ).limit(1)
+        )
+        if sent is not None:
+            raise SMTError(
+                ErrorCode.INVALID_ORDER,
+                "il Buongiorno di oggi è già stato inviato: non inviarne un altro",
+                {"field": "text", "reason": "already_sent_today", "outbox_id": sent},
+            )
     row = await enqueue(ctx.session, source=source, category="agent", level=level, text=message)
     return {"outbox_id": row.id, "status": row.status}
 
