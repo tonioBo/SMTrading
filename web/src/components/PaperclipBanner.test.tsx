@@ -111,7 +111,7 @@ describe("PaperclipBanner", () => {
   });
 
   it("shows the key expiry warning", async () => {
-    status = { ...baseStatus(), key_expiring: true, key_expires_at: "2026-11-20T09:00:00Z" };
+    status = { ...baseStatus(), key_expiring: true, key_expires_at: new Date(Date.now() + 3 * 86_400_000).toISOString() };
     renderApp("/portafogli");
     expect(await screen.findByRole("alert", { name: "Scadenza chiave Paperclip" })).toHaveTextContent("La chiave board di Paperclip scade il");
   });
