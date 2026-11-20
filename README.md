@@ -144,7 +144,11 @@ Funzionamento:
 - *Reset* di un portafoglio collegato: rifiutato se ci sono posizioni aperte (chiudile
   prima); gli annullamenti richiesti vengono mantenuti.
 - *Riconciliazione* (*Riconcilia ora*, e periodica): confronta le posizioni del broker con
-  le nostre e registra le differenze; non corregge nulla.
+  le nostre e registra le differenze; non corregge nulla. Il controllo periodico dei
+  collegamenti di prova (ogni 5 minuti) registra le differenze nel feed delle attività e
+  aggiorna lo stato del collegamento, ma non manda più avvisi Telegram: gli avvisi al
+  proprietario sulle differenze col broker arrivano solo dal controllo della pagina
+  **Riconciliazione** qui sotto.
 - Pagina **Riconciliazione** (Sistema): per ogni portafoglio collegato (prova o denaro
   reale) posizioni, liquidità e ordini aperti di SMTrading contro il conto del broker, con
   stato, voci, storico e *Riconcilia ora* (amministratori). Il worker la ripete ogni 15
@@ -582,7 +586,7 @@ docker compose exec api python -m smtrading.cli agent notify NOME on   # oppure 
 | Livello | Eventi |
 |---|---|
 | 🔴 critico | kill switch attivato, blocco aperture attivato o revocato, liquidazione, perdita giornaliera, ordine sconosciuto al broker |
-| 🟠 avviso | ordine rifiutato, kill switch disattivato, avviso di margine, liquidazione in attesa del broker, prezzo di esecuzione mancante, modifica ordine non riuscita, differenze di riconciliazione broker |
+| 🟠 avviso | ordine rifiutato, kill switch disattivato, avviso di margine, liquidazione in attesa del broker, prezzo di esecuzione mancante, modifica ordine non riuscita, differenze di riconciliazione broker trovate con *Riconcilia ora* (quelle del controllo periodico arrivano dal controllo di riconciliazione, vedi sopra) |
 | 🟢 eseguito | ordine eseguito |
 
 Il resto (ordini accettati o annullati, alert di prezzo, decisioni) compare solo nel feed

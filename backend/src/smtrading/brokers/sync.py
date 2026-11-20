@@ -99,8 +99,11 @@ send-time checks); one already at the broker is canceled when read (`cancel_plan
 before the cancel stand (they happened at the broker).
 
 `reconcile` compares the broker's positions with ours; it never corrects anything (a
-difference is recorded in the activity feed; it is sent to Telegram only when it
-differs from the portfolio's previous reconciliation).
+difference is recorded in the activity feed; from *Riconcilia ora* it is sent to Telegram
+only when it differs from the portfolio's previous reconciliation). The periodic
+`reconcile_all` (scheduler, every 5 minutes) records it quietly, never on Telegram: the
+owner's alerts on broker differences come only from the reconciliation job
+(`smtrading.reconciliation`).
 """
 
 import asyncio
@@ -1457,12 +1460,15 @@ async def _position_balances(session: AsyncSession, portfolio_id: UUID) -> dict[
 
 
 async def reconcile(
-    sessionmaker: async_sessionmaker[AsyncSession], link_id: UUID, http
+    sessionmaker: async_sessionmaker[AsyncSession], link_id: UUID, http, *,
+    notify: bool = True,
 ) -> list[Reconciliation]:
     """Compare the broker's positions with ours and store (committed) one
     Reconciliation per linked portfolio (diffs: [{symbol, ours, broker}], quantities as
     strings). Portfolios sharing a link share the broker account, so `ours` is their
-    sum. Nothing is corrected. Reads, broker calls and writes use separate sessions:
+    sum. Nothing is corrected. A difference is always recorded in the activity feed; with
+    `notify` (default) it is also sent to Telegram when it changed since the previous
+    reconciliation, without it never. Reads, broker calls and writes use separate sessions:
     no transaction is open during network I/O. A client the adapter needed of its own
     (a live link's LiveClient) is closed after the broker calls."""
     async with contextlib.AsyncExitStack() as stack:
@@ -1505,7 +1511,7 @@ async def reconcile(
                 # only a change is sent to Telegram; a repeat is recorded quietly
                 record_activity(session, ActivityDraft(
                     "broker.reconciliation_diff", ActivityLevel.warning,
-                    previous.get(row.portfolio_id) != diffs,
+                    notify and previous.get(row.portfolio_id) != diffs,
                     f"Riconciliazione broker con {len(diffs)} {noun}",
                     {"broker_link_id": link_id, "diffs": diffs},
                 ), portfolio_id=row.portfolio_id, agent_id=None)
@@ -1532,7 +1538,8 @@ async def reconcile_all(sessionmaker: async_sessionmaker[AsyncSession], http) ->
     """Reconcile every enabled paper/demo link (scheduler job); the link status records
     the outcome. Real-money links (live_state not null) are left to the LiveMonitor,
     which reconciles them through the live gate. Returns how many reconciliations found
-    differences."""
+    differences. A difference is recorded in the activity feed but never sent to Telegram
+    (`notify=False`): the reconciliation job (`smtrading.reconciliation`) alerts the owner."""
     async with sessionmaker() as session:
         link_ids = list(await session.scalars(
             select(BrokerLink.id)
@@ -1542,7 +1549,7 @@ async def reconcile_all(sessionmaker: async_sessionmaker[AsyncSession], http) ->
     mismatched = 0
     for link_id in link_ids:
         try:
-            rows = await reconcile(sessionmaker, link_id, http)
+            rows = await reconcile(sessionmaker, link_id, http, notify=False)
             status, error = "ok", None
         except Exception as e:  # noqa: BLE001  (any failure goes to the link status)
             log.warning("reconciliation of broker link %s failed: %s", link_id, e)
