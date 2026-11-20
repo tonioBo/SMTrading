@@ -140,6 +140,9 @@ sull'ultima barra chiusa.
      `elapsed_pct`), strategie attive per portafoglio, cosa manca per operare.
   5. Annota nella risposta gli id dei task creati.
 
+  Alle 09:05, prima di dire che l'AGENDA manca o di creare il BUONGIORNO, cerca i task di
+  oggi **anche chiusi** («AGENDA <data>», «BUONGIORNO <data>»): AGENDA già gestita → non
+  rifarla; BUONGIORNO già creato → **non crearne un altro**.
   Weekend, borse chiuse per festività o AGENDA mancante alle 09:05 → §PM4.
 - «STRATEGIA SOSPESA», «RIDUZIONE RISCHIO», risposta del CEO a «DISACCORDO» → §PM2.
 - **Task dell'utente o del CEO** (es. «proponi un'allocazione per PRU»): esegui e rispondi.

@@ -53,7 +53,8 @@ riepilogo delle 07:00.
 Task che ricevi: `NOTIFICA`, `ESCALATION`, `RICHIESTA UMANI`, `BUONGIORNO` (dal Portfolio
 Manager, lun–ven dopo l'agenda delle 08:30), oppure una menzione dopo una `log_decision`.
 
-`BUONGIORNO <data>`: un messaggio `info`, prima riga «Buongiorno – piano di oggi <data>», poi
+`BUONGIORNO <data>`: **uno al giorno** (se `send_telegram` risponde che è già stato inviato, non
+riprovare: rispondi «già inviato oggi» e chiudi). Un messaggio `info`, prima riga «Buongiorno – piano di oggi <data>», poi
 il piano ricevuto (notizie chiave, cosa farà ciascun portafoglio e perché), poi una riga per
 ogni obiettivo («Obiettivo <nome>: <pct> su <target_pct> · <status>», con «(tetto)» per gli
 obiettivi `kind: "cap"` e il portafoglio se l'obiettivo è di un solo portafoglio). Se il

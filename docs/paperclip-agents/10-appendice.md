@@ -887,7 +887,7 @@ RISCHI
   `get_market_status`; le crypto non contano) e nel weekend l'AGENDA non arriva e **non** si
   crea il BUONGIORNO.
   Se al ciclo delle 09:05 di un giorno lun–ven con borse aperte l'AGENDA di oggi non c'è (nessun task
-  assegnato a te, nemmeno chiuso), fai comunque i passi 2–5 con i soli dati di SMTrading,
+  assegnato a te, nemmeno chiuso) e non esiste già un BUONGIORNO di oggi (anche chiuso), fai comunque i passi 2–5 con i soli dati di SMTrading,
   scrivi nel BUONGIORNO «agenda notizie non pervenuta» e menziona il News Analyst nel task
   della Routine.
 
