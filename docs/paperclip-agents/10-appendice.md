@@ -1380,6 +1380,77 @@ RISCHI
 - Campione fuori campione piccolo (5 trade); mercati laterali generano falsi incroci.
 ```
 
+## §QR2 · Strategie e parametri di run_backtest
+
+Strategie disponibili in `run_backtest` (solo long, segnale alla chiusura ed esecuzione
+all'apertura della barra successiva con slippage):
+
+| `strategy` | `params` (default) | Regola |
+|---|---|---|
+| `sma_cross` | `fast` 20, `slow` 50 (`fast` < `slow`) | compra quando la SMA veloce incrocia sopra la lenta, vende all'incrocio opposto |
+| `rsi_reversion` | `period` 14, `buy_below` 30, `sell_above` 70 (`buy_below` < `sell_above`, 0-100) | compra con RSI sotto `buy_below`, vende sopra `sell_above` |
+| `breakout` | `lookback` 20, `exit_lookback` 10 | compra sopra il massimo degli ultimi `lookback`, vende sotto il minimo degli ultimi `exit_lookback` |
+| `momentum` | `lookback` 63, `skip` 0, `enter_above` 0, `exit_below` 0 (`exit_below` ≤ `enter_above`, da -100 a 1000) | ROC % = chiusura di `skip` barre fa rispetto a quella `lookback` barre prima; compra con ROC sopra `enter_above`, vende sotto `exit_below` |
+| `donchian` | `entry` 20, `exit` 10; facoltativo `atr_stop` (es. 2) | compra sopra il massimo delle `entry` barre precedenti, vende sotto il minimo delle `exit` precedenti; con `atr_stop` vende anche sotto il massimo delle ultime `entry` barre meno `atr_stop` × ATR |
+| `buy_and_hold` | nessuno | compra alla prima barra e tiene |
+
+Filtri facoltativi (0 = spento):
+
+- `rsi_reversion` + `sma_filter` (es. 200): compra solo con chiusura sopra la SMA di quel periodo.
+- Tutte tranne `buy_and_hold`: `max_atr_pct` (es. 3) salta gli ingressi quando l'ATR supera
+  quella % della chiusura; `atr_period` (default 14) vale per questo filtro e per `atr_stop`.
+
+Parametri interi tra 1 e 10000 (`skip` e `sma_filter` da 0); parametri sconosciuti →
+`INVALID_ORDER` con l'elenco ammesso.
+
+Diversificazione: oltre agli indici ampi considera anche gli ETF settoriali USA (XLE energia,
+XLF finanza, XLV salute, XLU utility, XLI industria, XLK tecnologia) e ETF europei, con
+`momentum` e `donchian` accanto alle strategie classiche. I criteri di valutazione restano
+quelli sotto (regole e confronto con `buy_and_hold`).
+
+## §QR3 · Strumenti di ricerca: walk-forward, sweep, backtest di portafoglio
+
+Analisi sullo storico con lo stesso motore dei backtest (segnale alla chiusura, esecuzione
+all'apertura successiva, commissioni e slippage del `portfolio_id`). Si accodano come
+`run_backtest` (risposta `{research_id, kind, status: "queued"}`), si leggono con
+`get_research` (controlla ogni 20-30 secondi) e `list_research`. Massimo **2 analisi in
+coda o in esecuzione** (contate a parte dai backtest), stessi limiti di periodo (5 anni
+`1d`, 90 giorni intraday). `grid` = `{parametro: [valori]}` sopra i `params` fissi; le
+combinazioni non valide (es. `fast >= slow`) sono saltate. `metric` default `sharpe`.
+
+**Walk-forward** (`run_walk_forward`, obbligatorio per candidare): `windows` 5 (2-10),
+`is_pct` 70, `mode` `rolling` (o `anchored`), griglia di al massimo **50 combinazioni** e
+10 simboli. In ogni finestra i parametri migliori sul tratto in campione sono eseguiti sul
+tratto successivo, che non hanno visto. Leggi `oos_metrics` (rendimento concatenato,
+drawdown, Sharpe, `trades`, `positive_windows_pct`, `efficiency` = fuori / dentro il
+campione), `stability.stability_pct` (quanto restano uguali i parametri migliori) e
+`verdict`: `solida` (si può candidare), `fragile` (candidabile solo dichiarando i
+`reasons`), `da scartare` (non candidare: `log_decision` con `details.result: "scartata"`),
+`dati insufficienti` (meno di 10 operazioni fuori campione: periodo più lungo o più
+simboli). Per la candidatura usa i parametri di `most_common_params` (o dell'ultima
+finestra, dichiarandolo).
+
+**Sweep** (`run_param_sweep`, al massimo **200 combinazioni** e 20 simboli): solo per
+scegliere i parametri, sempre con la robustezza: `sort: "robust"`, si sceglie
+`best_by_robust`; con `isolated_peak: true` il migliore per metrica è un picco isolato e
+non va proposto. Con 2 parametri che variano `heatmap` mostra la zona stabile. I parametri
+scelti vanno poi nel walk-forward: lo sweep da solo non basta mai.
+
+**Backtest di portafoglio** (`run_portfolio_backtest`): prima di aggiungere una strategia a
+un portafoglio che ne ha già, con `sleeves` = le strategie approvate (stessi `params` e
+simboli) più la candidata (al massimo 5, 20 coppie strategia × simbolo), `portfolio_id`
+del portafoglio (il suo blocco per perdita giornaliera) e `sizing` dai limiti del CEO
+(`risk_pct` rischio allo stop, `stop_pct`, `max_positions`, `max_weight_pct`). Riporta:
+rendimento e drawdown complessivi contro quelli senza la candidata, `contribution` della
+candidata, `correlation` con le altre (sopra 0,7: poca diversificazione, dichiaralo),
+`breaker_trips` e ingressi rifiutati (`refused_*`).
+
+Errori: `RATE_LIMITED` (2 analisi in coda: attendi con `get_research`);
+`RISK_LIMIT_EXCEEDED` (griglia, simboli, strategie o periodo oltre i limiti: riduci);
+`INVALID_ORDER` con `details.field` (`grid`, `windows`, `is_pct`, `mode`, `metric`, `sort`,
+`sleeves`, `sizing.*`); `status: "failed"` con `error` (spesso troppe poche barre per le
+finestre: meno finestre o periodo più lungo).
+
 ## §PA1 · Esempio di log_decision ed esempio di report
 
 ```json

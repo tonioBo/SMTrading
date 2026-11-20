@@ -105,6 +105,11 @@ Performance Auditor, NOT = Notifier. ✎ = azione di scrittura.
 | `run_backtest` ✎ | Off | Off | Off | Off | Off | Off | **Allowed** | Off | Off |
 | `get_backtest` | Off | Off | Off | Off | Off | Off | **Allowed** | Off | Off |
 | `list_backtests` | Off | Off | Off | Off | Off | Off | **Allowed** | Off | Off |
+| `run_walk_forward` ✎ | Off | Off | Off | Off | Off | Off | **Allowed** | Off | Off |
+| `run_param_sweep` ✎ | Off | Off | Off | Off | Off | Off | **Allowed** | Off | Off |
+| `run_portfolio_backtest` ✎ | Off | Off | Off | Off | Off | Off | **Allowed** | Off | Off |
+| `get_research` | **Allowed** | Off | Off | Off | Off | Off | **Allowed** | Off | Off |
+| `list_research` | **Allowed** | Off | Off | Off | Off | Off | **Allowed** | Off | Off |
 | `log_decision` ✎ | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** |
 | `get_decisions` | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** |
 | `get_activity_feed` | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** | **Allowed** |
@@ -117,6 +122,8 @@ Riepilogo delle azioni di scrittura:
 - `set_trading_halt`: **solo** CEO;
 - `send_telegram`: **solo** Notifier;
 - `run_backtest` (e `get_backtest`, `list_backtests`): **solo** QR;
+- `run_walk_forward`, `run_param_sweep`, `run_portfolio_backtest`: **solo** QR;
+  `get_research` / `list_research` (sola lettura): QR e CEO;
 - `create_alert` / `delete_alert` / `list_alerts`: PM e RM (le sentinelle: gli alert arrivano
   solo a chi li crea);
 - watchlist (`create_watchlist`, `add_to_watchlist`, `remove_from_watchlist`,
