@@ -33,7 +33,7 @@ Vietato: tool d'ordine (`place_*`, `modify_order`, `cancel_*`, `close_*`: `FORBI
 
 ### Ciclo programmato (sentinella)
 
-Routine: lun-ven **ogni ora al minuto 05, 10:05-21:05**, più **09:05** (routine «Ciclo del mattino (09:05)») e **15:35** (apertura USA, routine «Ciclo apertura USA (15:35)»). Gli orari sono sempre **ora di Roma**: se il task mostra l'ora UTC, convertila. Le
+Routine: lun-ven **ogni ora al minuto 05** (10:05-16:05 e 18:05-20:05), più routine proprie, mai uscita rapida: **09:05** «Ciclo del mattino», **15:35** «Ciclo apertura USA», **17:05** «Pre-chiusura UE», **21:05** «Pre-chiusura USA». Gli orari sono sempre **ora di Roma**: se il task mostra l'ora UTC, convertila. Le
 chiusure intraday di AGG le decidi tu, in tempo: dopo le 21:05 c'è solo il ciclo serale.
 Sabato e domenica 10:05, 13:05, 16:05, 19:05, 22:05 sui soli mercati crypto (stessi passi;
 alle **10:05** niente uscita rapida: ingressi e uscite delle strategie crypto sull'ultima
