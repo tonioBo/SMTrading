@@ -197,7 +197,7 @@ def provider_rows(connectors: list[Connector], now: datetime) -> list[dict[str, 
             continue
         checked = c.last_checked_at
         late = checked is None or (now - checked).total_seconds() > CONNECTOR_CHECK_LATE_S
-        status = WARN if c.health_status == "error" or late else OK
+        status = WARN if c.health_status == "error" or (late and c.health_status != "limited") else OK
         rows.append({"name": c.name, "status": status, "health": c.health_status,
                      "last_error": c.last_error,
                      "last_checked_at": checked.isoformat() if checked else None})
@@ -213,7 +213,7 @@ async def providers_section(session: AsyncSession, now: datetime) -> dict[str, A
     failing = [r for r in rows if r["health"] == "error"]
     late = [r for r in rows if r["status"] == WARN and r["health"] != "error"]
     reasons = [f"{r['name']}: {r['last_error'] or 'controllo non riuscito'}" for r in failing]
-    reasons += [f"{r['name']}: controllo non recente" for r in late]
+    reasons += [f"{r['name']}: controllo non recente" for r in late if r["health"] != "limited"]
     status = BAD if len(failing) == len(rows) else worst(r["status"] for r in rows)
     summary = (f"{len(rows)} fornitori attivi, tutti ok" if status == OK
                else f"{len(failing)} su {len(rows)} fornitori in errore" if failing

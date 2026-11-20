@@ -83,6 +83,15 @@ async def test_record_health(db_session):
     assert (y.health_status, y.last_error) == ("ok", None)
 
 
+async def test_record_health_quota_is_limited_not_error(db_session):
+    """A 429 (out of quota) is shown as «limited», not as a failure."""
+    await seed_connectors(db_session)
+    await record_health(db_session, "twelvedata", False, "RuntimeError: twelvedata: HTTP 429")
+    t = next(c for c in await list_connectors(db_session) if c.name == "twelvedata")
+    assert t.health_status == "limited"
+    assert t.last_error == "RuntimeError: twelvedata: HTTP 429"
+
+
 async def test_priorities_default_and_missing(db_session):
     await seed_connectors(db_session)
     assert await get_priorities(db_session, AssetClass.crypto, Capability.quote) == [
