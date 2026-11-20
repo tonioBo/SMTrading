@@ -38,13 +38,12 @@ function riskLine(t: OpenPositionsPortfolio): string {
   return `Rischio agli stop: ${risk} su ${formatMoney(t.daily_loss_limit_eur, "EUR")}${pct}`;
 }
 
-/** A position being closed at the end of a «piano»: «In chiusura piano fino al …» in grace. */
+/** A position being closed at the end of a «piano»: «In chiusura (fine piano)». */
 function PlanBadge({ p }: { p: OpenPosition }) {
   if (!p.plan_state) return null;
-  const text = p.plan_grace_until ? `In chiusura piano fino al ${formatDateTime(p.plan_grace_until)}` : "In chiusura piano";
   return (
-    <StatusBadge tone="warn" title="fine periodo di un piano: nessuna aggiunta, poi chiusura">
-      {text}
+    <StatusBadge tone="warn" title="fine periodo di un piano: nessuna aggiunta, chiusura alla prima seduta utile">
+      In chiusura (fine piano)
     </StatusBadge>
   );
 }

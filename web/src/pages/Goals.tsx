@@ -274,9 +274,9 @@ function GoalDialog({ goal, template, goals, onClose }: { goal: Goal | null; tem
               <label htmlFor="goal-closes-positions">Chiude le posizioni a fine periodo</label>
             </div>
             <p id="goal-closes-positions-help" className="text-xs text-muted">
-              Un piano: gli agenti chiudono le posizioni entro la fine del periodo; quelle ancora aperte e non in perdita le chiude
-              SMTrading alla prima apertura del mercato, quelle in perdita dopo qualche giorno di mercato di grazia (settimana 1,
-              mese 3, trimestre 5, anno 10), senza aggiunte. Al massimo un piano per portafoglio.
+              Un piano: gli agenti chiudono tutte le posizioni all&apos;ultima seduta del periodo, anche quelle in perdita; quelle
+              ancora aperte le chiude SMTrading alla prima seduta utile del loro mercato, senza aggiunte. Al massimo un piano per
+              portafoglio.
             </p>
             {cover && (
               <p className="text-xs text-warn">{`Non può essere un piano: «${cover.name}» chiude già le posizioni di questi portafogli.`}</p>
@@ -411,17 +411,15 @@ function TemplatesDialog({ onChoose, onClose }: { onChoose: (t: GoalTemplate) =>
 
 const PLAN_STATE_LABEL: Record<PlanState["positions"][number]["state"], string> = {
   pending: "in attesa dell'apertura",
-  grace: "in grazia",
   closing: "in chiusura",
   closed: "chiusa",
 };
 
-/** After a piano's period: how its positions were closed («2 chiuse · 1 in grazia fino al …»). */
+/** After a piano's period: how its positions were closed («2 chiuse · 1 in chiusura»). */
 function PlanOutcome({ plan }: { plan: PlanState }) {
   const { counts } = plan;
   const parts = [
     counts.closed ? `${counts.closed} chiuse` : null,
-    counts.grace ? `${counts.grace} in grazia` : null,
     counts.pending + counts.closing ? `${counts.pending + counts.closing} in chiusura` : null,
   ].filter(Boolean);
   return (
@@ -433,7 +431,6 @@ function PlanOutcome({ plan }: { plan: PlanState }) {
         {plan.positions.map((x) => (
           <li key={`${x.portfolio_id}:${x.symbol}`}>
             {`${x.symbol} · ${x.portfolio_name}: ${PLAN_STATE_LABEL[x.state]}`}
-            {x.state === "grace" && x.deadline ? ` fino al ${formatDateTime(x.deadline)}` : ""}
             {x.state === "closed" && x.closed_by ? (x.closed_by === "system" ? " da SMTrading" : " dagli agenti") : ""}
           </li>
         ))}

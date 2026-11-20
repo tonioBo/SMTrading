@@ -21,7 +21,7 @@ export function useGoalsProgress() {
   });
 }
 
-/** `GET /api/goals/plans`: the active piani's latest ended period (closed, in grace, …). */
+/** `GET /api/goals/plans`: the active piani's latest ended period (closed, still being closed, …). */
 export function useGoalPlans() {
   return useQuery({
     queryKey: [...goalsKey, "plans"],

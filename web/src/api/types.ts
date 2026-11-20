@@ -1544,9 +1544,7 @@ export interface OpenPosition {
   /** the extended-hours price is at or beyond the stop: gap risk at the open */
   extended_beyond_stop?: boolean;
   /** being closed at the end of a «piano» (older servers: absent) */
-  plan_state?: "pending" | "grace" | "closing" | null;
-  /** its grace deadline, while in grace */
-  plan_grace_until?: string | null;
+  plan_state?: "pending" | "closing" | null;
 }
 
 export interface OpenPositionsPortfolio {
@@ -1764,21 +1762,19 @@ export interface GoalCreate {
 
 export type GoalPatch = Partial<GoalCreate>;
 
-export type PlanClosureState = "pending" | "grace" | "closing" | "closed";
+export type PlanClosureState = "pending" | "closing" | "closed";
 
 /** `GET /api/goals/plans`: an active piano's latest ended period and its positions. */
 export interface PlanState {
   goal_id: string;
   period_start: string;
   period_end: string;
-  grace_days: number;
   counts: Record<PlanClosureState, number>;
   positions: {
     portfolio_id: string;
     portfolio_name: string;
     symbol: string;
     state: PlanClosureState;
-    deadline: string | null;
     closed_by: "system" | "agent" | null;
     closed_at: string | null;
   }[];

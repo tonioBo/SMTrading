@@ -338,12 +338,12 @@ describe("Obiettivi", () => {
     goals = [{ ...weekly, closes_positions: true }, xmas, old, risk, index];
     plans = [
       {
-        goal_id: "g1", period_start: "2026-11-09", period_end: "2026-11-15", grace_days: 1,
-        counts: { pending: 0, grace: 1, closing: 0, closed: 2 },
+        goal_id: "g1", period_start: "2026-11-09", period_end: "2026-11-15",
+        counts: { pending: 1, closing: 0, closed: 2 },
         positions: [
-          { portfolio_id: "p1", portfolio_name: "Alfa", symbol: "AAPL", state: "grace", deadline: "2026-11-16T21:00:00Z", closed_by: null, closed_at: null },
-          { portfolio_id: "p1", portfolio_name: "Alfa", symbol: "BTC-USD", state: "closed", deadline: null, closed_by: "system", closed_at: "2026-11-15T23:05:00Z" },
-          { portfolio_id: "p2", portfolio_name: "Beta", symbol: "ENI.MI", state: "closed", deadline: null, closed_by: "agent", closed_at: "2026-11-16T09:00:00Z" },
+          { portfolio_id: "p1", portfolio_name: "Alfa", symbol: "AAPL", state: "pending", closed_by: null, closed_at: null },
+          { portfolio_id: "p1", portfolio_name: "Alfa", symbol: "BTC-USD", state: "closed", closed_by: "system", closed_at: "2026-11-15T23:05:00Z" },
+          { portfolio_id: "p2", portfolio_name: "Beta", symbol: "ENI.MI", state: "closed", closed_by: "agent", closed_at: "2026-11-16T09:00:00Z" },
         ],
       },
     ];
@@ -352,8 +352,9 @@ describe("Obiettivi", () => {
     const w = await screen.findByRole("article", { name: "Obiettivo settimanale" });
     expect(within(w).getByText("Piano")).toBeInTheDocument();
     const outcome = await within(w).findByLabelText("Esito del piano");
-    expect(outcome).toHaveTextContent("Fine periodo 09/11/2026 – 15/11/2026: 2 chiuse · 1 in grazia");
-    expect(outcome).toHaveTextContent("AAPL · Alfa: in grazia fino al 16/11/2026 22:00:00");
+    expect(outcome).toHaveTextContent("Fine periodo 09/11/2026 – 15/11/2026: 2 chiuse · 1 in chiusura");
+    expect(outcome).toHaveTextContent("AAPL · Alfa: in attesa dell'apertura");
+    expect(outcome).not.toHaveTextContent(/grazia|fino al/);
     expect(outcome).toHaveTextContent("BTC-USD · Alfa: chiusa da SMTrading");
     expect(outcome).toHaveTextContent("ENI.MI · Beta: chiusa dagli agenti");
     expect(within(screen.getByRole("article", { name: "Obiettivo Natale" })).queryByText("Piano")).toBeNull();

@@ -11,7 +11,6 @@ import { formatQty } from "@/lib/format";
 
 const PLAN_STATE: Record<string, string> = {
   pending: "in attesa",
-  grace: "in tolleranza",
   closing: "in chiusura",
   closed: "chiusa",
 };
@@ -75,7 +74,7 @@ export function CampaignCloseDialog({ campaign, onClose }: { campaign: Campaign;
                       <div key={`${p.goal_id}-${p.period_start}`}>
                         <p>
                           {p.goal_name ?? "piano"} ({formatDay(p.period_start)} – {formatDay(p.period_end)}):{" "}
-                          {p.counts.closed} chiuse, {p.counts.pending + p.counts.grace + p.counts.closing} ancora da chiudere
+                          {p.counts.closed} chiuse, {p.counts.pending + p.counts.closing} ancora da chiudere
                         </p>
                         <ul className="pl-5 text-xs text-muted">
                           {p.positions.map((x) => (
