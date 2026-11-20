@@ -691,11 +691,68 @@ modificabile).
 - Paperclip spento o chiave errata: lo stato è nella sezione e c'è un solo avviso dopo 3
   errori consecutivi, niente allarmi a raffica.
 
-### Backup
+### Backup e ripristino
 
-Il servizio `backup` salva ogni giorno un `pg_dump` compresso nel volume `backups`
-(`/backups/smtrading-AAAA-MM-GG.sql.gz`, ultimi 14 giorni). Conserva anche `.env`:
-`SMT_MASTER_KEY` serve a decifrare le chiavi di connettori e broker.
+Il servizio `backup` del compose (stessa immagine del backend, `python -m
+smtrading.backup.main`) lavora da solo finché Docker è acceso:
+
+- **Ogni notte alle 03:30** (ora di `SMT_TZ`, Europe/Rome): `pg_dump -Fc` del database
+  `smtrading` in `smtrading-AAAAMMGG-HHMM.dump` con l'impronta `…dump.sha256` (formato
+  `sha256sum`), più `smtrading-AAAAMMGG-HHMM-config.tar.gz` (con la sua `.sha256`): le
+  istruzioni degli agenti esportate per Paperclip (`agent-instructions/`), il
+  `docker-compose.yml`, il `.env.example` e un `RESTORE.txt`. **Mai** `.env` né chiavi.
+- **Destinazioni:** ogni cartella di `BACKUP_DIRS` (percorsi separati da `;`, dentro il
+  container), create se mancano. Il compose monta
+  `SMT_BACKUP_LOCAL_DIR` (predefinita `/mnt/d/Backups/SMTrading`, cioè
+  `D:\Backups\SMTrading`) su `/backups/local` e `SMT_BACKUP_ONEDRIVE_DIR` (predefinita
+  `/mnt/d/onedrive/OneDrive - SantoMagno/Founders - Founders/Backups/SMTrading`, la
+  cartella sincronizzata con OneDrive) su `/backups/onedrive`. Per cambiarle basta
+  impostarle in `.env` (gli spazi vanno bene, senza virgolette) e `docker compose up -d
+  backup`. Il file viene scritto come `.partial` e rinominato solo quando è completo.
+- **Conservazione**, in ogni cartella: l'ultimo backup di ciascuno degli ultimi 30 giorni
+  con un backup e il primo di ciascuno degli ultimi 12 mesi (normalmente quello del 1°).
+  Vengono cancellati solo file con questi nomi.
+- **Prova di ripristino ogni domenica alle 04:00:** l'ultimo dump (con l'impronta
+  verificata) viene ripristinato nel database usa e getta `smtrading_restore_test` sullo
+  stesso server; deve essere alla versione di schema attuale (alembic head) e contenere
+  portafogli, ordini ed esecuzioni; poi il database viene eliminato.
+- Un orario saltato (PC spento) viene recuperato al successivo avvio del servizio.
+- **Esito** (riuscito / parziale / non riuscito, dimensione, durata, cartelle) in
+  «Salute del sistema», sezione *Backup*: **problema** se l'ultimo backup riuscito in tutte
+  le cartelle ha più di 26 ore, **attenzione** se l'ultima esecuzione non è riuscita o se
+  la prova di ripristino è fallita o ha più di 8 giorni. Un backup o una prova non riusciti
+  mandano un messaggio Telegram (categoria sistema).
+- **API:** `GET /api/backups` (file di ogni cartella, ultime esecuzioni, orari),
+  `POST /api/backups/run` (solo admin; `{"restore_test": true}` aggiunge la prova di
+  ripristino): il servizio la esegue entro 15 secondi. *Impostazioni → Scarica backup
+  ora* resta per un dump immediato scaricato dal browser.
+
+**La chiave di cifratura non è nei backup.** Le credenziali di connettori e broker sono
+nel database cifrate con `SMT_MASTER_KEY` (in `.env`): senza quella chiave un ripristino
+funziona ma le credenziali vanno reinserite. Il proprietario conserva `SMT_MASTER_KEY` (e
+le altre voci di `.env`: `POSTGRES_PASSWORD`, admin, Telegram) **a parte**, per esempio in
+un gestore di password, mai nella cartella dei backup né in OneDrive in chiaro.
+
+Ripristino (dal PC, nella cartella del progetto; esempio con il backup del 20/11/2026):
+
+```bash
+B="/mnt/d/Backups/SMTrading"; F=smtrading-20261120-0330
+cd "$B" && sha256sum -c "$F.dump.sha256" && cd -          # impronta ok
+docker compose stop api worker backup                       # nessuno scrive nel frattempo
+docker compose cp "$B/$F.dump" postgres:/tmp/restore.dump
+docker compose exec postgres pg_restore -U smtrading -d smtrading \
+  --clean --if-exists --no-owner --exit-on-error /tmp/restore.dump
+docker compose exec postgres rm /tmp/restore.dump
+docker compose up -d                                        # migrate porta lo schema all'head
+```
+
+Su un PC nuovo: clonare il progetto, ricreare `.env` da `.env.example` con la
+`SMT_MASTER_KEY` conservata, `docker compose up -d postgres`, poi gli stessi comandi
+(`pg_restore` su un database vuoto: `--clean --if-exists` non serve). Le istruzioni degli
+agenti sono anche nel database; quelle esportate stanno in `…-config.tar.gz`
+(`tar -xzf "$B/$F-config.tar.gz" -C /tmp/smt-restore`). Per provare un dump senza toccare
+il database vero: `docker compose exec postgres createdb -U smtrading prova` e
+`pg_restore -d prova`, poi `dropdb -U smtrading prova`.
 
 I log dei processi (`docker compose logs`) non contengono chiavi: le richieste HTTP verso i
 fornitori non sono registrate e un filtro maschera token, API key, password e credenziali

@@ -1,4 +1,5 @@
-"""Admin API: ledger integrity checks and database backups (pg_dump stream, backup volume)."""
+"""Admin API: ledger integrity checks and database backups (pg_dump stream, the automatic
+backups' list)."""
 
 import asyncio
 import contextlib
@@ -6,13 +7,13 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.engine import make_url
 
 from smtrading.admin.auth import DbSession, require_access
+from smtrading.backup.service import load_state
 from smtrading.common.config import get_settings
 from smtrading.ledger.service import verify_balances, verify_chain
 from smtrading.mcp.dto import to_jsonable
@@ -20,8 +21,6 @@ from smtrading.mcp.dto import to_jsonable
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/system", tags=["system"], dependencies=[Depends(require_access)])
 
-BACKUP_DIR = Path("/backups")  # the `backups` volume, mounted read-only on the api
-BACKUP_SUFFIXES = (".sql.gz", ".dump")
 _CHUNK = 64 * 1024
 # one pg_dump at a time (the api runs a single event loop): a second request gets 429
 _dump_running = False
@@ -139,17 +138,10 @@ async def download_backup() -> Response:
 
 
 @router.get("/backups")
-async def list_backups() -> list[dict]:
-    """Files of the backup volume, newest first."""
-    if not BACKUP_DIR.is_dir():
-        return []
-    rows = []
-    for p in BACKUP_DIR.iterdir():
-        if p.is_file() and p.name.endswith(BACKUP_SUFFIXES):
-            st = p.stat()
-            rows.append({
-                "name": p.name,
-                "size_bytes": st.st_size,
-                "modified_at": datetime.fromtimestamp(st.st_mtime, UTC).isoformat(),
-            })
-    return sorted(rows, key=lambda r: r["modified_at"], reverse=True)
+async def list_backups(session: DbSession) -> list[dict]:
+    """The dumps of the first backup destination, newest first, as the `backup` service
+    last listed them (GET /api/backups has every destination and the runs)."""
+    dests = (await load_state(session))["destinations"]
+    rows = dests[0]["files"] if dests else []
+    return [{"name": r["name"], "size_bytes": r["size_bytes"], "modified_at": r["modified_at"]}
+            for r in rows]

@@ -2177,7 +2177,30 @@ export interface SystemHealth {
     };
     costs: HealthSectionBase & { today_usd?: string; month?: AgentCostMonth };
     mcp: HealthSectionBase & { calls?: number; errors?: number; internal?: number; by_code?: { code: string; count: number }[] };
+    /** Missing on an api older than the automatic backups. */
+    backup?: HealthSectionBase & {
+      last_ok_at?: string | null;
+      last_ok_name?: string | null;
+      last_ok_age_s?: number | null;
+      last_backup?: HealthBackupRun | null;
+      last_restore_test?: HealthBackupRun | null;
+      restore_age_s?: number | null;
+      destinations?: { dir: string; files: number; error: string | null }[];
+    };
   };
+}
+
+/** One automatic backup run or restore test (`status`: "ok" | "parziale" | "non riuscito"). */
+export interface HealthBackupRun {
+  kind: "backup" | "restore_test";
+  status: string;
+  trigger: string;
+  started_at: string;
+  finished_at?: string;
+  duration_s?: number;
+  name: string | null;
+  size_bytes: number | null;
+  error: string | null;
 }
 
 /** «Costi agenti» → «Per modello» (decimals as strings, USD). */
