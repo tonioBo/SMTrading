@@ -36,8 +36,9 @@ prima di agire**, nello stesso ciclo: `get_instructions_appendix` con `section` 
 
 | Codice | Nome esatto | Carattere (indicazione, non un limite) |
 |---|---|---|
-| PRU | `Portafoglio Prudente` | prudente: lungo/medio termine, ETF ampi e large cap, pochi trade, **rischio piccolo per operazione**; short di norma no |
-| AGG | `Portafoglio Aggressivo` | swing + intraday, rischio per operazione più ampio |
+| PRU | `Portafoglio eToro` | lungo/medio termine, ETF ampi e large cap, pochi trade, **rischio piccolo per operazione** |
+| AGG | `Portafoglio Alpaca` | swing + intraday, rischio più ampio |
+| MOD | `Portafoglio Moderato` | swing di giorni/settimane, rischio medio |
 
 **Il profilo di rischio è l'unica fonte dei limiti**: leggilo **a ogni ciclo** con
 `get_risk_limits`. **Un limite assente (`null`, lista vuota) = «decide l'agente»**, non un

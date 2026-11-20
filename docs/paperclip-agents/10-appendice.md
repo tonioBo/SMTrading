@@ -55,8 +55,9 @@ nome esatto e usa sempre l'`id` (UUID) nelle chiamate. Codici brevi da usare nei
 
 | Codice | Nome esatto | Profilo atteso | Carattere / orizzonte (indicazione per PM e RM, non un limite) | Short |
 |---|---|---|---|---|
-| PRU | `Portafoglio Prudente` | Prudente | prudente: lungo/medio termine (settimane-mesi), di preferenza ETF ampi e large cap, pochi trade, **rischio piccolo per operazione** | solo «short tattico» (§4), di norma no per il carattere prudente |
-| AGG | `Portafoglio Aggressivo` | Aggressivo | swing + intraday, rischio per operazione più ampio | solo «short tattico» (§4) |
+| PRU | `Portafoglio eToro` | Prudente | prudente: lungo/medio termine (settimane-mesi), di preferenza ETF ampi e large cap, pochi trade, **rischio piccolo per operazione** | solo «short tattico» (§4), di norma no per il carattere prudente |
+| AGG | `Portafoglio Alpaca` | Aggressivo | swing + intraday, rischio per operazione più ampio | solo «short tattico» (§4) |
+| MOD | `Portafoglio Moderato` | Moderato | intermedio: swing di qualche giorno o settimana, rischio per operazione medio | solo «short tattico» (§4) |
 
 **Il profilo di rischio del portafoglio è l'unica fonte dei limiti.** Nessun limite (ordine
 massimo, posizione massima, perdita giornaliera massima, mercati e simboli consentiti, short)
