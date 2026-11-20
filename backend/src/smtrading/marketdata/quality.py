@@ -16,8 +16,12 @@ A `jump` or `disagree` quote is not accepted alone: the router asks the next pro
 and takes the consensus (the first quote another source agrees with, within
 DISAGREE_PCT, or the first one with no problem). Unconfirmed, it is passed on marked
 `suspect` (the reason): order fills, stop triggers and market orders refuse it and wait
-for the next good quote. A lone source's new level is accepted once the last accepted
-price ages out of JUMP_WINDOW_S.
+for the next good quote. A lone source's new level is accepted (a genuine gap must reach
+the stops in bounded time) as soon as either:
+- the run's quotes have all stayed beyond the jump limit on the same side of the last
+  accepted price for CONFIRM_JUMP_S: the next one (newer quote time) is accepted, while
+  no other recent source disagrees (a gap that holds, or keeps going, is not a glitch); or
+- the last accepted price ages out of JUMP_WINDOW_S.
 
 Redis (fails open: a Redis error never blocks a quote):
 - `mdq:ref:{sym}` the last accepted price (JSON {p, at}), TTL JUMP_WINDOW_S;
@@ -25,7 +29,10 @@ Redis (fails open: a Redis error never blocks a quote):
 - `mdq:ev:{YYYYMMDDHH}` hash "provider|symbol|reason" -> count (hourly, kept 25 h);
 - `mdq:suspects` sorted set of suspect quotes (score: epoch), trimmed to 24 h;
 - `mdq:suspect_since:{sym}` when the symbol's current suspect run began (cleared by the
-  next accepted quote): the Telegram alarm (`SuspectAlarm`) reads it.
+  next accepted quote): the Telegram alarm (`SuspectAlarm`) reads it;
+- `mdq:pending:{sym}` the first quote of the suspect run (JSON {p, at, ts}: price, when
+  seen, the quote time); cleared by an accepted quote, replaced by a suspect quote on the
+  other side of the last accepted price.
 """
 
 import json
@@ -54,6 +61,7 @@ JUMP_PCT: dict[str, Decimal] = {
 JUMP_WINDOW_S = 30 * 60
 DISAGREE_PCT = Decimal("0.03")
 DISAGREE_WINDOW_S = 120
+CONFIRM_JUMP_S = 120  # a lone source's jump holding this long is accepted
 SUSPECT_ALERT_AFTER_S = 15 * 60
 EVENTS_KEEP_S = 25 * 3600
 SUSPECTS_KEEP_S = 24 * 3600
@@ -65,6 +73,7 @@ PROV_KEY = "mdq:prov:{}"
 EVENTS_KEY = "mdq:ev:{}"
 SUSPECTS_KEY = "mdq:suspects"
 SINCE_KEY = "mdq:suspect_since:{}"
+PENDING_KEY = "mdq:pending:{}"
 
 
 def _s(v) -> str:
@@ -102,6 +111,7 @@ class Seen:
     price: Decimal
     at: float
     provider: str | None = None
+    ts: float | None = None  # the quote time (epoch), for a pending level
 
 
 @dataclass
@@ -110,6 +120,19 @@ class Context:
 
     ref: Seen | None = None
     others: list[Seen] = field(default_factory=list)
+    pending: Seen | None = None  # the first quote of the current suspect run (PENDING_KEY)
+
+
+def same_side(p: Decimal, pending: Decimal, ref: Decimal) -> bool:
+    return (p - ref) * (pending - ref) > 0
+
+
+def confirms(q: Quote, p: Decimal, ref: Seen, pending: Seen | None, now: float) -> bool:
+    """`q` (price `p`, a jump from `ref`) confirms the suspect run that began with
+    `pending`: at least CONFIRM_JUMP_S later, a newer quote time, the same side of `ref`."""
+    return (pending is not None and now - pending.at >= CONFIRM_JUMP_S
+            and (pending.ts is None or q.ts.timestamp() > pending.ts)
+            and same_side(p, pending.price, ref.price))
 
 
 def problems(q: Quote, asset_class: AssetClass | str, ctx: Context | None, now: float
@@ -121,7 +144,8 @@ def problems(q: Quote, asset_class: AssetClass | str, ctx: Context | None, now: 
     out: list[str] = []
     ref = ctx.ref
     limit = JUMP_PCT.get(str(asset_class), Decimal("0.15"))
-    if ref is not None and now - ref.at <= JUMP_WINDOW_S and moved(p, ref.price) > limit:
+    if ref is not None and now - ref.at <= JUMP_WINDOW_S and moved(p, ref.price) > limit \
+            and not confirms(q, p, ref, ctx.pending, now):
         out.append(JUMP)
     for o in ctx.others:
         if o.provider != q.provider and now - o.at <= DISAGREE_WINDOW_S \
@@ -184,6 +208,7 @@ class QuoteGuard:
                 for s in symbols:
                     pipe.get(REF_KEY.format(s))
                     pipe.hgetall(PROV_KEY.format(s))
+                    pipe.get(PENDING_KEY.format(s))
                 raw = await pipe.execute()
         except Exception:
             log.warning("quote guard: context unreadable", exc_info=True)
@@ -191,11 +216,14 @@ class QuoteGuard:
         out: dict[str, Context] = {}
         for i, s in enumerate(symbols):
             ctx = Context()
-            ref, prov = raw[2 * i], raw[2 * i + 1] or {}
+            ref, prov, pending = raw[3 * i], raw[3 * i + 1] or {}, raw[3 * i + 2]
             try:
                 if ref:
                     d = json.loads(_s(ref))
                     ctx.ref = Seen(Decimal(d["p"]), float(d["at"]))
+                if pending:
+                    d = json.loads(_s(pending))
+                    ctx.pending = Seen(Decimal(d["p"]), float(d["at"]), ts=float(d["ts"]))
                 for name, v in prov.items():
                     price, _, at = _s(v).partition("|")
                     ctx.others.append(Seen(Decimal(price), float(at), _s(name)))
@@ -229,6 +257,7 @@ class QuoteGuard:
                     pipe.hset(PROV_KEY.format(q.symbol), q.provider, f"{p}|{now}")
                     pipe.expire(PROV_KEY.format(q.symbol), 10 * DISAGREE_WINDOW_S)
                     pipe.delete(SINCE_KEY.format(q.symbol))
+                    pipe.delete(PENDING_KEY.format(q.symbol))
                 await pipe.execute()
         except Exception:
             log.warning("quote guard: accepted quotes not stored", exc_info=True)
@@ -256,6 +285,7 @@ class QuoteGuard:
             await self._redis.set(SINCE_KEY.format(q.symbol), str(now), nx=True, ex=2 * 86400)
         except Exception:
             log.warning("quote guard: suspect run of %s not stored", q.symbol, exc_info=True)
+        await self._pending(q, now)
 
         async def write() -> None:
             await self.record([(q.provider, q.symbol, reason)])
@@ -269,6 +299,24 @@ class QuoteGuard:
                 log.warning("quote guard: suspect %s not recorded", q.symbol, exc_info=True)
 
         await self._note(q, reason, write)
+
+    async def _pending(self, q: Quote, now: float) -> None:
+        """The first quote of the suspect run (`confirms`): kept while the suspect quotes
+        stay on its side of the last accepted price, replaced by one on the other side."""
+        p = price_of(q)
+        if p is None:
+            return
+        key = PENDING_KEY.format(q.symbol)
+        try:
+            raw, ref = await self._redis.mget([key, REF_KEY.format(q.symbol)])
+            if raw:
+                first = Decimal(json.loads(_s(raw))["p"])
+                if ref is None or same_side(p, first, Decimal(json.loads(_s(ref))["p"])):
+                    return
+            await self._redis.set(key, json.dumps(
+                {"p": str(p), "at": now, "ts": q.ts.timestamp()}), ex=JUMP_WINDOW_S)
+        except Exception:
+            log.warning("quote guard: pending level of %s not stored", q.symbol, exc_info=True)
 
     async def check_stream(self, q: Quote, asset_class: AssetClass | str) -> Quote:
         """A stream tick (one source, no fallback at hand): accepted, or marked suspect.

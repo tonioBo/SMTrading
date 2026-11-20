@@ -177,7 +177,7 @@ function PriceQuality({ s }: { s: NonNullable<SystemHealthData["sections"]["pric
       )}
       <p className="text-xs text-muted">
         Un prezzo con un salto improvviso o in disaccordo tra le fonti viene confrontato con le altre fonti; se nessuna lo conferma è «sospetto»: ordini e stop aspettano
-        una quotazione verificata.
+        una quotazione verificata. Con una sola fonte, un salto che resta tale per 2 minuti (o dopo 30 minuti dall&apos;ultimo prezzo accettato) diventa il nuovo prezzo.
       </p>
     </Section>
   );

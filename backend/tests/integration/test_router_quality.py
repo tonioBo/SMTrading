@@ -153,6 +153,45 @@ async def test_unconfirmed_jump_is_passed_on_suspect(env):
     assert await quality.suspect_since(redis, ["NVDA"]) == {}
 
 
+async def test_lone_source_genuine_gap_is_accepted_in_bounded_time(env):
+    """A real -20% gap with one answering source: suspect at first, accepted once it has
+    held CONFIRM_JUMP_S (polls every 30 s), and the stops can act on it."""
+    router, redis, _ = env
+    now = [datetime.now(UTC).timestamp()]
+    router.guard = quality.QuoteGuard(redis, clock=lambda: now[0])
+    QB.price, QC.price = RuntimeError("down"), None
+    await _quote(router)  # 100 accepted
+    QA.price = D(80)
+    seen = []
+    for _ in range(6):
+        now[0] += 30
+        seen.append((await _quote(router)).suspect)
+    assert seen[:3] == ["jump"] * 3  # 30, 60, 90 s after the gap
+    first_ok = seen.index(None)
+    assert 30 * (first_ok + 1) <= 30 + quality.CONFIRM_JUMP_S + 30  # bounded
+    assert (await router.guard.contexts(["NVDA"]))["NVDA"].ref.price == D(80)
+    assert await quality.suspect_since(redis, ["NVDA"]) == {}
+    assert (await read_quote(redis, "NVDA")).suspect is None
+
+
+async def test_lone_source_choppy_jump_accepted_when_the_reference_ages_out(env):
+    """Quotes that flip around the reference never confirm each other; the new level is
+    still accepted once the last accepted price is JUMP_WINDOW_S old."""
+    router, redis, _ = env
+    now = [datetime.now(UTC).timestamp()]
+    router.guard = quality.QuoteGuard(redis, clock=lambda: now[0])
+    QB.price, QC.price = RuntimeError("down"), None
+    await _quote(router)  # 100 accepted at t0
+    t0 = now[0]
+    for i in range(int(quality.JUMP_WINDOW_S // 60)):
+        now[0] = t0 + 60 * (i + 1) - 1
+        QA.price = D(80) if i % 2 == 0 else D(130)
+        assert (await _quote(router)).suspect == "jump"
+    now[0] = t0 + quality.JUMP_WINDOW_S + 1
+    QA.price = D(80)
+    assert (await _quote(router)).suspect is None
+
+
 async def test_disagreeing_providers_walk_to_a_third_for_consensus(env):
     router, _redis, _ = env
     await _quote(router)  # reference 100 from qa

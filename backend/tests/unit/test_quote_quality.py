@@ -60,6 +60,24 @@ def test_disagree_with_another_recent_provider_not_with_itself():
                     NOW) == []
 
 
+def test_a_lone_jump_that_holds_is_confirmed():
+    """A genuine gap from one source reaches the stops in bounded time: once every quote
+    of the run stayed beyond the limit on the same side for CONFIRM_JUMP_S."""
+    ref = Seen(D(100), NOW - 300)
+    first = Seen(D(80), NOW - quality.CONFIRM_JUMP_S, ts=NOW - quality.CONFIRM_JUMP_S)
+    assert problems(q("80"), "us_equity", Context(ref=ref, pending=first), NOW) == []
+    assert problems(q("75"), "us_equity", Context(ref=ref, pending=first), NOW) == []
+    # too early, the other side of the reference, or the very same quote again: no
+    young = Seen(D(80), NOW - 60, ts=NOW - 60)
+    assert problems(q("80"), "us_equity", Context(ref=ref, pending=young), NOW) == ["jump"]
+    assert problems(q("130"), "us_equity", Context(ref=ref, pending=first), NOW) == ["jump"]
+    replay = Seen(D(80), NOW - quality.CONFIRM_JUMP_S, ts=NOW)
+    assert problems(q("80"), "us_equity", Context(ref=ref, pending=replay), NOW) == ["jump"]
+    # another recent source disagreeing keeps it suspect
+    other = Context(ref=ref, pending=first, others=[Seen(D(100), NOW - 10, "b")])
+    assert problems(q("80"), "us_equity", other, NOW) == ["disagree"]
+
+
 def test_no_context_no_problem():
     assert problems(q("100"), "us_equity", None, NOW) == []
     assert problems(q(), "us_equity", Context(ref=Seen(D(1), NOW)), NOW) == []

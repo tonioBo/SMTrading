@@ -830,3 +830,56 @@ async def test_queued_market_order_waits_on_suspect_instead_of_rejecting(maker, 
     _tick(qs, "99.90", "100.00", clock.now)
     await _proc(maker, redis, qs, clock).sweep()
     assert (await _order(maker, oid)).status == OrderStatus.filled
+
+
+async def test_genuine_gap_on_a_lone_stream_fires_the_stop_in_bounded_time(
+        maker, redis, qs, fresh_db, redis_url, monkeypatch):
+    """Money safety: a real -20% gap seen by one source only (stream ticks through the
+    quality guard) is suspect at first, yet the stop fires within CONFIRM_JUMP_S (plus
+    one tick); the owner is warned on Telegram if a symbol stays suspect longer."""
+    from smtrading.marketdata import quality
+    from smtrading.marketdata.streaming import track
+    from smtrading.marketdata.suspect_alarm import SuspectAlarm
+    from smtrading.telegram.models import TelegramOutbox
+
+    for k, v in {"SMT_DATABASE_URL": fresh_db, "SMT_REDIS_URL": redis_url,
+                 "SMT_MASTER_KEY": "test-master-key", "SMT_ADMIN_EMAIL": "admin@example.com",
+                 "SMT_ADMIN_PASSWORD": "test-password"}.items():
+        monkeypatch.setenv(k, v)
+    pid = await _portfolio(maker)
+    await _place(maker, redis, qs, pid)  # long 10
+    oid = await _place(
+        maker, redis, qs, pid, side=OrderSide.sell, type=OrderType.stop, stop_price=D("95.00")
+    )
+    clock = Clock(OPEN + timedelta(minutes=1))
+    guard = quality.QuoteGuard(redis, clock=lambda: clock.now.timestamp())
+    proc = _proc(maker, redis, qs, clock, min_eval_interval_s=0)
+
+    async def tick(price: str) -> int:
+        raw = Quote("AAPL", D(price), D(price) + D("0.05"), None, clock.now, "fake")
+        q = await guard.check_stream(raw, "us_equity")
+        qs._quotes["AAPL"] = q
+        return await proc.on_tick("AAPL", q)
+
+    assert await tick("100.00") == 0  # the accepted reference
+    gap_at = clock.now
+    fired = None
+    for _ in range(20):
+        clock.advance(20)
+        if await tick("80.00"):
+            fired = clock.now
+            break
+    assert fired is not None
+    assert (fired - gap_at).total_seconds() <= quality.CONFIRM_JUMP_S + 40
+    order = await _order(maker, oid)
+    assert order.status == OrderStatus.filled and order.avg_fill_price == D("80.00")
+
+    # a symbol held and still suspect after 15 minutes: one Telegram warning
+    await track(redis, ["MSFT"], source="positions")
+    await redis.set(quality.SINCE_KEY.format("MSFT"),
+                    str(clock.now.timestamp() - quality.SUSPECT_ALERT_AFTER_S - 60))
+    alarm = SuspectAlarm(maker, redis, clock=lambda: clock.now.timestamp())
+    assert await alarm.tick() == ["MSFT"]
+    async with maker() as s:
+        texts = list(await s.scalars(select(TelegramOutbox.text)))
+    assert any("MSFT" in t and "Prezzo non affidabile" in t for t in texts)
