@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
-import type { StrategiesPerformanceResponse, StrategyExpectationsResponse } from "@/api/types";
+import type { ResearchRun, ResearchRunsResponse, StrategiesPerformanceResponse, StrategyExpectationsResponse } from "@/api/types";
 
 export const strategiesPerformanceKey = ["strategies", "performance"] as const;
 export const STRATEGIES_REFRESH_MS = 60_000;
@@ -25,5 +25,27 @@ export function useStrategyExpectations(enabled = true) {
     refetchIntervalInBackground: false,
     staleTime: STRATEGIES_REFRESH_MS,
     enabled,
+  });
+}
+
+export const researchRunsKey = ["strategies", "research"] as const;
+
+export function useResearchRuns(enabled = true) {
+  return useQuery({
+    queryKey: researchRunsKey,
+    queryFn: () => apiFetch<ResearchRunsResponse>("/api/strategies/research"),
+    refetchInterval: STRATEGIES_REFRESH_MS,
+    refetchIntervalInBackground: false,
+    staleTime: STRATEGIES_REFRESH_MS,
+    enabled,
+  });
+}
+
+export function useResearchRun(id: string | null) {
+  return useQuery({
+    queryKey: [...researchRunsKey, id],
+    queryFn: () => apiFetch<ResearchRun>(`/api/strategies/research/${id}`),
+    enabled: id != null,
+    staleTime: STRATEGIES_REFRESH_MS,
   });
 }

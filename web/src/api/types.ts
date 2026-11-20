@@ -2210,3 +2210,89 @@ export interface ModelCompare {
   /** a model's day of `at` with runs on both sides: left out */
   straddling: { agent: string; model: string; runs: number }[];
 }
+
+/** GET /api/strategies/research: the agents' research runs (walk-forward, sweep, portfolio). */
+export type ResearchKind = "walk_forward" | "param_sweep" | "portfolio";
+export type ResearchStatus = "queued" | "running" | "completed" | "failed";
+export type WalkForwardVerdict = "solida" | "fragile" | "da scartare" | "dati insufficienti";
+export type ParamValue = number | string;
+
+export interface ResearchMetrics {
+  total_return_pct?: string;
+  cagr_pct?: string;
+  max_drawdown_pct?: string;
+  sharpe?: string;
+  win_rate_pct?: string;
+  trades?: number;
+  exposure_pct?: string;
+  positive_windows_pct?: string;
+  efficiency?: string | null;
+  [key: string]: string | number | null | undefined;
+}
+
+export interface ResearchSummary {
+  verdict?: WalkForwardVerdict;
+  oos_metrics?: ResearchMetrics;
+  stability_pct?: string;
+  best_by_metric?: Record<string, ParamValue>;
+  best_by_robust?: Record<string, ParamValue>;
+  isolated_peak?: boolean;
+  metrics?: ResearchMetrics;
+}
+
+export interface ResearchRun {
+  id: string;
+  kind: ResearchKind;
+  agent: string | null;
+  strategy: string | null;
+  symbols: string[];
+  timeframe: string;
+  from_date: string;
+  to_date: string;
+  initial_cash: string;
+  spec: { sleeves?: { strategy: string; symbols: string[] }[]; [key: string]: unknown };
+  portfolio_id: string | null;
+  status: ResearchStatus;
+  warnings: string[];
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  summary?: ResearchSummary | null;
+  result?: ResearchResult | null;
+}
+
+export interface ResearchEquityPoint {
+  ts: string;
+  equity: string;
+  drawdown_pct?: string;
+}
+
+export interface ResearchResult {
+  // walk-forward
+  windows?: {
+    window: number;
+    oos_from: string;
+    oos_to: string;
+    best_params: Record<string, ParamValue>;
+    is_metrics: ResearchMetrics;
+    oos_metrics: ResearchMetrics;
+  }[];
+  oos_metrics?: ResearchMetrics;
+  verdict?: WalkForwardVerdict;
+  reasons?: string[];
+  oos_equity?: ResearchEquityPoint[];
+  // sweep
+  rows?: { rank: number; params: Record<string, ParamValue>; metrics: ResearchMetrics; robust: string; neighbour_median: string | null }[];
+  metric?: string;
+  heatmap?: { x_param: string; y_param: string; x_values: ParamValue[]; y_values: ParamValue[]; metric: string; z: (string | null)[][] } | null;
+  // portfolio
+  metrics?: ResearchMetrics;
+  equity?: ResearchEquityPoint[];
+  contribution?: { sleeve: number; strategy: string; symbols: string[]; pnl: string; contribution_pct: string; trades: number; win_rate_pct: string }[];
+  correlation?: { labels: string[]; matrix: (string | null)[][] };
+}
+
+export interface ResearchRunsResponse {
+  runs: ResearchRun[];
+}
