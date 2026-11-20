@@ -93,6 +93,39 @@ describe("SystemHealth", () => {
     expect(within(cycles).getByRole("row", { name: /Ciclo mattina/ })).toHaveTextContent("Portfolio Manager");
   });
 
+  it("shows the automatic backups and the restore test", async () => {
+    body = {
+      ...HEALTH_OK,
+      status: "attenzione",
+      reasons: ["prova di ripristino non riuscita: nessuna riga in fills"],
+      sections: {
+        ...HEALTH_OK.sections,
+        backup: {
+          status: "attenzione",
+          label: "Backup",
+          summary: "prova di ripristino non riuscita: nessuna riga in fills",
+          reasons: ["prova di ripristino non riuscita: nessuna riga in fills"],
+          last_ok_at: "2026-11-19T02:31:00Z",
+          last_ok_name: "smtrading-20261119-0330.dump",
+          last_backup: { kind: "backup", status: "ok", trigger: "programmato", started_at: "2026-11-19T02:30:00Z", duration_s: 12.5, name: "smtrading-20261119-0330.dump", size_bytes: 2048, error: null },
+          last_restore_test: { kind: "restore_test", status: "non riuscito", trigger: "programmato", started_at: "2026-11-16T03:00:00Z", name: "smtrading-20261116-0330.dump", size_bytes: 2048, error: "nessuna riga in fills" },
+          destinations: [
+            { dir: "/backups/local", files: 12, error: null },
+            { dir: "/backups/onedrive", files: 0, error: "cartella non disponibile" },
+          ],
+        },
+      },
+    };
+    renderApp("/salute-sistema");
+    const backup = await screen.findByRole("region", { name: "Backup" });
+    expect(backup).toHaveTextContent("Attenzione");
+    expect(backup).toHaveTextContent("smtrading-20261119-0330.dump");
+    expect(backup).toHaveTextContent("non riuscito");
+    const dirs = within(backup).getByRole("list", { name: "Cartelle dei backup" });
+    expect(within(dirs).getAllByRole("listitem")[0]).toHaveTextContent("12 backup");
+    expect(within(dirs).getAllByRole("listitem")[1]).toHaveTextContent("cartella non disponibile");
+  });
+
   it("stacks the tables as cards on a phone", async () => {
     body = PROBLEM;
     setViewportWidth(390);

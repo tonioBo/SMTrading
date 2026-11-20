@@ -8,7 +8,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatDateTime } from "@/lib/format";
+import { formatBytes, formatDateTime } from "@/lib/format";
 import { ASSET_CLASS_LABELS, HEALTH_LABEL, HEALTH_TONE, JOB_LABELS, formatAge } from "@/lib/health";
 import { formatUsd } from "@/lib/paperclip";
 import { cn } from "@/lib/utils";
@@ -274,6 +274,31 @@ function Mcp({ s }: { s: SystemHealthData["sections"]["mcp"] }) {
   );
 }
 
+function Backup({ s }: { s: NonNullable<SystemHealthData["sections"]["backup"]> }) {
+  const last = s.last_backup;
+  const test = s.last_restore_test;
+  return (
+    <Section id="backup" section={s} link={{ to: "/impostazioni", label: "Impostazioni" }}>
+      <Facts
+        items={[
+          ["Ultimo backup riuscito", s.last_ok_at ? `${when(s.last_ok_at)} (${s.last_ok_name ?? "—"})` : "—"],
+          ["Ultima esecuzione", last ? `${when(last.started_at)}: ${last.status}${last.size_bytes != null ? `, ${formatBytes(last.size_bytes)}` : ""}${last.duration_s != null ? `, ${last.duration_s} s` : ""}` : "—"],
+          ["Prova di ripristino", test ? `${when(test.started_at)}: ${test.status}` : "mai eseguita"],
+        ]}
+      />
+      {s.destinations && s.destinations.length > 0 && (
+        <ul className="space-y-1 text-sm" aria-label="Cartelle dei backup">
+          {s.destinations.map((d) => (
+            <li key={d.dir} className="break-words">
+              <span className="font-mono text-xs">{d.dir}</span> <span className="text-muted">{d.error ? `— ${d.error}` : `— ${d.files} backup`}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  );
+}
+
 function Version({ v }: { v: SystemHealthData["version"] }) {
   return (
     <Card role="region" aria-label="Versione">
@@ -341,6 +366,7 @@ export default function SystemHealth() {
             <Telegram s={data.sections.telegram} />
             <Costs s={data.sections.costs} />
             <Mcp s={data.sections.mcp} />
+            {data.sections.backup && <Backup s={data.sections.backup} />}
           </div>
           <Version v={data.version} />
         </>
