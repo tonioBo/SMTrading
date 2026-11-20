@@ -637,6 +637,13 @@ export interface HandoffWatchdog {
   on: boolean;
 }
 
+/** The weekly PDF report on Telegram; `weekday` 0 = Monday, `at` local time "HH:MM". */
+export interface WeeklyReportPdf {
+  on: boolean;
+  weekday: number;
+  at: string;
+}
+
 export interface AppSettings {
   stale_quote_s: Record<string, number>;
   default_spread_bps: Record<string, number>;
@@ -645,6 +652,7 @@ export interface AppSettings {
   weekly_goal?: WeeklyGoal;
   preopen_check?: PreopenCheck;
   handoff_watchdog?: HandoffWatchdog;
+  weekly_report_pdf?: WeeklyReportPdf;
 }
 
 export interface Connector {
@@ -1000,6 +1008,8 @@ export interface OutboxItem {
   last_error: string | null;
   created_at: string;
   sent_at: string | null;
+  /** A document sent with the text as its caption (the weekly PDF report). */
+  document_name?: string | null;
 }
 
 export type DecisionKind = "proposal" | "approval" | "veto" | "allocation" | "strategy" | "risk_rule" | "other" | "lesson" | "team_rule";

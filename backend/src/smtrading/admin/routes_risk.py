@@ -46,7 +46,7 @@ from smtrading.risk.settings import (
     DEFAULT_STALE_QUOTE_S,
     is_kill_switch_on,
 )
-from smtrading.telegram import preopen_settings, weekly_goal
+from smtrading.telegram import preopen_settings, weekly_goal, weekly_report_settings
 
 router = APIRouter(prefix="/api", tags=["risk"], dependencies=[Depends(require_access)])
 # protective actions every user may take, viewers included: the kill switch towards «on»
@@ -270,6 +270,8 @@ async def _app_settings(session: AsyncSession) -> dict[str, Any]:
             stored.get(preopen_settings.SETTINGS_KEY)),
         "handoff_watchdog": watchdog_settings.watchdog_dto(
             stored.get(watchdog_settings.SETTINGS_KEY)),
+        "weekly_report_pdf": weekly_report_settings.weekly_report_dto(
+            stored.get(weekly_report_settings.SETTINGS_KEY)),
     }
 
 
@@ -319,6 +321,9 @@ async def put_app_settings(body: AppSettingsIn, session: DbSession, redis: Redis
     if body.handoff_watchdog is not None:
         updates[watchdog_settings.SETTINGS_KEY] = watchdog_settings.clean_watchdog(
             body.handoff_watchdog.model_dump(), current["handoff_watchdog"])
+    if body.weekly_report_pdf is not None:
+        updates[weekly_report_settings.SETTINGS_KEY] = weekly_report_settings.clean_weekly_report(
+            body.weekly_report_pdf.model_dump(), current["weekly_report_pdf"])
     async with _transaction(session, redis):
         for key, value in updates.items():
             await _store_setting(session, key, value)

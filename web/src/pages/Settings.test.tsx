@@ -24,6 +24,7 @@ const extras = () => ({
   weekly_goal: { on: true, pct: "2.0" },
   preopen_check: { on: true, at: "08:45" },
   handoff_watchdog: { on: true },
+  weekly_report_pdf: { on: true, weekday: 4, at: "22:30" },
 });
 let stored: Record<string, unknown> = extras();
 const server = setupServer(
@@ -53,7 +54,7 @@ const server = setupServer(
   http.put("*/api/settings/app", async ({ request }) => {
     const body = (await request.json()) as Record<string, unknown>;
     tzPuts.push(body);
-    for (const key of ["weekly_goal", "preopen_check", "handoff_watchdog"]) {
+    for (const key of ["weekly_goal", "preopen_check", "handoff_watchdog", "weekly_report_pdf"]) {
       if (body[key]) stored = { ...stored, [key]: { ...(stored[key] as object), ...(body[key] as object) } };
     }
     return HttpResponse.json({ stale_quote_s: {}, default_spread_bps: {}, ...body, ...stored });
@@ -187,6 +188,26 @@ describe("Settings", () => {
     await waitFor(() => expect(screen.getByLabelText(/Avvisa su Telegram quando un passaggio/)).not.toBeChecked());
   });
 
+  it("saves the weekly PDF report's day and time and turns it off", async () => {
+    const user = userEvent.setup();
+    renderApp("/impostazioni");
+    const box = await screen.findByLabelText(/Invia ogni settimana il resoconto in PDF/);
+    expect(box).toBeChecked();
+    const day = screen.getByLabelText("Giorno del resoconto");
+    expect(day).toHaveValue("4");
+    const save = screen.getByRole("button", { name: "Salva giorno e orario" });
+    expect(save).toBeDisabled();
+    await user.selectOptions(day, "sabato");
+    const time = screen.getByLabelText("Orario del resoconto");
+    await user.clear(time);
+    await user.type(time, "09:00");
+    await user.click(save);
+    await waitFor(() => expect(tzPuts).toEqual([{ weekly_report_pdf: { weekday: 5, at: "09:00" } }]));
+    await user.click(box);
+    await waitFor(() => expect(tzPuts[1]).toEqual({ weekly_report_pdf: { on: false } }));
+    await waitFor(() => expect(screen.getByLabelText(/Invia ogni settimana il resoconto in PDF/)).not.toBeChecked());
+  });
+
   it("shows the Telegram extras read-only to a viewer", async () => {
     meRole = "viewer";
     renderApp("/impostazioni");
@@ -196,6 +217,9 @@ describe("Settings", () => {
     expect(screen.getByLabelText(/Avvisa su Telegram quando un passaggio/)).toBeDisabled();
     expect(screen.getByText("Obiettivo: +2,0% a settimana")).toBeInTheDocument();
     expect(screen.getByText("Orario: 08:45")).toBeInTheDocument();
+    expect(screen.getByLabelText(/Invia ogni settimana il resoconto in PDF/)).toBeDisabled();
+    expect(screen.getByText("Ogni venerdì alle 22:30")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Salva giorno e orario" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Salva obiettivo" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Salva orario" })).not.toBeInTheDocument();
   });

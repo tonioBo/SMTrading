@@ -21,8 +21,9 @@ from smtrading.activity.service import (
 from smtrading.agents.service import assign_portfolio, create_agent, unassign_portfolio
 from smtrading.brokers import registry
 from smtrading.brokers.base import BrokerAdapter
+from smtrading.brokers.models import BrokerLink
 from smtrading.brokers.service import create_link, link_portfolio
-from smtrading.brokers.sync import reconcile
+from smtrading.brokers.sync import reconcile, reconcile_all
 from smtrading.common.db import make_engine
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.execution import execute_fill
@@ -232,6 +233,23 @@ async def test_reconcile_repeat_not_direct_change_direct(maker):
         ("pending", "Riconciliazione broker con 2 differenze"),
     ]
     assert {r.portfolio_id for r in rows} == {pid}
+
+
+async def test_periodic_reconcile_all_is_never_sent_to_telegram(maker):
+    """The old paper job (every 5 min) records its differences and keeps the link status,
+    but the owner's alerts come only from the reconciliation job (smtrading.reconciliation)."""
+    (pid,), link_id = await _linked(maker)
+    _ReconcileAdapter.positions = {"AAPL": D(5)}
+    assert await reconcile_all(maker, None) == 1
+    _ReconcileAdapter.positions = {"AAPL": D(5), "MSFT": D(1)}
+    assert await reconcile_all(maker, None) == 1  # changed: still not sent
+    rows = await _diff_rows(maker)
+    assert [(r.telegram, r.summary, r.portfolio_id) for r in rows] == [
+        (None, "Riconciliazione broker con 1 differenza", pid),
+        (None, "Riconciliazione broker con 2 differenze", pid)]
+    async with maker() as s:
+        link = await s.get(BrokerLink, link_id)
+        assert (link.status, link.last_error) == ("ok", None)
 
 
 async def test_reconcile_compares_each_portfolio_with_its_previous(maker):

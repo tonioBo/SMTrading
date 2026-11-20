@@ -170,7 +170,7 @@ export default function Settings() {
       </Card>
       {data && <McpHideModeSection initial={data.mcp_hide_mode} />}
       <PaperclipSection />
-      {data?.weekly_goal && data.preopen_check && <TelegramExtrasSection goal={data.weekly_goal} preopen={data.preopen_check} watchdog={data.handoff_watchdog} />}
+      {data?.weekly_goal && data.preopen_check && <TelegramExtrasSection goal={data.weekly_goal} preopen={data.preopen_check} watchdog={data.handoff_watchdog} report={data.weekly_report_pdf} />}
       <ChangePasswordSection />
       <TotpSection />
       <SessionsSection />

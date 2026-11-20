@@ -35,6 +35,7 @@ from smtrading.telegram.planner import TelegramPlanner
 from smtrading.telegram.preopen import PreopenCheck
 from smtrading.telegram.sender import OutboxSender
 from smtrading.telegram.summaries import SummaryScheduler
+from smtrading.telegram.weekly_report import WeeklyReport
 from smtrading.watch.evaluator import AlertEvaluator
 from smtrading.worker.jobstate import JobRecorder, bind, job_tick
 
@@ -45,7 +46,7 @@ RESTART_DELAY_S = 5
 HEALTH_FIRST_DELAY_S = 30
 HEALTH_INTERVAL_S = 300
 # the alerting jobs (protection alarm, goal alerts, plan closer, pre-open check, hand-off
-# watchdog, broker reconciliation) wait
+# watchdog, broker reconciliation, weekly PDF report) wait
 # STARTUP_DELAY_S after the worker start and until the api health endpoint answers, so a
 # deploy restart fires nothing; after STARTUP_MAX_WAIT_S they start anyway (fail open)
 STARTUP_DELAY_S = 180
@@ -253,6 +254,8 @@ async def run() -> None:
                         gate, lambda: PreopenCheck(sessionmaker, router, redis).run()))),
                     tg.create_task(supervise("hand-off watchdog", lambda: gated(
                         gate, lambda: HandoffWatchdog(sessionmaker).run()))),
+                    tg.create_task(supervise("weekly report", lambda: gated(
+                        gate, lambda: WeeklyReport(sessionmaker, router).run()))),
                     tg.create_task(supervise("broker reconciliation", lambda: gated(
                         gate, lambda: ReconciliationJob(
                             sessionmaker, router, http,

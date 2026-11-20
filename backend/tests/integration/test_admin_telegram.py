@@ -434,7 +434,7 @@ async def test_outbox_list_and_retry(admin):
     assert [i["id"] for i in items] == [failed[0], sent[1], sent[0]]
     assert items[0]["agent"] == "Notifier" and items[1]["agent"] is None
     assert set(items[0]) == {"id", "source", "agent", "category", "level", "text", "status",
-                             "attempts", "last_error", "created_at", "sent_at"}
+                             "attempts", "last_error", "created_at", "sent_at", "document_name"}
     assert [i["id"] for i in (await c.get("/api/telegram/outbox?status=failed")).json()
             ["items"]] == failed
     assert [i["id"] for i in (await c.get(f"/api/telegram/outbox?before_id={sent[1]}"))

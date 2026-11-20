@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiDownload, apiFetch, saveBlob } from "@/api/client";
 import { appSettingsKey } from "@/api/hooks/risk";
-import type { AppSettings, BackupFile, HandoffWatchdog, PreopenCheck, SystemHealth, VerifyBalancesResult, VerifyChainResult, WeeklyGoal } from "@/api/types";
+import type { AppSettings, BackupFile, HandoffWatchdog, PreopenCheck, SystemHealth, VerifyBalancesResult, VerifyChainResult, WeeklyGoal, WeeklyReportPdf } from "@/api/types";
 
 export const systemHealthKey = ["system-health"] as const;
 
@@ -48,7 +48,8 @@ export function useSaveMcpHideMode() {
   });
 }
 
-/** The Telegram extras: weekly goal, pre-open check and hand-off watchdog (partial updates). */
+/** The Telegram extras: weekly goal, pre-open check, hand-off watchdog and weekly PDF
+ * report (partial updates). */
 export function useSaveTelegramExtras() {
   const qc = useQueryClient();
   return useMutation({
@@ -56,6 +57,7 @@ export function useSaveTelegramExtras() {
       weekly_goal?: Partial<WeeklyGoal>;
       preopen_check?: Partial<PreopenCheck>;
       handoff_watchdog?: Partial<HandoffWatchdog>;
+      weekly_report_pdf?: Partial<WeeklyReportPdf>;
     }) =>
       apiFetch<AppSettings>("/api/settings/app", { method: "PUT", body }),
     onSuccess: (data) => {

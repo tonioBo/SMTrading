@@ -16,6 +16,9 @@ AGENT_WINDOW_S = 60
 STALE_AFTER = timedelta(hours=24)  # R7.1: older non-critical news is not sent any more
 STALE_MESSAGE = "Non inviato: in pausa da più di 24 ore"
 LIVE_CATEGORY = "live"  # real-money messages: never stale-skipped (Ruling R8.4)
+MAX_DOCUMENT_BYTES = 20 * 1024 * 1024  # a document row: at most 20 MB
+CAPTION_MAX_LEN = 1024  # Telegram's limit of a caption, in UTF-16 units
+DOCUMENT_NAME_MAX = 128
 
 
 async def enqueue(session: AsyncSession, *, source: str, category: str, level: str,
@@ -31,6 +34,32 @@ async def enqueue(session: AsyncSession, *, source: str, category: str, level: s
         cfg = await load_config(session)
     row = TelegramOutbox(
         source=source, category=category, level=level, text=text, entities=entities or None,
+        status=OutboxStatus.paused if cfg.paused else OutboxStatus.pending,
+    )
+    session.add(row)
+    await session.flush()
+    return row
+
+
+async def enqueue_document(session: AsyncSession, *, source: str, category: str, level: str,
+                           caption: str, filename: str, content: bytes,
+                           entities: list | None = None,
+                           cfg: TelegramConfig | None = None) -> TelegramOutbox:
+    """A document row (sent with sendDocument, `caption` stored as its text), `paused` or
+    `pending` as `enqueue`. The file is stored in the row until it is sent or skipped.
+    A file over MAX_DOCUMENT_BYTES, an empty one, a caption over CAPTION_MAX_LEN or a
+    bad name is the caller's bug (ValueError)."""
+    if not content or len(content) > MAX_DOCUMENT_BYTES:
+        raise ValueError(f"telegram document must be 1 byte to {MAX_DOCUMENT_BYTES} bytes")
+    if utf16_len(caption) > CAPTION_MAX_LEN:
+        raise ValueError(f"telegram caption longer than {CAPTION_MAX_LEN} UTF-16 units")
+    if not filename or len(filename) > DOCUMENT_NAME_MAX or "/" in filename:
+        raise ValueError("telegram document name not valid")
+    if cfg is None:
+        cfg = await load_config(session)
+    row = TelegramOutbox(
+        source=source, category=category, level=level, text=caption,
+        entities=entities or None, document=content, document_name=filename,
         status=OutboxStatus.paused if cfg.paused else OutboxStatus.pending,
     )
     session.add(row)
@@ -61,7 +90,7 @@ async def resume_paused(session: AsyncSession) -> int:
                TelegramOutbox.level != "critical",
                TelegramOutbox.category != LIVE_CATEGORY,
                TelegramOutbox.created_at < func.now() - STALE_AFTER)
-        .values(status=OutboxStatus.skipped, last_error=STALE_MESSAGE)
+        .values(status=OutboxStatus.skipped, last_error=STALE_MESSAGE, document=None)
     )
     result = await session.execute(
         update(TelegramOutbox)

@@ -23,6 +23,9 @@ whose last error was chat-wide. A held sender polls the settings' `hold_version`
 token or group, a resume or «Riprova tutti i falliti» (`telegram.settings.release_hold`)
 bumps it, and the hold is dropped at once instead of waiting up to 900 s.
 
+A document row (`document_name` set) is sent with sendDocument, its text as the caption,
+with the same rules; once sent its file is cleared from the row.
+
 Supergroup migration (400 with `migrate_to_chat_id`): the configuration takes the new
 chat id (audited when it actually changes), and the message is sent again at once to the
 new id, in the same tick and with no attempt spent: the old id will never accept it.
@@ -65,6 +68,7 @@ BACKOFF_BASE_S = 5
 BACKOFF_MAX_S = 900
 DEFAULT_RETRY_AFTER_S = 5
 ADVISORY_LOCK_KEY = 0x534D54544753  # "SMTTGS"
+MISSING_DOCUMENT = "Documento mancante: non si può inviare"
 log = logging.getLogger(__name__)
 
 
@@ -205,11 +209,25 @@ class OutboxSender:
         chat_id = cfg.chat_id or ""
         silent = is_quiet(now, self._tz)
         migrated = False
+        document = None
+        if row.document_name is not None:  # deferred column: read explicitly
+            document = await session.scalar(
+                select(TelegramOutbox.document).where(TelegramOutbox.id == row.id))
+            if not document:  # never retried: nothing to send
+                row.status, row.last_error = OutboxStatus.failed, MISSING_DOCUMENT
+                return
         while True:
             self._last_send = self._clock()
             try:
-                message_id = await client.send_message(
-                    chat_id, row.text, entities=row.entities, disable_notification=silent)
+                if document is not None:
+                    message_id = await client.send_document(
+                        chat_id, row.document_name or "documento.pdf", document,
+                        caption=row.text, caption_entities=row.entities,
+                        disable_notification=silent)
+                else:
+                    message_id = await client.send_message(
+                        chat_id, row.text, entities=row.entities,
+                        disable_notification=silent)
                 break
             except TelegramError as e:
                 if e.migrate_to_chat_id is None or migrated:
@@ -221,6 +239,8 @@ class OutboxSender:
         row.sent_at = now
         row.telegram_message_id = message_id
         row.last_error = None
+        if document is not None:
+            row.document = None  # sent: the file is not kept in the database
         self._hold_until = None
 
     async def _migrate(self, session: AsyncSession, old: str, new: str) -> str:

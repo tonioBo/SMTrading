@@ -144,7 +144,11 @@ Funzionamento:
 - *Reset* di un portafoglio collegato: rifiutato se ci sono posizioni aperte (chiudile
   prima); gli annullamenti richiesti vengono mantenuti.
 - *Riconciliazione* (*Riconcilia ora*, e periodica): confronta le posizioni del broker con
-  le nostre e registra le differenze; non corregge nulla.
+  le nostre e registra le differenze; non corregge nulla. Il controllo periodico dei
+  collegamenti di prova (ogni 5 minuti) registra le differenze nel feed delle attività e
+  aggiorna lo stato del collegamento, ma non manda più avvisi Telegram: gli avvisi al
+  proprietario sulle differenze col broker arrivano solo dal controllo della pagina
+  **Riconciliazione** qui sotto.
 - Pagina **Riconciliazione** (Sistema): per ogni portafoglio collegato (prova o denaro
   reale) posizioni, liquidità e ordini aperti di SMTrading contro il conto del broker, con
   stato, voci, storico e *Riconcilia ora* (amministratori). Il worker la ripete ogni 15
@@ -582,7 +586,7 @@ docker compose exec api python -m smtrading.cli agent notify NOME on   # oppure 
 | Livello | Eventi |
 |---|---|
 | 🔴 critico | kill switch attivato, blocco aperture attivato o revocato, liquidazione, perdita giornaliera, ordine sconosciuto al broker |
-| 🟠 avviso | ordine rifiutato, kill switch disattivato, avviso di margine, liquidazione in attesa del broker, prezzo di esecuzione mancante, modifica ordine non riuscita, differenze di riconciliazione broker |
+| 🟠 avviso | ordine rifiutato, kill switch disattivato, avviso di margine, liquidazione in attesa del broker, prezzo di esecuzione mancante, modifica ordine non riuscita, differenze di riconciliazione broker trovate con *Riconcilia ora* (quelle del controllo periodico arrivano dal controllo di riconciliazione, vedi sopra) |
 | 🟢 eseguito | ordine eseguito |
 
 Il resto (ordini accettati o annullati, alert di prezzo, decisioni) compare solo nel feed
@@ -601,6 +605,17 @@ delle attività e nei riepiloghi.
   il riepilogo giornaliero e quello settimanale mostrano una riga «🎯» per ogni obiettivo
   attivo (settimana, mese, trimestre, anno o date fissate) con l'avanzamento del periodo, e
   il giorno dopo la fine di un periodo una riga «🏁» con l'esito.
+- **Resoconto settimanale in PDF** (attivo di default, il venerdì alle 22:30, dopo la
+  chiusura USA e il giro del PM delle 22:15; giorno e orario si cambiano): il *Resoconto*
+  della settimana, da lunedì alle 00:00 a quel momento, inviato nel gruppo come documento
+  PDF con una breve didascalia (settimana, P&L totale in € e %, obiettivo settimanale
+  raggiunto sì/no, costo degli agenti). Il resoconto somma solo i portafogli conteggiati
+  nei totali; quelli fuori dai totali sono in una pagina a parte, «Portafogli fuori dai
+  totali». Uno solo per settimana, anche dopo un riavvio; se il worker era fermo o
+  Telegram non era pronto parte entro 24 ore dall'orario, poi la settimana è saltata (un
+  WARNING nel log). Un PDF oltre i 20 MB non si invia: arriva la sola didascalia, con
+  l'invito a scaricarlo dal pulsante *Resoconto*. Il file resta nella coda solo finché
+  non è inviato.
 - **«🧭 Decisioni di oggi»** nel riepilogo delle 18:00 (e «della settimana» nel
   settimanale): le decisioni registrate dagli agenti con `log_decision`, per tipo, una riga
   ciascuna con esito, oggetto, portafoglio e motivo (campi `outcome`, `subject`, `reason`).

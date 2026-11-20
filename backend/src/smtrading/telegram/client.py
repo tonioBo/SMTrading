@@ -1,4 +1,5 @@
-"""Minimal async Telegram Bot API client (getMe, getChat, getUpdates, sendMessage).
+"""Minimal async Telegram Bot API client (getMe, getChat, getUpdates, sendMessage,
+sendDocument).
 
 The token is part of every URL (`/bot<token>/<method>`), so nothing that can carry the URL
 (httpx exceptions, responses, tracebacks) ever leaves this module: every failure becomes a
@@ -7,6 +8,7 @@ neither `__cause__` nor `__context__` holds the httpx error), with any echo of t
 replaced by `••••`.
 """
 
+import json
 import logging
 import re
 from typing import Any
@@ -16,6 +18,7 @@ import httpx
 API_URL = "https://api.telegram.org"
 _MASK = "••••"
 _TOKEN_RE = re.compile(r"\d+:[A-Za-z0-9_-]+")
+DOCUMENT_TIMEOUT_S = 120.0  # an upload of up to 20 MB
 log = logging.getLogger(__name__)
 
 
@@ -83,11 +86,16 @@ class TelegramClient:
     def _redact(self, text: str) -> str:
         return text.replace(self._token, _MASK) if self._token else text
 
-    async def _call(self, method: str, payload: dict[str, Any] | None = None) -> Any:
+    async def _call(self, method: str, payload: dict[str, Any] | None = None, *,
+                    files: dict[str, tuple[str, bytes, str]] | None = None,
+                    timeout: float | None = None) -> Any:
+        """JSON body, or with `files` a multipart form (`payload` as its fields)."""
         url = f"{API_URL}/bot{self._token}/{method}"
         resp = None
+        body_kw: dict[str, Any] = ({"data": payload or {}, "files": files} if files
+                                   else {"json": payload or {}})
         try:
-            resp = await self._http.post(url, json=payload or {}, timeout=self._timeout)
+            resp = await self._http.post(url, **body_kw, timeout=timeout or self._timeout)
         except (httpx.HTTPError, httpx.InvalidURL):
             pass  # raised below, outside the handler: no __context__ holding the URL
         if resp is None:
@@ -166,4 +174,26 @@ class TelegramClient:
         message_id = _int_or_none(r.get("message_id"))
         if message_id is None:
             log.warning("telegram sendMessage ok without a message_id: treated as sent")
+        return message_id
+
+    async def send_document(self, chat_id: int | str, filename: str, content: bytes, *,
+                            caption: str | None = None,
+                            caption_entities: list[dict[str, Any]] | None = None,
+                            disable_notification: bool = False,
+                            mime_type: str = "application/pdf") -> int | None:
+        """A file as a document (multipart upload), with an optional plain caption
+        (formatting only via `caption_entities`). Returns the message_id, None as for
+        `send_message`."""
+        payload: dict[str, Any] = {"chat_id": str(chat_id),
+                                   "disable_notification": json.dumps(disable_notification)}
+        if caption:
+            payload["caption"] = caption
+        if caption_entities:
+            payload["caption_entities"] = json.dumps(caption_entities)
+        r = await self._call("sendDocument", payload,
+                             files={"document": (filename, content, mime_type)},
+                             timeout=max(self._timeout, DOCUMENT_TIMEOUT_S))
+        message_id = _int_or_none(r.get("message_id")) if isinstance(r, dict) else None
+        if message_id is None:
+            log.warning("telegram sendDocument ok without a message_id: treated as sent")
         return message_id
