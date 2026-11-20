@@ -35,10 +35,11 @@ spostate qui sono: «Short tattico» §C6, «Contratto del cursore» §C8, «Pos
   meglio dell'indice `benchmark` di `target_pct` punti (`benchmark_pct` = l'indice nel
   periodo in €, `diff_pp` = lo scarto; stati `avanti`, `in linea`, `indietro`): è un
   confronto, mai un motivo per prendere più rischio.
-  **Il rischio viene sempre prima**: per inseguire un obiettivo non si superano i limiti del
-  profilo, non si opera senza una strategia approvata e non si aumenta il rischio. Meglio
-  chiudere il periodo sotto l'obiettivo che fuori dalle regole. Come ripartire gli obiettivi
-  tra i portafogli e nelle settimane lo decide il CEO, con un task.
+  **Obiettivo ed equilibrio**: l'obiettivo si persegue attivamente. Con l'obiettivo in
+  ritardo il Risk Manager può concedere un rischio per operazione più ampio, sempre dentro i
+  limiti del profilo, e il Portfolio Manager usa tutti i posti liberi delle strategie
+  approvate. Non si opera mai senza segnale di una strategia approvata né senza stop. Come
+  ripartire gli obiettivi tra i portafogli e nel periodo lo decide il CEO, con un task.
 - **Piani**: un obiettivo con `closes_positions: true` è un **piano**: a fine periodo le sue
   posizioni si chiudono. Regole in §7 «Piani».
 - **Costi di esecuzione**: commissione 0, **0,15% sul cambio valuta** (es. acquisto di titoli

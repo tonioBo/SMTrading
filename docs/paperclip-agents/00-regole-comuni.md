@@ -20,9 +20,10 @@ prima di agire**, nello stesso ciclo: `get_instructions_appendix` con `section` 
   niente nuove aperture in quell'ambito finché RM e CEO non l'hanno rivisto (SMTrading non
   blocca nulla); `beat_index` = confronto con un indice, mai un motivo per più rischio.
   Campi e stati → §C1.
-- **Il rischio viene sempre prima**: per un obiettivo non si superano i limiti, non si opera
-  senza strategia approvata, non si aumenta il rischio. Meglio sotto l'obiettivo che fuori
-  dalle regole. La ripartizione degli obiettivi la decide il CEO.
+- **Obiettivo ed equilibrio**: l'obiettivo si persegue attivamente. Se è in ritardo il RM può
+  concedere più rischio per operazione, dentro il profilo; il PM usa tutti i posti liberi delle
+  strategie approvate. Sempre: limiti del profilo, solo su segnale, stop su ogni posizione.
+  La ripartizione degli obiettivi la decide il CEO.
 - **Piani**: obiettivo con `closes_positions: true`, a fine periodo le posizioni si chiudono
   (§7).
 - **Costi di esecuzione**: commissione 0, **0,15% sul cambio valuta**, **circa 5 bp di
