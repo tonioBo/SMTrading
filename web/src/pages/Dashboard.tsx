@@ -32,7 +32,7 @@ import { heartbeatState } from "@/lib/heartbeat";
 import { cn } from "@/lib/utils";
 
 const TONE_DOT = { ok: "bg-gain", warn: "bg-warn", down: "bg-loss" } as const;
-const CONNECTOR_TONE = { ok: "ok", error: "down" } as const;
+const CONNECTOR_TONE = { ok: "ok", error: "down", limited: "warn" } as const;
 
 function Dot({ tone, label }: { tone: "ok" | "warn" | "down" | "off"; label: string }) {
   return (
@@ -68,8 +68,8 @@ function ConnectorStatus({ connectors }: { connectors: DashboardConnector[] }) {
         ) : (
           <ul className="space-y-2 text-sm">
             {connectors.map((c) => {
-              const tone = !c.enabled ? "off" : (CONNECTOR_TONE[c.health_status as "ok" | "error"] ?? "warn");
-              const state = !c.enabled ? "disabilitato" : c.health_status === "ok" ? "operativo" : c.health_status === "error" ? "errore" : "sconosciuto";
+              const tone = !c.enabled ? "off" : (CONNECTOR_TONE[c.health_status as "ok" | "error" | "limited"] ?? "warn");
+              const state = !c.enabled ? "disabilitato" : c.health_status === "ok" ? "operativo" : c.health_status === "error" ? "errore" : c.health_status === "limited" ? "quota esaurita" : "sconosciuto";
               return (
                 <li key={c.name} className="flex items-center gap-2">
                   <Dot tone={tone} label={`${c.name}: ${state}`} />

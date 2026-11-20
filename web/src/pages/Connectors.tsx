@@ -22,7 +22,7 @@ const ASSET_CLASS_LABELS: Record<AssetClass, string> = {
   crypto: "Crypto",
   forex: "Forex",
 };
-const HEALTH_LABELS: Record<string, string> = { ok: "Operativo", error: "Errore", unknown: "Non verificato" };
+const HEALTH_LABELS: Record<string, string> = { ok: "Operativo", error: "Errore", limited: "Quota esaurita (passa ad altre fonti)", unknown: "Non verificato" };
 /** Field labels of a connector (the config key otherwise). */
 const FIELD_LABELS: Record<string, Record<string, string>> = {
   etoro: { api_key: "Chiave API (x-api-key)", user_key: "Chiave utente (x-user-key)" },

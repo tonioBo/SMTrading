@@ -114,9 +114,15 @@ async def update_connector(
     return c
 
 
+def _is_quota_error(error: str | None) -> bool:
+    """A provider that answered «too many requests» (HTTP 429) is reachable but out of
+    quota: the router already moves it to the end of the list until the reset."""
+    return bool(error) and ("429" in error or "too many requests" in error.lower())
+
+
 async def record_health(session: AsyncSession, name: str, ok: bool, error: str | None) -> None:
     c = await _get(session, name)
-    c.health_status = "ok" if ok else "error"
+    c.health_status = "ok" if ok else ("limited" if _is_quota_error(error) else "error")
     c.last_error = None if ok else error
     c.last_checked_at = datetime.now(UTC)
     await session.flush()

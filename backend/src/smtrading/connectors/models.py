@@ -17,7 +17,7 @@ class Connector(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     config_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     rate_limit_per_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    health_status: Mapped[str] = mapped_column(String(32), default="unknown")  # ok|error|unknown
+    health_status: Mapped[str] = mapped_column(String(32), default="unknown")  # ok|error|limited|unknown
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_checked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
