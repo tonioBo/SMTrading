@@ -1,8 +1,8 @@
-"""Chiusura dei piani (plan 17): the worker job closes the positions of an ended piano not
-in loss at the first open session, puts the losing ones in grace until the deadline and
-closes them then; a closed market waits, a stale quote is skipped, the kill switch lets
-the closes through, a restart does nothing again; the risk check refuses to increase a
-position in grace. The week of 11-17 January 2027 ends on Sunday; Monday 18 is a US
+"""Chiusura dei piani (plan 17; no grace since 20/11/2026): the worker job closes every
+position of an ended piano still open at its market's first open session, in profit or in
+loss; a closed market waits, a stale or suspect quote is skipped, the kill switch lets the
+closes through, a restart does nothing again; the risk check refuses to increase a
+position being closed. The week of 11-17 January 2027 ends on Sunday; Monday 18 is a US
 holiday (Martin Luther King Day), so AAPL's first session is Tuesday 19."""
 
 import dataclasses
@@ -43,7 +43,6 @@ BOUGHT = datetime(2027, 1, 15, 15, 0, tzinfo=UTC)  # Friday, NASDAQ open
 SUNDAY_NIGHT = datetime(2027, 1, 17, 23, 5, tzinfo=UTC)  # Monday 00:05 in Rome
 HOLIDAY = datetime(2027, 1, 18, 15, 0, tzinfo=UTC)  # Monday: US markets closed
 TUESDAY = datetime(2027, 1, 19, 15, 0, tzinfo=UTC)  # NASDAQ open; closes at 21:00 UTC
-DEADLINE = datetime(2027, 1, 19, 21, 0, tzinfo=UTC)
 
 
 class Clock:
@@ -76,12 +75,14 @@ class QS(FakeQuoteSource):
         super().__init__()
         self.at: datetime | None = None
         self.age = timedelta(0)
+        self.suspect: str | None = None
 
     async def get_quotes(self, symbols, *, max_age_s: int = 5):
         quotes = await super().get_quotes(symbols, max_age_s=max_age_s)
         if self.at is None:
             return quotes
-        return {k: dataclasses.replace(q, ts=self.at - self.age) for k, q in quotes.items()}
+        return {k: dataclasses.replace(q, ts=self.at - self.age, suspect=self.suspect)
+                for k, q in quotes.items()}
 
 
 @pytest.fixture
@@ -158,7 +159,7 @@ def _job(sm, qs, clock):
     return _Job(sm, qs, None, clock=clock, tz="Europe/Rome")
 
 
-async def test_end_grace_and_deadline(sm, qs):
+async def test_end_closes_every_position_loss_included(sm, qs):
     pid = await _portfolio(sm)
     await _buy(sm, qs, pid, "AAPL", 10)
     await _buy(sm, qs, pid, "BTC-USD", "0.1")
@@ -170,11 +171,13 @@ async def test_end_grace_and_deadline(sm, qs):
     rows = await _rows(sm)
     assert {s: r.state for s, r in rows.items()} == {"AAPL": "pending", "BTC-USD": "closed"}, \
         {s: r.last_error for s, r in rows.items()}
+    assert {r.grace_days for r in rows.values()} == {0}
     assert rows["BTC-USD"].closed_by == "system"
     assert await _qty(sm, pid, "BTC-USD") == 0
     out = await _outbox(sm)
     assert out[0].startswith("🏁 Piano «settimana» concluso (11/01–17/01): 2 posizioni")
-    assert "🔒 Piano «settimana»: BTC-USD chiusa da SMTrading" in out[1]
+    assert "le chiude SMTrading alla prima seduta utile" in out[0]
+    assert "🔒 Piano «settimana»: BTC-USD chiusa da SMTrading (fine piano)" in out[1]
     feed = await _feed(sm)
     assert [t for t, _ in feed] == ["plan.ended", "plan.closed"]
     assert "simul" not in " ".join(t for _, t in feed).lower()
@@ -183,35 +186,29 @@ async def test_end_grace_and_deadline(sm, qs):
     await _job(sm, qs, clock).tick()
     assert (await _rows(sm))["AAPL"].state == "pending"
 
-    clock.t = TUESDAY
-    await _job(sm, qs, clock).tick()
-    aapl = (await _rows(sm))["AAPL"]
-    assert (aapl.state, aapl.deadline) == ("grace", DEADLINE)
-    assert [t for t, _ in await _feed(sm)][-1] == "plan.grace"
-
-    # no additions while in grace; reducing is allowed
+    # no additions while being closed
     with pytest.raises(SMTError) as e:
-        await _buy(sm, qs, pid, "AAPL", 1, now=TUESDAY)
+        await _buy(sm, qs, pid, "AAPL", 1, now=HOLIDAY)
     assert e.value.code == ErrorCode.RISK_LIMIT_EXCEEDED
-    assert e.value.details["reason"] == "plan_grace"
-    assert e.value.details["symbol"] == "AAPL"
-    assert e.value.details["deadline"] == DEADLINE.isoformat()
-    await _buy(sm, qs, pid, "AAPL", 2, now=TUESDAY, side=OrderSide.sell)
-
+    assert {k: v for k, v in e.value.details.items() if k != "order_id"} == {
+        "reason": "plan_grace", "symbol": "AAPL"}
+    assert "posizione in chiusura per fine piano" in e.value.message
     async with sm() as s:
         [state] = await plan_states(s)
-    assert state["counts"] == {"pending": 0, "grace": 1, "closing": 0, "closed": 1}
+    assert state["counts"] == {"pending": 1, "closing": 0, "closed": 1}
+    assert "grace_days" not in state and "deadline" not in state["positions"][0]
 
-    clock.t = DEADLINE - timedelta(minutes=30)  # before the last quarter of an hour
-    await _job(sm, qs, clock).tick()
-    assert (await _rows(sm))["AAPL"].state == "grace"
-    clock.t = DEADLINE - timedelta(minutes=10)
+    clock.t = TUESDAY  # the first session: closed in loss, no grace
     await _job(sm, qs, clock).tick()
     aapl = (await _rows(sm))["AAPL"]
-    assert (aapl.state, aapl.closed_by) == ("closed", "system")
+    assert (aapl.state, aapl.closed_by, aapl.deadline) == ("closed", "system", None)
     assert await _qty(sm, pid, "AAPL") == 0
     out = await _outbox(sm)
-    assert "fine del periodo di grazia" in out[-1]
+    assert "AAPL chiusa da SMTrading (fine piano)" in out[-1]
+    feed = await _feed(sm)
+    assert [t for t, _ in feed] == ["plan.ended", "plan.closed", "plan.closed"]
+    text = " ".join(out + [t for _, t in feed]).lower()
+    assert "grazia" not in text and "grace" not in text
 
     # a restart sends nothing again and creates nothing
     before = (len(await _outbox(sm)), len(await _feed(sm)))
@@ -220,6 +217,60 @@ async def test_end_grace_and_deadline(sm, qs):
     async with sm() as s:
         orders = list(await s.scalars(select(Order).where(Order.source == "system")))
     assert len(orders) == 2
+
+
+async def test_a_position_in_profit_is_closed_at_the_first_session(sm, qs):
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, "AAPL", 10)
+    await _plan(sm)
+    qs.set_quote("AAPL", D("210.00"), D("210.10"), D("210.05"))
+    await _job(sm, qs, Clock(SUNDAY_NIGHT)).tick()
+    await _job(sm, qs, Clock(HOLIDAY)).tick()
+    assert (await _rows(sm))["AAPL"].state == "pending"
+    await _job(sm, qs, Clock(TUESDAY)).tick()
+    row = (await _rows(sm))["AAPL"]
+    assert (row.state, row.closed_by) == ("closed", "system")
+    assert await _qty(sm, pid, "AAPL") == 0
+
+
+async def test_a_suspect_quote_waits_for_a_good_one(sm, qs):
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, "AAPL", 10)
+    await _plan(sm)
+    qs.set_quote("AAPL", D("150.00"), D("150.10"), D("150.05"))  # a big loss, maybe a bad print
+    await _job(sm, qs, Clock(SUNDAY_NIGHT)).tick()
+    qs.suspect = "jump"
+    await _job(sm, qs, Clock(TUESDAY)).tick()
+    row = (await _rows(sm))["AAPL"]
+    assert row.state == "pending" and "not confirmed" in row.last_error
+    assert row.attempts == 0 and await _qty(sm, pid, "AAPL") == 10
+    qs.suspect = None
+    await _job(sm, qs, Clock(TUESDAY + timedelta(minutes=5))).tick()
+    assert (await _rows(sm))["AAPL"].state == "closed"
+    assert await _qty(sm, pid, "AAPL") == 0
+
+
+async def test_a_legacy_grace_row_is_closed_at_the_next_run(sm, qs):
+    """A row left in `grace` by the old rule (deadline days away) is closed at once."""
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, "AAPL", 10)
+    gid = await _plan(sm)
+    qs.set_quote("AAPL", D("190.00"), D("190.10"), D("190.05"))  # in loss
+    async with sm() as s:
+        held = await s.get(Position, (pid, "AAPL"))
+        s.add(PlanClosure(
+            goal_id=gid, period_start=date(2027, 1, 11), period_end=date(2027, 1, 17),
+            ended_at=datetime(2027, 1, 17, 23, 0, tzinfo=UTC), portfolio_id=pid,
+            symbol="AAPL", qty=D(10), opened_at=held.opened_at, state="grace",
+            grace_days=1, attempts=0, deadline=TUESDAY + timedelta(days=3)))
+        await s.commit()
+    async with sm() as s:
+        [state] = await plan_states(s)
+    assert state["counts"] == {"pending": 1, "closing": 0, "closed": 0}
+    await _job(sm, qs, Clock(TUESDAY)).tick()
+    row = (await _rows(sm))["AAPL"]
+    assert (row.state, row.closed_by) == ("closed", "system")
+    assert await _qty(sm, pid, "AAPL") == 0
 
 
 async def test_stale_quote_skips_then_closes_and_kill_switch_lets_it_through(sm, qs):
@@ -297,14 +348,12 @@ async def test_deactivated_plan_and_plan_since(sm, qs):
     await _job(sm, qs, clock).tick()
     async with sm() as s:  # the later piano became one after the end: nothing
         assert await s.scalar(select(PlanClosure).where(PlanClosure.goal_id == late)) is None
-    clock.t = TUESDAY
-    await _job(sm, qs, clock).tick()
-    assert (await _rows(sm))["AAPL"].state == "grace"
+    assert (await _rows(sm))["AAPL"].state == "pending"
     async with sm() as s:
         await s.execute(update(Goal).where(Goal.id == gid).values(active=False))
         await s.commit()
     await _buy(sm, qs, pid, "AAPL", 1, now=TUESDAY)  # no longer a piano: allowed
-    clock.t = DEADLINE - timedelta(minutes=5)
+    clock.t = TUESDAY
     await _job(sm, qs, clock).tick()
     assert await _qty(sm, pid, "AAPL") == 11
 
@@ -370,15 +419,13 @@ async def test_a_piano_turned_on_again_leaves_its_earlier_rows_alone(sm, qs):
     qs.set_quote("AAPL", D("190.00"), D("190.10"), D("190.05"))
     gid = await _plan(sm)
     await _job(sm, qs, Clock(SUNDAY_NIGHT)).tick()
-    await _job(sm, qs, Clock(TUESDAY)).tick()
-    assert (await _rows(sm))["AAPL"].state == "grace"
+    assert (await _rows(sm))["AAPL"].state == "pending"
     async with sm() as s:  # off, then on again after the end (plan_since moves on)
         await s.execute(update(Goal).where(Goal.id == gid).values(
-            active=True, plan_since=TUESDAY + timedelta(hours=1)))
+            active=True, plan_since=HOLIDAY))
         await s.commit()
-    clock = Clock(DEADLINE - timedelta(minutes=5))
-    await _job(sm, qs, clock).tick()
-    assert (await _rows(sm))["AAPL"].state == "grace"  # untouched
+    await _job(sm, qs, Clock(TUESDAY)).tick()
+    assert (await _rows(sm))["AAPL"].state == "pending"  # untouched
     assert await _qty(sm, pid, "AAPL") == 10
     await _buy(sm, qs, pid, "AAPL", 1, now=TUESDAY)  # no longer blocks additions
     assert await _qty(sm, pid, "AAPL") == 11
@@ -386,35 +433,34 @@ async def test_a_piano_turned_on_again_leaves_its_earlier_rows_alone(sm, qs):
 
 async def test_a_close_order_ended_unfilled_counts_as_a_failure(sm, qs):
     """The system's close ended without a fill (e.g. rejected by the broker): back to
-    grace, counted, the owner told once."""
+    pending, counted, the owner told once."""
     pid = await _portfolio(sm)
     await _buy(sm, qs, pid, "AAPL", 10)
     qs.set_quote("AAPL", D("190.00"), D("190.10"), D("190.05"))
     await _plan(sm)
     await _job(sm, qs, Clock(SUNDAY_NIGHT)).tick()
-    await _job(sm, qs, Clock(TUESDAY)).tick()
     async with sm() as s:
         filled = await s.scalar(select(Order.id).where(Order.portfolio_id == pid))
     for _ in range(FAIL_NOTICE_AT):
         async with sm() as s:
             await s.execute(update(PlanClosure).values(state="closing", order_id=filled))
             await s.commit()
-        await _job(sm, qs, Clock(TUESDAY)).tick()
+        await _job(sm, qs, Clock(HOLIDAY)).tick()
     row = (await _rows(sm))["AAPL"]
-    assert (row.state, row.order_id, row.attempts) == ("grace", None, FAIL_NOTICE_AT)
+    assert (row.state, row.order_id, row.attempts) == ("pending", None, FAIL_NOTICE_AT)
     assert "close order filled" in row.last_error
     assert sum("non riuscita" in t for t in await _outbox(sm)) == 1
 
 
-async def test_protection_and_stop_changes_pass_in_grace(sm, qs):
-    """No additions in grace, but a PROTEGGI OCO and moving its stop are reductions."""
+async def test_protection_and_stop_changes_pass_in_plan_closing(sm, qs):
+    """No additions while being closed, but a PROTEGGI OCO and moving its stop are
+    reductions."""
     pid = await _portfolio(sm)
     await _buy(sm, qs, pid, "AAPL", 10)
     qs.set_quote("AAPL", D("190.00"), D("190.10"), D("190.05"))
     await _plan(sm)
     await _job(sm, qs, Clock(SUNDAY_NIGHT)).tick()
-    await _job(sm, qs, Clock(TUESDAY)).tick()
-    assert (await _rows(sm))["AAPL"].state == "grace"
+    assert (await _rows(sm))["AAPL"].state == "pending"
     async with sm() as s:
         legs = await place_oco_order(
             s, qs,
@@ -467,7 +513,7 @@ async def test_period_end_cancels_the_resting_additions_not_the_exits(sm, qs):
         await s.commit()
     exit_ = await _resting(sm, qs, pid, "AAPL", OrderSide.sell, OrderType.stop, 10,
                            stop_price=D(170))
-    qs.set_quote("AAPL", D("190.00"), D("190.10"), D("190.05"))  # in loss: grace later
+    qs.set_quote("AAPL", D("190.00"), D("190.10"), D("190.05"))  # in loss: closed at the open
     await _plan(sm)
     async with sm() as s:
         await set_kill_switch(s, True)
@@ -485,7 +531,7 @@ async def test_period_end_cancels_the_resting_additions_not_the_exits(sm, qs):
     assert len(await _feed(sm)) == before
 
 
-async def _row(sm, pid, symbol, state="grace"):
+async def _row(sm, pid, symbol, state="pending"):
     """A plan_closures row written directly (the job's cancel pass not run yet)."""
     gid = await _plan(sm)
     async with sm() as s:
@@ -493,7 +539,7 @@ async def _row(sm, pid, symbol, state="grace"):
             goal_id=gid, period_start=date(2027, 1, 11), period_end=date(2027, 1, 17),
             ended_at=datetime(2027, 1, 17, 23, 0, tzinfo=UTC), portfolio_id=pid,
             symbol=symbol, qty=D("0.1"), opened_at=None, state=state, grace_days=1,
-            attempts=0, deadline=DEADLINE if state == "grace" else None))
+            attempts=0))
         await s.commit()
 
 
@@ -510,7 +556,8 @@ async def _processor_tick(sm, qs, symbol, bid, ask, now):
 
 
 async def test_a_resting_entry_filling_in_plan_closing_is_rejected(sm, qs):
-    """Defensive check at fill time: the entry is rejected (plan_grace), nothing added."""
+    """Defensive check at fill time: the entry is rejected (reason plan_grace), nothing
+    added."""
     pid = await _portfolio(sm)
     await _buy(sm, qs, pid, "BTC-USD", "0.1")
     entry = await _resting(sm, qs, pid, "BTC-USD", OrderSide.buy, OrderType.limit, "0.05",
@@ -521,7 +568,7 @@ async def test_a_resting_entry_filling_in_plan_closing_is_rejected(sm, qs):
         o = await s.get(Order, entry)
         note = await s.scalar(select(Activity).where(Activity.type == "order.rejected"))
     assert (o.status, o.reject_code) == (OrderStatus.rejected, ErrorCode.RISK_LIMIT_EXCEEDED)
-    assert "being closed at the end of a plan" in o.reject_message
+    assert "posizione in chiusura per fine piano" in o.reject_message
     assert note.data["reason"] == "plan_grace"
     assert await _qty(sm, pid, "BTC-USD") == D("0.1")
 
@@ -553,16 +600,15 @@ async def test_a_flip_is_refused_at_placement_in_plan_closing(sm, qs):
     with pytest.raises(SMTError) as e:
         await _buy(sm, qs, pid, "BTC-USD", "0.15", now=TUESDAY, side=OrderSide.sell)
     assert e.value.code == ErrorCode.RISK_LIMIT_EXCEEDED
-    assert {k: e.value.details[k] for k in ("reason", "symbol", "deadline")} == {
-        "reason": "plan_grace", "symbol": "BTC-USD", "deadline": DEADLINE.isoformat()}
+    assert {k: v for k, v in e.value.details.items() if k != "order_id"} == {
+        "reason": "plan_grace", "symbol": "BTC-USD"}
     await _buy(sm, qs, pid, "BTC-USD", "0.05", now=TUESDAY, side=OrderSide.sell)
     assert await _qty(sm, pid, "BTC-USD") == D("0.05")
 
 
 async def test_total_plan_leaves_out_portfolios_out_of_totals(sm, qs):
     """A total piano covers the portfolios counted in the total only; a portfolio out of
-    the totals is closed by its own piano (a custom period here: 2 days, 1 market day of
-    grace)."""
+    the totals is closed by its own piano (a custom period here: 2 days)."""
     team = await _portfolio(sm, "Squadra")
     sfida = await _portfolio(sm, "Sfida")
     async with sm() as s:
@@ -575,7 +621,7 @@ async def test_total_plan_leaves_out_portfolios_out_of_totals(sm, qs):
                 portfolio_id=sfida, start_date=date(2027, 1, 16), end_date=date(2027, 1, 17))
     await _job(sm, qs, Clock(SUNDAY_NIGHT)).tick()
     async with sm() as s:
-        rows = list(await s.scalars(select(PlanClosure).order_by(PlanClosure.grace_days)))
+        rows = list(await s.scalars(select(PlanClosure)))
         goals = {g.id: g.name for g in await s.scalars(select(Goal))}
     assert sorted((goals[r.goal_id], r.portfolio_id, r.grace_days) for r in rows) == sorted([
-        ("settimana", team, 1), ("sfida", sfida, 1)])
+        ("settimana", team, 0), ("sfida", sfida, 0)])

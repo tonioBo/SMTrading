@@ -285,7 +285,7 @@ async def test_extended_hours_info_and_gap_below_stop(env):
     assert _rows(out)[("ZZ Notte", "ZZAMZ")]["extended"] is None
 
 
-async def test_plan_state_and_grace_deadline(env):
+async def test_plan_state(env):
     from datetime import date
 
     from smtrading.goals.models import Goal, PlanClosure
@@ -298,13 +298,13 @@ async def test_plan_state_and_grace_deadline(env):
              active=True, closes_positions=True, plan_since=datetime(2027, 1, 1, tzinfo=UTC))
     env.s.add(g)
     await env.s.flush()
-    deadline = datetime(2027, 1, 19, 21, 0, tzinfo=UTC)
+    ended = datetime(2027, 1, 19, 21, 0, tzinfo=UTC)
     env.s.add(PlanClosure(goal_id=g.id, period_start=date(2027, 1, 11),
-                          period_end=date(2027, 1, 17), ended_at=deadline,
-                          portfolio_id=p.id, symbol="ZZAMZ", qty=D(2), state="grace",
-                          grace_days=1, deadline=deadline, attempts=0))
+                          period_end=date(2027, 1, 17), ended_at=ended,
+                          portfolio_id=p.id, symbol="ZZAMZ", qty=D(2), state="grace",  # legacy
+                          grace_days=0, attempts=0))
     await env.s.flush()
     rows = _rows(await open_positions(env.s, env.qs, NOW))
     amz, msf = rows[("ZZ Piano", "ZZAMZ")], rows[("ZZ Piano", "ZZMSF")]
-    assert (amz["plan_state"], amz["plan_grace_until"]) == ("grace", deadline)
-    assert (msf["plan_state"], msf["plan_grace_until"]) == (None, None)
+    assert (amz["plan_state"], msf["plan_state"]) == ("pending", None)
+    assert "plan_grace_until" not in amz

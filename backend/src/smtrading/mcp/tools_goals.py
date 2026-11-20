@@ -23,8 +23,6 @@ from smtrading.agents.service import agent_portfolio_ids
 from smtrading.common.config import get_settings
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.goals.models import Goal
-from smtrading.goals.periods import Period
-from smtrading.goals.plans import grace_days
 from smtrading.goals.progress import active_progress
 from smtrading.mcp.runtime import ToolCtx, run_tool
 from smtrading.portfolios.models import total_portfolio_ids
@@ -36,21 +34,15 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _plan_actions(goal: Goal, p: dict[str, Any]) -> dict[str, Any]:
-    days = grace_days(goal.horizon, Period(p["period_start"], p["period_end"]))
-    return {
-        "grace_market_days": days,
-        "summary": (
-            "At period_end this plan closes the positions of its portfolios. Close the "
-            "ones not in loss yourself in the pre-close cycles of each market's last "
-            "session before period_end (for a week: Friday; crypto: the last cycle "
-            "before period_end), through the normal close flow. Positions still open: "
-            "not in loss, SMTrading closes them at their market's first session after "
-            f"period_end; in loss, they get {days} market session(s) of grace after "
-            "period_end (no additions; close them when it makes sense), then SMTrading "
-            "closes them. New entries near the end must have time to work before "
-            "period_end."),
-    }
+PLAN_END_SUMMARY = (
+    "All'ultima seduta del periodo chiudi tutte le posizioni dei portafogli coperti nelle "
+    "finestre pre-chiusura (anche quelle in perdita); quelle rimaste aperte le chiude "
+    "SMTrading alla prima seduta utile. I nuovi ingressi vicino a period_end devono avere "
+    "il tempo di lavorare prima della fine.")
+
+
+def _plan_actions() -> dict[str, Any]:
+    return {"summary": PLAN_END_SUMMARY}
 
 
 async def _get_goals(ctx: ToolCtx) -> dict[str, Any]:
@@ -71,8 +63,7 @@ async def _get_goals(ctx: ToolCtx) -> dict[str, Any]:
         goal = goals[p["goal_id"]]
         item = {k: v for k, v in p.items() if k not in ("goal_id", "parts")}
         item["closes_positions"] = goal.closes_positions
-        item["plan_end_actions"] = (_plan_actions(goal, p) if goal.closes_positions
-                                    else None)
+        item["plan_end_actions"] = _plan_actions() if goal.closes_positions else None
         if item["scope"] == "total" and not sees_all:
             item.update(dict.fromkeys(TOTAL_EUR_FIELDS))
         out.append(item)
@@ -96,8 +87,8 @@ def register(mcp: MCPServer) -> None:
         VWCE.DE for beat_index, else null), benchmark_pct (its change in EUR over the
         period), diff_pp (pct - benchmark_pct), loss_pct (max_loss: the loss so far, 0 or
         more), closes_positions (true: the goal is a plan, its positions are closed at
-        period_end), plan_end_actions (plans only, else null: {grace_market_days,
-        summary} what happens to the positions at period_end)}]}. Amounts in EUR, percentages and amounts as strings, null without data
+        period_end), plan_end_actions (plans only, else null: {summary} what to do with
+        the positions at period_end)}]}. Amounts in EUR, percentages and amounts as strings, null without data
         yet; the EUR figures of a total goal are null unless the agent holds every
         portfolio. Total goals plus the goals of the agent's own portfolios; week,
         month, quarter and year are calendar periods (Europe/Rome). Risk limits always

@@ -235,14 +235,18 @@ async def test_get_goals_risk_and_index_goals(env):
 
 
 async def test_get_goals_plan_fields(env):
-    # the migrated weekly goal on the total is a piano: its week ends on Sunday, 1 day of grace
+    # the migrated weekly goal on the total is a piano: its week ends on Sunday, no grace
     err, res = await env["call"]("get_goals")
     assert not err, res
     [weekly] = res["goals"]
     assert (weekly["name"], weekly["closes_positions"], weekly["period_end"]) == (
         "settimanale", True, "2027-03-14")
-    assert weekly["plan_end_actions"]["grace_market_days"] == 1
-    assert "Friday" in weekly["plan_end_actions"]["summary"]
+    assert weekly["plan_end_actions"] == {"summary": (
+        "All'ultima seduta del periodo chiudi tutte le posizioni dei portafogli coperti "
+        "nelle finestre pre-chiusura (anche quelle in perdita); quelle rimaste aperte le "
+        "chiude SMTrading alla prima seduta utile. I nuovi ingressi vicino a period_end "
+        "devono avere il tempo di lavorare prima della fine.")}
+    assert "grazia" not in weekly["plan_end_actions"]["summary"]
     async with env["db"]() as s:
         await s.execute(update(Goal).values(closes_positions=False))
         await s.commit()
@@ -253,4 +257,4 @@ async def test_get_goals_plan_fields(env):
     assert by["settimanale"]["plan_end_actions"] is None
     plan = by["piano mese"]  # a piano by default
     assert plan["closes_positions"] is True and plan["period_end"] == "2027-03-31"
-    assert plan["plan_end_actions"]["grace_market_days"] == 3
+    assert plan["plan_end_actions"] == weekly["plan_end_actions"]

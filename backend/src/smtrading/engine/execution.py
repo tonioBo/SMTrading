@@ -75,7 +75,7 @@ from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.events import queue_event, queue_track, queue_untrack
 from smtrading.fees.calculator import FeeRuleData, compute_fx_fee, compute_trade_fee
 from smtrading.fees.resolver import load_rules, resolve_rule
-from smtrading.goals.plans import adds_to, open_closure, plan_grace_error
+from smtrading.goals.plans import adds_to, open_closure, plan_closing_error
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, Journal, JournalType
 from smtrading.ledger.service import LineSpec, get_balance, get_or_create_account, post_journal
@@ -121,7 +121,7 @@ async def _check_plan(session: AsyncSession, portfolio_id: UUID, symbol: str) ->
     """A position of an ended piano still being closed takes no addition (goals.plans)."""
     closing = await open_closure(session, portfolio_id, symbol)
     if closing is not None:
-        raise plan_grace_error(closing, symbol)
+        raise plan_closing_error(symbol)
 
 
 async def plan_refusal(session: AsyncSession, order: Order) -> SMTError | None:
@@ -137,7 +137,7 @@ async def plan_refusal(session: AsyncSession, order: Order) -> SMTError | None:
     if not adds_to(held, order.side == OrderSide.buy, remaining):
         return None
     closing = await open_closure(session, order.portfolio_id, order.symbol)
-    return None if closing is None else plan_grace_error(closing, order.symbol)
+    return None if closing is None else plan_closing_error(order.symbol)
 
 
 async def broker_send_check(

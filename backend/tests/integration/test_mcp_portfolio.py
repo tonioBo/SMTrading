@@ -717,12 +717,12 @@ async def test_agent_payloads_unchanged_by_mode_labels(mcp_server, mcp_call, boo
             assert word not in text, (hide, word, text)
 
 
-async def test_get_positions_plan_grace_until(mcp_server, mcp_call, book):
+async def test_get_positions_plan_closing(mcp_server, mcp_call, book):
     from datetime import date
 
     from smtrading.goals.models import Goal, PlanClosure
 
-    deadline = datetime(2027, 1, 19, 21, 0, tzinfo=UTC)
+    ended = datetime(2027, 1, 19, 21, 0, tzinfo=UTC)
     async with _Db(mcp_server.db_url) as s:
         g = Goal(name="piano", horizon="week", start_date=date(2027, 1, 4), recurring=True,
                  scope="total", target_pct=D(2), kind="min", active=True,
@@ -730,13 +730,13 @@ async def test_get_positions_plan_grace_until(mcp_server, mcp_call, book):
         s.add(g)
         await s.flush()
         s.add(PlanClosure(goal_id=g.id, period_start=date(2027, 1, 11),
-                          period_end=date(2027, 1, 17), ended_at=deadline,
+                          period_end=date(2027, 1, 17), ended_at=ended,
                           portfolio_id=mcp_server.demo_id, symbol="ENI.MI", qty=D(100),
-                          state="grace", grace_days=1, deadline=deadline, attempts=0))
+                          state="pending", grace_days=0, attempts=0))
         await s.commit()
     _, positions = await mcp_call(
         mcp_server.url, mcp_server.token, "get_positions",
         {"portfolio_id": str(mcp_server.demo_id)},
     )
     [eni] = positions
-    assert datetime.fromisoformat(eni["plan_grace_until"]) == deadline
+    assert eni["plan_closing"] is True and "plan_grace_until" not in eni

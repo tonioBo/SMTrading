@@ -17,7 +17,7 @@ from smtrading.agents.service import require_permission
 from smtrading.brokers.models import BrokerLink
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import quantize_money
-from smtrading.goals.plans import grace_until, open_closures
+from smtrading.goals.plans import open_closures
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import JournalType
 from smtrading.marketdata.extended import extended_hours
@@ -143,7 +143,7 @@ async def _positions(ctx: ToolCtx, portfolio_id: str | None) -> list[dict]:
     out = []
     for p in valuation.positions:
         row = {**position_valuation_dto(p), "side": "long" if p.qty > 0 else "short",
-               "plan_grace_until": grace_until(closing.get(p.symbol))}
+               "plan_closing": p.symbol in closing}
         if p.symbol in ext:
             row["extended"] = ext[p.symbol]
         out.append(row)
@@ -273,9 +273,9 @@ def register(mcp: MCPServer) -> None:
     async def get_positions(portfolio_id: str) -> CallToolResult:
         """Open positions: [{symbol, side ("long"|"short"), qty (signed), avg_price, mark,
         currency, market_value, market_value_eur, unrealized_pnl, unrealized_pnl_eur,
-        stale, plan_grace_until}]. `plan_grace_until`: set while the position is in a
-        plan's grace (in loss at the end of the plan's period): it cannot be increased and
-        SMTrading closes it at that time (ISO 8601) if still open; null otherwise. US
+        stale, plan_closing}]. `plan_closing`: true while the position is being closed
+        at the end of a plan: no additions, close it now (SMTrading closes it at its
+        market's first session after the end if still open). US
         positions also have `extended`, as in get_quote: while the regular
         session is closed the latest pre-market / after-hours price {session, price,
         change_pct_vs_close, ts} (e.g. the gap risk at the next open), else null. Orari

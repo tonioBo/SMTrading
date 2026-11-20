@@ -1,38 +1,15 @@
-"""Piani (plan 17): grace days by horizon, the end of a period, the grace deadline on the
-exchange calendars (holidays, manual closures), CRYPTO and FX."""
+"""Piani (plan 17): the end of a period, the latest ended period, the refusal of an
+addition (no grace since 20/11/2026)."""
 
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
-import pytest
-
+from smtrading.common.errors import ErrorCode
+from smtrading.goals import plans
 from smtrading.goals.periods import Period
-from smtrading.goals.plans import ended_at, grace_days, grace_deadline, last_ended_period
-from smtrading.instruments.market_hours import Closure, set_closures
+from smtrading.goals.plans import ended_at, last_ended_period, plan_closing_error
 
 ROME = ZoneInfo("Europe/Rome")
-
-
-@pytest.fixture(autouse=True)
-def _no_closures():
-    set_closures([])
-    yield
-    set_closures([])
-
-
-@pytest.mark.parametrize(("horizon", "days"), [("week", 1), ("month", 3), ("quarter", 5),
-                                               ("year", 10)])
-def test_grace_by_horizon(horizon, days):
-    assert grace_days(horizon, Period(date(2027, 1, 1), date(2027, 12, 31))) == days
-
-
-@pytest.mark.parametrize(("length", "days"), [(1, 1), (4, 1), (5, 1), (14, 1), (15, 2),
-                                              (30, 3), (64, 6), (65, 7), (100, 10),
-                                              (400, 10)])
-def test_grace_custom_ten_percent_clamped(length, days):
-    start = date(2027, 1, 1)
-    end = date.fromordinal(start.toordinal() + length - 1)
-    assert grace_days("custom", Period(start, end)) == days
 
 
 def test_ended_at_is_local_midnight_after_the_last_day():
@@ -59,37 +36,14 @@ def test_last_ended_period():
                              date(2027, 1, 10)) == Period(date(2027, 1, 5), date(2027, 1, 9))
 
 
-def test_deadline_skips_a_holiday():
-    # the week ends on Sunday 17 January 2027; Monday 18 is Martin Luther King Day
-    end = ended_at(Period(date(2027, 1, 11), date(2027, 1, 17)), ROME)
-    assert grace_deadline("NYSE", end, 1) == datetime(2027, 1, 19, 21, 0, tzinfo=UTC)
-    assert grace_deadline("MTA", end, 1) == datetime(2027, 1, 18, 16, 30, tzinfo=UTC)
-    assert grace_deadline("NYSE", end, 3) == datetime(2027, 1, 21, 21, 0, tzinfo=UTC)
+def test_no_grace_left():
+    for name in ("grace_days", "grace_deadline", "grace_until", "GRACE_BY_HORIZON"):
+        assert not hasattr(plans, name), name
 
 
-def test_deadline_skips_a_manual_closure():
-    end = ended_at(Period(date(2027, 1, 11), date(2027, 1, 17)), ROME)
-    set_closures([Closure("NYSE", date(2027, 1, 19), "closed", None)])
-    assert grace_deadline("NYSE", end, 1) == datetime(2027, 1, 20, 21, 0, tzinfo=UTC)
-
-
-def test_deadline_crypto_counts_calendar_days():
-    end = ended_at(Period(date(2027, 1, 11), date(2027, 1, 17)), ROME)
-    assert grace_deadline("CRYPTO", end, 3) == datetime(2027, 1, 20, 23, 0, tzinfo=UTC)
-
-
-def test_deadline_fx_weekdays():
-    # ends Friday night: Monday's 22:00 UTC is the first
-    end = ended_at(Period(date(2027, 1, 1), date(2027, 1, 29)), ROME)
-    assert grace_deadline("FX", end, 1) == datetime(2027, 2, 1, 22, 0, tzinfo=UTC)
-    assert grace_deadline("FX", end, 5) == datetime(2027, 2, 5, 22, 0, tzinfo=UTC)
-
-
-def test_week_grace_is_the_monday_session():
-    # the week of 16-22 November 2026 ends on Sunday at midnight (Rome); the markets' last
-    # session is Friday 20; one session of grace = Monday 23's
-    end = ended_at(Period(date(2026, 11, 16), date(2026, 11, 22)), ROME)
-    assert end == datetime(2026, 11, 22, 23, 0, tzinfo=UTC)
-    assert grace_deadline("NASDAQ", end, 1) == datetime(2026, 11, 23, 21, 0, tzinfo=UTC)
-    assert grace_deadline("XETRA", end, 1) == datetime(2026, 11, 23, 16, 30, tzinfo=UTC)
-    assert grace_deadline("CRYPTO", end, 1) == datetime(2026, 11, 23, 23, 0, tzinfo=UTC)
+def test_addition_refusal_says_closing_for_the_plan_end():
+    e = plan_closing_error("AAPL")
+    assert e.code == ErrorCode.RISK_LIMIT_EXCEEDED
+    assert e.details == {"reason": "plan_grace", "symbol": "AAPL"}
+    assert "posizione in chiusura per fine piano" in e.message
+    assert "grazia" not in e.message.lower() and "grace" not in e.message.lower()

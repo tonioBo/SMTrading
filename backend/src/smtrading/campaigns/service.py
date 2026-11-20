@@ -36,7 +36,7 @@ from smtrading.engine.models import OPEN_STATUSES, Order
 from smtrading.events import discard_post_commit
 from smtrading.goals import service as goals
 from smtrading.goals.models import Goal
-from smtrading.goals.plan_closer import plan_states
+from smtrading.goals.plan_closer import PLAN_VIEW_STATES, plan_states
 from smtrading.mcp.dto import parse_decimal
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
@@ -462,7 +462,7 @@ async def close_check(session: AsyncSession, campaign: Campaign) -> dict[str, An
         positions = [x for x in st["positions"] if x["portfolio_id"] in idset]
         if not positions:
             continue
-        counts = dict.fromkeys(("pending", "grace", "closing", "closed"), 0)
+        counts = dict.fromkeys(PLAN_VIEW_STATES, 0)
         for x in positions:
             counts[x["state"]] += 1
         plans.append({**st, "goal_name": goal_names.get(st["goal_id"]), "counts": counts,

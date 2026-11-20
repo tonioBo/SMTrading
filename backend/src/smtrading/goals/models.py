@@ -139,9 +139,10 @@ PLAN_STATES = ("pending", "grace", "closing", "closed")
 
 class PlanClosure(Base):
     """A position open at the end of a piano's period (`goals.plans`): `pending` until
-    its market's first session after the end, `grace` (in loss then) until `deadline`,
-    `closing` while SMTrading's close order (`order_id`) is open, `closed` once flat
-    (`closed_by` system | agent). `opened_at` and `qty` are the position's at the end; a
+    its market's first session after the end (in profit or in loss), `closing` while
+    SMTrading's close order (`order_id`) is open, `closed` once flat (`closed_by` system |
+    agent). No grace since 20/11/2026: `grace` and `deadline` are only on older rows (a
+    `grace` row is handled as `pending`), `grace_days` is 0 on new ones. `opened_at` and `qty` are the position's at the end; a
     position reopened since (another `opened_at`) is not this one any more."""
 
     __tablename__ = "plan_closures"

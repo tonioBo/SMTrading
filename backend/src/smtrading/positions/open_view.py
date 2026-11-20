@@ -35,8 +35,8 @@ pre-market / after-hours price while the regular session is closed, else null) a
 for a short), the gap risk at the next open. Information only: `last`, the values, the
 distance and the risk at the stop stay on the regular session.
 
-`plan_state` (pending | grace | closing, else null) when the position is being closed at
-the end of a «piano» (`goals.plans`), with `plan_grace_until` its grace deadline.
+`plan_state` (pending | closing, else null) when the position is being closed at the end
+of a «piano» (`goals.plans`).
 """
 
 import uuid
@@ -60,7 +60,8 @@ from smtrading.engine.models import (
     TimeInForce,
 )
 from smtrading.engine.quotesource import QuoteSource
-from smtrading.goals.plans import grace_until, open_closures
+from smtrading.goals.plan_closer import view_state
+from smtrading.goals.plans import open_closures
 from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
@@ -348,8 +349,8 @@ async def open_positions(
                 "distance_to_stop_pct": _pct(dist), "risk_at_stop_eur": _money(risk_eur),
                 "protection": protection,
                 "extended": ext, "extended_beyond_stop": beyond,
-                "plan_state": plan.state if (plan := closing.get((p.id, sym))) else None,
-                "plan_grace_until": grace_until(plan),
+                "plan_state": (view_state(plan.state)
+                               if (plan := closing.get((p.id, sym))) else None),
             })
         if not count:
             continue

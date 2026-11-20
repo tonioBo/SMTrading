@@ -20,10 +20,10 @@ uses unrounded values (valuation *_raw fields, Ruling R8).
   and before the risk limits (order notional, position weight, buying power). With
   `live_effects=False` (a preview, a modify) the fuse never trips the portfolio.
 - «Piani» (`goals.plans`): a position of an ended piano still being closed (pending,
-  grace, closing) cannot grow nor turn to the other side (long 1, sell 3), even when
-  |after| <= |before|: RISK_LIMIT_EXCEEDED with details {reason: "plan_grace", symbol,
-  deadline} (deadline null before its first session). A reduce_only order is clamped
-  first, so it never flips.
+  closing) cannot grow nor turn to the other side (long 1, sell 3), even when
+  |after| <= |before|: RISK_LIMIT_EXCEEDED «posizione in chiusura per fine piano» with
+  details {reason: "plan_grace" (a code kept for compatibility), symbol}. A reduce_only
+  order is clamped first, so it never flips.
 """
 
 from dataclasses import dataclass
@@ -40,7 +40,7 @@ from smtrading.engine.pricing import QuoteView, fill_price, notional_to_qty
 from smtrading.engine.quotesource import QuoteSource
 from smtrading.fees.calculator import compute_trade_fee
 from smtrading.fees.resolver import FeeQuote, load_rules, resolve_rule
-from smtrading.goals.plans import adds_to, open_closure, plan_grace_error
+from smtrading.goals.plans import adds_to, open_closure, plan_closing_error
 from smtrading.instruments.models import Instrument
 from smtrading.instruments.service import validate_price, validate_quantity
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
@@ -235,7 +235,7 @@ async def _run(
     if qty > 0 and adds_to(before, side == OrderSide.buy, qty):  # a flip included
         closing = await open_closure(session, portfolio.id, instrument.symbol)
         if closing is not None:
-            e = plan_grace_error(closing, instrument.symbol)
+            e = plan_closing_error(instrument.symbol)
             raise _Reject(e.code, e.message, e.details)
 
     # 6-7: reduce-only and short permission

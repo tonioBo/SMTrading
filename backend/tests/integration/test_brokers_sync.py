@@ -1879,7 +1879,7 @@ async def _plan_row(maker, pid, symbol="AAPL") -> None:
         s.add(PlanClosure(
             goal_id=g.id, period_start=date(2026, 11, 2), period_end=date(2026, 11, 8),
             ended_at=datetime(2026, 11, 8, 23, 0, tzinfo=UTC), portfolio_id=pid,
-            symbol=symbol, qty=TEN, opened_at=held.opened_at, state="pending", grace_days=1,
+            symbol=symbol, qty=TEN, opened_at=held.opened_at, state="pending", grace_days=0,
             attempts=0))
         await s.commit()
 
@@ -1893,7 +1893,7 @@ async def test_an_addition_in_plan_closing_is_never_sent(maker, redis, qs):
     await sync.tick()
     o = await _order(maker, oid)
     assert (o.status, o.reject_code) == (OrderStatus.rejected, ErrorCode.RISK_LIMIT_EXCEEDED)
-    assert "being closed at the end of a plan" in o.reject_message
+    assert "posizione in chiusura per fine piano" in o.reject_message
     assert [p[0] for p in BROKER.placed] == ["b1"]
 
 
