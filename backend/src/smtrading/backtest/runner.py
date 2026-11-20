@@ -19,6 +19,7 @@ import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
@@ -76,17 +77,47 @@ async def enqueue_backtest(
     ):
         raise _invalid("slippage_bps", "slippage_bps must be an integer 0-1000")
     norm = strategies.validate_params(strategy, params)
+    tf, names = await check_request(session, agent_id, symbols=symbols, timeframe=timeframe,
+                                    start=start, end=end, initial_cash=initial_cash,
+                                    max_symbols=MAX_SYMBOLS, model=Backtest,
+                                    max_active=MAX_ACTIVE, what="backtests")
+    bt = Backtest(
+        agent_id=agent_id, strategy=strategy, symbols=names, timeframe=tf.value,
+        start=start, end=end, initial_cash=initial_cash, params={**to_jsonable(norm), **({} if slip is None else {"slippage_bps": slip})},
+        portfolio_id=portfolio_id, status=BacktestStatus.queued, warnings=[],
+    )
+    session.add(bt)
+    await session.flush()
+    return bt
+
+
+def check_symbols(symbols: Any, max_symbols: int) -> list[str]:
+    """Canonical, deduplicated, sorted; INVALID_ORDER / RISK_LIMIT_EXCEEDED."""
+    if not isinstance(symbols, list) or not symbols or not all(
+            isinstance(s, str) and s.strip() for s in symbols):
+        raise _invalid("symbols", "symbols must be a non-empty list of symbols")
+    names = sorted({canonical_symbol(s) for s in symbols})
+    if len(names) > max_symbols:
+        raise SMTError(ErrorCode.RISK_LIMIT_EXCEEDED, f"at most {max_symbols} symbols",
+                       {"limit": max_symbols})
+    return names
+
+
+async def check_request(
+    session: AsyncSession, agent_id: UUID, *, symbols: list[str], timeframe: str,
+    start: datetime, end: datetime, initial_cash: Decimal, max_symbols: int,
+    model: Any, max_active: int, what: str,
+) -> tuple[Timeframe, list[str]]:
+    """The checks every queued run shares: timeframe, symbols (canonical, at most
+    max_symbols), period and its span limit, cash, instruments, and at most max_active
+    `model` rows of the agent queued or running (the agent row is locked so concurrent
+    enqueues cannot overshoot it)."""
     try:
         tf = Timeframe(timeframe)
     except ValueError:
         raise _invalid("timeframe", f"timeframe must be one of {[t.value for t in Timeframe]}"
                        ) from None
-    if not symbols or not all(isinstance(s, str) and s.strip() for s in symbols):
-        raise _invalid("symbols", "symbols must be a non-empty list of symbols")
-    names = sorted({canonical_symbol(s) for s in symbols})
-    if len(names) > MAX_SYMBOLS:
-        raise SMTError(ErrorCode.RISK_LIMIT_EXCEEDED, f"at most {MAX_SYMBOLS} symbols",
-                       {"limit": MAX_SYMBOLS})
+    names = check_symbols(symbols, max_symbols)
     if start >= end:
         raise _invalid("from_date", "from_date must be before to_date")
     if initial_cash <= 0:
@@ -103,26 +134,26 @@ async def enqueue_backtest(
     # serialise this agent's enqueues so the active count cannot be overshot
     await session.execute(select(Agent.id).where(Agent.id == agent_id).with_for_update())
     active = await session.scalar(
-        select(func.count()).select_from(Backtest).where(
-            Backtest.agent_id == agent_id,
-            Backtest.status.in_([BacktestStatus.queued, BacktestStatus.running]),
+        select(func.count()).select_from(model).where(
+            model.agent_id == agent_id,
+            model.status.in_([BacktestStatus.queued, BacktestStatus.running]),
         )
     )
-    if (active or 0) >= MAX_ACTIVE:
+    if (active or 0) >= max_active:
         raise SMTError(ErrorCode.RATE_LIMITED,
-                       f"at most {MAX_ACTIVE} backtests queued or running per agent",
-                       {"limit": MAX_ACTIVE})
-    bt = Backtest(
-        agent_id=agent_id, strategy=strategy, symbols=names, timeframe=tf.value,
-        start=start, end=end, initial_cash=initial_cash, params={**to_jsonable(norm), **({} if slip is None else {"slippage_bps": slip})},
-        portfolio_id=portfolio_id, status=BacktestStatus.queued, warnings=[],
-    )
-    session.add(bt)
-    await session.flush()
-    return bt
+                       f"at most {max_active} {what} queued or running per agent",
+                       {"limit": max_active})
+    return tf, names
 
 
 class BacktestRunner:
+    """Runs queued `model` rows (Backtest here; research_runner.ResearchRunner reuses the
+    lifecycle for ResearchRun with its own `_compute`)."""
+
+    model: type[Backtest] | Any = Backtest
+    name = "backtest"
+    no_fee_note = "simulated without fees"
+
     def __init__(self, sessionmaker: async_sessionmaker[AsyncSession], router, *,
                  poll_s: float = 2.0, timeout_s: float = TIMEOUT_S,
                  slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
@@ -153,9 +184,9 @@ class BacktestRunner:
         stale = datetime.now(UTC) - timedelta(seconds=self._timeout_s + STALE_MARGIN_S)
         async with self._sm() as s:
             res = await s.execute(
-                update(Backtest)
-                .where(Backtest.status == BacktestStatus.running,
-                       Backtest.started_at < stale)
+                update(self.model)
+                .where(self.model.status == BacktestStatus.running,
+                       self.model.started_at < stale)
                 .values(status=BacktestStatus.queued, started_at=None)
             )
             await s.commit()
@@ -170,16 +201,17 @@ class BacktestRunner:
 
     async def _claim(self) -> list[UUID]:
         claimed: list[UUID] = []
+        m = self.model
         async with self._sm() as s:
             rows = (await s.execute(
-                select(Backtest).where(Backtest.status == BacktestStatus.queued)
-                .order_by(Backtest.created_at).limit(20).with_for_update(skip_locked=True)
+                select(m).where(m.status == BacktestStatus.queued)
+                .order_by(m.created_at).limit(20).with_for_update(skip_locked=True)
             )).scalars().all()
             running: dict[UUID | None, int] = {
                 a: n for a, n in (await s.execute(
-                    select(Backtest.agent_id, func.count()).where(
-                        Backtest.status == BacktestStatus.running
-                    ).group_by(Backtest.agent_id)
+                    select(m.agent_id, func.count()).where(
+                        m.status == BacktestStatus.running
+                    ).group_by(m.agent_id)
                 )).all()
             }
             for bt in rows:
@@ -201,7 +233,7 @@ class BacktestRunner:
         except SMTError as e:
             await self._finish(backtest_id, error=f"{e.code}: {e.message}")
         except Exception as e:
-            log.exception("backtest %s failed", backtest_id)
+            log.exception("%s %s failed", self.name, backtest_id)
             await self._finish(backtest_id, error=f"{type(e).__name__}: {e}")
         else:
             await self._finish(backtest_id, result=result, warnings=warnings)
@@ -221,17 +253,7 @@ class BacktestRunner:
         slippage = next(v for v in (explicit, portfolio_slip, self._slippage_bps)
                         if v is not None)
         warnings: list[str] = []
-        fee_rules: dict[str, FeeRuleData] = {}
-        for sym in symbols:  # fee schedule per symbol's asset class; read-only
-            instr = instruments[sym]
-            try:
-                rule = resolve_rule(rules, portfolio_id=portfolio_id or UUID(int=0),
-                                    asset_class=instr.asset_class, side="buy")
-            except SMTError:
-                warnings.append(f"no_fee_rule:{sym}: simulated without fees")
-                fee_rules[sym] = zero_fee_rule()
-                continue
-            fee_rules[sym] = await self._in_instrument_currency(rule, instr.currency, warnings)
+        fee_rules = await self._fee_rules(rules, instruments, portfolio_id, warnings)
         bars = {sym: await self._router.get_bars(sym, Timeframe(timeframe), start, end)
                 for sym in symbols}
         result = await asyncio.to_thread(
@@ -246,6 +268,21 @@ class BacktestRunner:
         result["slippage_bps"] = slippage
         result["fee_rule_ids"] = {s: str(r.id) for s, r in fee_rules.items()}
         return to_jsonable(result), warnings
+
+    async def _fee_rules(self, rules, instruments: dict, portfolio_id: UUID | None,
+                         warnings: list[str]) -> dict[str, FeeRuleData]:
+        """The fee schedule per symbol's asset class (read-only), in its currency."""
+        fee_rules: dict[str, FeeRuleData] = {}
+        for sym, instr in instruments.items():
+            try:
+                rule = resolve_rule(rules, portfolio_id=portfolio_id or UUID(int=0),
+                                    asset_class=instr.asset_class, side="buy")
+            except SMTError:
+                warnings.append(f"no_fee_rule:{sym}: {self.no_fee_note}")
+                fee_rules[sym] = zero_fee_rule()
+                continue
+            fee_rules[sym] = await self._in_instrument_currency(rule, instr.currency, warnings)
+        return fee_rules
 
     async def _in_instrument_currency(
         self, rule: FeeRuleData, currency: str, warnings: list[str]
@@ -274,7 +311,7 @@ class BacktestRunner:
     async def _finish(self, backtest_id: UUID, *, result: dict | None = None,
                       warnings: list[str] | None = None, error: str | None = None) -> None:
         async with self._sm() as s:
-            bt = await s.get(Backtest, backtest_id)
+            bt = await s.get(self.model, backtest_id)
             if bt is None:
                 return
             bt.status = BacktestStatus.failed if error else BacktestStatus.completed

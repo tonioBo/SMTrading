@@ -714,7 +714,7 @@ async def test_0039_instrument_metadata_round_trip(fresh_db):
         return got
 
     new = {"sector", "industry", "indices", "created_at"}
-    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "-1")
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0038")
     assert not new & await columns()
     engine = make_engine(fresh_db)
     async with engine.begin() as conn:
@@ -740,6 +740,26 @@ async def test_0039_instrument_metadata_round_trip(fresh_db):
             "select symbol from instruments where indices @> '{SP500}'")) == "NEW1"
         await conn.execute(text("delete from instruments where symbol in ('OLD1', 'NEW1')"))
     await engine.dispose()
-    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "-1")
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0038")
     assert not new & await columns()
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+
+
+async def test_0040_research_runs_round_trip(fresh_db):
+    """0040: research_runs; reversible (one step back)."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    async def table() -> str | None:
+        engine = make_engine(fresh_db)
+        async with engine.connect() as conn:
+            got = await conn.scalar(text("select to_regclass('research_runs')::text"))
+        await engine.dispose()
+        return got
+
+    assert await table() == "research_runs"
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0039")
+    assert await table() is None
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    assert await table() == "research_runs"

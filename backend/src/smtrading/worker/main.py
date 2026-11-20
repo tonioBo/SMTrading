@@ -10,6 +10,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 import smtrading.models  # noqa: F401  (complete mapper registry before any session)
+from smtrading.backtest.research_runner import ResearchRunner
 from smtrading.backtest.runner import BacktestRunner
 from smtrading.brokers.live.account import register_live_secrets
 from smtrading.brokers.live.gate import make_live_client
@@ -217,6 +218,10 @@ async def run() -> None:
                     ),
                     tg.create_task(
                         supervise("backtest runner", lambda: BacktestRunner(sessionmaker, router).run())
+                    ),
+                    tg.create_task(
+                        supervise("research runner",
+                                  lambda: ResearchRunner(sessionmaker, router).run())
                     ),
                     tg.create_task(
                         supervise("broker sync",
