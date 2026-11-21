@@ -19,6 +19,7 @@ from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.models import Order, OrderSide, OrderType, TimeInForce
 from smtrading.instruments.models import AssetClass, Instrument
 
+D = Decimal
 CFG = {"key_id": "KID-SECRET", "secret_key": "SEC-SECRET"}
 
 
@@ -358,3 +359,119 @@ async def test_get_open_orders_reads_the_open_list(http):
         ("o2", "BTC-USD", "sell", Decimal("0.5"), None, None),
         ("o3", "MSFT", "buy", None, None, None),
     ]
+
+
+# -- crypto fee (plan 37): the paper API's answers read on 21/11 (ids kept, keys never) --
+
+BUY_0015 = {
+    "id": "308f1731-59d8-4025-a8f2-da305a11abca",
+    "client_order_id": "1ed4258c-fe22-487b-9791-5e11a5586364",
+    "created_at": "2026-11-21T20:48:13.991954188Z",
+    "updated_at": "2026-11-21T20:48:14.03654738Z",
+    "submitted_at": "2026-11-21T20:48:13.991954188Z",
+    "filled_at": "2026-11-21T20:48:13.994071785Z",
+    "asset_class": "crypto", "symbol": "BTC/USD", "notional": None, "qty": "0.0015",
+    "filled_qty": "0.0015", "filled_avg_price": "60271.008", "order_class": "",
+    "order_type": "limit", "type": "limit", "side": "buy", "position_intent": "buy_to_open",
+    "time_in_force": "gtc", "limit_price": "60828.76", "stop_price": None,
+    "status": "filled", "legs": None,
+}
+SELL_00149625 = {
+    **BUY_0015, "id": "1fbf5875-1d60-4966-837a-5752911c38c5",
+    "submitted_at": "2026-11-21T20:48:38.621689209Z",
+    "filled_at": "2026-11-21T20:48:38.623668609Z", "qty": "0.00149625",
+    "filled_qty": "0.00149625", "filled_avg_price": "60210.7", "order_type": "market",
+    "type": "market", "side": "sell", "position_intent": "sell_to_close",
+    "limit_price": None,
+}
+ACCOUNT_TIER_1 = {"id": "acct", "status": "ACTIVE", "crypto_status": "ACTIVE",
+                  "currency": "USD", "cash": "99999.45", "crypto_tier": 1}
+BTC_ASSET = {"class": "crypto", "exchange": "CRYPTO", "symbol": "BTC/USD",
+             "status": "active", "tradable": True, "fractionable": True,
+             "min_order_size": "0.00001709", "min_trade_increment": "0.000000001",
+             "price_increment": "0.000000001"}
+
+
+def _crypto_routes(order: dict) -> None:
+    respx.get(f"{PAPER_URL}/v2/orders/{order['id']}").mock(
+        return_value=httpx.Response(200, json=order))
+    respx.get(f"{PAPER_URL}/v2/account").mock(
+        return_value=httpx.Response(200, json=ACCOUNT_TIER_1))
+    respx.get(f"{PAPER_URL}/v2/assets/BTC/USD").mock(
+        return_value=httpx.Response(200, json=BTC_ASSET))
+
+
+@respx.mock
+async def test_crypto_fill_carries_the_tier_fee_rate(http):
+    """No fee anywhere in the order entity: the rate of the account's tier, taker for an
+    order filled on arrival or a market order, maker for one that rested."""
+    a = AlpacaPaperAdapter(CFG, http)
+    _crypto_routes(BUY_0015)
+    bo = await a.get_order(BUY_0015["id"])
+    assert (bo.filled_qty, bo.fees, bo.fee_rate) == (D("0.0015"), None, D("0.0025"))
+    _crypto_routes(SELL_00149625)
+    assert (await a.get_order(SELL_00149625["id"])).fee_rate == D("0.0025")
+    rested = {**BUY_0015, "id": "r1", "filled_at": "2026-11-21T21:30:00.000000001Z"}
+    _crypto_routes(rested)
+    assert (await a.get_order("r1")).fee_rate == D("0.0015")
+    assert a.fee_dust("BTC-USD", D("0.00149625")) == D("0.00001709")  # min order size
+    assert a.fee_dust("BTC-USD", D(1)) == D("0.003")
+    assert a.fee_dust("AAPL", D(10)) == 0
+
+
+@respx.mock
+async def test_crypto_order_without_fills_reads_nothing_more(http):
+    respx.get(f"{PAPER_URL}/v2/orders/n1").mock(return_value=httpx.Response(
+        200, json={**BUY_0015, "id": "n1", "status": "new", "filled_qty": "0",
+                   "filled_avg_price": None, "filled_at": None}))
+    bo = await AlpacaPaperAdapter(CFG, http).get_order("n1")
+    assert bo.fee_rate is None
+    assert len(respx.calls) == 1
+
+
+@respx.mock
+async def test_equity_fill_keeps_the_commission_and_no_rate(http):
+    respx.get(f"{PAPER_URL}/v2/orders/e1").mock(return_value=httpx.Response(200, json={
+        "id": "e1", "status": "filled", "symbol": "AAPL", "asset_class": "us_equity",
+        "side": "sell", "type": "market", "filled_qty": "10", "filled_avg_price": "190",
+        "commission": "0.03"}))
+    bo = await AlpacaPaperAdapter(CFG, http).get_order("e1")
+    assert (bo.fees, bo.fee_rate) == (D("0.03"), None)
+    assert len(respx.calls) == 1  # no account read
+
+
+@respx.mock
+async def test_asset_balance_reads_the_crypto_position(http):
+    a = AlpacaPaperAdapter(CFG, http)
+    route = respx.get(f"{PAPER_URL}/v2/positions/BTCUSD").mock(side_effect=[
+        httpx.Response(404, json={"code": 40410000, "message": "position does not exist"}),
+        httpx.Response(200, json={"symbol": "BTCUSD", "asset_class": "crypto",
+                                  "qty": "0.00149625", "qty_available": "0.00149625",
+                                  "side": "long"}),
+    ])
+    btc = _inst("BTC-USD", AssetClass.crypto)
+    assert await a.asset_balance("BTC-USD", btc) == (D(0), D(0))
+    assert await a.asset_balance("BTC-USD", btc) == (D("0.00149625"), D("0.00149625"))
+    assert await a.asset_balance("AAPL", _inst()) is None
+    assert route.call_count == 2
+
+
+def test_crypto_resting_orders_but_buy_limits_are_kept_here(http):
+    a = AlpacaPaperAdapter(CFG, http)
+    btc, aapl = _inst("BTC-USD", AssetClass.crypto), _inst()
+
+    def o(side, type, **kw):
+        return _order(symbol="BTC-USD", side=side, type=type, qty=D("0.001"), **kw)
+
+    stop = o(OrderSide.sell, OrderType.stop, stop_price=D(50000))
+    tp = o(OrderSide.sell, OrderType.limit, limit_price=D(70000))
+    trail = o(OrderSide.sell, OrderType.trailing_stop, trail_pct=D(2))
+    for kept in (stop, tp, trail, o(OrderSide.buy, OrderType.stop, stop_price=D(70000))):
+        assert not a.routable(kept, btc) and a.synthetic(kept, btc)
+    for sent in (o(OrderSide.buy, OrderType.limit, limit_price=D(50000)),
+                 o(OrderSide.buy, OrderType.market), o(OrderSide.sell, OrderType.market)):
+        assert a.routable(sent, btc) and not a.synthetic(sent, btc)
+    eq_tp = _order(side=OrderSide.sell, type=OrderType.limit, limit_price=D(200))
+    eq_stop = _order(side=OrderSide.sell, type=OrderType.stop, stop_price=D(150))
+    for sent in (eq_tp, eq_stop):  # stocks unchanged: at the broker
+        assert a.routable(sent, aapl) and not a.synthetic(sent, aapl)
