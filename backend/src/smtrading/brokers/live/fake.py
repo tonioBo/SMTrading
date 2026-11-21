@@ -413,7 +413,9 @@ class FakeLiveBroker:
             del env.positions[pid]
         env.credit += units * self.price
         cid = next(self._ids)
-        env.closes[cid] = {"statusID": 3, "unitsDeducted": units, "closeRate": self.price}
+        env.closes[cid] = {"orderID": cid, "statusID": 3, "instrumentID": pos["instrumentID"],
+                           "positions": [{"positionID": pid, "rate": self.price,
+                                          "units": units, "conversionRate": 1}]}
         return _numbers(200, {"orderForClose": {
             "positionID": pid, "instrumentID": pos["instrumentID"], "unitsToDeduct": raw,
             "orderID": cid, "statusID": 1}, "token": "t"})

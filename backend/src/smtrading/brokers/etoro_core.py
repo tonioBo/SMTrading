@@ -285,6 +285,31 @@ def _eligibility_items(data: object) -> list[dict]:
     return []
 
 
+def close_fill(data: dict) -> tuple[Decimal | None, Decimal | None]:
+    """Units closed and their average rate from a close-order read. eToro reports them
+    per closed position (`positions[].units`/`rate`); `unitsDeducted`/`closeRate` at the
+    top level are read when present. (None, None) while nothing is closed yet."""
+    units, rate = _dec(data.get("unitsDeducted")), _dec(data.get("closeRate"))
+    if units is not None:
+        return units, rate
+    total, cost, priced = Decimal(0), Decimal(0), True
+    for p in data.get("positions") or []:
+        if not isinstance(p, dict):
+            continue
+        u = _dec(p.get("units"))
+        if not u:
+            continue
+        total += abs(u)
+        r = _dec(p.get("rate"))
+        if r is None:
+            priced = False
+        else:
+            cost += abs(u) * r
+    if total == 0:
+        return None, None
+    return total, (cost / total if priced else None)
+
+
 def _buy_unleveraged_real(entry: dict) -> bool:
     if entry.get("allowOpenPosition") is not True:
         return False
@@ -766,8 +791,7 @@ class _EtoroProtocol(BrokerAdapter):
                 st = st.get("id")
             sid = _int(st)
             status = _STATUS.get(sid, "accepted") if sid is not None else "accepted"
-            units = _dec(data.get("unitsDeducted"))
-            rate = _dec(data.get("closeRate"))
+            units, rate = close_fill(data)
             if units is None:
                 if status == "filled":
                     log.warning("eToro close %s filled without units: waiting", cid)

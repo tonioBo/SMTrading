@@ -13,7 +13,7 @@ To verify with the user's real key before arming (assumed shapes, parsed fail-sa
 `_EtoroProtocol`: an unknown shape never invents a price or units, the order waits):
 1. the eligibility response (`POST {INFO_V2}/eligibility`);
 2. the order lookup wrapper (`GET {INFO_V2}/orders:lookup`);
-3. the close-order fields `statusID`, `unitsDeducted`, `closeRate`
+3. the close-order fields `statusID`, `positions[].units`/`rate` (checked on demo 21/11/2026)
    (`GET {INFO_V1}/close-orders/{id}`).
 """
 
