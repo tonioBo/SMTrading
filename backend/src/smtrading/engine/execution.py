@@ -170,26 +170,85 @@ async def broker_send_check(
     return True
 
 
+async def oco_in_flight(session: AsyncSession, order: Order) -> bool:
+    """Plan 29 (A): an open OCO sibling of this synthetic order is being executed at the
+    broker (triggered, handed to BrokerSync): the order is suspended, it neither triggers
+    nor cancels it. It still protects the position; it is canceled once that sibling is
+    filled, and active again if the sibling ends unfilled (refused, failed, expired)."""
+    if not order.synthetic or order.oco_group_id is None:
+        return False
+    return await session.scalar(
+        select(Order.id).where(
+            Order.oco_group_id == order.oco_group_id, Order.id != order.id,
+            Order.status.in_(OPEN_STATUSES), Order.broker_link_id.is_not(None),
+            (Order.parent_id.is_(None)) | (Order.parent_id != order.id),
+        ).limit(1)
+    ) is not None
+
+
+WAIT = "wait"
+
+
+async def market_only_sell(session: AsyncSession, order: Order) -> str | None:
+    """Plan 29 (B): a sell on a link that takes only market orders (eToro closes FIFO
+    positions of the whole account, possibly another portfolio's on a shared link) is
+    reduce-only: clamped to what the portfolio holds, less its other sells already at the
+    broker. Returns None (go, qty clamped), NOTHING_TO_REDUCE (flat or short: to cancel)
+    or WAIT (all of it is being sold by another order: try again later)."""
+    if order.side != OrderSide.sell:
+        return None
+    held = await _held(session, order.portfolio_id, order.symbol)
+    if held <= 0:
+        return NOTHING_TO_REDUCE
+    room = held
+    for other in await session.scalars(
+        select(Order).where(
+            Order.portfolio_id == order.portfolio_id, Order.symbol == order.symbol,
+            Order.side == OrderSide.sell, Order.id != order.id,
+            Order.status.in_(FILLABLE_STATUSES), Order.broker_link_id.is_not(None),
+        )
+    ):
+        if broker_live(other):
+            room -= held if other.qty is None else max(
+                other.qty - (other.filled_qty or Decimal(0)), Decimal(0))
+    if room <= 0:
+        return WAIT
+    filled = order.filled_qty or Decimal(0)
+    if order.qty is not None and order.qty - filled > room:
+        order.qty = filled + room
+    return None
+
+
 async def hand_to_broker(session: AsyncSession, order: Order, link_id: UUID) -> bool:
     """Ruling R10 (a) / R11: a simulated trigger on a broker-linked portfolio (trailing
     stop) becomes a market order sent by BrokerSync, keeping its own reduce_only flag;
     nothing fills locally. The fill-time checks run first (broker_send_check): an error
     is raised for the caller to reject the order; False when a reduce_only order had
-    nothing to reduce (canceled here)."""
+    nothing to reduce (canceled here) or, for a synthetic order (plan 29), when it waits
+    (an OCO sibling in flight, or its position already being sold: left as it is)."""
     portfolio = await session.get(Portfolio, order.portfolio_id)
+    if order.synthetic:
+        if await oco_in_flight(session, order):
+            return False
+        verdict = await market_only_sell(session, order)
+        if verdict == WAIT:
+            return False
+        if verdict == NOTHING_TO_REDUCE:
+            _cancel_nothing_to_reduce(session, order)
+            await session.flush()
+            return False
     if not await broker_send_check(session, portfolio, order):
         _cancel_nothing_to_reduce(session, order)
         await session.flush()
         return False
     if order.synthetic:
         # plan 29: it keeps its own type and prices (BrokerSync sends it at market); a
-        # fired stop reads `triggered` like any stop; its OCO siblings stop now, so two
-        # legs never both go to the broker
+        # fired stop reads `triggered` like any stop; its OCO siblings are suspended
+        # (oco_in_flight) until it fills, so two legs never both go to the broker
         if order.type in (OrderType.stop, OrderType.stop_limit, OrderType.trailing_stop):
             order.status = OrderStatus.triggered
         else:
             order.status = OrderStatus.pending
-        await _cancel_oco_siblings(session, order, datetime.now(UTC))
     else:
         order.type = OrderType.market
         order.trail_pct = order.trail_amount = None  # trail_ref_price records the trigger
@@ -412,40 +471,70 @@ async def _has_other_short(
     return found is not None
 
 
+async def _open_siblings(session: AsyncSession, order: Order) -> list[Order]:
+    """The order's open OCO siblings (not its own bracket children), locked."""
+    if order.oco_group_id is None:
+        return []
+    return list(await session.scalars(
+        select(Order)
+        .where(
+            Order.oco_group_id == order.oco_group_id,
+            Order.id != order.id,
+            Order.status.in_(OPEN_STATUSES),
+            (Order.parent_id.is_(None)) | (Order.parent_id != order.id),
+        )
+        .order_by(Order.created_at, Order.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ))
+
+
+def _cancel_sibling(session: AsyncSession, sibling: Order, now: datetime) -> None:
+    sibling.updated_at = now
+    if broker_live(sibling):  # canceled once the broker confirms (BrokerSync)
+        sibling.broker_status = BrokerState.CANCEL_REQUESTED
+        return
+    sibling.status = OrderStatus.canceled
+    queue_event(session, "order.canceled", {
+        "order_id": sibling.id, "portfolio_id": sibling.portfolio_id,
+        "agent_id": sibling.agent_id, "symbol": sibling.symbol, "by": "system",
+        "reason": "oco_sibling_filled",
+    })
+
+
 async def _cancel_oco_siblings(session: AsyncSession, order: Order, now: datetime) -> None:
     """Cancel the order's open OCO siblings (at the broker: cancel requested)."""
-    if order.oco_group_id is not None:
-        siblings = list(await session.scalars(
-            select(Order)
-            .where(
-                Order.oco_group_id == order.oco_group_id,
-                Order.id != order.id,
-                Order.status.in_(OPEN_STATUSES),
-                (Order.parent_id.is_(None)) | (Order.parent_id != order.id),
-            )
-            .order_by(Order.created_at, Order.id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        ))
-        for sibling in siblings:
-            sibling.updated_at = now
-            if broker_live(sibling):  # canceled once the broker confirms (BrokerSync)
-                sibling.broker_status = BrokerState.CANCEL_REQUESTED
-                continue
-            sibling.status = OrderStatus.canceled
-            queue_event(session, "order.canceled", {
-                "order_id": sibling.id, "portfolio_id": sibling.portfolio_id,
-                "agent_id": sibling.agent_id, "symbol": sibling.symbol, "by": "system",
-                "reason": "oco_sibling_filled",
-            })
+    for sibling in await _open_siblings(session, order):
+        _cancel_sibling(session, sibling, now)
+
+
+async def _follow_partial(session: AsyncSession, order: Order, held: Decimal, *,
+                          final: bool, now: datetime) -> None:
+    """Plan 29 (A): a synthetic leg filled in part (`held`: the position now). A sibling
+    that closes the position stays, sized to what is left of it; any other sibling is
+    canceled once the leg is final (it did execute), kept suspended before."""
+    for sibling in await _open_siblings(session, order):
+        closing = held != 0 and (held > 0) != (sibling.side == OrderSide.buy)
+        if closing and not broker_live(sibling):
+            done = sibling.filled_qty or Decimal(0)
+            if sibling.qty is not None and sibling.qty - done > abs(held):
+                sibling.qty = done + abs(held)
+                sibling.updated_at = now
+        elif final:
+            _cancel_sibling(session, sibling, now)
 
 
 async def activate_linked(session: AsyncSession, order: Order) -> None:
     """Cancel open OCO siblings; release held bracket children as one OCO group. Synthetic
     children (plan 29) stay here, watched by the processor, when the entry went to the
-    broker."""
+    broker. A synthetic leg final with a partial fill keeps the siblings that protect
+    what is left (`_follow_partial`)."""
     now = datetime.now(UTC)
-    await _cancel_oco_siblings(session, order, now)
+    if order.synthetic and order.status != OrderStatus.filled:
+        held = await _held(session, order.portfolio_id, order.symbol)
+        await _follow_partial(session, order, held, final=True, now=now)
+    else:
+        await _cancel_oco_siblings(session, order, now)
     children = list(
         await session.scalars(
             select(Order)
@@ -779,6 +868,8 @@ async def execute_fill(
     _advance(order, progress, price, final=final or fill_qty is None)
     if order.status == OrderStatus.filled:
         await activate_linked(session, order)
+    elif order.synthetic:  # plan 29 (A): its siblings follow what is left
+        await _follow_partial(session, order, after, final=False, now=datetime.now(UTC))
     await session.flush()
 
     queue_event(

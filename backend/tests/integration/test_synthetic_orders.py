@@ -245,8 +245,10 @@ async def test_bracket_entry_triggers_then_stop_sells_at_market_and_cancels_targ
     assert (s.type, s.stop_price, s.status) == (OrderType.stop, D("90.00"),
                                                  OrderStatus.triggered)
     assert s.broker_status == BrokerState.TO_SEND
-    assert (await _order(maker, tp)).status == OrderStatus.canceled  # OCO, locally
+    t = await _order(maker, tp)  # OCO: suspended while the stop is in flight
+    assert (t.status, t.broker_link_id) == (OrderStatus.pending, None)
     await _settle(sync)
+    assert (await _order(maker, tp)).status == OrderStatus.canceled  # once it filled
     s = await _order(maker, sl)
     assert (s.status, s.type, s.filled_qty, s.avg_fill_price) == (
         OrderStatus.filled, OrderType.stop, TWO, D("89.90"))
@@ -268,8 +270,9 @@ async def test_take_profit_sells_at_market_and_cancels_the_stop(maker, redis, qs
     assert await _tick(maker, redis, qs, "109.90", "110.00") == 0  # bid below the target
     fake.price = D("110.20")
     assert await _tick(maker, redis, qs, "110.20", "110.30") == 1  # bid >= target
-    assert (await _order(maker, sl)).status == OrderStatus.canceled
+    assert (await _order(maker, sl)).status == OrderStatus.pending  # suspended
     await _settle(sync)
+    assert (await _order(maker, sl)).status == OrderStatus.canceled
     t = await _order(maker, tp)
     assert (t.status, t.type, t.limit_price, t.avg_fill_price) == (
         OrderStatus.filled, OrderType.limit, D("110.00"), D("110.20"))
@@ -333,9 +336,12 @@ async def test_oco_protection_one_leg_sent_the_other_canceled(maker, redis, qs, 
     assert _sent(fake) == []
     fake.price = D("89")
     await _tick(maker, redis, qs, "89.00", "89.10")
-    assert (await _order(maker, target.id)).status == OrderStatus.canceled
+    t = await _order(maker, target.id)  # suspended, still protecting, not triggerable
+    assert (t.status, t.broker_link_id) == (OrderStatus.pending, None)
+    assert await _tick(maker, redis, qs, "121.00", "121.10") == 0
     await _settle(sync)
     assert (await _order(maker, stop.id)).status == OrderStatus.filled
+    assert (await _order(maker, target.id)).status == OrderStatus.canceled
     assert len(_sent(fake)) == 1
 
 
@@ -516,3 +522,231 @@ def test_market_view_is_a_transient_market_copy():
         o.id, TWO, OrderSide.buy, OrderType.market, None, None)
     assert o.type == OrderType.stop_limit and o.limit_price == D(1)
     assert BrokerAdapter.client_ref(v) == f"{o.id}-1"
+
+
+# -- hardening (plan 33) ---------------------------------------------------------------------
+
+async def _oco_protection(maker, qs, pid, *, qty=TWO) -> tuple[uuid.UUID, uuid.UUID]:
+    stop, target = D("90.00"), D("120.00")
+    async with maker() as s:
+        a, b = await place_oco_order(
+            s, qs, _req(pid, side=OrderSide.sell, type=OrderType.stop, stop_price=stop,
+                        qty=qty, tif=TimeInForce.gtc),
+            _req(pid, side=OrderSide.sell, type=OrderType.limit, limit_price=target,
+                 qty=qty, tif=TimeInForce.gtc), now=OPEN)
+        await s.commit()
+    return a.id, b.id
+
+
+def _broker_units(fake) -> Decimal:
+    return sum((p["units"] for p in fake.etoro["demo"].positions.values()), D(0))
+
+
+async def test_oco_sibling_is_active_again_when_the_leg_is_refused(maker, redis, qs, etoro):
+    """A: the stop goes to eToro and is refused there: the target was only suspended, it
+    protects the position again (and the owner is told of the refusal)."""
+    fake, http = etoro
+    pid, _ = await _portfolio(maker)
+    sync = _sync(maker, redis, qs, http)
+    await _hold(maker, redis, qs, pid, sync, fake)
+    stop, target = await _oco_protection(maker, qs, pid)
+    fake.etoro["demo"].positions.clear()  # nothing closable at the broker: refused
+    fake.price = D("89")
+    assert await _tick(maker, redis, qs, "89.00", "89.10") == 1
+    await _settle(sync)
+    s = await _order(maker, stop)
+    assert (s.status, s.reject_message) == (OrderStatus.rejected, NOT_CLOSABLE_MESSAGE)
+    async with maker() as ses:
+        kinds = list(await ses.scalars(select(Notification.kind).where(
+            Notification.portfolio_id == pid)))
+    assert "order.rejected" in kinds
+    t = await _order(maker, target)
+    assert (t.status, t.broker_link_id, t.qty) == (OrderStatus.pending, None, TWO)
+    assert await _tick(maker, redis, qs, "120.10", "120.20") == 1  # active again
+    assert (await _order(maker, target)).broker_status == BrokerState.TO_SEND
+
+
+async def test_oco_sibling_follows_a_partial_fill(maker, redis, qs, etoro):
+    """A: the stop closes only one of the two eToro positions: the target stays, sized
+    to what is left."""
+    fake, http = etoro
+    pid, _ = await _portfolio(maker)
+    sync = _sync(maker, redis, qs, http)
+    for _ in range(2):  # two positions of 1 at the broker
+        await _place(maker, redis, qs, pid, qty=D(1))
+        await _settle(sync)
+    assert await _position(maker, pid) == TWO
+    fake.calls.clear()
+    stop, target = await _oco_protection(maker, qs, pid)
+    fake.etoro_fail_close_after = 1  # the second close fails: a partial
+    fake.price = D("89")
+    await _tick(maker, redis, qs, "89.00", "89.10")
+    await _settle(sync)
+    s = await _order(maker, stop)
+    assert s.filled_qty == D(1) and s.status in (OrderStatus.canceled,
+                                                 OrderStatus.partially_filled)
+    assert await _position(maker, pid) == D(1)
+    t = await _order(maker, target)
+    assert (t.status, t.qty, t.broker_link_id) == (OrderStatus.pending, D(1), None)
+
+
+async def test_oco_entries_triggered_at_placement_send_one_leg_only(maker, redis, qs, etoro):
+    """A: both legs marketable at placement: the first goes, the second waits."""
+    fake, http = etoro
+    pid, _ = await _portfolio(maker)
+    async with maker() as s:
+        a, b = await place_oco_order(
+            s, qs, _req(pid, type=OrderType.limit, limit_price=D("101.00")),
+            _req(pid, type=OrderType.stop, stop_price=D("99.50")), now=OPEN)
+        await s.commit()
+    assert (a.broker_status, b.broker_status, b.status) == (
+        BrokerState.TO_SEND, None, OrderStatus.pending)
+    await _settle(_sync(maker, redis, qs, http))
+    assert (await _order(maker, a.id)).status == OrderStatus.filled
+    assert (await _order(maker, b.id)).status == OrderStatus.canceled
+    assert len(_sent(fake)) == 1
+
+
+async def _shared(maker, n=2) -> tuple[list[uuid.UUID], uuid.UUID]:
+    async with maker() as s:
+        link = await create_link(s, f"L-{uuid.uuid4().hex[:8]}", "etoro_demo", dict(KEYS))
+        pids = []
+        for _ in range(n):
+            p = await create_portfolio(s, name=f"P-{uuid.uuid4().hex[:8]}",
+                                       initial_cash=D(100000), leverage=D(1))
+            await link_portfolio(s, p.id, link.id)
+            pids.append(p.id)
+        await s.commit()
+    return pids, link.id
+
+
+async def test_shared_link_stop_is_clamped_to_its_portfolio_position(
+        maker, redis, qs, etoro):
+    """B: on a link shared by two portfolios a stop larger than what its portfolio still
+    holds sells only that (eToro closes FIFO on the whole account); with nothing left it
+    is canceled without sending anything."""
+    fake, http = etoro
+    (p1, p2), _ = await _shared(maker)
+    sync = _sync(maker, redis, qs, http)
+    for pid in (p1, p2):
+        await _hold(maker, redis, qs, pid, sync, fake)
+    assert _broker_units(fake) == D(4)
+    stop = await _place(maker, redis, qs, p1, side=OrderSide.sell, type=OrderType.stop,
+                        stop_price=D("90.00"), tif=TimeInForce.gtc)
+    await _place(maker, redis, qs, p1, side=OrderSide.sell, qty=D(1))
+    await _settle(sync)
+    assert await _position(maker, p1) == D(1)
+    fake.price = D("89")
+    await _tick(maker, redis, qs, "89.00", "89.10")
+    assert (await _order(maker, stop)).qty == D(1)
+    await _settle(sync)
+    assert (await _order(maker, stop)).status == OrderStatus.filled
+    assert await _position(maker, p1) == 0
+    assert _broker_units(fake) == TWO  # p2's position untouched
+
+    # nothing left to reduce at the trigger: canceled, nothing sent
+    other = await _place(maker, redis, qs, p2, side=OrderSide.sell, type=OrderType.stop,
+                         stop_price=D("80.00"), tif=TimeInForce.gtc)
+    await _place(maker, redis, qs, p2, side=OrderSide.sell)  # p2 sells it all meanwhile
+    await _settle(sync)
+    assert await _position(maker, p2) == 0
+    fake.calls.clear()
+    fake.price = D("79")
+    await _tick(maker, redis, qs, "79.00", "79.10")
+    await _settle(sync)
+    o = await _order(maker, other)
+    assert (o.status, o.reject_message) == (OrderStatus.canceled, "nothing_to_reduce")
+    assert _sent(fake) == []
+
+
+async def test_shared_link_two_sells_in_flight_never_oversell(maker, redis, qs, etoro):
+    """B: a market sell and a triggered stop of the same portfolio both waiting to be
+    sent: once the first is at the broker the second waits, then has nothing to reduce."""
+    fake, http = etoro
+    (p1, p2), _ = await _shared(maker)
+    sync = _sync(maker, redis, qs, http)
+    for pid in (p1, p2):
+        await _hold(maker, redis, qs, pid, sync, fake)
+    stop = await _place(maker, redis, qs, p1, side=OrderSide.sell, type=OrderType.stop,
+                        stop_price=D("90.00"), tif=TimeInForce.gtc)
+    sell = await _place(maker, redis, qs, p1, side=OrderSide.sell)  # to send
+    fake.price = D("89")
+    await _tick(maker, redis, qs, "89.00", "89.10")
+    assert (await _order(maker, stop)).broker_status == BrokerState.TO_SEND
+    await _settle(sync, 4)
+    statuses = {(await _order(maker, o)).status for o in (stop, sell)}
+    assert statuses == {OrderStatus.filled, OrderStatus.canceled}
+    assert await _position(maker, p1) == 0
+    assert await _position(maker, p2) == TWO
+    assert _broker_units(fake) == TWO
+
+
+async def test_triggered_limit_no_longer_marketable_goes_back_to_watching(
+        maker, redis, qs, etoro):
+    """C: the price moved away before the send: never sent at market, watched again."""
+    fake, http = etoro
+    pid, _ = await _portfolio(maker)
+    entry = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95.00"),
+                         tif=TimeInForce.gtc)
+    await _tick(maker, redis, qs, "94.90", "95.00")
+    assert (await _order(maker, entry)).broker_status == BrokerState.TO_SEND
+    qs.set_quote("AAPL", D("96.90"), D("97.00"), None)  # ask above the limit now
+    sync = _sync(maker, redis, qs, http)
+    await _settle(sync)
+    o = await _order(maker, entry)
+    assert (o.status, o.broker_link_id, o.broker_status, o.type) == (
+        OrderStatus.pending, None, None, OrderType.limit)
+    assert _sent(fake) == []
+    fake.price = D("95")
+    assert await _tick(maker, redis, qs, "94.90", "95.00") == 1
+    await _settle(sync)
+    assert (await _order(maker, entry)).status == OrderStatus.filled
+
+    # a stop-limit whose stop was hit goes back as triggered (a resting limit)
+    sl = await _place(maker, redis, qs, pid, side=OrderSide.sell, type=OrderType.stop_limit,
+                      stop_price=D("90.00"), limit_price=D("89.00"), tif=TimeInForce.gtc)
+    await _tick(maker, redis, qs, "89.90", "90.00")  # stop hit
+    await _tick(maker, redis, qs, "89.90", "90.00")  # bid >= limit: handed
+    assert (await _order(maker, sl)).broker_status == BrokerState.TO_SEND
+    qs.set_quote("AAPL", D("88.00"), D("88.10"), None)
+    fake.calls.clear()
+    await _settle(sync)
+    o = await _order(maker, sl)
+    assert (o.status, o.broker_link_id, o.broker_status) == (
+        OrderStatus.triggered, None, None)
+    assert _sent(fake) == []
+
+
+async def test_live_cash_estimate_of_a_triggered_stop_buy_uses_the_ask(maker, monkeypatch):
+    """H: the cash check of a triggered stop buy values it at market, not at its stop."""
+    from types import SimpleNamespace
+
+    import smtrading.brokers.sync as sync_mod
+    from smtrading.instruments.models import Instrument
+    from smtrading.portfolios.models import Portfolio
+
+    seen = []
+
+    async def nothing(*a, **k):
+        return None
+
+    async def estimate(session, qs, *, portfolio, instrument, order):
+        seen.append((order.type, order.stop_price))
+        return D(1), D(0)
+
+    for name in ("check_live_state", "check_live_cash", "check_live_fuse"):
+        monkeypatch.setattr(sync_mod, name, nothing)
+    monkeypatch.setattr(sync_mod, "snapshot_fresh", lambda link, now: True)
+    monkeypatch.setattr(sync_mod, "estimate_buy", estimate)
+    pid = (await _portfolio(maker))[0]
+    async with maker() as s:
+        portfolio = await s.get(Portfolio, pid)
+        instrument = await s.get(Instrument, "AAPL")
+        order = Order(id=uuid.uuid4(), portfolio_id=pid, symbol="AAPL", side=OrderSide.buy,
+                      type=OrderType.stop, qty=TWO, stop_price=D(90), filled_qty=D(0),
+                      status=OrderStatus.triggered, synthetic=True, reduce_only=False,
+                      live_flatten=False)
+        sync = BrokerSync(maker, None, FakeQuoteSource(), None, clock=Clock(OPEN))
+        assert await sync._live_refusal(s, None, portfolio, order, SimpleNamespace(),
+                                        instrument, OPEN) is None
+    assert seen == [(OrderType.market, None)]
