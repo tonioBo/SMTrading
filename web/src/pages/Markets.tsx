@@ -18,10 +18,18 @@ import { InstantSearch } from "@/components/markets/InstantSearch";
 import { InstrumentSheet } from "@/components/markets/InstrumentSheet";
 import { DEFAULT_UNIVERSES, INDEX_LABELS, QUICK_LABELS, UNSECTORED } from "@/components/markets/labels";
 import { MarketOverview } from "@/components/markets/MarketOverview";
+import { FavoriteStar } from "@/components/markets/FavoriteStar";
+import { Favorites } from "@/components/markets/Favorites";
+import { MarketNews } from "@/components/markets/MarketNews";
+import { MarketsToday } from "@/components/markets/MarketsToday";
+import { PriceAlerts } from "@/components/markets/PriceAlerts";
+import { Screener } from "@/components/markets/Screener";
+import { WeekCalendar } from "@/components/markets/WeekCalendar";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Pct } from "@/components/Pct";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ASSET_CLASS_LABELS } from "@/lib/labels";
-import { useMarketsPrefs, type MarketsPrefs } from "@/lib/marketsPrefs";
+import { useMarketsPrefs, type MarketsPrefs, type MarketsTab } from "@/lib/marketsPrefs";
 import type { AssetClass, Instrument, InstrumentCreate, MarketClosure, MarketClosureCreate, MarketClosureKind, MarketStatus, Quote, TrackSource } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
@@ -418,9 +426,12 @@ function InstrumentsSection({
                 return (
                   <TableRow key={i.symbol}>
                     <TableCell>
-                      <button type="button" className="num font-medium hover:underline" aria-label={`Scheda ${i.symbol}`} onClick={() => onOpen(i.symbol)}>
-                        {i.symbol}
-                      </button>
+                      <span className="flex items-center gap-0.5">
+                        <FavoriteStar symbol={i.symbol} className="-ml-1.5" />
+                        <button type="button" className="num font-medium hover:underline" aria-label={`Scheda ${i.symbol}`} onClick={() => onOpen(i.symbol)}>
+                          {i.symbol}
+                        </button>
+                      </span>
                     </TableCell>
                     <TableCell className="max-w-[14rem]">
                       <span className="block truncate">{i.name}</span>
@@ -738,6 +749,58 @@ function ClosuresSection({ markets }: { markets: string[] }) {
   );
 }
 
+const TAB_LABELS: Record<MarketsTab, string> = {
+  favorites: "Preferiti",
+  screener: "Screener",
+  calendar: "Calendario",
+  news: "Notizie",
+  alerts: "Avvisi di prezzo",
+};
+
+/** «Preferiti», «Screener tecnico», «Calendario della settimana», «Notizie» and (admins)
+ * «Avvisi di prezzo»: one tab at a time, the last one remembered. */
+function DailyTools({ tab, onTab, onOpen }: { tab: MarketsTab; onTab: (t: MarketsTab) => void; onOpen: (s: string) => void }) {
+  const admin = useIsAdmin();
+  const tabs = (Object.keys(TAB_LABELS) as MarketsTab[]).filter((t) => t !== "alerts" || admin);
+  const current = tabs.includes(tab) ? tab : "favorites";
+  return (
+    <Card className="mt-6">
+      <Tabs value={current} onValueChange={(v) => onTab(v as MarketsTab)}>
+        <CardHeader className="space-y-0 pb-3">
+          <div className="-mx-1 overflow-x-auto px-1">
+            <TabsList aria-label="Strumenti del giorno">
+              {tabs.map((t) => (
+                <TabsTrigger key={t} value={t}>
+                  {TAB_LABELS[t]}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <TabsContent value="favorites" className="mt-0">
+            <Favorites onOpen={onOpen} />
+          </TabsContent>
+          <TabsContent value="screener" className="mt-0">
+            <Screener onOpen={onOpen} />
+          </TabsContent>
+          <TabsContent value="calendar" className="mt-0">
+            <WeekCalendar onOpen={onOpen} />
+          </TabsContent>
+          <TabsContent value="news" className="mt-0">
+            <MarketNews onOpen={onOpen} />
+          </TabsContent>
+          {admin && (
+            <TabsContent value="alerts" className="mt-0">
+              <PriceAlerts />
+            </TabsContent>
+          )}
+        </CardContent>
+      </Tabs>
+    </Card>
+  );
+}
+
 export default function Markets() {
   const stream = useStreamStatus();
   const hours = useMarketsStatus();
@@ -752,7 +815,11 @@ export default function Markets() {
   return (
     <div>
       <PageHeader title="Mercati" />
-      <InstantSearch onOpen={setSheet} />
+      <MarketsToday />
+      <div className="mt-4">
+        <InstantSearch onOpen={setSheet} />
+      </div>
+      <DailyTools tab={prefs.tab} onTab={(tab) => setPrefs({ tab })} onOpen={setSheet} />
       <Card className="mt-6">
         <CardHeader className="flex-row items-center justify-between space-y-0">
           <CardTitle>Mappa dei settori e titoli più mossi</CardTitle>

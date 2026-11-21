@@ -16,10 +16,11 @@ map and the movers. Read-only (a viewer can read it).
   nulls its part), cached MARKET_TTL_S.
 - `GET /api/markets/day-changes?symbols=A,B` (at most 100) → {symbol: {last, prev_close,
   change_pct, ts, provider}} for the symbols with a day change (the list page's «Var.»).
-- `GET /api/markets/snapshot?universe=SP500|NDX|FTSEMIB|DAX|CAC40|MDAX|CRYPTO|MINE` →
-  {universe, label, as_of, total, covered, sectors: [{sector, count, avg_change_pct, up,
+- `GET /api/markets/snapshot?universe=SP500|NDX|FTSEMIB|DAX|CAC40|MDAX|CRYPTO|MINE&period=
+  1d|1w|1m|ytd` → {universe, label, as_of, period, total, covered, sectors: [{sector, count, avg_change_pct, up,
   down, members}], gainers, losers}: day changes of the universe from the batch calls
   (MarketDataRouter.get_day_changes), cached SNAPSHOT_TTL_S; computed only when asked.
+  Other periods: the precomputed daily-bar changes (plan 30, market_screen_rows).
 - `GET /api/instruments/{symbol}/bars?timeframe=1d|1h&start=&end=` → {symbol, timeframe,
   bars: [{ts, open, high, low, close, volume}], error}: the closed bars of a window (the
   «Diario operazioni» trade chart), at most BARS_MAX_DAYS[timeframe] days, cached
@@ -30,6 +31,7 @@ Numbers are strings.
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -383,22 +385,34 @@ async def day_changes(request: Request, symbols: str) -> dict:
     return to_jsonable({s: _day_change_dto(dc) for s, dc in got.items()})
 
 
+SNAPSHOT_PERIODS = {"1d": None, "1w": "chg_1w", "1m": "chg_1m", "ytd": "chg_ytd"}
+
+
 @router.get("/markets/snapshot")
 async def snapshot(request: Request, session: DbSession, redis: RedisClient,
-                   universe: str = "SP500") -> dict:
+                   universe: str = "SP500", period: str = "1d") -> dict:
+    """`period` 1d: the day changes (live, batch); 1w | 1m | ytd: the changes of the
+    precomputed daily-bar rows (plan 30, marketsportal.screener), as of their last close."""
     code = universe.strip().upper()
     if code not in explore.UNIVERSES:
         raise _invalid("universe", f"universe deve essere uno tra {list(explore.UNIVERSES)}")
-    key = SNAPSHOT_KEY + code
+    if period not in SNAPSHOT_PERIODS:
+        raise _invalid("period", f"period deve essere uno tra {list(SNAPSHOT_PERIODS)}")
+    key = SNAPSHOT_KEY + code + ("" if period == "1d" else f":{period}")
     if (hit := await _cache_get(redis, key)) is not None:
         return hit
     instruments = await explore.universe_instruments(session, code)
-    r = _router(request)
-    changes = await r.get_day_changes([i.symbol for i in instruments]) if instruments else {}
+    as_of: Any = datetime.now(UTC)
+    if period == "1d":
+        r = _router(request)
+        changes = await r.get_day_changes([i.symbol for i in instruments]) if instruments else {}
+    else:
+        changes, as_of = await _period_changes(session, instruments, SNAPSHOT_PERIODS[period])
     rows = explore.members(instruments, changes)
     gainers, losers = explore.movers(rows)
     body = to_jsonable({
-        "universe": code, "label": explore.UNIVERSES[code], "as_of": datetime.now(UTC),
+        "universe": code, "label": explore.UNIVERSES[code], "as_of": as_of,
+        "period": period,
         "total": len(instruments), "covered": len(rows),
         "sectors": explore.sector_tiles(rows), "gainers": gainers, "losers": losers,
     })
@@ -406,3 +420,23 @@ async def snapshot(request: Request, session: DbSession, redis: RedisClient,
     ttl = SNAPSHOT_TTL_S if len(rows) >= 0.9 * len(instruments) else PARTIAL_TTL_S
     await _cache_set(redis, key, body, ttl)
     return body
+
+
+@dataclass(frozen=True)
+class _Change:
+    last: Any
+    change_pct: Any
+
+
+async def _period_changes(session, instruments: list[Instrument], column: str):
+    """symbol -> (last close, change over the period) from market_screen_rows, and the
+    latest computation time (None when no row)."""
+    from smtrading.marketsportal.models import MarketScreenRow
+
+    if not instruments:
+        return {}, None
+    rows = list(await session.scalars(select(MarketScreenRow).where(
+        MarketScreenRow.symbol.in_([i.symbol for i in instruments]))))
+    changes = {r.symbol: _Change(r.close, getattr(r, column)) for r in rows
+               if getattr(r, column) is not None}
+    return changes, max((r.computed_at for r in rows), default=None)

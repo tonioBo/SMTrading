@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { ASSET_CLASS_LABELS } from "@/lib/labels";
 import { highlightParts } from "@/lib/marketsPrefs";
 import { INDEX_LABELS } from "@/components/markets/labels";
+import { FavoriteStar } from "@/components/markets/FavoriteStar";
 
 export const SEARCH_DEBOUNCE_MS = 150;
 const CLASS_ORDER: AssetClass[] = ["us_equity", "eu_equity", "crypto", "forex"];
@@ -148,6 +149,7 @@ export function InstantSearch({ onOpen }: { onOpen: (symbol: string) => void }) 
                         </span>
                       </span>
                       {!h.active && <span className="text-xs text-muted">disattivato</span>}
+                      <FavoriteStar symbol={h.symbol} className="self-center" />
                     </div>
                   );
                 })}
