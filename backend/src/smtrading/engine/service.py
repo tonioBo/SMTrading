@@ -49,10 +49,15 @@ Synthetic orders (plan 29): on a link whose broker takes only market orders (eTo
 at market is accepted and kept here (`synthetic`, no broker_link_id): the processor
 watches it like a simulated order (same quotes, stale/suspect guards, market hours,
 expiry) and at the trigger hands it to BrokerSync (`hand_to_broker`), which sends it as a
-market order; its OCO siblings are canceled then. The bracket exits of such a portfolio
-are synthetic too and stay here once active. The order keeps its own type and prices; the
-fill is the broker's. A synthetic sell beyond the position (a short) is refused at
-placement with the broker's text.
+market order. Its OCO siblings are only suspended meanwhile (they protect the position,
+never trigger): canceled once it fills, resized to what is left after a partial fill,
+active again if it ends unfilled (refused, failed, expired). The bracket exits of such a
+portfolio are synthetic too and stay here once active. The order keeps its own type and
+prices; the fill is the broker's. A synthetic sell beyond the position (a short) is
+refused at placement with the broker's text (an OCO as a whole, before either leg is
+stored); at the trigger and again at the send a sell is clamped to the position less the
+portfolio's sells already at the broker (eToro closes FIFO on the whole account). Once
+handed over the order cannot be modified any more.
 
 Market closed: market orders are `queued` (the processor executes them at the open);
 other types rest as `pending` and are only evaluated once the market is open, because a
@@ -572,6 +577,31 @@ async def _keeps_exits_local(session: AsyncSession, portfolio: Portfolio,
         return all(adapter.synthetic(o, instrument) for o in exits)
 
 
+async def _oco_short_leg(session: AsyncSession, adm: _Admission) -> str | None:
+    """Plan 29 (F): the broker's refusal text when this OCO leg would be a synthetic sell
+    beyond the position (refused by `_route`), checked before any leg is stored."""
+    if adm.check is not None and not adm.check.ok:
+        return None
+    link_id = adm.portfolio.broker_link_id
+    link = await session.get(BrokerLink, link_id) if link_id is not None else None
+    if link is None or not link.enabled:
+        return None
+    req = adm.req
+    leg = Order(  # transient, never added to the session
+        portfolio_id=req.portfolio_id, symbol=adm.instrument.symbol, side=req.side,
+        type=req.type, tif=req.tif, qty=req.qty, notional=req.notional,
+        limit_price=req.limit_price, stop_price=req.stop_price, trail_pct=req.trail_pct,
+        trail_amount=req.trail_amount, filled_qty=Decimal(0), reduce_only=req.reduce_only,
+    )
+    async with open_adapter(session, link_id, None) as adapter:  # config only
+        synthetic = (not adapter.routable(leg, adm.instrument)
+                     and adapter.synthetic(leg, adm.instrument))
+        beyond = adapter.SELL_BEYOND_POSITION_MESSAGE
+    if synthetic and beyond is not None and await _sells_beyond_position(session, leg):
+        return beyond
+    return None
+
+
 async def _route(session: AsyncSession, order: Order, adm: _Admission) -> bool:
     """True when the order was handed to the portfolio's broker, or refused because the
     broker cannot take it (Ruling R10: nothing fills locally on a linked portfolio; a
@@ -824,6 +854,10 @@ async def place_oco_order(
         _raise_if_rejected(ea, eb)
         return [ea, eb]
 
+    for adm in (adm_a, adm_b):  # plan 29 (F): refused as a whole, never one leg alone
+        beyond = await _oco_short_leg(session, adm)
+        if beyond is not None:
+            adm.check = CheckResult(ok=False, code=ErrorCode.SHORT_NOT_ALLOWED, message=beyond)
     group = uuid.uuid4()
     oa = await _persist(session, adm_a, oco_group_id=group)
     ob = await _persist(session, adm_b, oco_group_id=group)
@@ -1034,6 +1068,10 @@ async def modify_order(
     ensure_not_archived(await session.get(Portfolio, order.portfolio_id))
     if order.status not in MODIFIABLE:
         raise _invalid(f"cannot modify a {order.status} order", order_id=order.id)
+    if order.synthetic and order.broker_link_id is not None:
+        # plan 29: triggered, being sent at market: a change would be ignored
+        raise _invalid(f"cannot modify a {order.status} order: it is being executed",
+                       order_id=order.id)
     replace = broker_live(order)
     if replace and (
         order.broker_status in BrokerState.PENDING_WORK or order.filled_qty > 0

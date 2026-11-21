@@ -19,7 +19,12 @@ the lock (startup recovery).
   released to the simulator.
 - synthetic orders (plan 29: a market-only broker, eToro): a resting one is not here
   (kept and watched by the processor); once triggered it is sent as a market order
-  (`market_view`), keeping its own type locally;
+  (`market_view`), keeping its own type locally. A limit / stop-limit is first checked
+  against the current quote (the processor's guards): no longer marketable (or no good
+  quote) it goes back to the processor (`_watch_again`), never sent at any price. On a
+  market-only link every sell is reduce-only at the send (`market_only_sell`): clamped to
+  the portfolio's position less its sells already at the broker, waiting while another
+  sell holds all of it, canceled (nothing_to_reduce) when flat;
 - once a send was attempted (`broker_sent_at` set) the order is never expired,
   rejected or released before `find_order` (with every broker order id already linked
   on the link excluded, C1) gave an answer: found -> adopted (then canceled at the
@@ -153,9 +158,11 @@ from smtrading.brokers.service import get_adapter, open_adapter
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.execution import (
     NOTHING_TO_REDUCE,
+    WAIT,
     activate_linked,
     broker_send_check,
     execute_fill,
+    market_only_sell,
 )
 from smtrading.engine.models import (
     LIQUIDATION_ROLE,
@@ -168,6 +175,7 @@ from smtrading.engine.models import (
     OrderType,
 )
 from smtrading.engine.prefetch import prefetch_portfolio
+from smtrading.engine.pricing import QuoteView, effective_bid_ask
 from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.engine.service import (
     cancel_held_children,
@@ -185,6 +193,7 @@ from smtrading.fees.resolver import load_rules
 from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, JournalType
+from smtrading.marketdata.types import Quote
 from smtrading.portfolios.locks import lock_portfolio
 from smtrading.portfolios.models import Portfolio
 from smtrading.risk.daily_loss import check_daily_loss
@@ -201,7 +210,11 @@ from smtrading.risk.live_checks import (
     to_currency,
 )
 from smtrading.risk.models import Notification
-from smtrading.risk.settings import is_kill_switch_on
+from smtrading.risk.settings import (
+    get_default_spread_bps,
+    get_stale_threshold,
+    is_kill_switch_on,
+)
 
 log = logging.getLogger("smtrading.brokers.sync")
 
@@ -219,6 +232,7 @@ _SYNCED = tuple(s for s in OrderStatus if s in OPEN_STATUSES - {OrderStatus.held
 _FINAL = {"canceled": OrderStatus.canceled, "rejected": OrderStatus.rejected,
           "expired": OrderStatus.expired}
 _PREC = 60
+_LIMIT_TYPES = (OrderType.limit, OrderType.stop_limit)
 ACCOUNT_READ_MIN_INTERVAL = timedelta(seconds=5)  # Trading 212: 1 account read / 5 s
 DRY_RUN_MESSAGE = "prova a secco: ordine non inviato"
 NOT_SENT_MESSAGE = "cancello live non disponibile: ordine non inviato"
@@ -686,6 +700,7 @@ class BrokerSync:
                          waiting: list[bool]) -> None:
         now = self._clock()
         memo = await self._live_memo(order_id)
+        quote = await self._limit_quote(order_id)
         async with self._sm() as session:
             order = await _lock(session, order_id)
             if (
@@ -731,7 +746,19 @@ class BrokerSync:
                         waiting[0] = True  # the retry manages the wait clock
                         await self._send(order_id, retry=False)
                     return
-            refusal = await self._refusal(session, portfolio, order, clamp=True)
+            if (order.synthetic and order.type in _LIMIT_TYPES
+                    and not await self._marketable(session, order, instrument, quote, now)):
+                self._watch_again(order)  # plan 29 (C): never sent at market blindly
+                await self._commit(session)
+                return
+            adapter = await self._adapter(session, link.id)
+            verdict = await market_only_sell(session, order) if adapter.market_only else None
+            if verdict == WAIT:  # plan 29 (B): its position is being sold by another
+                await self._commit(session)
+                return
+            refusal = (SMTError(ErrorCode.INVALID_ORDER, NOTHING_TO_REDUCE)
+                       if verdict == NOTHING_TO_REDUCE
+                       else await self._refusal(session, portfolio, order, clamp=True))
             if refusal is not None and refusal.message == NOTHING_TO_REDUCE:
                 await self._set_final(session, order, OrderStatus.canceled)
                 order.reject_message = NOTHING_TO_REDUCE
@@ -758,7 +785,6 @@ class BrokerSync:
                 await self._reject(session, order, refusal.code, refusal.message)
                 await self._commit(session)
                 return
-            adapter = await self._adapter(session, link.id)
             order.broker_status = BrokerState.SENDING
             order.broker_sent_at = now
             order.broker_last_sync_at = now
@@ -818,6 +844,55 @@ class BrokerSync:
         await self._update(order_id, lambda s, o: self._placed(s, o, bo, payload), bo)
         if live and order.side == OrderSide.buy and bo.status != "rejected":
             await self._mark_stale(link.id)
+
+    # -- synthetic limits (plan 29, C) ------------------------------------------------
+
+    async def _limit_quote(self, order_id: UUID) -> Quote | None:
+        """The current quote of a triggered synthetic limit / stop-limit about to be sent
+        (read with no transaction open); None for any other order, or when unavailable."""
+        async with self._sm() as session:
+            row = (await session.execute(
+                select(Order.symbol, Order.type, Order.synthetic)
+                .where(Order.id == order_id)
+            )).first()
+            await session.commit()
+        if row is None or not row.synthetic or row.type not in _LIMIT_TYPES:
+            return None
+        try:
+            return (await self._qs.get_quotes([row.symbol])).get(row.symbol)
+        except Exception as e:  # noqa: BLE001  (no usable quote: watched again)
+            log.warning("order %s: no quote before sending: %s", order_id, e)
+            return None
+
+    async def _marketable(self, session: AsyncSession, order: Order,
+                          instrument: Instrument, quote: Quote | None,
+                          now: datetime) -> bool:
+        """The limit is still reachable at `quote` (buy: ask <= limit; sell: bid >= limit),
+        with the processor's guards: a missing, stale or suspect quote is not."""
+        if quote is None or quote.suspect is not None or order.limit_price is None:
+            return False
+        if (now - quote.ts).total_seconds() > await get_stale_threshold(
+                session, instrument.asset_class):
+            return False
+        try:
+            bid, ask = effective_bid_ask(
+                QuoteView(quote.bid, quote.ask, quote.last, quote.ts),
+                await get_default_spread_bps(session, instrument.asset_class))
+        except SMTError:
+            return False
+        if order.side == OrderSide.buy:
+            return ask <= order.limit_price
+        return bid >= order.limit_price
+
+    def _watch_again(self, order: Order) -> None:
+        """A triggered synthetic limit no longer marketable: back to the processor, which
+        hands it over again when its limit is reached (a stop-limit stays triggered)."""
+        order.broker_link_id = None
+        order.broker_status = None
+        if order.type == OrderType.limit:
+            order.status = OrderStatus.pending
+        order.updated_at = datetime.now(UTC)
+        log.info("order %s: limit no longer reachable, watched again", order.id)
 
     # -- real money ------------------------------------------------------------------
 
@@ -879,8 +954,10 @@ class BrokerSync:
                 if not snapshot_fresh(link, now):
                     return _STALE
                 try:
-                    value, fees = await estimate_buy(session, qs, portfolio=portfolio,
-                                                     instrument=instrument, order=order)
+                    # plan 29: a triggered synthetic order goes at market (the ask)
+                    value, fees = await estimate_buy(
+                        session, qs, portfolio=portfolio, instrument=instrument,
+                        order=market_view(order) if order.synthetic else order)
                     await check_live_cash(session, qs, portfolio=portfolio, link=link,
                                           est_value=value, est_fees=fees, now=now,
                                           order=order)

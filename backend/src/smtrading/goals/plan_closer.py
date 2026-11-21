@@ -20,8 +20,10 @@ Each run:
 3. a `closing` row is `closed` once the position is flat (its order not filled by the
    end: back to pending, tried again, counted in `attempts` like a refusal).
 A row is never closed while another order closing the position is in flight (a market
-order or a triggered stop on the closing side, e.g. the agents' CHIUDI queued for the
-open or still at the broker): a second full-size close at the broker could sell twice
+order, a triggered stop or an order kept for a market-only broker and handed over to be
+sent at market, on the closing side, e.g. the agents' CHIUDI queued for the open or still
+at the broker; a triggered stop-limit kept here is a resting limit, canceled with the
+close): a second full-size close at the broker could sell twice
 (BrokerSync clamps a reduce-only order to the position, not to the other open sells);
 the row waits for the next run. With the close, `close_position` cancels the symbol's
 bracket exits and its other resting orders on the closing side that are not reduce-only
@@ -65,7 +67,7 @@ from smtrading.engine.models import (
     OrderType,
 )
 from smtrading.engine.quotesource import QuoteSource
-from smtrading.engine.service import cancel_plan_additions, close_position
+from smtrading.engine.service import cancel_orders, cancel_plan_additions, close_position
 from smtrading.events import discard_post_commit, dispatch_post_commit
 from smtrading.goals.models import Goal, PlanClosure
 from smtrading.goals.plans import ended_at, last_ended_period, open_closures, plan_rows
@@ -359,8 +361,30 @@ class PlanCloser:
                 Order.portfolio_id == row.portfolio_id, Order.symbol == row.symbol,
                 Order.side == side, Order.status.in_(FILLABLE_STATUSES),
                 (Order.type == OrderType.market)
-                | Order.status.in_((OrderStatus.triggered, OrderStatus.partially_filled)))
+                | (Order.status == OrderStatus.partially_filled)
+                # a fired stop is a market order; a triggered stop-limit kept here is a
+                # resting limit (canceled with the close, `_local_triggered`)
+                | ((Order.status == OrderStatus.triggered)
+                   & ((Order.type != OrderType.stop_limit)
+                      | Order.broker_link_id.is_not(None)))
+                # plan 29: a synthetic order handed over is sent at market
+                | (Order.synthetic.is_(True) & Order.broker_link_id.is_not(None)))
             .limit(1)) is not None
+
+    async def _cancel_local_triggered(self, session: AsyncSession, row: PlanClosure,
+                                      held: Decimal) -> None:
+        """The closing side's triggered stop-limits kept here (their stop was hit, their
+        limit not reached yet): canceled with the close, reduce-only or not, so they never
+        sell what the close sells (the portfolio is locked)."""
+        side = OrderSide.sell if held > 0 else OrderSide.buy
+        orders = list(await session.scalars(
+            select(Order).where(
+                Order.portfolio_id == row.portfolio_id, Order.symbol == row.symbol,
+                Order.side == side, Order.status == OrderStatus.triggered,
+                Order.type == OrderType.stop_limit, Order.broker_link_id.is_(None))
+            .with_for_update().execution_options(populate_existing=True)))
+        if orders:
+            await cancel_orders(session, orders, by="system")
 
     async def _additions(self, row_id: int) -> None:
         async with self._sm() as session:
@@ -411,6 +435,7 @@ class PlanCloser:
                     if await self._close_in_flight(session, row, held.qty):
                         row.last_error = "another close order is in flight"
                         return
+                    await self._cancel_local_triggered(session, row, held.qty)
                     order = await close_position(
                         session, self._qs, row.portfolio_id, row.symbol, source="system",
                         now=now, redis=self._redis)

@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from smtrading.activity.models import Activity
 from smtrading.common.db import make_engine
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType
+from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType, TimeInForce
 from smtrading.engine.quotesource import FakeQuoteSource
 from smtrading.engine.service import (
     PlaceOrderRequest,
@@ -411,6 +411,30 @@ async def test_the_close_cancels_the_standalone_oco(sm, qs):
         statuses = {o.status for o in await s.scalars(
             select(Order).where(Order.id.in_([o.id for o in legs])))}
     assert statuses == {OrderStatus.canceled}
+
+
+async def test_a_triggered_stop_limit_kept_here_never_blocks_the_close(sm, qs):
+    """A stop-limit whose stop was hit but whose limit is not reached is a resting limit,
+    not a close in flight: the job cancels it (reduce-only too) and closes."""
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, "AAPL", 10)
+    async with sm() as s:
+        sl = await place_order(s, qs, PlaceOrderRequest(
+            portfolio_id=pid, symbol="AAPL", side=OrderSide.sell, type=OrderType.stop_limit,
+            qty=D(10), stop_price=D(190), limit_price=D("189.50"), reduce_only=True,
+            tif=TimeInForce.gtc), now=BOUGHT)
+        discard_post_commit(s)
+        await s.execute(update(Order).where(Order.id == sl.id)
+                        .values(status=OrderStatus.triggered))
+        await s.commit()
+    await _plan(sm)
+    qs.set_quote("AAPL", D("189.00"), D("189.10"), D("189.05"))
+    await _job(sm, qs, Clock(SUNDAY_NIGHT)).tick()
+    await _job(sm, qs, Clock(TUESDAY)).tick()
+    assert (await _rows(sm))["AAPL"].state == "closed"
+    assert await _qty(sm, pid, "AAPL") == 0
+    async with sm() as s:
+        assert (await s.get(Order, sl.id)).status == OrderStatus.canceled
 
 
 async def test_a_piano_turned_on_again_leaves_its_earlier_rows_alone(sm, qs):
