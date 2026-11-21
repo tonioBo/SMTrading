@@ -181,9 +181,19 @@ async def hand_to_broker(session: AsyncSession, order: Order, link_id: UUID) -> 
         _cancel_nothing_to_reduce(session, order)
         await session.flush()
         return False
-    order.type = OrderType.market
-    order.trail_pct = order.trail_amount = None  # trail_ref_price records the trigger
-    order.status = OrderStatus.pending
+    if order.synthetic:
+        # plan 29: it keeps its own type and prices (BrokerSync sends it at market); a
+        # fired stop reads `triggered` like any stop; its OCO siblings stop now, so two
+        # legs never both go to the broker
+        if order.type in (OrderType.stop, OrderType.stop_limit, OrderType.trailing_stop):
+            order.status = OrderStatus.triggered
+        else:
+            order.status = OrderStatus.pending
+        await _cancel_oco_siblings(session, order, datetime.now(UTC))
+    else:
+        order.type = OrderType.market
+        order.trail_pct = order.trail_amount = None  # trail_ref_price records the trigger
+        order.status = OrderStatus.pending
     order.broker_link_id = link_id
     order.broker_status = BrokerState.TO_SEND
     order.updated_at = datetime.now(UTC)
@@ -402,9 +412,8 @@ async def _has_other_short(
     return found is not None
 
 
-async def activate_linked(session: AsyncSession, order: Order) -> None:
-    """Cancel open OCO siblings; release held bracket children as one OCO group."""
-    now = datetime.now(UTC)
+async def _cancel_oco_siblings(session: AsyncSession, order: Order, now: datetime) -> None:
+    """Cancel the order's open OCO siblings (at the broker: cancel requested)."""
     if order.oco_group_id is not None:
         siblings = list(await session.scalars(
             select(Order)
@@ -429,6 +438,14 @@ async def activate_linked(session: AsyncSession, order: Order) -> None:
                 "agent_id": sibling.agent_id, "symbol": sibling.symbol, "by": "system",
                 "reason": "oco_sibling_filled",
             })
+
+
+async def activate_linked(session: AsyncSession, order: Order) -> None:
+    """Cancel open OCO siblings; release held bracket children as one OCO group. Synthetic
+    children (plan 29) stay here, watched by the processor, when the entry went to the
+    broker."""
+    now = datetime.now(UTC)
+    await _cancel_oco_siblings(session, order, now)
     children = list(
         await session.scalars(
             select(Order)
@@ -446,7 +463,8 @@ async def activate_linked(session: AsyncSession, order: Order) -> None:
             child.status = OrderStatus.pending
             child.oco_group_id = group
             child.updated_at = now
-            if order.broker_link_id is not None:  # the exits follow the entry to the broker
+            if order.broker_link_id is not None and not child.synthetic:
+                # the exits follow the entry to the broker
                 child.broker_link_id = order.broker_link_id
                 child.broker_status = BrokerState.TO_SEND
 

@@ -48,7 +48,8 @@ confirmed cancel as `expired`. A cancel is allowed with the kill switch on.
 An expired entry that filled in part (possible at the broker only) releases its held
 exits for the filled quantity, like BrokerSync's final states. Ruling R10 (a): a simulated trigger (trailing
 stop) on a broker-linked portfolio is handed to the broker as a market order instead of
-filled here.
+filled here. Synthetic orders (plan 29, a broker that takes only market orders) are
+handed over the same way, keeping their own type: BrokerSync sends them at market.
 
 Errors: a business SMTError (`REJECTING_CODES`) rejects the order with its code in a new
 transaction, cancels its held bracket children (Ruling R17) and notifies the portfolio.

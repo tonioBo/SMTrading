@@ -159,10 +159,12 @@ async def check_relink(session: AsyncSession, pf: Portfolio, link_id: uuid.UUID 
             " il collegamento",
             {"portfolio_id": str(pf.id)},
         )
-    # Ruling R10: on a linked portfolio nothing fills locally; only trailing stops are
-    # simulated (and handed to the broker on trigger)
+    # Ruling R10: on a linked portfolio nothing fills locally; only trailing stops and the
+    # synthetic orders of a market-only link (plan 29) are watched here (and handed to the
+    # broker on trigger)
     if link_id is not None and any(
-        o.broker_link_id is None and o.type != OrderType.trailing_stop for o in open_orders
+        o.broker_link_id is None and o.type != OrderType.trailing_stop and not o.synthetic
+        for o in open_orders
     ):
         raise SMTError(
             ErrorCode.INVALID_ORDER,

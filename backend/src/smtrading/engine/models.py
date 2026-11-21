@@ -130,6 +130,11 @@ class Order(Base):
     live_flatten: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false")
     )
+    # plan 29: kept and watched here on a link that takes only market orders (eToro); at
+    # the trigger handed to BrokerSync with its own type, sent as a market order
+    synthetic: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
     broker_order_id: Mapped[str | None] = mapped_column(String(128))
     broker_link_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("broker_links.id"))
     broker_status: Mapped[str | None] = mapped_column(String(32))

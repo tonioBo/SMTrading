@@ -44,6 +44,16 @@ and final states. Canceling an order that is (or may be) at the broker only mark
 Modifying one marks it `replace_requested` (cancel, then send again). No network I/O
 happens here, so no lock is ever held while waiting for a broker.
 
+Synthetic orders (plan 29): on a link whose broker takes only market orders (eToro,
+`adapter.market_only`), a limit, stop, stop-limit or trailing order the broker would take
+at market is accepted and kept here (`synthetic`, no broker_link_id): the processor
+watches it like a simulated order (same quotes, stale/suspect guards, market hours,
+expiry) and at the trigger hands it to BrokerSync (`hand_to_broker`), which sends it as a
+market order; its OCO siblings are canceled then. The bracket exits of such a portfolio
+are synthetic too and stay here once active. The order keeps its own type and prices; the
+fill is the broker's. A synthetic sell beyond the position (a short) is refused at
+placement with the broker's text.
+
 Market closed: market orders are `queued` (the processor executes them at the open);
 other types rest as `pending` and are only evaluated once the market is open, because a
 queued order is executed at market. While the market is closed the quote age is not
@@ -535,6 +545,33 @@ async def _activate(session: AsyncSession, qs: QuoteSource, order: Order, adm: _
 UNSUPPORTED_BY_BROKER = "Ordine non supportato dal broker collegato"
 
 
+async def _sells_beyond_position(session: AsyncSession, order: Order) -> bool:
+    """A sell that is not reduce-only and exceeds the long position: it would open a short
+    (plan 29: refused at placement on a link that cannot short)."""
+    if order.side != OrderSide.sell or order.reduce_only or order.qty is None:
+        return False
+    held = await session.scalar(
+        select(AccountBalance.balance)
+        .join(Account, AccountBalance.account_id == Account.id)
+        .where(Account.portfolio_id == order.portfolio_id, Account.asset == order.symbol,
+               Account.kind == AccountKind.position)
+    ) or Decimal(0)
+    return order.qty > held
+
+
+async def _keeps_exits_local(session: AsyncSession, portfolio: Portfolio,
+                             instrument: Instrument, exits: list[Order]) -> bool:
+    """Plan 29: the bracket exits of a portfolio linked to a market-only broker are
+    synthetic (kept and watched here once active, sent at market at the trigger)."""
+    if portfolio.broker_link_id is None:
+        return False
+    link = await session.get(BrokerLink, portfolio.broker_link_id)
+    if link is None or not link.enabled:
+        return False
+    async with open_adapter(session, link.id, None) as adapter:  # config only
+        return all(adapter.synthetic(o, instrument) for o in exits)
+
+
 async def _route(session: AsyncSession, order: Order, adm: _Admission) -> bool:
     """True when the order was handed to the portfolio's broker, or refused because the
     broker cannot take it (Ruling R10: nothing fills locally on a linked portfolio; a
@@ -549,6 +586,14 @@ async def _route(session: AsyncSession, order: Order, adm: _Admission) -> bool:
     async with open_adapter(session, link_id, None) as adapter:  # no network: config only
         routable = adapter.routable(order, adm.instrument)
         reason = None if routable else adapter.unsupported_reason(order, adm.instrument)
+        synthetic = not routable and adapter.synthetic(order, adm.instrument)
+        beyond = adapter.SELL_BEYOND_POSITION_MESSAGE
+    if synthetic:  # plan 29: kept and watched here, sent at market at the trigger
+        if beyond is not None and await _sells_beyond_position(session, order):
+            _reject(order, ErrorCode.SHORT_NOT_ALLOWED, beyond)
+            return True
+        order.synthetic = True
+        return False
     if not routable:
         if order.type == OrderType.trailing_stop:
             return False  # simulated trigger, see hand_to_broker
@@ -734,6 +779,9 @@ async def place_bracket_order(
             ("stop_loss", OrderType.stop, None, stop_loss),
         )
     ]
+    if await _keeps_exits_local(session, adm.portfolio, instrument, children):
+        for child in children:
+            child.synthetic = True
     session.add_all(children)
     await session.flush()
 

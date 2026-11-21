@@ -106,12 +106,15 @@ class _Ours:
 def _our_order(o: Order) -> OurOrder:
     filled = o.filled_qty or Decimal(0)
     qty = None if o.qty is None else max(o.qty - filled, Decimal(0))
+    # plan 29: a synthetic order is at the broker only once triggered, as a market order
+    # (resting, it is kept here by design: never read, it has no broker_link_id)
+    kind = OrderType.market if o.synthetic else o.type
     return OurOrder(
         id=o.id, portfolio_id=o.portfolio_id, symbol=o.symbol, side=str(o.side),
-        type=str(o.type), open=o.status in OPEN_STATUSES, qty=qty,
-        limit_price=o.limit_price if o.type in (OrderType.limit, OrderType.stop_limit)
+        type=str(kind), open=o.status in OPEN_STATUSES, qty=qty,
+        limit_price=o.limit_price if kind in (OrderType.limit, OrderType.stop_limit)
         else None,
-        stop_price=o.stop_price if o.type in (OrderType.stop, OrderType.stop_limit) else None,
+        stop_price=o.stop_price if kind in (OrderType.stop, OrderType.stop_limit) else None,
         broker_order_id=o.broker_order_id, broker_status=o.broker_status,
         sent=o.broker_order_id is not None or o.broker_sent_at is not None,
         updated_at=o.updated_at)

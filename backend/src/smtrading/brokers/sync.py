@@ -17,6 +17,9 @@ the lock (startup recovery).
   adapter cannot take after `prepare`, or whose link is disabled, is rejected
   (notified); only an order whose portfolio the admin unlinked, never attempted, is
   released to the simulator.
+- synthetic orders (plan 29: a market-only broker, eToro): a resting one is not here
+  (kept and watched by the processor); once triggered it is sent as a market order
+  (`market_view`), keeping its own type locally;
 - once a send was attempted (`broker_sent_at` set) the order is never expired,
   rejected or released before `find_order` (with every broker order id already linked
   on the link excluded, C1) gave an answer: found -> adopted (then canceled at the
@@ -128,6 +131,7 @@ from smtrading.brokers.base import (
     BrokerOrder,
     OutcomeUnknown,
     RateLimited,
+    market_view,
 )
 from smtrading.brokers.live import LIVE_KINDS
 from smtrading.brokers.live.account import account_fingerprint, snapshot_record
@@ -760,9 +764,11 @@ class BrokerSync:
             order.broker_last_sync_at = now
             await self._commit(session)  # claimed before any network I/O
 
+        # plan 29: a triggered synthetic order goes out at market, its own type kept here
+        sent = market_view(order) if order.synthetic else order
         try:
             await adapter.prepare([instrument])
-            supported = adapter.supports(order, instrument)
+            supported = adapter.supports(sent, instrument)
         except RuntimeError as e:  # nothing was sent: try again next pass
             log.warning("order %s: broker not ready: %s", order_id, e)
             await self._update(order_id, self._unclaim_unsent)
@@ -774,7 +780,7 @@ class BrokerSync:
         if live:
             self._live_client(link.id)[1].reached.pop(str(order_id), None)
         try:
-            bo = await adapter.place_order(order, instrument)
+            bo = await adapter.place_order(sent, instrument)
         except LiveDryRun as dry:
             payload = dry.payload
             await self._update(order_id, lambda s, o: self._not_sent(
@@ -1169,7 +1175,8 @@ class BrokerSync:
             exclude = await _linked_ids(session, order.broker_link_id, order.id)
             await session.commit()
         since = order.broker_sent_at
-        bo = await adapter.find_order(order, instrument, since, exclude)
+        sent = market_view(order) if order.synthetic else order
+        bo = await adapter.find_order(sent, instrument, since, exclude)
         if bo is not None:  # _adopt checks again, under the lock, that it is unused
             await self._update(order_id, lambda s, o: self._matched(s, o, bo), bo)
             return

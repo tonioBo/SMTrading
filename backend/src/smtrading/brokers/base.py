@@ -4,6 +4,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import ClassVar, Literal
 
+from sqlalchemy import inspect
+
 from smtrading.engine.models import Order, OrderType
 from smtrading.instruments.models import AssetClass, Instrument
 
@@ -36,6 +38,25 @@ class BrokerOpenOrder:
     qty: Decimal | None  # the open (unfilled) quantity; None: an amount order
     limit_price: Decimal | None
     stop_price: Decimal | None  # None for a trailing stop (its level moves)
+
+
+# plan 29: the resting types SMTrading keeps and watches itself on a market-only link
+SYNTHETIC_TYPES = frozenset(
+    {OrderType.limit, OrderType.stop, OrderType.stop_limit, OrderType.trailing_stop}
+)
+
+
+def market_view(order: Order) -> Order:
+    """A transient copy of `order` as a market order (same id, quantity, side, client
+    reference): what BrokerSync sends for a triggered synthetic order. Never added to a
+    session. Only the loaded columns are copied (no lazy load: the order may be detached;
+    a column expired by a commit, such as `updated_at`, is left out)."""
+    loaded = inspect(order).dict
+    view = Order(**{a.key: loaded[a.key] for a in Order.__mapper__.column_attrs
+                    if a.key in loaded})
+    view.type = OrderType.market
+    view.limit_price = view.stop_price = view.trail_pct = view.trail_amount = None
+    return view
 
 
 class RateLimited(RuntimeError):  # retryable, like any RuntimeError
@@ -89,6 +110,25 @@ class BrokerAdapter:
     def __init__(self, config: dict, http) -> None:
         self.config = config
         self.http = http
+
+    # the text of a refused sell beyond the position on a link that cannot short (eToro):
+    # a synthetic sell (plan 29) that would open a short is refused with it at placement
+    SELL_BEYOND_POSITION_MESSAGE: ClassVar[str | None] = None
+
+    @property
+    def market_only(self) -> bool:
+        """The broker takes only market orders (eToro; a Trading 212 link configured so):
+        resting orders are kept and watched by SMTrading (plan 29, `Order.synthetic`)."""
+        return self.supported_types == frozenset({OrderType.market})
+
+    def synthetic(self, order: Order, instrument: Instrument) -> bool:
+        """Plan 29: `order` is kept and watched here, then sent as a market order at its
+        trigger: a resting type on a market-only link that takes the same order at market.
+        No network I/O."""
+        return (
+            self.market_only and order.type in SYNTHETIC_TYPES
+            and self.routable(market_view(order), instrument)
+        )
 
     def supports(self, order: Order, instrument: Instrument) -> bool:
         return (

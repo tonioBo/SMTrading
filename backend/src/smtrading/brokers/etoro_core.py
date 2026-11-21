@@ -368,6 +368,7 @@ class _EtoroProtocol(BrokerAdapter):
     idempotent_place: ClassVar[bool] = False
     ACCOUNT_CURRENCY: ClassVar[str | None] = "USD"  # USD accounts only (get_account)
     supported_types: ClassVar[frozenset[OrderType]] = frozenset({OrderType.market})
+    SELL_BEYOND_POSITION_MESSAGE: ClassVar[str | None] = NOT_CLOSABLE_MESSAGE
     supported_asset_classes: ClassVar[frozenset[AssetClass]] = frozenset(
         {AssetClass.us_equity, AssetClass.eu_equity, AssetClass.crypto}
     )

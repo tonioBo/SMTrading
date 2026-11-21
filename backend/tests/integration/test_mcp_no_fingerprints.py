@@ -363,6 +363,13 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
     _, filled = await call("place_order", {**order, "type": "market"})
     _, resting = await call("place_order", {**order, "type": "limit", "limit_price": "100"})
     await call("place_order", {**order, "type": "market", "qty": "1000"})  # rejected
+    if flavor == "etoro_linked":  # plan 29: kept and watched by SMTrading, read as placed
+        _, bracket = await call("place_bracket_order", {
+            **order, "type": "limit", "limit_price": "100", "take_profit": "200",
+            "stop_loss": "50"})
+        legs = bracket if isinstance(bracket, list) else bracket.get("orders", bracket)
+        assert [(o["type"], o["status"]) for o in legs] == [
+            ("limit", "pending"), ("limit", "held"), ("stop", "held")], bracket
     if flavor == "etoro_linked":
         assert isinstance(filled, dict) and "id" in filled, filled
         await _broker_error_on(mcp_server, filled["id"])
@@ -479,6 +486,7 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
         text = json.dumps(payload, ensure_ascii=False)
         assert "etoro_demo" not in text and "/demo/" not in text, (tool, text[:300])
         assert '"source": "admin"' not in text, (tool, text[:300])
+        assert "synthetic" not in text.lower() and "sintetic" not in text.lower(), tool
         if flavor == "etoro_live_dry_run":
             assert "etoro_live" not in text, (tool, text[:300])
             assert all(c not in text for c in ETORO_CANARY.values()), tool
