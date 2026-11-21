@@ -19,7 +19,12 @@ export interface MarketsPrefs {
   universe: string;
   /** sector map / movers panel shown */
   mapOpen: boolean;
+  /** the tab of «I miei strumenti» (plan 30) */
+  tab: MarketsTab;
 }
+
+export type MarketsTab = "favorites" | "screener" | "calendar" | "news" | "alerts";
+export const MARKETS_TABS: MarketsTab[] = ["favorites", "screener", "calendar", "news", "alerts"];
 
 export const DEFAULT_PREFS: MarketsPrefs = {
   asset_class: "",
@@ -31,6 +36,7 @@ export const DEFAULT_PREFS: MarketsPrefs = {
   dir: "asc",
   universe: "SP500",
   mapOpen: true,
+  tab: "favorites",
 };
 
 const SORTS: (InstrumentSort | "change")[] = ["symbol", "name", "sector", "market", "asset_class", "created_at", "change"];
@@ -58,6 +64,7 @@ export function readPrefs(): MarketsPrefs {
     dir: r.dir === "desc" ? "desc" : "asc",
     universe: str("universe"),
     mapOpen: typeof r.mapOpen === "boolean" ? r.mapOpen : true,
+    tab: MARKETS_TABS.includes(r.tab as MarketsTab) ? (r.tab as MarketsTab) : "favorites",
   };
 }
 

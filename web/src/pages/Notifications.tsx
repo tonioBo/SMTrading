@@ -52,6 +52,7 @@ const CATEGORY: Record<string, string> = {
   agent: "Agente",
   test: "Prova",
   live: "Denaro reale",
+  price_alert: "Avviso di prezzo",
 };
 const LEVEL: Record<string, string> = { info: "Info", warning: "Avviso", critical: "Critico", executed: "Eseguito" };
 const DECISION_KIND: Record<DecisionKind, string> = {

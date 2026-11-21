@@ -125,7 +125,9 @@ export interface SectorTile {
 export interface MarketSnapshot {
   universe: string;
   label: string;
-  as_of: string;
+  /** null: a period of daily closes not computed yet */
+  as_of: string | null;
+  period?: "1d" | "1w" | "1m" | "ytd";
   total: number;
   covered: number;
   sectors: SectorTile[];

@@ -4,11 +4,12 @@
  * While a module loads, a placeholder of the chart's size keeps the layout still.
  */
 import { Component, lazy, Suspense, type ReactNode } from "react";
-import type { EquityChartProps, PriceChartProps, SectorTreemapProps } from "@/components/charts/types";
+import type { EquityChartProps, OverviewChartProps, PriceChartProps, SectorTreemapProps } from "@/components/charts/types";
 
 const EquityImpl = lazy(() => import("@/components/charts/EquityChart"));
 const PriceImpl = lazy(() => import("@/components/charts/PriceChart"));
 const TreemapImpl = lazy(() => import("@/components/charts/SectorTreemap"));
+const OverviewImpl = lazy(() => import("@/components/charts/OverviewChart"));
 
 function Placeholder({ className }: { className: string }) {
   return <div className={`w-full animate-pulse rounded-md bg-card ${className}`} aria-busy="true" aria-label="Caricamento del grafico" />;
@@ -65,5 +66,15 @@ export function SectorTreemap(props: SectorTreemapProps) {
     <Suspense fallback={<Placeholder className="h-80 sm:h-[400px]" />}>
       <TreemapImpl {...props} />
     </Suspense>
+  );
+}
+
+export function OverviewChart(props: OverviewChartProps) {
+  return (
+    <ChartBoundary resetKey={props.ariaLabel} className="h-[220px] sm:h-[280px]">
+      <Suspense fallback={<Placeholder className="h-[220px] sm:h-[280px]" />}>
+        <OverviewImpl {...props} />
+      </Suspense>
+    </ChartBoundary>
   );
 }

@@ -12,6 +12,8 @@ import { formatClock, formatDateTime, formatDecimal, formatMoney, formatQty } fr
 import { ASSET_CLASS_LABELS } from "@/lib/labels";
 import { chartMoney, fillMarkers, positionLines, sma, toCandles } from "@/lib/priceChart";
 import { INDEX_LABELS } from "@/components/markets/labels";
+import { FavoriteStar } from "@/components/markets/FavoriteStar";
+import { FundamentalsSection } from "@/components/markets/Fundamentals";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -185,6 +187,7 @@ export function InstrumentSheet({ symbol, onClose }: { symbol: string | null; on
       <DialogContent className="left-auto right-0 top-0 h-full max-h-screen w-full max-w-full translate-x-0 translate-y-0 content-start overflow-y-auto sm:max-w-2xl sm:rounded-none">
         <DialogHeader className="pr-8 text-left">
           <DialogTitle className="flex flex-wrap items-baseline gap-2">
+            {symbol && <FavoriteStar symbol={symbol} className="self-center" />}
             <span className="num">{symbol}</span>
             <span className="text-base font-normal text-muted">{i?.name ?? ""}</span>
           </DialogTitle>
@@ -211,6 +214,11 @@ export function InstrumentSheet({ symbol, onClose }: { symbol: string | null; on
         <Section title="Indicatori">
           <Indicators m={m} />
         </Section>
+        {symbol && i && i.asset_class !== "forex" && (
+          <Section title="Dati fondamentali">
+            <FundamentalsSection symbol={symbol} currency={i.currency} />
+          </Section>
+        )}
         {i && (
           <Section title="Settore e indici">
             <p className="text-sm">

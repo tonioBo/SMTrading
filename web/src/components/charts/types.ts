@@ -49,3 +49,12 @@ export interface SectorTreemapProps {
   onSector: (sector: string) => void;
   onMember: (symbol: string) => void;
 }
+
+export interface OverviewChartProps {
+  /** [epoch seconds, value] */
+  points: [number, number][];
+  /** daily axis labels (dates) rather than hours */
+  daily: boolean;
+  formatValue: (v: number) => string;
+  ariaLabel: string;
+}

@@ -3,6 +3,7 @@ import { apiFetch } from "@/api/client";
 import { instrumentsKey } from "@/api/hooks/markets";
 import type { DayChanges, Facets, InstrumentBars, InstrumentMarket, InstrumentOverview, InstrumentSort, MarketSnapshot, QuickFilter, SearchResponse } from "@/api/marketsTypes";
 import type { AssetClass, InstrumentsPage, QuotesResponse } from "@/api/types";
+import type { SnapshotPeriod } from "@/api/marketsV2Types";
 
 /** Rows per page of the «Strumenti» list: one batch quote request (at most 50) per page. */
 export const LIST_PAGE = 50;
@@ -107,11 +108,14 @@ export function useInstrumentBars(symbol: string | null, timeframe: "1d" | "1h",
   });
 }
 
-/** Sector map and movers of a universe: only while shown, refreshed every 5 minutes. */
-export function useMarketSnapshot(universe: string, enabled = true) {
+/** Sector map and movers of a universe: only while shown, refreshed every 5 minutes.
+ * `period` 1d: today's changes; 1w / 1m / ytd: from the daily closes (plan 30). */
+export function useMarketSnapshot(universe: string, enabled = true, period: SnapshotPeriod = "1d") {
+  const params = new URLSearchParams({ universe });
+  if (period !== "1d") params.set("period", period);
   return useQuery({
-    queryKey: ["market-snapshot", universe],
-    queryFn: () => apiFetch<MarketSnapshot>(`/api/markets/snapshot?universe=${encodeURIComponent(universe)}`),
+    queryKey: ["market-snapshot", universe, period],
+    queryFn: () => apiFetch<MarketSnapshot>(`/api/markets/snapshot?${params.toString()}`),
     enabled,
     staleTime: SNAPSHOT_MS,
     refetchInterval: SNAPSHOT_MS,

@@ -8,6 +8,14 @@ import { selectClass } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { formatClock, formatMoney } from "@/lib/format";
 import { FULL_SCALE } from "@/lib/sectorMap";
+import type { SnapshotPeriod } from "@/api/marketsV2Types";
+
+const PERIODS: { code: SnapshotPeriod; label: string; long: string }[] = [
+  { code: "1d", label: "1g", long: "di oggi" },
+  { code: "1w", label: "1s", long: "a una settimana" },
+  { code: "1m", label: "1m", long: "a un mese" },
+  { code: "ytd", label: "Da inizio anno", long: "da inizio anno" },
+];
 
 function MoverList({ title, rows, onOpen }: { title: string; rows: Mover[]; onOpen: (s: string) => void }) {
   return (
@@ -106,7 +114,8 @@ export function MarketOverview({
   onUniverse: (u: string) => void;
   onOpen: (symbol: string) => void;
 }) {
-  const snap = useMarketSnapshot(universe);
+  const [period, setPeriod] = useState<SnapshotPeriod>("1d");
+  const snap = useMarketSnapshot(universe, true, period);
   const [sector, setSector] = useState<string | null>(null);
   const tile = snap.data?.sectors.find((t) => t.sector === sector) ?? null;
   return (
@@ -127,16 +136,36 @@ export function MarketOverview({
             </option>
           ))}
         </select>
+        <div className="flex gap-1" role="group" aria-label="Periodo della mappa">
+          {PERIODS.map((p) => (
+            <Button
+              key={p.code}
+              type="button"
+              size="sm"
+              variant={p.code === period ? "default" : "outline"}
+              aria-pressed={p.code === period}
+              onClick={() => {
+                setSector(null);
+                setPeriod(p.code);
+              }}
+            >
+              {p.label}
+            </Button>
+          ))}
+        </div>
         {snap.data && (
           <span className="text-xs text-muted">
-            Variazione dalla chiusura precedente, media semplice per settore · {snap.data.covered} di {snap.data.total} titoli · agg. {formatClock(snap.data.as_of)}
+            {period === "1d" ? "Variazione dalla chiusura precedente" : `Variazione ${PERIODS.find((p) => p.code === period)?.long} sulle chiusure giornaliere`}, media semplice per settore · {snap.data.covered} di {snap.data.total} titoli
+            {snap.data.as_of ? ` · agg. ${formatClock(snap.data.as_of)}` : ""}
           </span>
         )}
       </div>
       {snap.isError && <p className="text-loss">Impossibile caricare la mappa dei settori</p>}
       {snap.isLoading && <p className="text-sm text-muted">Caricamento…</p>}
       {snap.data && snap.data.total === 0 && <p className="text-sm text-muted">Nessuno strumento in questo universo</p>}
-      {snap.data && snap.data.total > 0 && snap.data.covered === 0 && <p className="text-sm text-muted">Variazioni non disponibili al momento</p>}
+      {snap.data && snap.data.total > 0 && snap.data.covered === 0 && (
+        <p className="text-sm text-muted">{period === "1d" ? "Variazioni non disponibili al momento" : "Variazioni in preparazione: si aggiornano dopo la chiusura dei mercati"}</p>
+      )}
       {snap.data && snap.data.sectors.length > 0 && (
         <div>
           <Breadcrumb tile={tile} onBack={() => setSector(null)} />

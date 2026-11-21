@@ -47,6 +47,15 @@ export const HEALTH_OK = {
 
 /** Requests every authenticated page makes (Layout, halt, mode and Paperclip banners): mocked once for all page tests. */
 export const commonHandlers = [
+  // «Mercati v2» (plan 30): nothing unless a test overrides it
+  http.get("*/api/markets/overview", () => HttpResponse.json({ as_of: "2026-11-21T12:00:00Z", ttl_s: 300, stale: false, items: [] })),
+  http.get("*/api/markets/favorites", () => HttpResponse.json({ items: [] })),
+  http.get("*/api/instruments/:symbol/fundamentals", ({ params }) =>
+    HttpResponse.json({
+      symbol: params.symbol, market_cap: null, pe_trailing: null, pe_forward: null, dividend_yield: null, low_52w: null, high_52w: null, beta: null,
+      next_earnings: null, earnings_estimate: null, ex_dividend: null, dividend_date: null, currency: null, source: null,
+    }),
+  ),
   http.get("*/api/dashboard/modes", () => HttpResponse.json({ simulazione: 1, paper: 0, reale: 0 })),
   http.get("*/api/halts", () => HttpResponse.json({ active: [], history: [] })),
   http.get("*/api/live/status", () => HttpResponse.json({ armed_count: 0, dry_run_count: 0, portfolios: [], telegram_ok: true })),
