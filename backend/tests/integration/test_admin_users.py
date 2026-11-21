@@ -38,6 +38,10 @@ VIEWER_UNSAFE_EXCEPTIONS = {
     ("POST", "/api/auth/sessions/revoke-others"),  # own sessions only
     ("POST", "/api/live-links/{link_id}/disarm"),
     ("POST", "/api/kill-switch"),  # only towards "on" (tested below)
+    # the viewer's own favourites list on the Markets page (per user, nothing shared)
+    ("PUT", "/api/markets/favorites"),
+    ("PUT", "/api/markets/favorites/{symbol}"),
+    ("DELETE", "/api/markets/favorites/{symbol}"),
 }
 # reads only an admin may make
 ADMIN_ONLY_READS = {
@@ -45,6 +49,7 @@ ADMIN_ONLY_READS = {
     ("GET", "/api/activity-log"),
     ("GET", "/api/activity-log.csv"),
     ("GET", "/api/activity-log/catalog"),
+    ("GET", "/api/markets/price-alerts"),  # the owner's personal price alerts
 }
 SKIPPED_PATHS = {"/health", "/mcp", "/mcp/"}
 
