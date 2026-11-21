@@ -14,6 +14,7 @@ from smtrading.common.crypto import decrypt_json, encrypt_json
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.execution import broker_live
 from smtrading.engine.models import OPEN_STATUSES, Order, OrderType
+from smtrading.instruments.models import Instrument
 from smtrading.portfolios.locks import lock_live_portfolio
 from smtrading.portfolios.models import Portfolio
 from smtrading.positions.models import Position
@@ -171,6 +172,21 @@ async def check_relink(session: AsyncSession, pf: Portfolio, link_id: uuid.UUID 
             "annulla prima gli ordini aperti simulati del portafoglio",
             {"portfolio_id": str(pf.id)},
         )
+    # plan 29: the orders kept here for a market-only link stay valid only on a link that
+    # keeps them the same way (another eToro link); on unlink the simulator fills them. A
+    # broker that takes resting orders would get them at market: cancel them first
+    kept = [o for o in open_orders if o.synthetic and o.broker_link_id is None]
+    if link_id is not None and kept:
+        async with open_adapter(session, link_id, None) as adapter:  # config only
+            for o in kept:
+                instrument = await session.get(Instrument, o.symbol)
+                if instrument is None or not adapter.synthetic(o, instrument):
+                    raise SMTError(
+                        ErrorCode.INVALID_ORDER,
+                        "annulla prima gli ordini in attesa del portafoglio: il nuovo"
+                        " collegamento li gestisce in modo diverso",
+                        {"portfolio_id": str(pf.id), "order_id": str(o.id)},
+                    )
     # the broker does not hold the simulated positions: a close would be routed for qty
     # the account does not have (a short on Alpaca paper)
     if link_id is not None and await session.scalar(

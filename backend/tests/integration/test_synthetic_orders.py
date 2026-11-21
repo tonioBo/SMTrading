@@ -717,6 +717,89 @@ async def test_triggered_limit_no_longer_marketable_goes_back_to_watching(
     assert _sent(fake) == []
 
 
+async def test_plan_closer_sees_a_handed_limit_as_in_flight(maker, redis, qs, etoro):
+    """D: a target triggered and waiting to be sent counts as a close in flight."""
+    from types import SimpleNamespace
+
+    from smtrading.goals.plan_closer import PlanCloser
+
+    fake, http = etoro
+    pid, _ = await _portfolio(maker)
+    sync = _sync(maker, redis, qs, http)
+    await _hold(maker, redis, qs, pid, sync, fake)
+    target = await _place(maker, redis, qs, pid, side=OrderSide.sell, type=OrderType.limit,
+                          limit_price=D("120.00"), tif=TimeInForce.gtc)
+    row = SimpleNamespace(portfolio_id=pid, symbol="AAPL")
+    closer = PlanCloser(maker, qs, redis, tz="Europe/Rome")
+    async with maker() as s:
+        assert not await closer._close_in_flight(s, row, TWO)
+    await _tick(maker, redis, qs, "120.10", "120.20")
+    o = await _order(maker, target)
+    assert (o.status, o.broker_status) == (OrderStatus.pending, BrokerState.TO_SEND)
+    async with maker() as s:
+        assert await closer._close_in_flight(s, row, TWO)
+
+
+async def test_a_handed_order_cannot_be_modified(maker, redis, qs, etoro):
+    """E: once handed for sending, a change would be ignored: refused."""
+    pid, _ = await _portfolio(maker)
+    entry = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95.00"))
+    await _tick(maker, redis, qs, "94.90", "95.00")
+    with pytest.raises(SMTError) as e:
+        async with maker() as s:
+            await modify_order(s, qs, entry, limit_price=D("94.00"), now=OPEN)
+    assert e.value.code == ErrorCode.INVALID_ORDER
+    assert "synthetic" not in e.value.message
+    assert (await _order(maker, entry)).limit_price == D("95.00")
+
+
+async def test_oco_with_a_leg_beyond_the_position_is_refused_whole(maker, redis, qs, etoro):
+    """F: one leg would sell more than held: both legs are refused, none left alone."""
+    fake, http = etoro
+    pid, _ = await _portfolio(maker)
+    await _hold(maker, redis, qs, pid, _sync(maker, redis, qs, http), fake)
+    with pytest.raises(SMTError) as e:
+        async with maker() as s:
+            try:
+                await place_oco_order(
+                    s, qs, _req(pid, side=OrderSide.sell, type=OrderType.stop,
+                                stop_price=D("90.00")),
+                    _req(pid, side=OrderSide.sell, type=OrderType.limit,
+                         limit_price=D("120.00"), qty=D(3)), now=OPEN)
+            finally:
+                await s.commit()
+    assert e.value.code == ErrorCode.SHORT_NOT_ALLOWED
+    async with maker() as s:
+        legs = list(await s.scalars(select(Order).where(
+            Order.portfolio_id == pid, Order.side == OrderSide.sell)))
+    assert len(legs) == 2 and {o.status for o in legs} == {OrderStatus.rejected}
+
+
+async def test_relink_to_a_broker_with_resting_orders_needs_them_canceled(
+        maker, redis, qs, etoro):
+    """G: kept orders only make sense on a market-only link: relinking to another eToro
+    link is fine, to a broker that takes resting orders is refused."""
+    pid, _ = await _portfolio(maker)
+    await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95.00"),
+                 tif=TimeInForce.gtc)
+    async with maker() as s:
+        other = await create_link(s, f"L-{uuid.uuid4().hex[:8]}", "etoro_demo", dict(KEYS))
+        alpaca = await create_link(s, f"A-{uuid.uuid4().hex[:8]}", "alpaca_paper",
+                                   {"key_id": "PK", "secret_key": "SK"})
+        await link_portfolio(s, pid, other.id)
+        await s.commit()
+    with pytest.raises(SMTError) as e:
+        async with maker() as s:
+            await link_portfolio(s, pid, alpaca.id)
+    assert e.value.code == ErrorCode.INVALID_ORDER
+    async with maker() as s:  # unlinked (simulator), then to Alpaca: refused too
+        await link_portfolio(s, pid, None)
+        await s.commit()
+    with pytest.raises(SMTError):
+        async with maker() as s:
+            await link_portfolio(s, pid, alpaca.id)
+
+
 async def test_live_cash_estimate_of_a_triggered_stop_buy_uses_the_ask(maker, monkeypatch):
     """H: the cash check of a triggered stop buy values it at market, not at its stop."""
     from types import SimpleNamespace
