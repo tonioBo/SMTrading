@@ -198,3 +198,31 @@ def test_extended_hours_returns_plain_pre_post_and_regular_values(fake):
         "pre_price": 101.5, "pre_time": 1700000000, "post_price": None, "post_time": None,
         "regular_price": 100.0, "regular_time": 1699990000,
     }
+
+
+def test_yfinance_logger_is_silenced():
+    """yfinance logs every unknown or glitching symbol at ERROR («possibly delisted»), on
+    every run: its logger is kept at CRITICAL and our own once-a-day line replaces it."""
+    import logging
+
+    assert logging.getLogger("yfinance").level == logging.CRITICAL
+
+
+def test_a_miss_is_logged_once_a_day(fake, monkeypatch, caplog):
+    import logging
+
+    day = {"d": datetime(2026, 11, 21, tzinfo=UTC).date()}
+    monkeypatch.setattr(yahoo, "_today", lambda: day["d"])
+    yahoo._logged_misses.clear()
+    fake.script = {"history": [pd.DataFrame()] * 6, "fast_info": [{"lastPrice": None}] * 2}
+    with caplog.at_level(logging.INFO, logger="smtrading.marketdata.providers.yahoo"):
+        _YF().history("NOPE-USD", "1d", START, END)
+        _YF().history("NOPE-USD", "1d", START, END)
+        _YF().fast_info("NOPE-USD")
+        lines = [r for r in caplog.records if "no data for NOPE-USD" in r.getMessage()]
+        assert len(lines) == 1 and lines[0].levelno == logging.INFO
+        day["d"] = datetime(2026, 11, 22, tzinfo=UTC).date()
+        _YF().history("NOPE-USD", "1d", START, END)
+        lines = [r for r in caplog.records if "no data for NOPE-USD" in r.getMessage()]
+        assert len(lines) == 2
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]

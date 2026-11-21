@@ -434,3 +434,40 @@ async def test_day_changes_one_batch_call(provider):
     assert round(dc.change_pct, 2) == Decimal("-1.02")
     assert dc.ts == datetime.fromtimestamp(1795106375, UTC)
     assert YahooProvider.day_change_chunk == 50 and YahooProvider.day_change_cost == 1
+
+
+async def test_crypto_yahoo_does_not_have_is_skipped_for_a_while(provider, monkeypatch):
+    """A coin Yahoo does not list (empty daily history / no price) is not asked again for
+    MISS_TTL_S: the router moves on (unsupported, no error) instead of a Yahoo call per run.
+    Equities are never remembered (a Yahoo glitch on SPY must not hide it)."""
+    from smtrading.marketdata.providers import yahoo
+
+    t = {"now": 1000.0}
+    monkeypatch.setattr(yahoo, "_clock", lambda: t["now"])
+    yahoo._missing.clear()
+    calls = provider._yf.calls
+    provider._yf.history = lambda sym, interval, start, end: calls.append(("history", sym)) or []
+    provider._yf.fasts["NEW-USD"] = {"lastPrice": None}
+    provider._yf.fasts["GONE"] = {"lastPrice": None}
+    start, end = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 6, 1, tzinfo=UTC)
+
+    # a short daily range can be empty for a listed coin (today's bar not out yet)
+    assert await provider.get_bars("NEW-USD", "NEW-USD", Timeframe.d1, end, end) == []
+    assert not yahoo._known_missing("NEW-USD")
+    calls.remove(("history", "NEW-USD"))
+    assert await provider.get_bars("NEW-USD", "NEW-USD", Timeframe.d1, start, end) == []
+    with pytest.raises(ProviderUnsupported):
+        await provider.get_bars("NEW-USD", "NEW-USD", Timeframe.d1, start, end)
+    with pytest.raises(ProviderUnsupported):
+        await provider.get_quotes([("NEW-USD", "NEW-USD")])
+    assert ("fast_info", "NEW-USD") not in calls  # remembered from the bars
+    assert [c for c in calls if c[1] == "NEW-USD"] == [("history", "NEW-USD")]
+
+    assert await provider.get_quotes([("GONE", "GONE")]) == {}
+    assert await provider.get_quotes([("GONE", "GONE")]) == {}
+    assert calls.count(("fast_info", "GONE")) == 2  # equities: never remembered
+
+    t["now"] += yahoo.MISS_TTL_S + 1
+    assert await provider.get_bars("NEW-USD", "NEW-USD", Timeframe.d1, start, end) == []
+    assert calls.count(("history", "NEW-USD")) == 2
+    yahoo._missing.clear()
