@@ -33,12 +33,14 @@ class FakeRaw:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.fail = False
+        self.fail_with: str = "HTTP 500"
+        self.fail_symbols: set[str] = set()  # a chunk holding one of them fails
         self.rows: dict[str, dict] = {}
 
     def quote(self, symbols, fields):
         self.calls.append("quote:" + ",".join(symbols))
-        if self.fail:
-            raise RuntimeError("HTTP 500")
+        if self.fail or self.fail_symbols & set(symbols):
+            raise RuntimeError(self.fail_with)
         out = []
         for s in symbols:
             if s in self.rows:
@@ -136,6 +138,70 @@ async def test_overview_counts_yahoo_quota_and_rate_limit(redis):
     with pytest.raises(PortalYahooUnavailable):
         await y.chart("^GSPC", "1d", "5m")
     assert not any(c.startswith("chart") for c in raw.calls)
+
+
+async def test_portal_429_never_demotes_the_trading_provider(redis):
+    """A 429 on the portal's v7/v8 endpoints (stricter than the trading side's calls) pauses
+    the portal only: Yahoo stays first for the quotes and bars that drive the stops."""
+    from smtrading.marketdata import quota
+
+    raw = FakeRaw()
+    raw.fail, raw.fail_with = True, "HTTP Error 429: Too Many Requests"
+    y = PortalYahoo(redis, None, raw=raw)
+    with pytest.raises(PortalYahooUnavailable):
+        await y.quotes(["^GSPC"], ["symbol"])
+    used = (await quota.usage(redis, ["yahoo"]))["yahoo"]
+    assert used.blocked_until is None  # the trading side is untouched
+    raw.fail, n = False, len(raw.calls)
+    with pytest.raises(PortalYahooUnavailable):  # the portal itself waits
+        await y.chart("^GSPC", "1d", "5m")
+    assert len(raw.calls) == n
+
+
+async def test_failed_chunk_is_not_cached_as_empty(redis):
+    """A refused or failing v7 chunk is not «unknown to Yahoo»: only the symbols of the
+    chunks that answered are cached empty; the others are asked again next time."""
+    from types import SimpleNamespace
+
+    from smtrading.instruments.models import AssetClass
+    from smtrading.marketsportal.fundamentals import KEY, FundamentalsService
+    from smtrading.marketsportal.yahoo import QUOTE_CHUNK
+
+    raw = FakeRaw()
+    syms = [f"S{i:03d}" for i in range(QUOTE_CHUNK + 5)]
+    raw.rows = {"S001": {"trailingPE": 10.0}, f"S{QUOTE_CHUNK + 1:03d}": {"trailingPE": 12.0}}
+    raw.fail_symbols = {"S000"}  # the first chunk fails
+    instruments = [SimpleNamespace(symbol=s, provider_symbols={},
+                                   asset_class=AssetClass.us_equity) for s in syms]
+    svc = FundamentalsService(redis, PortalYahoo(redis, None, raw=raw))
+    out = await svc.many(instruments)
+    assert set(out) == set(syms[QUOTE_CHUNK:])  # the failed chunk: absent, not empty
+    assert out[f"S{QUOTE_CHUNK + 1:03d}"]["source"] == "yahoo"
+    assert out[f"S{QUOTE_CHUNK:03d}"]["source"] is None  # answered chunk, unknown symbol
+    assert await redis.get(KEY + "S001") is None
+    raw.fail_symbols = set()
+    out = await svc.many(instruments)
+    assert out["S001"]["source"] == "yahoo" and set(out) == set(syms)
+
+
+async def test_personal_alert_prices_never_stale(redis):
+    """The overview's stale fallback (the last good snapshot, kept 7 days) is for the page
+    only: the personal alerts get no price rather than one days old."""
+    raw = FakeRaw()
+    svc = OverviewService(redis, PortalYahoo(redis, None, raw=raw), clock=lambda: TUE)
+    assert (await svc.prices())["SPX"] == D("110.0")
+    await redis.delete(SNAPSHOT_KEY)
+    raw.fail = True
+    assert (await svc.snapshot())["stale"] is True
+    assert await svc.prices() == {}
+    # a fresh-looking snapshot that is old (as_of) is not used either
+    await redis.flushdb()
+    raw.fail = False
+    late = OverviewService(redis, PortalYahoo(redis, None, raw=raw),
+                           clock=lambda: TUE - timedelta(hours=2))
+    await late.snapshot()
+    svc_now = OverviewService(redis, PortalYahoo(redis, None, raw=raw), clock=lambda: TUE)
+    assert await svc_now.prices() == {}
 
 
 # ------------------------------------------------------------------ API fixture
@@ -378,7 +444,10 @@ async def test_calendar_week(portal):
     assert ("earnings", "AAPL") in events and not events[("earnings", "AAPL")]["held"]
     eni = events[("ex_dividend", "ENI.MI")]
     assert eni["held"] and eni["portfolios"] == ["Portafoglio eToro"]
-    assert body["total"] > 500 and body["covered"] == body["total"]
+    # covered: only the symbols a source answered for (the fake knows two); the others
+    # are cached empty, so the next request asks Yahoo nothing
+    assert body["total"] > 500 and body["covered"] == 2
+    assert 0 < await portal.redis.ttl("portal:calendar:v1:" + today.isoformat()) <= 300
     assert body["macro"]["as_of"] == "2026-11-21"
     # batched: at most 50 symbols per Yahoo request
     quotes = [c for c in portal.raw.calls if c.startswith("quote:")]

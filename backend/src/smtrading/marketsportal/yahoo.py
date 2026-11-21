@@ -7,8 +7,11 @@ oggi»: ^GSPC, FTSEMIB.MI…), so they do not go through the MarketDataRouter (w
 resolves catalog instruments only) but share its allowance: every request takes a token
 from the `yahoo` connector's rate limiter (`rl:yahoo`, its per-minute limit) and is
 counted in its quota (marketdata.quota), and nothing is asked while the connector is
-disabled or demoted after a 429. A refused token is PortalYahooUnavailable, as is any
-failure: callers cache what they got and show «non disponibile».
+disabled or demoted. A 429 on these endpoints (stricter than the trading side's) pauses
+the portal only (PORTAL_BLOCK_KEY until the next hour): it never demotes the `yahoo`
+provider whose quotes and bars drive the stops. A refused token is
+PortalYahooUnavailable, as is any failure: callers cache what they got and show «non
+disponibile».
 
 `PortalYahoo(raw=…)`: tests pass a fake raw adapter (`quote`, `spark`, `chart`).
 """
@@ -16,6 +19,7 @@ failure: callers cache what they got and show «non disponibile».
 import asyncio
 import logging
 import time
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -33,6 +37,7 @@ CALL_TIMEOUT_S = 20
 CONNECTOR_TTL_S = 60
 DEFAULT_RATE = 60
 _BASE = "https://query1.finance.yahoo.com"
+PORTAL_BLOCK_KEY = "portal:yahoo:block"
 
 
 def _budget(rate: int) -> quota.Budget:
@@ -123,6 +128,8 @@ class PortalYahoo:
         if not enabled:
             raise PortalYahooUnavailable("yahoo connector disabled")
         try:
+            if await self._redis.exists(PORTAL_BLOCK_KEY):
+                raise PortalYahooUnavailable("yahoo answered 429 to the portal: paused")
             used = (await quota.usage(self._redis, [PROVIDER])).get(PROVIDER)
             why = used.demoted(_budget(rate)) if used is not None else None
             if why is not None:
@@ -145,17 +152,34 @@ class PortalYahoo:
         except Exception as e:
             text = str(e)
             if quota.is_quota_error(e, text):
-                try:
-                    await quota.block(self._redis, PROVIDER, _budget(DEFAULT_RATE))
-                except Exception:
-                    log.warning("yahoo quota block failed", exc_info=True)
+                await self._block()
             raise PortalYahooUnavailable(text[:200]) from e
+
+    async def _block(self) -> None:
+        """The portal's own pause after a 429, until the next hour (the trading side's
+        `quota:yahoo:block` is never written here)."""
+        until = quota.next_reset(quota.HOUR, datetime.now(UTC))
+        ms = max(int((until - datetime.now(UTC)).total_seconds() * 1000), 1000)
+        try:
+            await self._redis.set(PORTAL_BLOCK_KEY, until.isoformat(), px=ms)
+        except Exception:
+            log.warning("portal yahoo pause not stored", exc_info=True)
+            return
+        log.warning("yahoo answered 429 to the portal: paused until %s", until.isoformat())
 
     async def quotes(self, symbols: list[str], fields: list[str]) -> dict[str, dict]:
         """{symbol: v7 quote row} for the symbols Yahoo knows, QUOTE_CHUNK per request. A
         failing chunk is left out (logged); raises only when nothing came back and a
         request failed."""
+        out, _failed = await self.quotes_detailed(symbols, fields)
+        return out
+
+    async def quotes_detailed(self, symbols: list[str], fields: list[str]
+                              ) -> tuple[dict[str, dict], set[str]]:
+        """(rows, the symbols of the chunks that failed): a symbol of a failed chunk is
+        not known to be missing. Raises only when nothing came back and a request failed."""
         out: dict[str, dict] = {}
+        failed: set[str] = set()
         error: PortalYahooUnavailable | None = None
         for i in range(0, len(symbols), QUOTE_CHUNK):
             chunk = symbols[i:i + QUOTE_CHUNK]
@@ -164,13 +188,14 @@ class PortalYahoo:
             except PortalYahooUnavailable as e:
                 log.info("yahoo quote chunk failed: %s", e)
                 error = error or e
+                failed.update(chunk)
                 continue
             for r in rows:
                 if r.get("symbol"):
                     out[str(r["symbol"])] = r
         if not out and error is not None:
             raise error
-        return out
+        return out, failed
 
     async def spark(self, symbols: list[str], range_: str, interval: str
                     ) -> dict[str, list[tuple[int, float]]]:

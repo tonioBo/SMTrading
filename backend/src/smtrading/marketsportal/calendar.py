@@ -104,7 +104,9 @@ def assemble(instruments: list[Instrument], figures: dict[str, dict],
                                e["symbol"] or ""))
     return {
         "from": start.isoformat(), "to": end.isoformat(), "today": today.isoformat(),
-        "events": events, "covered": sum(1 for i in instruments if i.symbol in figures),
+        "events": events,
+        # covered: a source answered (an empty entry is not knowledge of the dates)
+        "covered": sum(1 for i in instruments if (figures.get(i.symbol) or {}).get("source")),
         "total": len(instruments),
         "macro": {"as_of": MACRO_AS_OF, "sources": MACRO_SOURCES,
                   "note": "Riunioni delle banche centrali dai calendari ufficiali 2026; "

@@ -573,7 +573,7 @@ async def test_etoro_connector_keys_masked_verified_on_fake(admin, monkeypatch, 
     assert row["config_fields"] == ["api_key", "user_key"]
     assert row["secret_keys"] == ["api_key", "user_key"] and row["config_masked"] == {}
     assert row["capabilities"] == ["bars", "quote"]
-    assert row["asset_classes"] == ["crypto", "us_equity"]
+    assert row["asset_classes"] == ["crypto", "eu_equity", "us_equity"]
     yahoo = next(x for x in (await c.get("/api/connectors")).json() if x["name"] == "yahoo")
     assert yahoo["config_fields"] == []
 

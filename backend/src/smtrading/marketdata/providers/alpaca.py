@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 import websockets
 
 from smtrading.instruments.models import AssetClass
-from smtrading.marketdata.provider import DataProvider
+from smtrading.marketdata.provider import DataProvider, StreamRefused
 from smtrading.marketdata.registry import register
 from smtrading.marketdata.types import Bar, Capability, DayChange, NewsItem, Quote, Timeframe
 
@@ -16,6 +16,10 @@ DEFAULT_FEED = "iex"
 BARS_PAGE_LIMIT = 10000
 NEWS_MAX_LIMIT = 50
 INVALID_KEY = "alpaca: chiave non valida"
+# the free data plan allows one socket per key: a 406 means another session (another
+# client with the same key, or our own dropped one Alpaca has not timed out yet) holds it
+CONNECTION_LIMIT = 406
+CONNECTION_LIMIT_RETRY_S = 180
 
 TIMEFRAMES = {
     Timeframe.m1: "1Min",
@@ -286,7 +290,12 @@ class AlpacaProvider(DataProvider):
                     for msg in frame if isinstance(frame, list) else [frame]:
                         kind = msg.get("T")
                         if kind == "error":
-                            raise ConnectionError(f"alpaca stream error {msg.get('code')}: {msg.get('msg')}")
+                            text = f"alpaca stream error {msg.get('code')}: {msg.get('msg')}"
+                            if msg.get("code") == CONNECTION_LIMIT:
+                                raise StreamRefused(
+                                    text + " (one socket per key: another session holds it)",
+                                    retry_after_s=CONNECTION_LIMIT_RETRY_S)
+                            raise ConnectionError(text)
                         if kind == "success" and msg.get("msg") == "connected":
                             await ws.send(json.dumps(auth))
                         elif kind == "success" and msg.get("msg") == "authenticated":
@@ -294,6 +303,8 @@ class AlpacaProvider(DataProvider):
                     msgs = frame if isinstance(frame, list) else [frame]
                     for quote in parse_alpaca_ws(msgs, reverse, merged):
                         yield quote
+        except StreamRefused:
+            raise
         except (TimeoutError, websockets.WebSocketException, OSError) as exc:
             raise ConnectionError(f"alpaca websocket: {exc}") from exc
         raise ConnectionError("alpaca websocket closed")

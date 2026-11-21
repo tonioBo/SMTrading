@@ -20,15 +20,16 @@ _US, _EU, _CR, _FX = (
 _C = Capability
 
 # Combinations absent from this table have no providers. `etoro` (plan 9) is last and off
-# by default: migration 0028 appends it to the existing rows too. `rssnews` (plan 10, the
+# by default: migration 0028 appends it to the existing rows too (0044: EU stocks, whose
+# Twelve Data / Finnhub plans do not cover EU listings). `rssnews` (plan 10, the
 # keyless CoinDesk/Cointelegraph feeds) leads crypto news and is on: migration 0029.
 DEFAULT_PRIORITIES: dict[tuple[AssetClass, Capability], list[str]] = {
     (_US, _C.quote): ["alpaca", "finnhub", "yahoo", "etoro"],
-    (_EU, _C.quote): ["twelvedata", "finnhub", "yahoo"],
+    (_EU, _C.quote): ["twelvedata", "finnhub", "yahoo", "etoro"],
     (_CR, _C.quote): ["kraken", "binance", "coingecko", "yahoo", "etoro"],
     (_FX, _C.quote): ["twelvedata", "yahoo", "frankfurter"],
     (_US, _C.bars): ["alpaca", "yahoo", "etoro"],
-    (_EU, _C.bars): ["twelvedata", "yahoo"],
+    (_EU, _C.bars): ["twelvedata", "yahoo", "etoro"],
     (_CR, _C.bars): ["kraken", "binance", "yahoo", "etoro"],
     (_FX, _C.bars): ["twelvedata", "yahoo"],
     (_US, _C.stream): ["alpaca", "finnhub"],

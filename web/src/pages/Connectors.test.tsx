@@ -93,7 +93,13 @@ const server = setupServer(
   }),
   http.get("*/api/marketdata/stream-status", () =>
     HttpResponse.json({
-      streams: { "kraken:crypto": { symbols: ["BTC-USD"], state: "backoff" } },
+      streams: {
+        "kraken:crypto": { symbols: ["BTC-USD"], state: "backoff" },
+        "alpaca:us_equity": {
+          symbols: ["SPY"], state: "backoff",
+          note: "Rifiutato dal provider (connection limit exceeded): prezzi in polling, nuovo tentativo tra 180 s",
+        },
+      },
       polling: ["AAPL"],
       available: true,
       tracked: ["BTC-USD", "AAPL"],
@@ -292,7 +298,8 @@ describe("Connectors", () => {
   it("shows stream state and polling symbols", async () => {
     renderApp("/connettori");
     expect(await screen.findByText("kraken:crypto")).toBeInTheDocument();
-    expect(screen.getByText("In attesa di riconnessione")).toBeInTheDocument();
+    expect(screen.getAllByText("In attesa di riconnessione")).toHaveLength(2);
+    expect(screen.getByText(/connection limit exceeded.*polling/)).toBeInTheDocument();
     expect(screen.getByText("In polling: AAPL")).toBeInTheDocument();
   });
 });
