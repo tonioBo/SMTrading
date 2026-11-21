@@ -287,6 +287,7 @@ async def reconcile_live(
         await adapter.prepare(instruments)
         snap = await adapter.get_account()
         broker = await adapter.positions_after_account()  # T212: the positions just read
+        await adapter.load_fee_dust(set(before.positions) | set(broker))
     except Exception as e:
         if isinstance(e, RateLimited) or _RATE.search(str(e)):
             raise LiveBrokerRateLimited(str(e)[:500]) from e
@@ -314,7 +315,8 @@ async def reconcile_live(
         link.last_account_snapshot = new
         link.last_snapshot_at = await session.scalar(select(func.now()))
         now = link.last_snapshot_at
-        diffs, _, cash = _compare(before, after, broker, snap, money, link.fx_ref_rates)
+        diffs, _, cash = _compare(before, after, broker, snap, money, link.fx_ref_rates,
+                                  fee_dust=adapter.fee_dust)
         if cash == _CASH_OK:  # matching: these rates are the new reference
             link.fx_ref_rates = {c: str(r) for c, r in money.rates.items()}
         link.last_account_snapshot = {**new, RECONCILED_AT_KEY: now.isoformat()}
@@ -362,8 +364,10 @@ def _drift(money: _Money, cash: dict[str, Decimal], refs: dict | None) -> Decima
 
 def _compare(before: _State, after: _State, broker: dict[str, Decimal],
              snap: AccountSnapshot, money: _Money | None, refs: dict | None = None,
-             ) -> tuple[list[dict], bool, str]:
-    """(entries, a position differs, the cash outcome: _CASH_*)."""
+             *, fee_dust=None) -> tuple[list[dict], bool, str]:
+    """(entries, a position differs, the cash outcome: _CASH_*). `fee_dust(symbol, qty)`:
+    the broker's fee residue in the asset (Alpaca crypto), a difference within it is
+    none."""
     diffs: list[dict] = []
     position_diff = False
     unbounded = before.unbounded | after.unbounded
@@ -377,7 +381,8 @@ def _compare(before: _State, after: _State, broker: dict[str, Decimal],
 
     for symbol in sorted(set(after.positions) | set(broker) | unbounded):
         ours, theirs = after.positions.get(symbol, Decimal(0)), broker.get(symbol, Decimal(0))
-        if abs(ours - theirs) <= QTY_EPSILON:
+        if abs(ours - theirs) <= QTY_EPSILON or (fee_dust is not None and abs(
+                ours - theirs) <= fee_dust(symbol, max(abs(ours), abs(theirs)))):
             continue
         if symbol in unbounded:
             diffs.append({"symbol": symbol, "skipped": INFLIGHT,

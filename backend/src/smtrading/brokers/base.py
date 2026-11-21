@@ -25,6 +25,11 @@ class BrokerOrder:
     raw: dict = field(default_factory=dict)
     # fees reported by the broker, in the account currency (None: not reported)
     fees: Decimal | None = None
+    # the share of each fill the broker keeps as its fee, when it charges one by rate
+    # rather than reporting it (Alpaca crypto): taken out of the asset bought on a buy
+    # (the account receives less than the filled quantity), out of the proceeds on a
+    # sell. None: `fees` or the fee rules apply
+    fee_rate: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -195,6 +200,24 @@ class BrokerAdapter:
         """The positions, right after `get_account` (an adapter whose account read
         already fetched them reuses that answer: one positions read per pass)."""
         return await self.get_positions()
+
+    async def asset_balance(self, symbol: str, instrument: Instrument
+                            ) -> tuple[Decimal, Decimal] | None:
+        """(quantity held, quantity free to sell) of `symbol` in the broker account, for a
+        broker whose fee in the asset leaves the account holding less than the fills
+        (Alpaca crypto: a sell is sized to what is there, see BrokerSync); None: not
+        read (no network I/O)."""
+        return None
+
+    async def load_fee_dust(self, symbols: Iterable[str]) -> None:
+        """Load what `fee_dust` needs (network); no-op by default."""
+
+    def fee_dust(self, symbol: str, qty: Decimal) -> Decimal:
+        """The quantity difference the broker's fee in the asset can leave between the
+        account and the fills booked here for a position of `qty` (Alpaca crypto: the
+        rate charged differs from the one applied, rounding, a residue below the minimum
+        order size); 0 for a broker that takes no fee in the asset. No network I/O."""
+        return Decimal(0)
 
     async def get_open_orders(self) -> list[BrokerOpenOrder] | None:
         """The orders open at the broker, read with GET requests only; None: this broker

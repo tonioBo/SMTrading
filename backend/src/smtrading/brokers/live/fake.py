@@ -8,7 +8,15 @@ host is never looked at, nothing is ever resolved or connected.
 
 State: an empty account with 1000.00 of cash (USD for Alpaca, EUR for Trading 212).
 Market orders fill at once at `price` (cash and positions updated, a buy beyond the cash
-is rejected); other orders stay open until canceled.
+is rejected); other orders stay open until canceled (or `alpaca_fill`).
+
+Alpaca crypto (a pair with a slash, BTC/USD), as the paper API answers (shapes read on
+it): the fee of the account's `crypto_tier` (`ALPACA_CRYPTO_FEES`, taker for a market
+order, maker for a resting order filled later) is kept in the coin on a buy (the
+position holds the filled quantity less it) and out of the USD proceeds on a sell; the
+order entity reports no fee. A sell beyond the coins free (held less the open sells)
+is refused (403 «insufficient balance»). Positions list the pair as BTCUSD with
+`qty_available`; GET /v2/positions/BTCUSD and GET /v2/assets/BTC/USD (min_order_size).
 """
 
 import itertools
@@ -50,6 +58,10 @@ _ETORO_CLOSE_STATUS = re.compile(r"^/api/v1/trading/info/(demo|real)/close-order
 _ETORO_PNL = re.compile(r"^/api/v1/trading/info/(demo|real)/pnl$")
 _ETORO_ELIGIBILITY = re.compile(r"^/api/v2/trading/info/(demo/)?eligibility$")
 _ALPACA_ORDER = re.compile(r"^/v2/orders/([^/]+)$")
+_ALPACA_POSITION = re.compile(r"^/v2/positions/([^/]+)$")
+_ALPACA_ASSET = re.compile(r"^/v2/assets/(.+)$")
+ALPACA_CRYPTO_FEES = {1: (Decimal("0.0015"), Decimal("0.0025"))}  # (maker, taker)
+ALPACA_MIN_ORDER = Decimal("0.00001709")
 _T212_ORDER = re.compile(rf"^{_T212}/orders/(\d+)$")
 _T212_PLACE = re.compile(rf"^{_T212}/orders/(market|limit|stop|stop_limit)$")
 
@@ -100,6 +112,7 @@ class FakeLiveBroker:
     def __init__(self, price: Decimal = Decimal(100)) -> None:
         self.price = price
         self.alpaca = _Account("USD")
+        self.alpaca_crypto_tier = 1
         self.t212 = _Account("EUR")
         self.etoro = {"demo": _EtoroEnv(), "real": _EtoroEnv()}
         self.etoro_partial_close = True  # allowPartialClosePosition of every instrument
@@ -148,6 +161,52 @@ class FakeLiveBroker:
 
     # --- Alpaca --------------------------------------------------------------------
 
+    def _alpaca_position(self, symbol: str, qty: Decimal) -> dict:
+        crypto = "/" in symbol
+        reserved = sum(
+            (Decimal(o["qty"]) - Decimal(o["filled_qty"]) for o in self.alpaca.orders.values()
+             if o["symbol"] == symbol and o["side"] == "sell" and o["status"] == "new"),
+            Decimal(0))
+        return {"symbol": symbol.replace("/", ""), "qty": _num(qty),
+                "qty_available": _num(qty - reserved),
+                "side": "long" if qty > 0 else "short",
+                "asset_class": "crypto" if crypto else "us_equity",
+                "exchange": "CRYPTO" if crypto else "NASDAQ"}
+
+    def _alpaca_free(self, symbol: str) -> Decimal:
+        held = self.alpaca.positions.get(symbol, Decimal(0))
+        return Decimal(self._alpaca_position(symbol, held)["qty_available"])
+
+    def alpaca_fill(self, order_id: str, price: Decimal | None = None) -> None:
+        """Fill a resting Alpaca order now (a crypto one pays the maker fee)."""
+        with self._lock:
+            o = self.alpaca.orders[order_id]
+            qty = Decimal(o["qty"]) - Decimal(o["filled_qty"])
+            fill = price if price is not None else self.price
+            if "/" in o["symbol"]:
+                self._alpaca_crypto(o["symbol"], o["side"], qty, fill, taker=False)
+            else:
+                self._fill(self.alpaca, o["symbol"], qty if o["side"] == "buy" else -qty)
+            o.update(status="filled", filled_qty=o["qty"], filled_avg_price=_num(fill),
+                     filled_at=_now(), updated_at=_now())
+
+    def _alpaca_crypto(self, symbol: str, side: str, qty: Decimal, price: Decimal, *,
+                       taker: bool) -> None:
+        acct = self.alpaca
+        maker_rate, taker_rate = ALPACA_CRYPTO_FEES[self.alpaca_crypto_tier]
+        rate = taker_rate if taker else maker_rate
+        held = acct.positions.get(symbol, Decimal(0))
+        if side == "buy":
+            acct.cash -= qty * price
+            held += qty - qty * rate  # the fee is kept in the coin
+        else:
+            acct.cash += qty * price * (1 - rate)  # the fee is taken in USD
+            held -= qty
+        if held == 0:
+            acct.positions.pop(symbol, None)
+        else:
+            acct.positions[symbol] = held
+
     def _alpaca(self, method: str, path: str, params, body: dict) -> httpx.Response:
         acct = self.alpaca
         if (method, path) == ("GET", "/v2/account"):
@@ -155,11 +214,28 @@ class FakeLiveBroker:
             return httpx.Response(200, json={
                 "id": "fake-alpaca-account", "status": "ACTIVE", "currency": acct.currency,
                 "cash": cash, "buying_power": cash, "multiplier": "1",
-                "crypto_status": "INACTIVE"})
+                "crypto_status": "INACTIVE", "crypto_tier": self.alpaca_crypto_tier})
         if (method, path) == ("GET", "/v2/positions"):
             return httpx.Response(200, json=[
-                {"symbol": s, "qty": _num(q), "side": "long" if q > 0 else "short",
-                 "asset_class": "us_equity"} for s, q in acct.positions.items()])
+                self._alpaca_position(s, q) for s, q in acct.positions.items()])
+        m = _ALPACA_POSITION.match(path)
+        if m and method == "GET":
+            held = next(((s, q) for s, q in acct.positions.items()
+                         if s.replace("/", "") == m.group(1)), None)
+            if held is None:
+                return httpx.Response(404, json={"code": 40410000,
+                                                 "message": "position does not exist"})
+            return httpx.Response(200, json=self._alpaca_position(*held))
+        m = _ALPACA_ASSET.match(path)
+        if m and method == "GET":
+            if "/" not in m.group(1):
+                return httpx.Response(200, json={"class": "us_equity", "symbol": m.group(1),
+                                                 "tradable": True, "fractionable": True})
+            return httpx.Response(200, json={
+                "class": "crypto", "exchange": "CRYPTO", "symbol": m.group(1),
+                "status": "active", "tradable": True, "fractionable": True,
+                "min_order_size": _num(ALPACA_MIN_ORDER),
+                "min_trade_increment": "0.000000001", "price_increment": "0.000000001"})
         if (method, path) == ("GET", "/v2/orders"):
             orders = list(acct.orders.values())
             if params.get("status") == "open":
@@ -199,11 +275,29 @@ class FakeLiveBroker:
         if qty <= 0 or body.get("side") not in ("buy", "sell"):
             return httpx.Response(422, json={"message": "invalid order"})
         signed = qty if body["side"] == "buy" else -qty
+        symbol = str(body.get("symbol"))
+        crypto = "/" in symbol
         order = {"id": f"fake-{next(self._ids)}", "client_order_id": body.get("client_order_id"),
-                 "symbol": body.get("symbol"), "side": body["side"], "type": body.get("type"),
+                 "symbol": body.get("symbol"), "asset_class": "crypto" if crypto else "us_equity",
+                 "side": body["side"], "type": body.get("type"),
+                 "order_type": body.get("type"), "time_in_force": body.get("time_in_force"),
+                 "limit_price": body.get("limit_price"), "stop_price": body.get("stop_price"),
                  "qty": _num(qty), "status": "new", "filled_qty": "0",
-                 "filled_avg_price": None, "created_at": _now()}
-        if body.get("type") == "market":
+                 "filled_avg_price": None, "created_at": _now(), "submitted_at": _now(),
+                 "updated_at": _now(), "filled_at": None, "order_class": "", "legs": None}
+        if crypto and body["side"] == "sell" and qty > self._alpaca_free(symbol):
+            coin = symbol.split("/")[0]
+            return httpx.Response(403, json={
+                "code": 40310000,
+                "message": f"insufficient balance for {coin} (requested: {_num(qty)},"
+                           f" available: {_num(self._alpaca_free(symbol))})"})
+        if crypto and body.get("type") == "market":
+            if body["side"] == "buy" and qty * self.price > acct.cash:
+                return httpx.Response(403, json={"message": "insufficient buying power"})
+            self._alpaca_crypto(symbol, body["side"], qty, self.price, taker=True)
+            order.update(status="filled", filled_qty=_num(qty),
+                         filled_avg_price=_num(self.price), filled_at=_now())
+        elif body.get("type") == "market":
             if not self._fill(acct, str(body.get("symbol")), signed):
                 return httpx.Response(403, json={"message": "insufficient buying power"})
             order.update(status="filled", filled_qty=_num(qty),

@@ -57,7 +57,12 @@ prices; the fill is the broker's. A synthetic sell beyond the position (a short)
 refused at placement with the broker's text (an OCO as a whole, before either leg is
 stored); at the trigger and again at the send a sell is clamped to the position less the
 portfolio's sells already at the broker (eToro closes FIFO on the whole account). Once
-handed over the order cannot be modified any more.
+handed over the order cannot be modified any more. Alpaca crypto keeps its resting
+orders the same way (`adapter.synthetic`: stops, trailing stops, every resting sell; a buy
+limit / stop limit goes to Alpaca), its bracket exits and OCO legs included. A sell beyond
+the long position by no more than the broker's fee residue in the asset (`fee_dust`:
+Alpaca keeps its crypto buy fee in the coin, so a sell of the quantity ordered on the
+entry exceeds the position) is sized to the position at placement (`_fee_sized`).
 
 Market closed: market orders are `queued` (the processor executes them at the open);
 other types rest as `pending` and are only evaluated once the market is open, because a
@@ -388,6 +393,7 @@ async def _admit(
     instrument = await get_instrument(session, req.symbol)
     market = market_status(instrument.market, now)
     memo = await _memo(session, qs, portfolio.id, [instrument.symbol])
+    sized = await _fee_sized(session, portfolio, instrument, req)
     adm = _Admission(req, portfolio, instrument, market, now, memo, redis)
     if req.client_order_id is not None:
         # under the portfolio lock: a concurrent duplicate waits and then sees this row
@@ -398,7 +404,8 @@ async def _admit(
             )
         )
         if existing is not None:
-            if not _same_params(existing, req, instrument.symbol):
+            if not (_same_params(existing, req, instrument.symbol)
+                    or _same_params(existing, sized, instrument.symbol)):
                 raise _invalid(
                     "client_order_id reused with different parameters",
                     client_order_id=req.client_order_id, order_id=existing.id,
@@ -406,10 +413,33 @@ async def _admit(
             adm.existing = existing
             return adm
     adm.req = dataclasses.replace(
-        req, valid_until=_resolve_valid_until(req.valid_until, instrument, now))
+        sized, valid_until=_resolve_valid_until(req.valid_until, instrument, now))
     if check:
         await _check_admission(session, adm)
     return adm
+
+
+async def _fee_sized(session: AsyncSession, portfolio: Portfolio, instrument: Instrument,
+                     req: PlaceOrderRequest) -> PlaceOrderRequest:
+    """A sell beyond the long position by no more than the linked broker's fee residue in
+    the asset (Alpaca crypto keeps its buy fee in the coin: a sell of the quantity
+    ordered on the entry) is the position: sized to it, never a short."""
+    if (req.side != OrderSide.sell or req.qty is None or portfolio.broker_link_id is None):
+        return req
+    held = await session.scalar(
+        select(AccountBalance.balance)
+        .join(Account, AccountBalance.account_id == Account.id)
+        .where(Account.portfolio_id == portfolio.id, Account.asset == instrument.symbol,
+               Account.kind == AccountKind.position)
+    ) or Decimal(0)
+    if held <= 0 or req.qty <= held:
+        return req
+    link = await session.get(BrokerLink, portfolio.broker_link_id)
+    if link is None or not link.enabled:
+        return req
+    async with open_adapter(session, link.id, None) as adapter:  # config only
+        dust = adapter.fee_dust(instrument.symbol, held)
+    return dataclasses.replace(req, qty=held) if req.qty - held <= dust else req
 
 
 async def _check_admission(session: AsyncSession, adm: _Admission) -> None:

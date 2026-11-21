@@ -335,6 +335,7 @@ async def check_link(
             except Exception as e:  # noqa: BLE001  (an unreadable config: unverifiable)
                 adapter, error = None, redact_log_text(str(e))[:MAX_ERROR] or type(e).__name__
         snap = positions = broker_orders = None
+        dust: dict[str, Decimal] = {}
         if adapter is not None:
             inner = adapter.http
             adapter.http = ReadOnlyHttp(inner)
@@ -343,6 +344,11 @@ async def check_link(
                 snap = await adapter.get_account()
                 positions = await adapter.positions_after_account()
                 broker_orders = await adapter.get_open_orders()
+                symbols = set(ours.positions) | set(positions)
+                await adapter.load_fee_dust(symbols)
+                dust = {sym: adapter.fee_dust(sym, max(
+                    abs(ours.positions.get(sym, Decimal(0))),
+                    abs(positions.get(sym, Decimal(0))))) for sym in symbols}
             except Exception as e:  # noqa: BLE001  (any broker failure: unverifiable)
                 error = redact_log_text(str(e))[:MAX_ERROR] or type(e).__name__
                 log.warning("reconciliation of broker link %s not verifiable: %s",
@@ -358,7 +364,7 @@ async def check_link(
         await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
                               {"k": f"reconciliation:{link_id}"})
         if error is None:
-            items = compare_positions(ours.positions, positions, ours.orders)
+            items = compare_positions(ours.positions, positions, ours.orders, dust)
             items.append(compare_cash(cash))
             if broker_orders is not None:
                 known = {o.broker_order_id for o in ours.orders if o.broker_order_id}

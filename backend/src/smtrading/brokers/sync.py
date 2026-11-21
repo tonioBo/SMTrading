@@ -47,6 +47,21 @@ the lock (startup recovery).
   with a new client reference (broker_attempt + 1); if it filled, the fills stand.
 - bracket exits at the broker are independent orders: when one fills, the cancel of
   its OCO sibling is requested and sent in the same pass.
+- a fee charged by rate (`BrokerOrder.fee_rate`, Alpaca crypto): a buy books the net
+  quantity (the filled one less the fee, which the broker keeps in the coin, rounded up
+  to _COIN_STEP) and the fee's value; a sell its proceeds less the fee. A sell that
+  completes leaving a residue here within the adapter's `fee_dust` (an earlier fee
+  estimated low) takes the residue along, its value as fee; a sell beyond the position
+  within it (a residue the account held, never booked) books only the position. Its
+  bracket exits are sized to the net position (`activate_linked`).
+- a sell on a broker with a fee in the asset (`adapter.asset_balance`, Alpaca crypto) is
+  sized at the send, the account's balance read before the lock: down to the free
+  quantity when it lacks no more than `fee_dust` (an exit is never refused for a fee
+  residue); a full exit also takes the account's residue never booked here (the
+  account's quantity beyond the linked portfolios', within `fee_dust`); when what is
+  left is below the asset's minimum order size the residue is closed here, never sent
+  (`write_off_dust`: its value as fee, no cash). A failed balance read: the order waits
+  for the next pass.
 - daily renewal: an order the broker takes only as `day` although it is `gtc` here
   (`adapter.renewed_daily`: Alpaca fractional quantities, resting types) is sent as
   `day`; when the broker expires it with nothing filled, it stays open here and goes
@@ -119,7 +134,7 @@ import contextlib
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, localcontext
+from decimal import ROUND_UP, Decimal, localcontext
 from uuid import UUID
 
 import httpx
@@ -159,10 +174,13 @@ from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.execution import (
     NOTHING_TO_REDUCE,
     WAIT,
+    _held,
     activate_linked,
     broker_send_check,
+    credited_qty,
     execute_fill,
     market_only_sell,
+    write_off_dust,
 )
 from smtrading.engine.models import (
     LIQUIDATION_ROLE,
@@ -240,6 +258,8 @@ LIVE_UNLINKED_MESSAGE = "collegamento reale rimosso: ordine non inviato"
 NOT_ARMED_STOP = "denaro reale non attivo"
 _STALE = object()  # a real buy waits for a fresh broker snapshot
 _WAIT = object()  # a real order waits for a quote / FX rate (not prefetched, outage)
+_NO_BALANCE = object()  # a sell waits for the broker's balance of the asset (read failed)
+_COIN_STEP = Decimal("1e-9")  # Alpaca's quantity increment of a crypto pair
 LIVE_WAIT_MAX = timedelta(minutes=30)
 WAIT_TOO_LONG_MESSAGE = ("dati del conto o quotazioni non disponibili da 30 minuti:"
                          " ordine non inviato")
@@ -701,6 +721,9 @@ class BrokerSync:
         now = self._clock()
         memo = await self._live_memo(order_id)
         quote = await self._limit_quote(order_id)
+        balance = await self._sell_balance(order_id)
+        if balance is _NO_BALANCE:
+            return
         async with self._sm() as session:
             order = await _lock(session, order_id)
             if (
@@ -752,7 +775,8 @@ class BrokerSync:
                 await self._commit(session)
                 return
             adapter = await self._adapter(session, link.id)
-            verdict = await market_only_sell(session, order) if adapter.market_only else None
+            verdict = (await market_only_sell(session, order)
+                       if adapter.market_only or order.synthetic else None)
             if verdict == WAIT:  # plan 29 (B): its position is being sold by another
                 await self._commit(session)
                 return
@@ -765,6 +789,10 @@ class BrokerSync:
                 await cancel_held_children(session, order, by="system")
                 await self._closed(session, order)
                 await self._commit(session)
+                return
+            if refusal is None and balance is not None and await self._size_to_balance(
+                    session, order, adapter, balance):
+                await self._commit(session)  # the residue was closed here: nothing to send
                 return
             if refusal is None and live:
                 refusal = await self._live_refusal(session, memo, portfolio, order, link,
@@ -844,6 +872,101 @@ class BrokerSync:
         await self._update(order_id, lambda s, o: self._placed(s, o, bo, payload), bo)
         if live and order.side == OrderSide.buy and bo.status != "rejected":
             await self._mark_stale(link.id)
+
+    # -- fee in the asset (Alpaca crypto) ----------------------------------------------
+
+    async def _sell_balance(self, order_id: UUID):
+        """(held, free) of the asset in the broker account for a sell about to be sent on
+        a broker whose fee is taken in the asset (`asset_balance`), read with no
+        transaction open; None for any other order; _NO_BALANCE when the read failed."""
+        async with self._sm() as session:
+            order = await session.get(Order, order_id)
+            if (order is None or order.side != OrderSide.sell or order.broker_link_id is None
+                    or order.broker_status != BrokerState.TO_SEND):
+                await session.commit()
+                return None
+            instrument = await session.get(Instrument, order.symbol)
+            adapter = await self._adapter(session, order.broker_link_id)
+            await session.commit()
+        if instrument is None:
+            return None
+        try:
+            got = await adapter.asset_balance(order.symbol, instrument)
+            if got is not None:
+                await adapter.load_fee_dust([order.symbol])
+        except RuntimeError as e:
+            log.warning("order %s: broker balance not read (%s); retried next pass",
+                        order_id, e)
+            return _NO_BALANCE
+        return got
+
+    async def _size_to_balance(self, session: AsyncSession, order: Order,
+                               adapter: BrokerAdapter,
+                               balance: tuple[Decimal, Decimal]) -> bool:
+        """Size a sell to the broker account's balance of the asset (module docstring).
+        True when the residue was closed here instead (the order is filled, not sent)."""
+        if order.qty is None:
+            return False
+        total, free = balance
+        filled = order.filled_qty or Decimal(0)
+        remaining = order.qty - filled
+        held = await _held(session, order.portfolio_id, order.symbol)
+        tolerance = adapter.fee_dust(order.symbol, max(remaining, held))
+        min_qty = adapter.fee_dust(order.symbol, Decimal(0))
+        if remaining > free:
+            if remaining - free > tolerance:
+                return False  # not a fee residue: sent as is, the broker answers
+            if free <= 0 or free < min_qty:
+                if not await write_off_dust(session, order):
+                    return False
+                order.broker_status = "filled"
+                log.info("order %s: %s %s left here only (fee residue): closed here",
+                         order.id, remaining, order.symbol)
+                await self._closed(session, order)
+                return True
+            log.info("order %s: sized %s -> %s (what the account holds)",
+                     order.id, remaining, free)
+            order.qty = filled + free
+            return False
+        if held > 0 and remaining == held:  # a full exit: the account's residue goes too
+            ours = await session.scalar(
+                select(func.coalesce(func.sum(AccountBalance.balance), 0))
+                .join(Account, AccountBalance.account_id == Account.id)
+                .join(Portfolio, Portfolio.id == Account.portfolio_id)
+                .where(Portfolio.broker_link_id == order.broker_link_id,
+                       Account.asset == order.symbol, Account.kind == AccountKind.position))
+            extra = total - Decimal(ours)
+            if 0 < extra <= tolerance and remaining + extra <= free:
+                log.info("order %s: sized %s -> %s (the account's fee residue too)",
+                         order.id, remaining, remaining + extra)
+                order.qty = order.qty + extra
+        return False
+
+    async def _rate_fee(self, session: AsyncSession, order: Order, bo: BrokerOrder,
+                        delta: Decimal, price: Decimal
+                        ) -> tuple[Decimal, Decimal | None, Decimal, str]:
+        """(quantity that moves the position, the order's progress when it differs, fee,
+        fee currency) of a fill of `delta` charged `bo.fee_rate` (module docstring)."""
+        ccy = await session.scalar(
+            select(Instrument.currency).where(Instrument.symbol == order.symbol))
+        ccy = str(ccy or "USD").upper()
+        rate = bo.fee_rate
+        with localcontext() as ctx:
+            ctx.prec = _PREC
+            if order.side == OrderSide.buy:
+                coin = min((delta * rate).quantize(_COIN_STEP, rounding=ROUND_UP), delta)
+                return delta - coin, delta, coin * price, ccy
+            fee = delta * price * rate
+            held = await _held(session, order.portfolio_id, order.symbol)
+            adapter = await self._adapter(session, order.broker_link_id)
+            tolerance = adapter.fee_dust(order.symbol, held)
+            left = held - delta
+            if (bo.status == "filled" and 0 < left <= tolerance and (
+                    order.reduce_only or left < adapter.fee_dust(order.symbol, Decimal(0)))):
+                return held, delta, fee + left * price, ccy  # the residue goes with it
+            if held > 0 and 0 < -left <= tolerance:
+                return held, delta, fee, ccy  # the account's residue, never booked here
+            return delta, None, fee, ccy
 
     # -- synthetic limits (plan 29, C) ------------------------------------------------
 
@@ -1396,8 +1519,13 @@ class BrokerSync:
                 return  # no broker price yet: wait for it
             price = delta_price(order, bo, delta)
             fee, fee_ccy = await self._fee_override(session, order, bo)
+            qty, progress = delta, None
+            if bo.fee_rate is not None:
+                qty, progress, fee, fee_ccy = await self._rate_fee(
+                    session, order, bo, delta, price)
             await execute_fill(
-                session, self._fill_qs, order.id, fill_qty=delta, fill_price=price,
+                session, self._fill_qs, order.id, fill_qty=qty, fill_price=price,
+                progress_qty=progress,
                 source="broker", final=bo.status == "filled", redis=self._redis,
                 journal_type=(
                     JournalType.LIQUIDATION if order.role == LIQUIDATION_ROLE
@@ -1513,11 +1641,13 @@ class BrokerSync:
         await self._set_final(
             session, order, self._canceled(order) if final == OrderStatus.canceled else final)
         if order.filled_qty > 0:  # a partly filled entry: its exits cover what filled
+            credited = await credited_qty(session, order)  # net of a fee in the asset
             for child in await session.scalars(
                 select(Order).where(Order.parent_id == order.id,
                                     Order.status == OrderStatus.held)
             ):
-                child.qty = order.filled_qty
+                child.qty = min(order.filled_qty, credited) if credited > 0 else (
+                    order.filled_qty)
             await activate_linked(session, order)
         else:
             await cancel_held_children(session, order, by="system")
@@ -1529,6 +1659,14 @@ class BrokerSync:
 
 def _num(v: Decimal) -> str:
     return format(v.normalize(), "f") if v != 0 else "0"
+
+
+def fee_dust_equal(adapter: BrokerAdapter, symbol: str, ours: Decimal, broker: Decimal
+                   ) -> bool:
+    """Equal quantities, or apart by no more than the broker's fee residue in the asset
+    (`adapter.fee_dust`, Alpaca crypto: never a difference to report)."""
+    return ours == broker or abs(ours - broker) <= adapter.fee_dust(
+        symbol, max(abs(ours), abs(broker)))
 
 
 async def _position_balances(session: AsyncSession, portfolio_id: UUID) -> dict[str, Decimal]:
@@ -1577,11 +1715,13 @@ async def reconcile(
                 open_adapter(session, link_id, http, sessionmaker=sessionmaker))
         await adapter.prepare(instruments)
         broker = await adapter.get_positions()
+        await adapter.load_fee_dust(set(ours) | set(broker))
     diffs = [
         {"symbol": symbol, "ours": _num(ours.get(symbol, Decimal(0))),
          "broker": _num(broker.get(symbol, Decimal(0)))}
         for symbol in sorted(set(ours) | set(broker))
-        if ours.get(symbol, Decimal(0)) != broker.get(symbol, Decimal(0))
+        if not fee_dust_equal(adapter, symbol, ours.get(symbol, Decimal(0)),
+                              broker.get(symbol, Decimal(0)))
     ]
     rows = [
         Reconciliation(broker_link_id=link_id, portfolio_id=pid, diffs=diffs, ok=not diffs)

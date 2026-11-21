@@ -53,7 +53,7 @@ from decimal import ROUND_DOWN, ROUND_UP, Decimal, localcontext
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.common.errors import ErrorCode, SMTError
@@ -83,6 +83,7 @@ from smtrading.marketdata.types import Quote
 from smtrading.portfolios.locks import lock_portfolio
 from smtrading.portfolios.models import ARCHIVED_MESSAGE, Portfolio, PortfolioStatus
 from smtrading.portfolios.service import get_cash_balances
+from smtrading.positions.models import Position
 from smtrading.positions.service import upsert_position
 from smtrading.risk.halts import covering_halt, halt_message
 from smtrading.risk.profiles import effective_risk_profile
@@ -524,11 +525,22 @@ async def _follow_partial(session: AsyncSession, order: Order, held: Decimal, *,
             _cancel_sibling(session, sibling, now)
 
 
-async def activate_linked(session: AsyncSession, order: Order) -> None:
+async def credited_qty(session: AsyncSession, order: Order) -> Decimal:
+    """What the order's fills moved the position by (its fills' quantities; below the
+    filled quantity when the broker kept its fee in the asset, Alpaca crypto)."""
+    await session.flush()
+    total = await session.scalar(
+        select(func.coalesce(func.sum(Fill.qty), 0)).where(Fill.order_id == order.id))
+    return Decimal(total)
+
+
+async def activate_linked(session: AsyncSession, order: Order, *,
+                          exit_qty: Decimal | None = None) -> None:
     """Cancel open OCO siblings; release held bracket children as one OCO group. Synthetic
     children (plan 29) stay here, watched by the processor, when the entry went to the
     broker. A synthetic leg final with a partial fill keeps the siblings that protect
-    what is left (`_follow_partial`)."""
+    what is left (`_follow_partial`). `exit_qty`: the children are sized to it when they
+    exceed it (the position the entry built, net of a fee kept in the asset)."""
     now = datetime.now(UTC)
     if order.synthetic and order.status != OrderStatus.filled:
         held = await _held(session, order.portfolio_id, order.symbol)
@@ -552,6 +564,9 @@ async def activate_linked(session: AsyncSession, order: Order) -> None:
             child.status = OrderStatus.pending
             child.oco_group_id = group
             child.updated_at = now
+            if exit_qty is not None and exit_qty > 0 and (
+                    child.qty is not None and child.qty > exit_qty):
+                child.qty = exit_qty
             if order.broker_link_id is not None and not child.synthetic:
                 # the exits follow the entry to the broker
                 child.broker_link_id = order.broker_link_id
@@ -618,6 +633,7 @@ async def execute_fill(
     final: bool = False,
     fee_override: Decimal | None = None,
     fee_override_ccy: str | None = None,
+    progress_qty: Decimal | None = None,
 ) -> FillResult | None:
     """Fill `order_id` at `quote`; None if the order is no longer fillable (or a
     reduce_only order had nothing to reduce: canceled for a simulated fill, progress
@@ -638,6 +654,12 @@ async def execute_fill(
     `qs` is wrapped in a MemoQuoteSource (shared if it already is one) and frozen before
     the first journal. `redis`, when given, lets the post-fill valuation fall back to
     cached quotes (I4).
+
+    `progress_qty` (broker fills): what the order's filled quantity grows by when it
+    differs from what moves the position (`fill_qty`): Alpaca crypto keeps its fee in the
+    coin bought (the position takes the net quantity), and a full exit takes the fee
+    residue left here along with what the broker sold. The bracket exits released by the
+    fill are sized to the position the order built (never above it).
     """
     broker = source == "broker"
     if broker and (fill_qty is None or fill_price is None):
@@ -680,7 +702,7 @@ async def execute_fill(
         qty = notional_to_qty(order.notional, price, instrument.lot_size)
     if qty <= 0:
         raise SMTError(ErrorCode.INVALID_ORDER, "nothing left to fill", {"order_id": str(order.id)})
-    progress = qty  # what the order's filled quantity grows by
+    progress = qty if progress_qty is None else progress_qty  # the order's filled qty grows
     buy = side == OrderSide.buy
     accts = _Accounts(session, portfolio.id)
     held = await accts.balance(symbol, AccountKind.position)
@@ -867,7 +889,9 @@ async def execute_fill(
     session.add(fill)
     _advance(order, progress, price, final=final or fill_qty is None)
     if order.status == OrderStatus.filled:
-        await activate_linked(session, order)
+        await activate_linked(
+            session, order,
+            exit_qty=None if progress_qty is None else await credited_qty(session, order))
     elif order.synthetic:  # plan 29 (A): its siblings follow what is left
         await _follow_partial(session, order, after, final=False, now=datetime.now(UTC))
     await session.flush()
@@ -888,3 +912,65 @@ async def execute_fill(
     elif held != 0 and position.qty == 0:
         queue_untrack(session, symbol, "positions")
     return FillResult(order=order, fill=fill, journals=journals)
+
+
+async def write_off_dust(session: AsyncSession, order: Order) -> bool:
+    """Alpaca crypto: close here a long residue the broker account does not hold (its
+    fee in the coin took it, BrokerSync): the sell `order` fills its remaining quantity
+    (clamped to the position) at the position's average price, with that whole value as
+    its fee (the broker kept it): no cash moves, the position and the strategy trades
+    close. False (nothing done) without a long position. Caller holds the portfolio
+    lock; no quotes needed."""
+    accts = _Accounts(session, order.portfolio_id)
+    held = await accts.balance(order.symbol, AccountKind.position)
+    remaining = None if order.qty is None else order.qty - (order.filled_qty or Decimal(0))
+    if held <= 0 or order.side != OrderSide.sell:
+        return False
+    qty = held if remaining is None else min(held, remaining)
+    price = await session.scalar(select(Position.avg_price).where(
+        Position.portfolio_id == order.portfolio_id, Position.symbol == order.symbol))
+    instrument = await session.get(Instrument, order.symbol)
+    if qty <= 0 or price is None or price <= 0 or instrument is None:
+        return False
+    ccy = instrument.currency
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        value = quantize_money(qty * price, ccy)
+    fill_id = uuid.uuid4()
+    lines = [
+        LineSpec(await accts.id(order.symbol, AccountKind.position), qty.copy_negate(),
+                 price, ccy),
+        LineSpec(await accts.id(order.symbol, AccountKind.system_equity, system=True), qty),
+    ]
+    if value > 0:
+        lines += [
+            LineSpec(await accts.id(ccy, AccountKind.system_fees, system=True), value),
+            LineSpec(await accts.id(ccy, AccountKind.system_equity, system=True),
+                     value.copy_negate()),
+        ]
+    trade = await post_journal(
+        session, type=JournalType.TRADE, lines=lines, author_type="system",
+        author_id=order.agent_id, order_id=order.id, fill_id=fill_id,
+        reason="fee residue",
+    )
+    position = await upsert_position(session, order.portfolio_id, order.symbol,
+                                     OrderSide.sell, qty, price)
+    fill = Fill(
+        id=fill_id, order_id=order.id, portfolio_id=order.portfolio_id, symbol=order.symbol,
+        side=OrderSide.sell, qty=qty, price=price, source="broker", fee_amount=value,
+        fee_currency=ccy, fee_rule_id=None, journal_id=trade.id,
+    )
+    session.add(fill)
+    _advance(order, qty, price, final=True)
+    await activate_linked(session, order)
+    await session.flush()
+    queue_event(session, "order.filled", {
+        "order_id": order.id, "fill_id": fill.id, "portfolio_id": order.portfolio_id,
+        "agent_id": order.agent_id, "symbol": order.symbol, "side": OrderSide.sell,
+        "qty": qty, "price": price, "notional": value, "currency": ccy, "fee": value,
+        "fee_currency": ccy, "position_qty": position.qty, "filled_qty": order.filled_qty,
+        "source": "broker",
+    })
+    if position.qty == 0:
+        queue_untrack(session, order.symbol, "positions")
+    return True

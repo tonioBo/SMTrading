@@ -3,8 +3,8 @@
 Items (one per thing compared, each with a `status`):
 
 - `position:<symbol>`: the summed quantity of the link's portfolios against the broker's,
-  for every symbol either side holds. Equal within QTY_TOLERANCE (fractional rounding):
-  ok. A difference that the orders sent to the broker and still open can explain (ours
+  for every symbol either side holds. Equal within QTY_TOLERANCE (fractional rounding),
+  or within the broker's fee residue in the asset (`fee_dust`, Alpaca crypto): ok. A difference that the orders sent to the broker and still open can explain (ours
   within [broker − open buys, broker + open sells]): warning «ordine in corso». Anything
   else, an unknown position at the broker included: mismatch;
 - `cash:<currency>`: our cash (every currency, converted to the account currency) against
@@ -105,7 +105,8 @@ def _recent(t: datetime | None, now: datetime) -> bool:
 
 
 def compare_positions(ours: dict[str, Decimal], broker: dict[str, Decimal],
-                      orders: list[OurOrder]) -> list[dict]:
+                      orders: list[OurOrder],
+                      fee_dust: dict[str, Decimal] | None = None) -> list[dict]:
     open_buy: dict[str, Decimal] = {}
     open_sell: dict[str, Decimal] = {}
     unbounded: set[str] = set()
@@ -122,7 +123,8 @@ def compare_positions(ours: dict[str, Decimal], broker: dict[str, Decimal],
         mine, theirs = ours.get(symbol, Decimal(0)), broker.get(symbol, Decimal(0))
         if mine == 0 and theirs == 0:
             continue
-        if abs(mine - theirs) <= qty_tolerance(theirs):
+        if abs(mine - theirs) <= max(qty_tolerance(theirs),
+                                     (fee_dust or {}).get(symbol, Decimal(0))):
             status, note = OK, "uguale"
         elif symbol in unbounded or (
                 theirs - open_buy.get(symbol, Decimal(0)) <= mine
