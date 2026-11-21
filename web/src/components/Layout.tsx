@@ -198,6 +198,11 @@ export function Layout() {
         <PaperclipBanner />
         <main className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-3 sm:p-4 md:p-6">
           <Outlet />
+          <footer className="mt-8 border-t pt-3 text-center text-xs text-muted-foreground">
+            Grafici:{" "}
+            <a href="https://www.tradingview.com/lightweight-charts/" target="_blank" rel="noreferrer"
+               className="underline underline-offset-2 hover:text-foreground">TradingView Lightweight Charts</a>
+          </footer>
         </main>
       </div>
     </div>

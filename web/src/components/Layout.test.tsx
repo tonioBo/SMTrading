@@ -41,6 +41,12 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe("Layout", () => {
+  it("credits TradingView in the footer (logo hidden inside the charts)", async () => {
+    renderApp("/");
+    const link = await screen.findByRole("link", { name: "TradingView Lightweight Charts" });
+    expect(link).toHaveAttribute("href", "https://www.tradingview.com/lightweight-charts/");
+  });
+
   it("shows the Italian sidebar, the app name and the kill-switch state", async () => {
     renderApp("/");
     const nav = await screen.findByRole("navigation", { name: "Navigazione principale" });

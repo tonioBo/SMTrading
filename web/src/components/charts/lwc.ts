@@ -19,7 +19,7 @@ export function themeOptions(p: Palette): DeepPartial<ChartOptions> {
       textColor: p.muted,
       fontFamily: "Inter, system-ui, sans-serif",
       fontSize: 11,
-      attributionLogo: true,
+      attributionLogo: false,
       panes: { separatorColor: p.border, separatorHoverColor: withAlpha(p.muted, 0.3) },
     },
     grid: { vertLines: { color: withAlpha(p.border, 0.6) }, horzLines: { color: withAlpha(p.border, 0.9) } },
