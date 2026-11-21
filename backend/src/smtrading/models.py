@@ -15,6 +15,7 @@ import smtrading.goals.models
 import smtrading.instruments.closures
 import smtrading.instruments.models
 import smtrading.ledger.models
+import smtrading.marketsportal.models
 import smtrading.paperclip.models
 import smtrading.portfolios.models
 import smtrading.positions.models

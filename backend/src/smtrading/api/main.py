@@ -32,6 +32,7 @@ from smtrading.admin.routes_halts import router as halts_router
 from smtrading.admin.routes_live import emergency_router as live_emergency_router
 from smtrading.admin.routes_live import router as live_router
 from smtrading.admin.routes_markets import router as markets_router
+from smtrading.admin.routes_markets_v2 import router as markets_v2_router
 from smtrading.admin.routes_orders import router as orders_router
 from smtrading.admin.routes_paperclip import router as paperclip_router
 from smtrading.admin.routes_portfolios import router as portfolios_router
@@ -215,6 +216,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(live_router)
     app.include_router(live_emergency_router)
     app.include_router(explore_router)  # /instruments/search before /instruments/{symbol}
+    app.include_router(markets_v2_router)  # plan 30: portal only, never MCP
     app.include_router(markets_router)
     app.include_router(system_router)
     app.include_router(system_health_router)

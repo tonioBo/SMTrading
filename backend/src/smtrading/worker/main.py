@@ -29,6 +29,10 @@ from smtrading.jobs.scheduler import JobScheduler
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.marketdata.streaming import StreamManager
 from smtrading.marketdata.suspect_alarm import SuspectAlarm
+from smtrading.marketsportal.alerts import PersonalAlerts
+from smtrading.marketsportal.overview import OverviewService
+from smtrading.marketsportal.screener import ScreenerJob
+from smtrading.marketsportal.yahoo import PortalYahoo
 from smtrading.paperclip.reader import PaperclipReader
 from smtrading.paperclip.watchdog import HandoffWatchdog
 from smtrading.positions.protection import ProtectionAlarm
@@ -262,6 +266,12 @@ async def run() -> None:
                         gate, lambda: PreopenCheck(sessionmaker, router, redis).run()))),
                     tg.create_task(supervise("hand-off watchdog", lambda: gated(
                         gate, lambda: HandoffWatchdog(sessionmaker).run()))),
+                    tg.create_task(supervise("market screener", lambda: gated(
+                        gate, lambda: ScreenerJob(sessionmaker, router, redis).run()))),
+                    tg.create_task(supervise("personal price alerts", lambda: gated(
+                        gate, lambda: PersonalAlerts(
+                            sessionmaker, router, redis, OverviewService(
+                                redis, PortalYahoo(redis, sessionmaker))).run()))),
                     tg.create_task(supervise("weekly report", lambda: gated(
                         gate, lambda: WeeklyReport(sessionmaker, router).run()))),
                     tg.create_task(supervise("broker reconciliation", lambda: gated(

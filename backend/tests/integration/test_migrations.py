@@ -763,3 +763,26 @@ async def test_0041_research_runs_round_trip(fresh_db):
     assert await table() is None
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
     assert await table() == "research_runs"
+
+
+async def test_0043_markets_v2_round_trip(fresh_db):
+    """0043: portal_favorites, portal_price_alerts, market_screen_rows; reversible."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    names = ("portal_favorites", "portal_price_alerts", "market_screen_rows")
+
+    async def tables() -> set[str]:
+        engine = make_engine(fresh_db)
+        async with engine.connect() as conn:
+            got = {n for n in names
+                   if await conn.scalar(text(f"select to_regclass('{n}')::text")) == n}
+        await engine.dispose()
+        return got
+
+    assert await tables() == set(names)
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0042")
+    assert await tables() == set()
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    assert await tables() == set(names)
