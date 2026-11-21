@@ -284,10 +284,10 @@ class FakeLiveBroker:
             return self._etoro_open(env, body, request.headers.get("x-request-id") or "")
         if method == "POST" and _ETORO_ELIGIBILITY.match(path):
             ids = body.get("instrumentIds") or []
-            return httpx.Response(200, json={"instruments": [
+            return httpx.Response(200, json={"currency": "usd", "eligibilities": [
                 {"instrumentId": iid, "allowOpenPosition": True,
                  "allowPartialClosePosition": self.etoro_partial_close,
-                 "leverageConfigs": [{"settlementType": "real", "direction": "buy",
+                 "leverageConfigs": [{"settlementType": "real", "direction": "long",
                                       "leverageValues": [1]}]}
                 for iid in ids if iid in _ETORO_INSTRUMENTS.values()]})
         if method == "GET" and _ETORO_LOOKUP.match(path):

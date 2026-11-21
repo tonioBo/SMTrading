@@ -125,8 +125,9 @@ def _search_item(symbol="AAPL", iid=1001, **kw):
 
 def _eligibility(iid=1001, *, allow_open=True, partial=True, configs=None):
     if configs is None:
-        configs = [{"settlementType": "real", "direction": "buy", "leverageValues": [1]}]
-    return {"instruments": [{"instrumentId": iid, "allowOpenPosition": allow_open,
+        configs = [{"settlementType": "real", "direction": "long", "leverageValues": [1]}]
+    # the real eToro shape (seen on the demo API 21/11/2026)
+    return {"currency": "usd", "eligibilities": [{"instrumentId": iid, "allowOpenPosition": allow_open,
                              "allowPartialClosePosition": partial,
                              "leverageConfigs": configs}]}
 
