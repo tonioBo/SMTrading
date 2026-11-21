@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 OPEN_TTL_S = 60
 CLOSED_TTL_S = 300
 LAST_TTL_S = 7 * 24 * 3600
+PRICE_MAX_AGE_S = 600  # the personal alerts never read an older snapshot
 SNAPSHOT_KEY = "portal:overview:v1"
 LAST_KEY = "portal:overview:last:v1"
 CHART_KEY = "portal:overview:chart:v1:"
@@ -195,8 +196,20 @@ class OverviewService:
         return {"as_of": now.isoformat(), "ttl_s": ttl, "stale": False, "items": items}
 
     async def prices(self) -> dict[str, Decimal]:
-        """code -> latest value (the cached snapshot; refreshed when expired)."""
+        """code -> latest value (the cached snapshot; refreshed when expired), for the
+        personal alerts: nothing from a stale snapshot (the last good one, kept LAST_TTL_S
+        for the page) or one taken over PRICE_MAX_AGE_S ago, so no alert fires on an old
+        value."""
         snap = await self.snapshot()
+        if snap.get("stale") or snap.get("error"):
+            return {}
+        try:
+            age = (self._clock().astimezone(UTC)
+                   - datetime.fromisoformat(snap["as_of"])).total_seconds()
+        except (KeyError, TypeError, ValueError):
+            return {}
+        if age > PRICE_MAX_AGE_S:
+            return {}
         return {it["code"]: Decimal(it["value"]) for it in snap.get("items") or []
                 if it.get("value") is not None}
 

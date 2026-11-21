@@ -2,7 +2,8 @@
 (plan 30), from Yahoo's batch v7 quote: market cap, P/E (trailing and forward), dividend
 yield, 52-week range, beta, next earnings date, ex-dividend date — QUOTE_CHUNK symbols
 per request, each symbol cached TTL_S (12 h; a symbol Yahoo does not know is cached as
-empty too). When Yahoo fails for one sheet, the market data router's fundamentals
+empty too, but only when its request answered: the symbols of a refused or failed chunk
+are asked again next time). When Yahoo fails for one sheet, the market data router's fundamentals
 (Finnhub / Yahoo info, its own cache) fill what they can; whatever is missing is null
 («non disponibile» on the page).
 """
@@ -135,12 +136,14 @@ class FundamentalsService:
                 return out
             ys = {yahoo_symbol(i): i.symbol for i in todo}
             try:
-                rows = await self._yahoo.quotes(list(ys), FIELDS)
+                rows, failed = await self._yahoo.quotes_detailed(list(ys), FIELDS)
             except PortalYahooUnavailable as e:
                 log.info("fundamentals unavailable: %s", e)
                 return out
             today = self._clock().astimezone(UTC).date()
             for ysym, sym in ys.items():
+                if ysym in failed:
+                    continue  # not known to be missing: asked again next time
                 row = rows.get(ysym)
                 body = {**parse(row, today), "source": "yahoo"} if row is not None \
                     else {**dict.fromkeys(EMPTY_KEYS), "source": None}
