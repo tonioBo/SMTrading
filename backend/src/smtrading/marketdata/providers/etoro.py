@@ -1,12 +1,14 @@
-"""eToro as a general market-data source (plan 9 Task 14): quotes and bars of US stocks
-and USD crypto, for every portfolio, with its own keys (a dedicated Read key, never the
+"""eToro as a general market-data source (plan 9 Task 14): quotes and bars of US stocks,
+the catalog's EU listings (Milan, Xetra, Paris) and USD crypto, for every portfolio, with its own keys (a dedicated Read key, never the
 keys of an eToro broker link).
 
 Docs: https://api-portal.etoro.com/llms.txt (consulted 2026-11-15).
 - every request: `x-api-key`, `x-user-key`, `x-request-id` (uuid4); market data only
   (`MARKET_DATA_PREFIX`, GET), checked before any network I/O;
 - quotes: `instruments/rates?instrumentIds=` (at most 100 ids); a rate with a
-  `conversionRate*` other than 1 is not in USD and is skipped (no schema has a currency);
+  `conversionRate*` other than 1 is not in USD and is skipped (no schema has a currency),
+  except for an EU listing, whose price is in the listing's own currency (EUR) and whose
+  conversion rate is EUR→USD (checked live 2026-11-21: A2A.MI 2.199, conversion 1.098);
 - bars: `instruments/{id}/history/candles/desc/{interval}/{count}` (no date parameters,
   count at most 1000);
 - instrument ids: `search`, exact `internalSymbolFull` only, cached 24 h (`"data"` scope,
@@ -50,6 +52,8 @@ MAX_LOOKUPS_PER_CALL = 10
 MISS_TTL_S = 3600
 MAX_BLOCK_S = 60.0
 INVALID_KEY = "etoro: chiave non valida"
+# the catalog's EU listings (all in EUR): eToro's `internalSymbolFull` is the same symbol
+EU_SUFFIXES = (".MI", ".DE", ".PA")
 RATE_LIMITED = "etoro: rate limited"
 
 INTERVALS: dict[Timeframe, tuple[str, timedelta]] = {
@@ -89,6 +93,10 @@ def _positive(value: object) -> Decimal | None:
     return d if d is not None and d > 0 else None
 
 
+def _is_eu_listing(symbol: str) -> bool:
+    return symbol.endswith(EU_SUFFIXES) and len(symbol) > 3
+
+
 def _in_usd(rate: dict) -> bool:
     """No conversion rate, or 1 (rule 2 of the plan): the price is already in USD."""
     for key in ("conversionRateBid", "conversionRateAsk"):
@@ -102,7 +110,7 @@ def _in_usd(rate: dict) -> bool:
 class EtoroProvider(DataProvider):
     name = "etoro"
     capabilities = frozenset({Capability.quote, Capability.bars})
-    asset_classes = frozenset({AssetClass.us_equity, AssetClass.crypto})
+    asset_classes = frozenset({AssetClass.us_equity, AssetClass.eu_equity, AssetClass.crypto})
     requires_key = True
     config_fields = ("api_key", "user_key")
     default_rate_limit_per_min = 60
@@ -116,6 +124,8 @@ class EtoroProvider(DataProvider):
 
     def _default_symbol(self, symbol: str, asset_class: AssetClass) -> str:
         if asset_class == AssetClass.us_equity:
+            return symbol
+        if asset_class == AssetClass.eu_equity and _is_eu_listing(symbol):
             return symbol
         if asset_class == AssetClass.crypto and symbol.endswith("-USD") and len(symbol) > 4:
             return symbol[: -len("-USD")]
@@ -214,9 +224,11 @@ class EtoroProvider(DataProvider):
                 if last is None and bid is not None and ask is not None:
                     # eToro sends lastExecution 0.0 outside trading hours: use the mid
                     last = (bid + ask) / 2
-                if not canonicals or last is None or ts is None or not _in_usd(rate):
+                if not canonicals or last is None or ts is None:
                     continue
                 for canonical in canonicals:
+                    if not _is_eu_listing(canonical) and not _in_usd(rate):
+                        continue
                     out[canonical] = Quote(symbol=canonical, bid=bid, ask=ask, last=last,
                                            ts=ts, provider=self.name)
         return out

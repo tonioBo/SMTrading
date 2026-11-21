@@ -55,6 +55,17 @@ def test_catalog_provider_overrides():
             assert row.provider_symbols.get("coingecko", "").endswith(":usd"), row.symbol
 
 
+def test_catalog_yahoo_ids_of_recent_coins():
+    """Yahoo lists coins that share a ticker under `<TICKER><id>-USD`: without the override
+    every Yahoo call answers «possibly delisted» (checked live 2026-11-21, prices matching
+    Kraken: ASTER 0.489, CC 0.0764, HYPE 60.5, PEARL 1.87)."""
+    by_symbol = {r.symbol: r for r in ROWS}
+    expected = {"ASTER-USD": "ASTER36341-USD", "CC-USD": "CC37263-USD",
+                "HYPE-USD": "HYPE32196-USD", "PEARL-USD": "PEARL41876-USD"}
+    for symbol, yahoo in expected.items():
+        assert by_symbol[symbol].provider_symbols.get("yahoo") == yahoo, symbol
+
+
 @pytest.mark.parametrize("row", ROWS, ids=lambda r: r.symbol)
 def test_catalog_row_is_consistent(row):
     assert row.market in MARKETS
