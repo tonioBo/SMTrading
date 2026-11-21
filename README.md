@@ -221,9 +221,17 @@ reale*, con tutte le protezioni del denaro reale). Regole comuni:
 - **Solo leva 1 e solo acquisti:** un acquisto apre una posizione eToro senza leva
   (`real`, lato buy); una vendita chiude le posizioni di quello strumento dalla più vecchia
   (FIFO), anche in parte. Niente short e niente leva, né in demo né in reale.
-- **Solo ordini a mercato:** limit, stop e stop-limit sono rifiutati con «tipo d'ordine non
-  disponibile su questo broker: solo ordini a mercato». Il trailing stop è seguito da
-  SMTrading e al trigger diventa un ordine a mercato. Strumenti: azioni USA ed europee,
+- **Solo ordini a mercato al broker:** eToro riceve soltanto ordini a mercato. Ingressi
+  limit, stop, stop-limit, trailing stop, take profit, stop loss dei bracket e coppie OCO
+  (PROTEGGI) sono accettati e **seguiti da SMTrading**: restano in SMTrading (non al
+  broker) e, quando la quotazione raggiunge il livello (stesse quotazioni e stessi
+  controlli del simulatore: quotazioni sospette o vecchie ignorate, solo a mercato aperto,
+  scadenze rispettate), partono come ordine a mercato per la loro quantità, al prezzo
+  di eseguito di eToro. Nell'OCO l'altro ordine si annulla appena uno parte; con il kill
+  switch partono solo le uscite. Per gli agenti l'ordine resta quello inserito (stesso
+  tipo e prezzi). La riconciliazione non li cerca al broker e l'allarme di protezione
+  conta gli stop così seguiti. Una vendita oltre la posizione (short) resta rifiutata.
+  Strumenti: azioni USA ed europee,
   ETF e cripto in USD (`BTC-USD` → `BTC`); uno strumento che eToro non vende senza leva è
   rifiutato; la mappatura del simbolo si cambia per strumento nella pagina *Mercati*.
 - **Chiavi:** sul portale API di eToro

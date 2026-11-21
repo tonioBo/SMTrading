@@ -139,10 +139,6 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
 - `get_risk_limits`: stato di rischio: soglie di margine, profilo effettivo (con `description`, il «Quando usarlo» del profilo), perdita giornaliera, kill switch.
 - `preview_order`: esegue i controlli pre-trade senza inserire l'ordine (stima di prezzo, costi, potere d'acquisto).
 - `place_order`: inserisce un ordine (market, limit, stop, stop_limit, trailing_stop); `client_order_id` rende l'invio idempotente.
-  Su alcuni portafogli collegati a un broker sono ammessi solo gli ordini a mercato: gli
-  altri tipi sono rifiutati con `INVALID_ORDER` e il messaggio «tipo d'ordine non
-  disponibile su questo broker: solo ordini a mercato» (il trailing stop resta ammesso: e'
-  seguito da SMTrading e al trigger diventa un ordine a mercato).
 - `place_bracket_order`: ingresso piu' take profit e stop loss in un gruppo OCO.
 - Campo facoltativo `valid_until` di `place_order` e `place_bracket_order`: data e ora ISO con fuso
   (es. `2026-11-18T21:55:00+01:00`) o `"close"` (chiusura regolare di oggi del mercato dello

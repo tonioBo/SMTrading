@@ -937,15 +937,17 @@ async def t_arm(s: State) -> str:
     return "armato"
 
 
-@test("eToro reale finto: tipo non a mercato", "rifiuto «solo ordini a mercato»")
+@test("eToro reale finto: limit seguito da SMTrading", "accettato, in attesa, annullabile")
 async def t_live_limit(s: State) -> str:
     _, ask = await quote(s)
     r = await place(s, s.pr, symbol=SYM, side="buy", type="limit",
                     qty=await qty_for(s, Decimal(20)), limit_price=s.px(ask * Decimal("0.9")))
-    msg = r.data.get("message") if r.error else r.data.get("reject_message")
-    if not r.error or "solo ordini a mercato" not in str(msg):
+    if r.error or r.data.get("status") != "pending" or r.data.get("type") != "limit":
         raise Fail(short(r.data))
-    return f"rifiutato {r.code}: «{msg}»"
+    c = await s.agent.ok("cancel_order", order_id=r.data["id"])
+    if c.get("status") != "canceled":
+        raise Fail(f"annullo: {short(c)}")
+    return "limit accettato in attesa (seguito da SMTrading), poi annullato"
 
 
 @test("eToro reale finto: due market buy", "due posizioni aperte presso il broker")
