@@ -253,6 +253,7 @@ function StreamSection({ status }: { status: StreamStatus | undefined }) {
                 <span className="font-medium">{key}</span>
                 <Badge variant={STATE_VARIANT[s.state] ?? "secondary"}>{STATE_LABEL[s.state] ?? s.state}</Badge>
                 <span className="text-xs text-muted">{s.symbols.join(", ")}</span>
+                {s.note && <span className="w-full text-xs text-warn">{s.note}</span>}
               </li>
             ))}
           </ul>

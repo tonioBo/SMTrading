@@ -76,7 +76,8 @@ async def provider():
 def test_registered_and_metadata():
     assert PROVIDERS["etoro"] is EtoroProvider
     assert EtoroProvider.capabilities == {Capability.quote, Capability.bars}
-    assert EtoroProvider.asset_classes == {AssetClass.us_equity, AssetClass.crypto}
+    assert EtoroProvider.asset_classes == {
+        AssetClass.us_equity, AssetClass.eu_equity, AssetClass.crypto}
     assert EtoroProvider.requires_key is True
     assert EtoroProvider.config_fields == ("api_key", "user_key")
     assert EtoroProvider.default_rate_limit_per_min == 60
@@ -86,8 +87,11 @@ def test_symbol_mapping_us_crypto_override(provider):
     assert provider.map_symbol("AAPL", AssetClass.us_equity, None) == "AAPL"
     assert provider.map_symbol("BTC-USD", AssetClass.crypto, None) == "BTC"
     assert provider.map_symbol("AAPL", AssetClass.us_equity, "AAPL.X") == "AAPL.X"
-    for symbol, ac in (("ENI.MI", AssetClass.eu_equity), ("EURUSD=X", AssetClass.forex),
-                       ("BTC-EUR", AssetClass.crypto)):
+    # the catalog's EU listings (Milan, Xetra, Paris): eToro's own symbol is the same
+    for symbol in ("A2A.MI", "SAP.DE", "AI.PA"):
+        assert provider.map_symbol(symbol, AssetClass.eu_equity, None) == symbol
+    for symbol, ac in (("ENI", AssetClass.eu_equity), ("VOD.L", AssetClass.eu_equity),
+                       ("EURUSD=X", AssetClass.forex), ("BTC-EUR", AssetClass.crypto)):
         with pytest.raises(ProviderUnsupported):
             provider.map_symbol(symbol, ac, None)
 
@@ -367,3 +371,24 @@ async def test_quote_without_last_execution_uses_mid(provider):
     out = await provider.get_quotes([("AAPL", "AAPL")])
     assert out["AAPL"].last == Decimal("356.27")
     assert (out["AAPL"].bid, out["AAPL"].ask) == (Decimal("356.26"), Decimal("356.28"))
+
+
+@respx.mock  # assert_all_mocked (default): any unmocked request fails
+async def test_eu_listing_quote_in_its_own_currency(provider):
+    """Live check 2026-11-21: A2A.MI rate {bid 2.199, ask 2.2, lastExecution 2.199,
+    conversionRate* 1.098} — the price is in EUR (the listing's currency, as Yahoo's 2.194)
+    and the conversion rate is EUR→USD: an EU listing keeps it, a US one is still skipped."""
+    cache = instrument_cache("data")
+    cache.put("A2A.MI", 1271)
+    cache.put("AAPL", 1001)
+    conv = {"conversionRateBid": 1.09839, "conversionRateAsk": 1.0984,
+            "date": "2026-11-20T16:23:56.8003035Z"}
+    respx.get(f"{MD}/instruments/rates").mock(return_value=httpx.Response(200, json={"rates": [
+        {"instrumentID": 1271, "bid": 2.199, "ask": 2.2, "lastExecution": 2.199, **conv},
+        {"instrumentID": 1001, "bid": 180, "ask": 181, "lastExecution": 180.5, **conv},
+    ]}))
+    out = await provider.get_quotes([("A2A.MI", "A2A.MI"), ("AAPL", "AAPL")])
+    assert set(out) == {"A2A.MI"}
+    q = out["A2A.MI"]
+    assert (q.bid, q.ask, q.last) == (Decimal("2.199"), Decimal("2.2"), Decimal("2.199"))
+    assert q.provider == "etoro"

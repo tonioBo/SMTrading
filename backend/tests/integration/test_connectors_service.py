@@ -126,6 +126,7 @@ async def test_etoro_seeded_off_and_last_in_its_priorities(db_session):
     assert "etoro" in conns and conns["etoro"].enabled is False
     assert "etoro" not in DEFAULT_ENABLED
     pairs = {(AssetClass.us_equity, Capability.quote), (AssetClass.us_equity, Capability.bars),
+             (AssetClass.eu_equity, Capability.quote), (AssetClass.eu_equity, Capability.bars),
              (AssetClass.crypto, Capability.quote), (AssetClass.crypto, Capability.bars)}
     for (ac, cap), providers in DEFAULT_PRIORITIES.items():
         assert ("etoro" in providers) == ((ac, cap) in pairs), (ac, cap)

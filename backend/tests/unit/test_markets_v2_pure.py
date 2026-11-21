@@ -102,9 +102,10 @@ def test_calendar_assemble():
     i = lambda s, sector="Tecnologia": SimpleNamespace(symbol=s, name=s + " Inc", sector=sector)
     figures = {
         "AAA": {"next_earnings": "2026-12-03", "earnings_estimate": True,
-                "ex_dividend": "2026-11-29"},  # ex-dividend before the window
-        "BBB": {"next_earnings": "2026-12-03", "ex_dividend": "2026-12-10"},
-        "CCC": {"next_earnings": "2026-12-20"},  # after the window
+                "ex_dividend": "2026-11-29", "source": "yahoo"},  # ex-dividend before
+        "BBB": {"next_earnings": "2026-12-03", "ex_dividend": "2026-12-10", "source": "yahoo"},
+        "CCC": {"next_earnings": "2026-12-20", "source": "router"},  # after the window
+        "DDD": {"next_earnings": None, "source": None},  # an empty entry: not covered
     }
     out = calendar.assemble([i("AAA"), i("BBB"), i("CCC"), i("DDD")], figures,
                             {"BBB": ["Portafoglio eToro"]}, today)

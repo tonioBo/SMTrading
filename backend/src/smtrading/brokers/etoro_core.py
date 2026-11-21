@@ -277,7 +277,7 @@ def _eligibility_items(data: object) -> list[dict]:
     if isinstance(data, list):
         return [d for d in data if isinstance(d, dict)]
     if isinstance(data, dict):
-        for key in ("instruments", "items", "results", "eligibility"):
+        for key in ("eligibilities", "instruments", "items", "results", "eligibility"):
             if isinstance(data.get(key), list):
                 return [d for d in data[key] if isinstance(d, dict)]
         if _get(data, "instrumentId") is not None:

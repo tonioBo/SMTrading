@@ -786,3 +786,62 @@ async def test_0043_markets_v2_round_trip(fresh_db):
     assert await tables() == set()
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
     assert await tables() == set(names)
+
+
+async def test_0044_eu_etoro_and_yahoo_coin_ids(fresh_db):
+    """0044 (data only): `etoro` appended to the EU quote/bars priority rows (after the
+    admin's order, never twice) and the Yahoo id merged into the provider symbols of four
+    recent coins (an admin's own Yahoo override wins); the downgrade takes both back."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0043")
+    engine = make_engine(fresh_db)
+    async with engine.begin() as conn:
+        await conn.execute(text("delete from provider_priorities"))
+        for (ac, cap), providers in {
+            ("eu_equity", "quote"): ["yahoo", "twelvedata", "finnhub"],
+            ("eu_equity", "bars"): ["yahoo", "etoro"],  # already there: unchanged
+            ("eu_equity", "news"): ["yahoo"],
+        }.items():
+            await conn.execute(text(
+                "insert into provider_priorities (asset_class, capability, providers)"
+                " values (:a, :c, cast(:p as jsonb))"), {"a": ac, "c": cap, "p": json.dumps(providers)})
+        for sym, ps in {"HYPE-USD": {"coingecko": "hyperliquid:usd"},
+                        "CC-USD": {"yahoo": "MINE-USD"}}.items():
+            await conn.execute(text(
+                "insert into instruments (symbol, name, asset_class, market, currency,"
+                " lot_size, tick_size, shortable, active, provider_symbols, source)"
+                " values (:s, :s, 'crypto', 'CRYPTO', 'USD', 0.00000001,"
+                " 0.00000001, false, true, cast(:p as jsonb), 'catalog')"
+                " on conflict (symbol) do update set provider_symbols = excluded.provider_symbols"),
+                {"s": sym, "p": json.dumps(ps)})
+    await engine.dispose()
+
+    async def state() -> tuple[dict, dict]:
+        engine = make_engine(fresh_db)
+        async with engine.connect() as conn:
+            prio = {(r[0], r[1]): r[2] for r in await conn.execute(
+                text("select asset_class, capability, providers from provider_priorities"))}
+            syms = {r[0]: r[1] for r in await conn.execute(text(
+                "select symbol, provider_symbols from instruments"
+                " where symbol in ('HYPE-USD', 'CC-USD')"))}
+        await engine.dispose()
+        return prio, syms
+
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    prio, syms = await state()
+    assert prio == {
+        ("eu_equity", "quote"): ["yahoo", "twelvedata", "finnhub", "etoro"],
+        ("eu_equity", "bars"): ["yahoo", "etoro"],
+        ("eu_equity", "news"): ["yahoo"],
+    }
+    assert syms == {"HYPE-USD": {"coingecko": "hyperliquid:usd", "yahoo": "HYPE32196-USD"},
+                    "CC-USD": {"yahoo": "MINE-USD"}}
+
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0043")
+    prio, syms = await state()
+    assert prio[("eu_equity", "quote")] == ["yahoo", "twelvedata", "finnhub"]
+    assert syms == {"HYPE-USD": {"coingecko": "hyperliquid:usd"}, "CC-USD": {"yahoo": "MINE-USD"}}
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")

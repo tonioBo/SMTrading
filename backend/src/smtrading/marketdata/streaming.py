@@ -4,9 +4,16 @@ Tracking: each source (orders, positions, …) keeps its own Redis set `md:track
 `md:tracked` is the union. A symbol stays tracked while at least one source follows it.
 
 StreamManager: one stream task per (provider, asset class) with the current symbol set,
-restarted when the set changes. A failing stream reconnects with exponential backoff
-(1, 2, 4, … up to `backoff_max_s`); until a stream has delivered its first quote, and while
-it is down, its symbols are polled, as are symbols of classes without a stream provider.
+restarted when the set changes (the old socket is closed before the new one opens). A
+failing stream reconnects with exponential backoff (1, 2, 4, … up to `backoff_max_s`); a
+stream the provider refuses for a while (StreamRefused: Alpaca's 406 «connection limit
+exceeded», one socket per key) waits the provider's `retry_after_s` instead, with a note
+in the published status. Until a stream has delivered its first quote, and while it is
+down, its symbols are polled, as are symbols of classes without a stream provider.
+
+One owner: a manager streams and polls only while it holds OWNER_KEY in Redis (renewed at
+every reconcile, released on stop), so a second worker or a deploy overlap never opens a
+second socket with the same key; the other one takes over when the owner's lease lapses.
 Polling skips symbols whose market is closed, refreshing them only every
 `closed_poll_every_s`.
 
@@ -20,6 +27,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -32,7 +40,7 @@ from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.instruments.service import canonical_symbol
 from smtrading.marketdata.cache import write_quote
-from smtrading.marketdata.provider import DataProvider, ProviderUnsupported
+from smtrading.marketdata.provider import DataProvider, ProviderUnsupported, StreamRefused
 from smtrading.marketdata.router import MarketDataRouter
 
 log = logging.getLogger(__name__)
@@ -41,6 +49,8 @@ SOURCES = frozenset({"orders", "positions", "alerts", "watchlists", "admin"})
 TRACKED_KEY = "md:tracked"
 STATUS_KEY = "md:stream_status"
 STATUS_TTL_S = 30  # a stale status (worker down) disappears instead of lying
+OWNER_KEY = "md:stream_owner"
+OWNER_TTL_S = 30
 CONNECTING = "connecting"
 CONNECTED = "connected"
 BACKOFF = "backoff"
@@ -52,6 +62,23 @@ def _source_key(source: str) -> str:
     if source not in SOURCES:
         raise ValueError(f"unknown tracking source {source!r}")
     return f"{TRACKED_KEY}:{source}"
+
+
+# renew the lease only if it is still ours; take it when free. KEYS = [owner], ARGV = [me, ttl]
+_OWN_LUA = """
+local cur = redis.call('GET', KEYS[1])
+if cur == false or cur == ARGV[1] then
+  redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+  return 1
+end
+return 0
+"""
+_RELEASE_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
 
 
 def _s(v) -> str:
@@ -122,6 +149,7 @@ class _Stream:
     asset_class: AssetClass
     items: tuple[tuple[str, str], ...]
     state: str = CONNECTING
+    note: str | None = None  # why it is refused (StreamRefused), for «Salute del sistema»
     task: asyncio.Task | None = field(default=None, repr=False)
 
     @property
@@ -140,6 +168,7 @@ class StreamManager:
         poll_every_s: float = 5,
         backoff_max_s: float = 60,
         closed_poll_every_s: float = CLOSED_POLL_EVERY_S,
+        owner_ttl_s: float = OWNER_TTL_S,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ):
         self._router = router
@@ -158,6 +187,9 @@ class StreamManager:
         self._last_poll: dict[str, datetime] = {}
         self._confirming: dict[str, float] = {}  # symbol -> loop time of the last confirm
         self._confirm_tasks: set[asyncio.Task] = set()
+        self._id = uuid.uuid4().hex
+        self._owner_ttl_ms = max(int(owner_ttl_s * 1000), 1)
+        self._owner = False
 
     # ---------------------------------------------------------------- public
 
@@ -168,14 +200,16 @@ class StreamManager:
                 tg.create_task(self._loop(self.poll, self._poll_every_s, "poll"))
         finally:
             await self._stop(list(self._streams))
+            await self._release()
 
     def status(self) -> dict:
         return {
             "streams": {
-                key: {"symbols": s.symbols, "state": s.state}
+                key: {"symbols": s.symbols, "state": s.state, "note": s.note}
                 for key, s in sorted(self._streams.items())
             },
             "polling": sorted(s for group in self._polling().values() for s in group),
+            "owner": self._owner,
         }
 
     # ---------------------------------------------------------------- loops
@@ -189,7 +223,32 @@ class StreamManager:
                 log.warning("stream manager %s failed; retrying", what, exc_info=True)
             await asyncio.sleep(every_s)
 
+    async def _claim(self) -> bool:
+        try:
+            got = await self._redis.eval(_OWN_LUA, 1, OWNER_KEY, self._id,
+                                         self._owner_ttl_ms)
+        except Exception:
+            log.warning("stream owner lease not renewed", exc_info=True)
+            return self._owner
+        owner = bool(int(got))
+        if owner != self._owner:
+            log.info("stream manager %s: %s", self._id[:8],
+                     "owner, streaming" if owner else "another worker streams: standing by")
+        self._owner = owner
+        return owner
+
+    async def _release(self) -> None:
+        if not self._owner:
+            return
+        self._owner = False
+        with contextlib.suppress(Exception):
+            await self._redis.eval(_RELEASE_LUA, 1, OWNER_KEY, self._id)
+
     async def reconcile(self) -> None:
+        if not await self._claim():
+            await self._stop(list(self._streams))  # never a second socket on the key
+            self._poll_only = {}
+            return
         instrs = await self._instruments(await tracked_symbols(self._redis))
         self._markets = {i.symbol: i.market for i in instrs}
         self._last_poll = {s: t for s, t in self._last_poll.items() if s in self._markets}
@@ -227,6 +286,8 @@ class StreamManager:
         await self._redis.set(STATUS_KEY, json.dumps(self.status()), ex=STATUS_TTL_S)
 
     async def poll(self) -> None:
+        if not self._owner:
+            return
         now = self._now()
         groups = {}
         for asset_class, symbols in self._polling().items():
@@ -343,6 +404,7 @@ class StreamManager:
                         if not delivered:
                             delivered = True
                             stream.state = CONNECTED
+                            stream.note = None
                         q = await self._router.guard.check_stream(q, stream.asset_class)
                         if q.suspect is not None:
                             self._confirm(q.symbol)
@@ -352,6 +414,15 @@ class StreamManager:
                             log.warning("stream %s: writing %s failed", key, q.symbol,
                                         exc_info=True)
                 raise ConnectionError("stream ended")
+            except StreamRefused as e:  # refused for a while: the provider's own wait
+                stream.state = BACKOFF
+                stream.note = (f"Rifiutato dal provider ({e}): prezzi in polling, nuovo "
+                               f"tentativo tra {e.retry_after_s:g} s")
+                log.warning("stream %s refused (%s); polling, reconnecting in %ss",
+                            key, e, e.retry_after_s)
+                await asyncio.sleep(e.retry_after_s)
+                delay = 1.0
+                continue
             except Exception as e:  # noqa: BLE001 - any failure: poll and reconnect later
                 if delivered:
                     delay = 1.0

@@ -4,7 +4,7 @@ import math
 import struct
 import threading
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -26,7 +26,18 @@ from smtrading.marketdata.types import (
 )
 
 log = logging.getLogger(__name__)
+# yfinance logs every unknown or glitching symbol at ERROR («possibly delisted; no price
+# data found»), on every call: silenced, our own `_note_miss` line (INFO, once a day per
+# symbol) replaces it, and real failures still surface through the router's errors.
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 MAX_CONCURRENT_CALLS = 4
+# a coin Yahoo does not list is not asked again for MISS_TTL_S (crypto only: Yahoo is a
+# late fallback there, while a glitch on an equity must never hide it)
+MISS_TTL_S = 6 * 3600
+MISS_MIN_RANGE = timedelta(days=14)  # an empty daily history this long: not listed
+_missing: dict[str, float] = {}  # Yahoo crypto symbol -> monotonic time of the miss
+_logged_misses: dict[str, date] = {}  # Yahoo symbol -> the UTC day its miss was logged
+_clock = time.monotonic
 _NO_INFO_QUOTE_TYPES = frozenset({"CURRENCY", "CRYPTOCURRENCY"})
 _RETRY_DELAY_S = 0.5
 _session_lock = threading.Lock()
@@ -77,6 +88,39 @@ def _attempt(fn: Any, retry_if: Any = None) -> Any:
             return out
     time.sleep(_RETRY_DELAY_S)
     return fn()
+
+
+def _today() -> date:
+    return datetime.now(UTC).date()
+
+
+def _note_miss(sym: str) -> None:
+    """Yahoo had no data for `sym` (after the retry): one INFO line a day per symbol."""
+    today = _today()
+    if _logged_misses.get(sym) == today:
+        return
+    _logged_misses[sym] = today
+    log.info("yahoo: no data for %s (unknown symbol or a Yahoo glitch; logged once a day)",
+             sym)
+
+
+def _is_crypto(provider_symbol: str) -> bool:
+    return provider_symbol.endswith("-USD")
+
+
+def _known_missing(provider_symbol: str) -> bool:
+    at = _missing.get(provider_symbol)
+    if at is None:
+        return False
+    if _clock() - at < MISS_TTL_S:
+        return True
+    _missing.pop(provider_symbol, None)
+    return False
+
+
+def _remember_missing(provider_symbol: str) -> None:
+    if _is_crypto(provider_symbol):
+        _missing[provider_symbol] = _clock()
 
 
 def _ticker(sym: str) -> Any:
@@ -229,7 +273,10 @@ class _YF:
             fi = _ticker(sym).fast_info
             return self._clean({k: fi[k] for k in fi})
 
-        return _attempt(once, lambda d: d.get("lastPrice") is None)
+        out = _attempt(once, lambda d: d.get("lastPrice") is None)
+        if out.get("lastPrice") is None:
+            _note_miss(sym)
+        return out
 
     def history(self, sym: str, interval: str, start: datetime, end: datetime) -> list[dict]:
         def once() -> list[dict]:
@@ -248,7 +295,10 @@ class _YF:
                 for ts, r in df.iterrows()
             ]
 
-        return _attempt(once, lambda rows: not rows)
+        rows = _attempt(once, lambda rows: not rows)
+        if not rows:
+            _note_miss(sym)
+        return rows
 
     def info(self, sym: str) -> dict:
         return _attempt(lambda: self._clean(_ticker(sym).info))
@@ -363,12 +413,21 @@ class YahooProvider(DataProvider):
 
     async def get_quotes(self, items: list[tuple[str, str]]) -> dict[str, Quote]:
         sem = asyncio.Semaphore(MAX_CONCURRENT_CALLS)
+        items = [(c, ps) for c, ps in items if not _known_missing(ps)]
+        if not items:
+            raise self._unsupported("symbols Yahoo does not list")
 
         async def one(canonical: str, ps: str) -> tuple[str, Quote | None]:
-            async with sem:
-                fast = await self._call(self._yf.fast_info, ps)
+            try:
+                async with sem:
+                    fast = await self._call(self._yf.fast_info, ps)
+            except KeyError:  # yfinance on a symbol Yahoo does not know ('currency')
+                _remember_missing(ps)
+                _note_miss(ps)
+                return canonical, None
             last = _dec(fast.get("lastPrice"))
             if last is None:
+                _remember_missing(ps)
                 return canonical, None
             info: dict = {}
             # forex and crypto have no meaningful bid/ask/time in info: skip the extra call.
@@ -470,7 +529,12 @@ class YahooProvider(DataProvider):
         start: datetime,
         end: datetime,
     ) -> list[Bar]:
+        if _known_missing(provider_symbol):
+            raise self._unsupported(f"symbol {symbol} (not listed by Yahoo)")
         rows = await self._call(self._yf.history, provider_symbol, INTERVALS[timeframe], start, end)
+        if not rows and timeframe in (Timeframe.d1, Timeframe.w1) \
+                and end - start >= MISS_MIN_RANGE:
+            _remember_missing(provider_symbol)  # a coin trades every day: not listed
         bars: list[Bar] = []
         for r in rows:
             o, h, lo, c = (_dec(r.get(k)) for k in ("open", "high", "low", "close"))

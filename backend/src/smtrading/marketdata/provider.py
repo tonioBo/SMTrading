@@ -25,6 +25,16 @@ class ProviderUnsupported(Exception):
     """The provider does not support the capability or the symbol."""
 
 
+class StreamRefused(ConnectionError):
+    """The provider refused the stream for a while (e.g. Alpaca's 406 «connection limit
+    exceeded»): the stream manager waits `retry_after_s` before reconnecting, polling
+    meanwhile, instead of its short exponential backoff."""
+
+    def __init__(self, message: str, *, retry_after_s: float) -> None:
+        super().__init__(message)
+        self.retry_after_s = retry_after_s
+
+
 class DataProvider:
     name: ClassVar[str] = ""
     capabilities: ClassVar[frozenset[Capability]] = frozenset()

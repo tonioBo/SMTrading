@@ -14,7 +14,7 @@ from smtrading.common.db import make_engine
 from smtrading.connectors.models import Connector, ProviderPriority
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.marketdata.cache import read_quote
-from smtrading.marketdata.provider import DataProvider
+from smtrading.marketdata.provider import DataProvider, StreamRefused
 from smtrading.marketdata.registry import PROVIDERS
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.marketdata.streaming import StreamManager, track, tracked_symbols, untrack
@@ -31,6 +31,8 @@ class FakeStream(DataProvider):
     fail_first: ClassVar[int] = 0
     connections: ClassVar[list[list[tuple[str, str]]]] = []
     active: ClassVar[int] = 0
+    max_active: ClassVar[int] = 0  # the most sockets ever open at once
+    refuse_first: ClassVar[int] = 0  # initial connections refused with a «connection limit»
     polls: ClassVar[list[list[str]]] = []
     first_quote_delay: ClassVar[float] = 0
 
@@ -48,7 +50,11 @@ class FakeStream(DataProvider):
         cls.connections.append(list(items))
         if len(cls.connections) <= cls.fail_first:
             raise ConnectionError("refused")
+        if len(cls.connections) <= cls.refuse_first:
+            raise StreamRefused("stream error 406: connection limit exceeded",
+                                retry_after_s=0.4)
         cls.active += 1
+        cls.max_active = max(cls.max_active, cls.active)
         try:
             await asyncio.sleep(cls.first_quote_delay)
             while True:
@@ -84,6 +90,8 @@ async def env(fresh_db, redis_url, monkeypatch):
     monkeypatch.setattr(FakeStream, "fail_first", 0)
     monkeypatch.setattr(FakeStream, "connections", [])
     monkeypatch.setattr(FakeStream, "active", 0)
+    monkeypatch.setattr(FakeStream, "max_active", 0)
+    monkeypatch.setattr(FakeStream, "refuse_first", 0)
     monkeypatch.setattr(FakeStream, "polls", [])
     monkeypatch.setattr(FakeStream, "first_quote_delay", 0)
     monkeypatch.setattr(FakePoll, "polls", [])
@@ -164,8 +172,9 @@ async def test_tracked_symbol_gets_streamed_quotes(manager):
     assert ("BTC-USD", "BTCUSD") in FakeStream.connections[-1]
     status = mgr.status()
     assert status["streams"]["fake_stream:crypto"] == {
-        "symbols": ["BTC-USD", "ETH-USD"], "state": "connected",
+        "symbols": ["BTC-USD", "ETH-USD"], "state": "connected", "note": None,
     }
+    assert status["owner"] is True
     assert status["polling"] == []
     published = json.loads(await redis.get("md:stream_status"))
     assert published["streams"]["fake_stream:crypto"]["symbols"] == ["BTC-USD", "ETH-USD"]
@@ -188,6 +197,7 @@ async def test_untrack_stops_stream(manager):
 
     await _until(restarted)
     assert [s for s, _ in FakeStream.connections[-1]] == ["BTC-USD"]
+    assert FakeStream.max_active == 1  # the old socket closed before the new one opened
     await untrack(redis, ["BTC-USD"], source="orders")
     await _until(lambda: (FakeStream.active == 0
                                 and mgr.status()["streams"] == {}))
@@ -217,6 +227,66 @@ async def test_stream_failure_falls_back_to_polling_and_reconnects(manager):
     assert mgr.status()["polling"] == []
 
 
+async def test_connection_limit_backs_off_longer_polls_and_notes_it(manager):
+    """Alpaca's 406 «connection limit exceeded» (one socket per key: another client, or
+    its own half-dead session): no 1-2-4 s hammering but the provider's longer wait,
+    polled meanwhile, with a note in the published status."""
+    mgr, redis = manager
+    FakeStream.refuse_first = 1
+    await track(redis, ["BTC-USD"], source="orders")
+
+    async def polled():
+        q = await read_quote(redis, "BTC-USD")
+        return q is not None and q.provider == "poll"
+
+    await _until(polled)
+    s = mgr.status()["streams"]["fake_stream:crypto"]
+    assert s["state"] == "backoff" and "connection limit" in s["note"]
+    async def published():
+        body = json.loads(await redis.get("md:stream_status"))
+        return "connection limit" in (body["streams"]["fake_stream:crypto"]["note"] or "")
+
+    await _until(published)
+    await asyncio.sleep(0.2)
+    assert len(FakeStream.connections) == 1  # still waiting (0.4 s, not 1 s doubling)
+
+    async def streamed():
+        q = await read_quote(redis, "BTC-USD")
+        return q is not None and q.provider == "fake_stream"
+
+    await _until(streamed, timeout=2)
+    assert len(FakeStream.connections) == 2
+    assert mgr.status()["streams"]["fake_stream:crypto"].get("note") is None
+
+
+async def test_one_stream_owner_across_managers(env):
+    """Two stream managers on the same Redis (a second worker, a deploy overlap): only
+    the owner opens sockets; the other takes over when the owner stops."""
+    router, redis, sm = env
+    a = StreamManager(router, redis, sm, reconcile_every_s=FAST, poll_every_s=FAST,
+                      owner_ttl_s=1)
+    b = StreamManager(router, redis, sm, reconcile_every_s=FAST, poll_every_s=FAST,
+                      owner_ttl_s=1)
+    await track(redis, ["BTC-USD"], source="orders")
+    ta = asyncio.create_task(a.run())
+    await _until(lambda: FakeStream.active == 1)
+    tb = asyncio.create_task(b.run())
+    try:
+        await asyncio.sleep(FAST * 6)
+        assert FakeStream.max_active == 1 and len(FakeStream.connections) == 1
+        assert b.status()["streams"] == {} and b.status()["owner"] is False
+        ta.cancel()
+        await asyncio.wait([ta])
+        await _until(lambda: FakeStream.active == 1 and b.status()["owner"] is True,
+                     timeout=3)
+        assert FakeStream.max_active == 1
+    finally:
+        for t in (ta, tb):
+            t.cancel()
+        await asyncio.wait([ta, tb])
+    assert FakeStream.active == 0
+
+
 async def test_symbol_without_stream_provider_is_polled(manager):
     mgr, redis = manager
     await track(redis, ["AAPL"], source="watchlists")
@@ -227,7 +297,7 @@ async def test_symbol_without_stream_provider_is_polled(manager):
 
     await _until(polled)
     await _until(lambda: (len(FakePoll.polls) >= 2))  # keeps polling
-    assert mgr.status() == {"streams": {}, "polling": ["AAPL"]}
+    assert mgr.status() == {"streams": {}, "polling": ["AAPL"], "owner": True}
     assert FakeStream.connections == []
 
 
