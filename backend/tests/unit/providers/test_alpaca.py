@@ -313,6 +313,29 @@ async def test_stream_auth_error_is_connection_error():
                     pass
 
 
+async def test_stream_connection_limit_is_refused_with_a_long_wait():
+    """Alpaca's free data allows one socket per key: 406 «connection limit exceeded» (live
+    21/11 08:51 UTC, after a drop without close frame) is StreamRefused, with a wait long
+    enough for Alpaca to drop the other session, instead of a 1-2-4 s reconnect loop."""
+    from smtrading.marketdata.provider import StreamRefused
+    from smtrading.marketdata.providers.alpaca import CONNECTION_LIMIT_RETRY_S
+
+    async def handler(ws):
+        await ws.send('[{"T":"success","msg":"connected"}]')
+        await ws.recv()
+        await ws.send('[{"T":"error","code":406,"msg":"connection limit exceeded"}]')
+
+    async with websockets.serve(handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        async with httpx.AsyncClient() as http:
+            p = AlpacaProvider({**CONFIG, "ws_url": f"ws://127.0.0.1:{port}"}, http)
+            with pytest.raises(StreamRefused, match="connection limit") as e:
+                async for _ in p.stream([("AAPL", "AAPL")]):
+                    pass
+    assert isinstance(e.value, ConnectionError)
+    assert e.value.retry_after_s == CONNECTION_LIMIT_RETRY_S >= 120
+
+
 async def test_stream_handshake_failure_is_connection_error():
     async with httpx.AsyncClient() as http:
         p = AlpacaProvider({**CONFIG, "ws_url": "ws://127.0.0.1:1"}, http)

@@ -729,8 +729,11 @@ export interface ProviderPriority {
 export type StreamState = "connected" | "connecting" | "backoff";
 
 export interface StreamStatus {
-  streams: Record<string, { symbols: string[]; state: StreamState | string }>;
+  /** note: why the provider refuses the stream for now (e.g. Alpaca's connection limit) */
+  streams: Record<string, { symbols: string[]; state: StreamState | string; note?: string | null }>;
   polling: string[];
+  /** false: another worker holds the stream (this one stands by) */
+  owner?: boolean;
   /** false: the worker's status is stale or absent */
   available: boolean;
   tracked: string[];
