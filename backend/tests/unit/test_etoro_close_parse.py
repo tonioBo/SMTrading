@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from smtrading.brokers.etoro_core import close_fill
+from smtrading.brokers.etoro_core import close_fee, close_fill
 
 # Close order read from the eToro demo API on 21/11/2026 (BTC, order 395843503).
 REAL = {"orderID": 395843503, "statusID": 3, "instrumentID": 100000,
@@ -25,3 +25,12 @@ def test_older_top_level_fields_still_read():
 
 def test_no_positions_yet_gives_none():
     assert close_fill({"statusID": 1, "positions": []}) == (None, None)
+
+
+def test_close_fee_is_gross_minus_proceeds():
+    # 0.0015 × 60010.0 = 90.015 gross, 89.11 credited → 0.905 charged by eToro
+    assert close_fee(REAL) == Decimal("0.905")
+
+
+def test_close_fee_unknown_without_proceeds():
+    assert close_fee({"statusID": 3, "positions": [{"units": "1", "rate": "10"}]}) is None

@@ -414,6 +414,7 @@ class FakeLiveBroker:
         env.credit += units * self.price
         cid = next(self._ids)
         env.closes[cid] = {"orderID": cid, "statusID": 3, "instrumentID": pos["instrumentID"],
+                           "proceeds": units * self.price,
                            "positions": [{"positionID": pid, "rate": self.price,
                                           "units": units, "conversionRate": 1}]}
         return _numbers(200, {"orderForClose": {

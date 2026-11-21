@@ -310,6 +310,26 @@ def close_fill(data: dict) -> tuple[Decimal | None, Decimal | None]:
     return total, (cost / total if priced else None)
 
 
+def close_fee(data: dict) -> Decimal | None:
+    """What eToro kept on a close: units × rate (× conversion) of the closed positions
+    minus the `proceeds` credited. None when the read does not carry both."""
+    proceeds = _dec(data.get("proceeds"))
+    if proceeds is None:
+        return None
+    gross = Decimal(0)
+    for p in data.get("positions") or []:
+        if not isinstance(p, dict):
+            continue
+        u, r = _dec(p.get("units")), _dec(p.get("rate"))
+        if not u or r is None:
+            return None
+        gross += abs(u) * r * (_dec(p.get("conversionRate")) or Decimal(1))
+    if gross == 0:
+        return None
+    fee = gross - proceeds
+    return fee if fee >= 0 else None
+
+
 def _buy_unleveraged_real(entry: dict) -> bool:
     if entry.get("allowOpenPosition") is not True:
         return False
@@ -778,6 +798,7 @@ class _EtoroProtocol(BrokerAdapter):
             raise RuntimeError(f"{self.kind}: unknown close order id") from None
         ids = [i for i in ids_text.split(",") if i]
         filled, cost, priced, final = Decimal(0), Decimal(0), True, True
+        fees: Decimal | None = Decimal(0)
         statuses: list[str] = []
         closes: list[dict] = []
         for cid in ids:
@@ -792,6 +813,9 @@ class _EtoroProtocol(BrokerAdapter):
             sid = _int(st)
             status = _STATUS.get(sid, "accepted") if sid is not None else "accepted"
             units, rate = close_fill(data)
+            if units:
+                fee = close_fee(data)
+                fees = None if fee is None or fees is None else fees + fee
             if units is None:
                 if status == "filled":
                     log.warning("eToro close %s filled without units: waiting", cid)
@@ -815,7 +839,9 @@ class _EtoroProtocol(BrokerAdapter):
             status = "rejected"
         else:
             status = "canceled"
-        return BrokerOrder(broker_order_id, status, filled, avg, None, {"closes": closes})
+        if filled == 0:
+            fees = None
+        return BrokerOrder(broker_order_id, status, filled, avg, None, {"closes": closes}, fees)
 
     async def cancel_order(self, broker_order_id: str) -> None:
         if broker_order_id.startswith("close:"):
