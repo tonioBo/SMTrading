@@ -161,7 +161,8 @@ function Group({ group, collapsed, collapsible, first }: { group: NavGroup; coll
           {group.label}
         </div>
       )}
-      <div id={id} hidden={!open} className="flex flex-col gap-1">
+      {/* the «hidden» attribute alone loses to the «flex» class in a real browser */}
+      <div id={id} hidden={!open} className={cn("flex flex-col gap-1", !open && "hidden")}>
         <NavItems items={group.items} collapsed={false} />
       </div>
     </div>

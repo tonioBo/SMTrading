@@ -58,8 +58,12 @@ describe("Layout", () => {
     for (const name of ["Agenti", "Sistema"]) {
       const heading = within(nav).getByRole("button", { name });
       expect(heading).toHaveAttribute("aria-expanded", "false");
+      // what a real browser shows: the closed list must carry the «hidden» class, not only the attribute
+      const list = document.getElementById(heading.getAttribute("aria-controls")!)!;
+      expect(list.className.split(" ")).toContain("hidden");
       await user.click(heading);
       expect(heading).toHaveAttribute("aria-expanded", "true");
+      expect(list.className.split(" ")).not.toContain("hidden");
     }
     expect(within(nav).getAllByRole("link").map((a) => a.textContent)).toEqual([
       "Dashboard",
