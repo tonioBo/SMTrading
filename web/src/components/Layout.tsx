@@ -54,7 +54,9 @@ function MobileDrawer({ open, onClose, returnFocus }: { open: boolean; onClose: 
   const panel = useRef<HTMLElement>(null);
   useEffect(() => {
     if (!open) return;
-    const items = () => Array.from(panel.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
+    // links of a closed group are hidden: not reachable with Tab
+    const items = () =>
+      Array.from(panel.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []).filter((el) => !el.closest("[hidden]"));
     items()[0]?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {

@@ -27,8 +27,8 @@ import {
   Wallet,
   type LucideIcon,
 } from "lucide-react";
-import { useId, useState } from "react";
-import { NavLink } from "react-router-dom";
+import { useEffect, useId, useState } from "react";
+import { matchPath, NavLink, useLocation } from "react-router-dom";
 import { useIsAdmin } from "@/api/hooks/auth";
 import { cn } from "@/lib/utils";
 
@@ -43,6 +43,8 @@ interface NavItem {
 interface NavGroup {
   label: string;
   items: NavItem[];
+  /** closed on load (opens with its heading, or by itself on one of its pages) */
+  startClosed?: boolean;
 }
 
 const NAV_GROUPS: NavGroup[] = [
@@ -62,6 +64,7 @@ const NAV_GROUPS: NavGroup[] = [
   },
   {
     label: "Agenti",
+    startClosed: true,
     items: [
       { to: "/agenti", label: "Agenti", icon: Bot },
       { to: "/istruzioni-agenti", label: "Istruzioni agenti", icon: BookOpen },
@@ -74,6 +77,7 @@ const NAV_GROUPS: NavGroup[] = [
   },
   {
     label: "Sistema",
+    startClosed: true,
     items: [
       { to: "/salute-sistema", label: "Salute del sistema", icon: HeartPulse },
       { to: "/broker", label: "Broker", icon: Landmark },
@@ -92,7 +96,7 @@ interface SidebarProps {
   /** icon-only rail: the label stays as the accessible name and the tooltip (title) */
   collapsed?: boolean;
   label?: string;
-  /** small screens (the drawer): each group opens and closes with its heading */
+  /** each group opens and closes with its heading (always on; kept for callers) */
   collapsibleGroups?: boolean;
 }
 
@@ -122,7 +126,13 @@ function NavItems({ items, collapsed }: { items: NavItem[]; collapsed: boolean }
 }
 
 function Group({ group, collapsed, collapsible, first }: { group: NavGroup; collapsed: boolean; collapsible: boolean; first: boolean }) {
-  const [open, setOpen] = useState(true);
+  const { pathname } = useLocation();
+  const here = group.items.some((item) => matchPath({ path: item.to, end: item.to === "/" }, pathname));
+  const [open, setOpen] = useState(!group.startClosed || here);
+  // landing on one of the group's pages opens it, so the current page is always visible
+  useEffect(() => {
+    if (here) setOpen(true);
+  }, [here]);
   const id = useId();
   if (collapsed) {
     // icon rail: a thin separator instead of the heading
@@ -167,7 +177,7 @@ export function Sidebar({ collapsed = false, label = "Navigazione principale", c
           key={g.label}
           group={{ ...g, items: g.items.filter((item) => admin || !item.adminOnly) }}
           collapsed={collapsed}
-          collapsible={collapsibleGroups}
+          collapsible={collapsibleGroups || !collapsed}
           first={i === 0}
         />
       ))}

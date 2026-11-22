@@ -48,8 +48,19 @@ describe("Layout", () => {
   });
 
   it("shows the Italian sidebar, the app name and the kill-switch state", async () => {
+    const user = userEvent.setup();
     renderApp("/");
     const nav = await screen.findByRole("navigation", { name: "Navigazione principale" });
+    // «Agenti» and «Sistema» start closed; their headings open them
+    expect(within(nav).getAllByRole("link").map((a) => a.textContent)).toEqual([
+      "Dashboard", "Portafogli", "Segnali", "Posizioni", "Diario operazioni", "Strategie", "Obiettivi", "Campagne", "Mercati",
+    ]);
+    for (const name of ["Agenti", "Sistema"]) {
+      const heading = within(nav).getByRole("button", { name });
+      expect(heading).toHaveAttribute("aria-expanded", "false");
+      await user.click(heading);
+      expect(heading).toHaveAttribute("aria-expanded", "true");
+    }
     expect(within(nav).getAllByRole("link").map((a) => a.textContent)).toEqual([
       "Dashboard",
       "Portafogli",
@@ -86,6 +97,14 @@ describe("Layout", () => {
     expect(logo).toHaveAttribute("aria-hidden", "true");
     expect(logo.parentElement).toHaveTextContent("SMTrading");
     expect(await screen.findByText("Trading attivo")).toBeInTheDocument();
+  });
+
+  it("opens by itself the closed group of the current page", async () => {
+    renderApp("/rischio");
+    const nav = await screen.findByRole("navigation", { name: "Navigazione principale" });
+    expect(within(nav).getByRole("button", { name: "Sistema" })).toHaveAttribute("aria-expanded", "true");
+    expect(within(nav).getByRole("link", { name: "Rischio e margine" })).toBeVisible();
+    expect(within(nav).getByRole("button", { name: "Agenti" })).toHaveAttribute("aria-expanded", "false");
   });
 
   it("shows an active kill-switch", async () => {
@@ -161,6 +180,7 @@ describe("Layout", () => {
     expect(menu()).not.toBeInTheDocument();
 
     await user.click(open);
+    await user.click(within(menu()!).getByRole("button", { name: "Sistema" }));
     await user.click(within(menu()!).getByRole("link", { name: "Rischio e margine" }));
     await vi.waitFor(() => expect(router.state.location.pathname).toBe("/rischio"));
     expect(menu()).not.toBeInTheDocument();
@@ -183,6 +203,7 @@ describe("Layout", () => {
     await user.click(open);
     const menu = screen.getByRole("navigation", { name: "Navigazione principale (menu)" });
     const sistema = within(menu).getByRole("group", { name: "Sistema" });
+    await user.click(within(sistema).getByRole("button", { name: "Sistema" }));
     await user.click(within(sistema).getByRole("link", { name: "Salute del sistema" }));
     await vi.waitFor(() => expect(router.state.location.pathname).toBe("/salute-sistema"));
     expect(screen.queryByRole("navigation", { name: "Navigazione principale (menu)" })).not.toBeInTheDocument();
@@ -296,14 +317,14 @@ describe("Layout", () => {
     await user.click(await screen.findByRole("button", { name: "Apri menu" }));
     const menu = screen.getByRole("navigation", { name: "Navigazione principale (menu)" });
     const sistema = within(menu).getByRole("button", { name: "Sistema" });
-    expect(sistema).toHaveAttribute("aria-expanded", "true");
-    expect(within(menu).getByRole("link", { name: "Broker" })).toBeVisible();
-    await user.click(sistema);
-    expect(sistema).toHaveAttribute("aria-expanded", "false");
+    expect(sistema).toHaveAttribute("aria-expanded", "false"); // closed by default
     expect(within(menu).queryByRole("link", { name: "Broker" })).not.toBeInTheDocument();
     expect(within(menu).getByRole("link", { name: "Dashboard" })).toBeInTheDocument();
     await user.click(sistema);
-    expect(within(menu).getByRole("link", { name: "Broker" })).toBeInTheDocument();
+    expect(sistema).toHaveAttribute("aria-expanded", "true");
+    expect(within(menu).getByRole("link", { name: "Broker" })).toBeVisible();
+    await user.click(sistema);
+    expect(within(menu).queryByRole("link", { name: "Broker" })).not.toBeInTheDocument();
   });
 
   it("moves focus into the drawer, keeps Tab inside and returns it to the menu button", async () => {
@@ -316,7 +337,7 @@ describe("Layout", () => {
     const first = within(menu).getByRole("button", { name: "Trading" }); // the first group's heading
     expect(first).toHaveFocus();
     await user.tab({ shift: true });
-    expect(links[links.length - 1]).toHaveFocus(); // wraps backwards
+    expect(within(menu).getByRole("button", { name: "Sistema" })).toHaveFocus(); // wraps backwards (closed last group)
     await user.tab();
     expect(first).toHaveFocus(); // wraps forwards
     for (let i = 0; i < links.length + 2; i++) await user.tab();

@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -144,6 +144,7 @@ describe("SystemHealth", () => {
     expect(badge).toHaveAttribute("title", "broker sync: si sta riavviando dopo un errore (e altri 2)");
     const nav = screen.getByRole("navigation", { name: "Navigazione principale" });
     const sistema = within(nav).getByRole("group", { name: "Sistema" });
+    fireEvent.click(within(sistema).getByRole("button", { name: "Sistema" })); // the group starts closed
     expect(within(sistema).getAllByRole("link")[0]).toHaveTextContent("Salute del sistema");
   });
 });
