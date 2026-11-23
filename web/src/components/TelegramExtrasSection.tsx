@@ -14,17 +14,19 @@ const checkboxClass = "h-4 w-4 accent-[rgb(var(--accent))]";
 const WEEKDAYS = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"];
 
 /** «Messaggi Telegram»: the weekly goal of the summaries, the pre-open check, the
- * hand-off watchdog and the weekly PDF report. Admins edit, viewers only read. None
- * reaches the agents. */
+ * hand-off watchdog, the system sentinel and the weekly PDF report. Admins edit, viewers
+ * only read. None reaches the agents. */
 export function TelegramExtrasSection({
   goal,
   preopen,
   watchdog,
+  sentinel,
   report,
 }: {
   goal: WeeklyGoal;
   preopen: PreopenCheck;
   watchdog?: HandoffWatchdog;
+  sentinel?: { on: boolean };
   report?: WeeklyReportPdf;
 }) {
   const admin = useIsAdmin();
@@ -127,6 +129,26 @@ export function TelegramExtrasSection({
               Legge i task di Paperclip ogni 5 minuti: AGENDA entro le 08:50 e BUONGIORNO entro le 09:20 nei giorni di borsa, PROTEGGI e RISCHIO
               OBIETTIVO senza risposta dopo 45 minuti, ESEGUI ancora aperti dopo 30 minuti a mercato aperto. Un avviso per passaggio al giorno;
               serve il lettore Paperclip attivo.
+            </p>
+          </section>
+        )}
+        {sentinel && (
+          <section className="space-y-2" aria-label="Sentinella di sistema">
+            <h3 className="font-medium">Sentinella di sistema</h3>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                className={checkboxClass}
+                checked={sentinel.on}
+                disabled={!admin || save.isPending}
+                onChange={(e) => save.mutate({ system_sentinel: { on: e.target.checked } }, { onSuccess: saved })}
+              />
+              Avvisa su Telegram quando il sistema ha un problema
+            </label>
+            <p className="text-muted">
+              Ogni 5 minuti: salute del sistema, agenti Paperclip in errore o in pausa, cicli mancati, errori MCP ripetuti, errori nei log, più
+              identità sullo stesso minuto e dati visibili agli agenti che non dovrebbero esserlo. Un messaggio quando un problema inizia, un
+              promemoria ogni 2 ore, uno quando è risolto; la domenica alle 20 il riepilogo della settimana.
             </p>
           </section>
         )}

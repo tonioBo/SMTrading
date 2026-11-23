@@ -657,6 +657,8 @@ export interface AppSettings {
   weekly_goal?: WeeklyGoal;
   preopen_check?: PreopenCheck;
   handoff_watchdog?: HandoffWatchdog;
+  /** «Sentinella di sistema» (missing on an older api) */
+  system_sentinel?: { on: boolean };
   weekly_report_pdf?: WeeklyReportPdf;
 }
 
@@ -2199,10 +2201,33 @@ export interface HealthPriceQuality {
   current: { symbol: string; since: string | null; age_s: number }[];
 }
 
+/** One problem the «Sentinella di sistema» told the owner about and that is still open. */
+export interface HealthSentinelProblem {
+  key: string;
+  kind: string;
+  /** the kind in Italian («Agenti Paperclip», «Errori MCP ripetuti» …) */
+  label: string;
+  title: string;
+  detail: string;
+  level: "info" | "warning" | "critical";
+  since: string | null;
+}
+
+/** «Sentinella di sistema»: outside the overall status (it alerts on that status). */
+export interface HealthSentinel extends HealthSectionBase {
+  on: boolean | null;
+  last_pass_at: string | null;
+  last_error: string | null;
+  open: HealthSentinelProblem[];
+  alerts_7d: number;
+}
+
 export interface SystemHealth {
   status: HealthStatus;
   reasons: string[];
   checked_at: string;
+  /** Missing on an api older than the sentinel. */
+  sentinel?: HealthSentinel;
   version: { build: string; built_at: string | null; api_started_at: string | null; worker_started_at: string | null };
   sections: {
     services: HealthSectionBase & { heartbeat_age_s?: number | null; worker_started_at?: string | null; jobs?: HealthJob[] };

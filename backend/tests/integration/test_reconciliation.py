@@ -12,6 +12,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from smtrading.activity.models import Activity
+from smtrading.agents.service import assign_portfolio, create_agent
 from smtrading.brokers import registry
 from smtrading.brokers.base import AccountSnapshot, BrokerAdapter, BrokerOpenOrder
 from smtrading.brokers.service import create_link, link_portfolio
@@ -129,11 +130,21 @@ class Clock:
         return self.now
 
 
-async def _linked(maker, *, name="Alfa", cash=10000) -> tuple[uuid.UUID, uuid.UUID]:
+async def _give_an_agent(s, pid) -> None:
+    agent, _ = await create_agent(s, f"rec-{uuid.uuid4().hex[:6]}")
+    await assign_portfolio(s, agent.id, pid, "read")
+
+
+async def _linked(maker, *, name="Alfa", cash=10000, agent=True
+                  ) -> tuple[uuid.UUID, uuid.UUID]:
+    """A portfolio on a new fake link, assigned to an agent (`agent=False`: the owner's
+    alone, no agent can access it)."""
     async with maker() as s:
         p = await create_portfolio(s, name=name, initial_cash=D(cash), leverage=D(1))
         link = await create_link(s, f"L-{uuid.uuid4().hex[:8]}", "fake_recon", {})
         await link_portfolio(s, p.id, link.id)
+        if agent:
+            await _give_an_agent(s, p.id)
         discard_post_commit(s)
         await s.commit()
         return p.id, link.id
@@ -352,6 +363,25 @@ async def test_mismatch_alerts_on_the_second_check_once_per_day(maker, qs):
     assert len(await _alerts(maker)) == 2 and len(await _outbox(maker)) == 2
 
 
+async def test_a_portfolio_no_agent_can_access_alerts_the_owner_only(maker, qs):
+    """The owner's test portfolio: the Telegram message once a day, no activity row (no
+    agent may ever see it); a restart repeats nothing."""
+    pid, link_id = await _linked(maker, name="Prova", agent=False)
+    await _fill(maker, qs, pid, link_id)
+    ACCOUNT.positions = {"AAPL": D(7)}
+    await _check(maker, qs, link_id)
+    second = await _check(maker, qs, link_id, now=T0 + timedelta(minutes=15))
+    assert _items(second)["position:AAPL"]["alerted"]
+    assert await _alerts(maker) == []
+    outbox = await _outbox(maker)
+    assert len(outbox) == 1 and "Prova" in outbox[0].text and "AAPL" in outbox[0].text
+    await _check(maker, qs, link_id, now=T0 + timedelta(minutes=30))  # same day
+    await _check(maker, qs, link_id, now=T0 + timedelta(minutes=31))  # "after a restart"
+    assert len(await _outbox(maker)) == 1 and await _alerts(maker) == []
+    await _check(maker, qs, link_id, now=T0 + timedelta(days=1))  # next day: again
+    assert len(await _outbox(maker)) == 2 and await _alerts(maker) == []
+
+
 async def test_a_resolved_mismatch_starts_over(maker, qs):
     pid, link_id = await _linked(maker)
     await _fill(maker, qs, pid, link_id)
@@ -403,6 +433,7 @@ async def test_two_portfolios_on_one_link(maker, qs):
     async with maker() as s:
         other = await create_portfolio(s, name="Beta", initial_cash=D(10000), leverage=D(1))
         await link_portfolio(s, other.id, link_id)
+        await _give_an_agent(s, other.id)
         discard_post_commit(s)
         await s.commit()
     await _open_order(maker, pid, link_id, broker_id="b1")

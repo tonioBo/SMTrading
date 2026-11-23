@@ -22,6 +22,8 @@ Every section is built from data the system already keeps, nothing is called out
 - backup: the record of the `backup` service (`backup.state`): the last fully ok backup
   (older than 26 h: problema), the last run and the last restore test (failed or older
   than 8 days: attenzione);
+- sentinel («Sentinella di sistema», `sentinel`): its open problems, last pass and the
+  alerts of the week; kept out of the overall status (the sentinel alerts on it);
 - version: the build id baked into the image (SMT_BUILD_ID, else SMTRADING_VERSION), the
   build time (SMT_BUILT_AT) and the api and worker start (the last deploy).
 
@@ -62,6 +64,7 @@ from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.positions.models import Position
 from smtrading.risk.models import AppSetting
 from smtrading.risk.settings import get_stale_threshold
+from smtrading.sentinel import settings as sentinel_settings
 from smtrading.telegram.config import is_ready
 from smtrading.telegram.config import load_config as load_telegram_config
 from smtrading.telegram.models import OutboxStatus, TelegramOutbox
@@ -81,11 +84,11 @@ RECENT_CRASH_S = 15 * 60
 JOB_INTERVALS: dict[str, float] = {
     "health checks": 300, "job scheduler": 30, "paperclip reader": 300,
     "hand-off watchdog": 300, "protection alarm": 300, "goal alerts": 300,
-    "telegram summaries": 30, "price quality alarm": 60,
+    "telegram summaries": 30, "price quality alarm": 60, "system sentinel": 300,
 }
 LATE_FACTOR = 3  # a pass later than 3 intervals is late
 GATED_JOBS = ("protection alarm", "goal alerts", "plan closer", "pre-open check",
-              "hand-off watchdog", "weekly report")
+              "hand-off watchdog", "weekly report", "system sentinel")
 GATE_GRACE_S = 15 * 60  # the gated jobs may wait for the startup gate this long
 CONNECTOR_CHECK_LATE_S = 15 * 60
 PAPERCLIP_LATE_S = 15 * 60
@@ -641,6 +644,18 @@ async def _mcp(session: AsyncSession, now: datetime) -> dict[str, Any]:
     return mcp_section(outcomes)
 
 
+async def _sentinel(session: AsyncSession, now: datetime) -> dict[str, Any]:
+    try:
+        on = await sentinel_settings.sentinel_on(session)
+        state = await sentinel_settings.load_state(session)
+    except Exception as e:  # noqa: BLE001
+        await session.rollback()
+        return {**_unreadable("Sentinella di sistema", e), "label": "Sentinella di sistema",
+                "on": None, "open": [], "last_pass_at": None, "last_error": None,
+                "alerts_7d": 0}
+    return sentinel_settings.sentinel_view(on, state, now)
+
+
 async def system_health(session: AsyncSession, redis, *, now: datetime | None = None
                         ) -> dict[str, Any]:
     now = now or datetime.now(UTC)
@@ -676,4 +691,5 @@ async def system_health(session: AsyncSession, redis, *, now: datetime | None = 
     reasons = [r for s in sections.values() if s["status"] in (WARN, BAD) for r in s["reasons"]]
     worker_started = sections["services"].get("worker_started_at")
     return {"status": status, "reasons": reasons, "checked_at": now.isoformat(),
-            "sections": sections, "version": version_info(worker_started)}
+            "sections": sections, "sentinel": await _sentinel(session, now),
+            "version": version_info(worker_started)}

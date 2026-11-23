@@ -11,6 +11,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from smtrading.activity.models import Activity
+from smtrading.agents.models import Agent, AgentPortfolio
 from smtrading.common.db import make_engine
 from smtrading.engine.models import Order, OrderSide, OrderStatus, OrderType, TimeInForce
 from smtrading.events import discard_post_commit
@@ -99,10 +100,18 @@ async def _paperclip(sm, enabled=True):
         await s.commit()
 
 
-async def _portfolio(sm, name="Aggressivo", status=PortfolioStatus.active) -> uuid.UUID:
+async def _portfolio(sm, name="Aggressivo", status=PortfolioStatus.active, *,
+                     agent: bool = True) -> uuid.UUID:
+    """A portfolio an agent can access (`agent=False`: the owner's alone)."""
     async with sm() as s:
         p = await create_portfolio(s, name=name, initial_cash=D(10000))
         p.status = status
+        if agent:
+            a = Agent(name=f"agent-{uuid.uuid4().hex[:6]}", token_prefix=uuid.uuid4().hex[:8],
+                      token_hash="x")
+            s.add(a)
+            await s.flush()
+            s.add(AgentPortfolio(agent_id=a.id, portfolio_id=p.id, permission="trade"))
         discard_post_commit(s)
         await s.commit()
         return p.id
@@ -170,6 +179,33 @@ async def test_unprotected_position_alerts_once_and_survives_restart(env):
         [entry] = state["open"].values()
         assert entry["issue"] == "SMT-1"
     assert await _activity_count(sm) == activity_before  # nothing reaches the agents
+
+
+async def test_a_portfolio_no_agent_can_access_alerts_the_owner_only(env):
+    """An owner's test portfolio (no agent assigned): Telegram to the owner, no «PROTEGGI»
+    issue for the Risk Manager; the agents' portfolio next to it still gets its issue."""
+    sm = env
+    await _paperclip(sm)
+    owner = await _portfolio(sm, "Prova del proprietario", agent=False)
+    shared = await _portfolio(sm, "Aggressivo")
+    await _position(sm, owner)
+    await _position(sm, shared)
+    activity_before = await _activity_count(sm)
+    clock, fake = Clock(NOW), FakeIssues()
+    await _alarm(sm, clock, fake).tick()
+    assert sorted(await _outbox(sm)) == [
+        "⚠️ Posizione senza protezione — Aggressivo · AAPL: nessuno stop di uscita attivo",
+        ("⚠️ Posizione senza protezione — Prova del proprietario · AAPL: nessuno stop di "
+         "uscita attivo (nessun agente ha accesso a questo portafoglio: avviso solo a te)")]
+    assert [i["title"] for i in fake.created] == ["PROTEGGI · Aggressivo · AAPL"]
+    clock.t += timedelta(minutes=5)
+    await _alarm(sm, clock, fake).tick()  # never retried as a failed issue
+    assert len(fake.created) == 1 and len(await _outbox(sm)) == 2
+    async with sm() as s:
+        state = await load_state(s)
+    owner_entry = next(e for k, e in state["open"].items() if k.startswith(str(owner)))
+    assert (owner_entry["issue"], owner_entry["attempts"]) == (None, 0)
+    assert await _activity_count(sm) == activity_before
 
 
 async def test_resolution_clears_and_reappearance_alerts_again(env):

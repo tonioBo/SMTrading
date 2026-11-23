@@ -37,6 +37,8 @@ from smtrading.paperclip.reader import PaperclipReader
 from smtrading.paperclip.watchdog import HandoffWatchdog
 from smtrading.positions.protection import ProtectionAlarm
 from smtrading.reconciliation.job import ReconciliationJob
+from smtrading.sentinel import errorlog
+from smtrading.sentinel.job import SystemSentinel
 from smtrading.telegram.planner import TelegramPlanner
 from smtrading.telegram.preopen import PreopenCheck
 from smtrading.telegram.sender import OutboxSender
@@ -52,7 +54,7 @@ RESTART_DELAY_S = 5
 HEALTH_FIRST_DELAY_S = 30
 HEALTH_INTERVAL_S = 300
 # the alerting jobs (protection alarm, goal alerts, plan closer, pre-open check, hand-off
-# watchdog, broker reconciliation, weekly PDF report) wait
+# watchdog, broker reconciliation, weekly PDF report, system sentinel) wait
 # STARTUP_DELAY_S after the worker start and until the api health endpoint answers, so a
 # deploy restart fires nothing; after STARTUP_MAX_WAIT_S they start anyway (fail open)
 STARTUP_DELAY_S = 180
@@ -195,6 +197,8 @@ async def run() -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         with contextlib.suppress(NotImplementedError, RuntimeError):
             loop.add_signal_handler(sig, stop.set)
+    # ERROR/CRITICAL records per logger, for the system sentinel (flushed to Redis)
+    error_counter = errorlog.install("worker")
     try:
         await register_live_keys(sessionmaker)
         await warn_if_fake_broker(sessionmaker, process="worker")
@@ -206,6 +210,7 @@ async def run() -> None:
             async with asyncio.TaskGroup() as tg:
                 jobs = [
                     tg.create_task(heartbeat(redis)),
+                    tg.create_task(errorlog.flusher(redis, error_counter)),
                     tg.create_task(
                         supervise("market closures", lambda: ClosureRefresher(sessionmaker).run())
                     ),
@@ -274,6 +279,8 @@ async def run() -> None:
                                 redis, PortalYahoo(redis, sessionmaker))).run()))),
                     tg.create_task(supervise("weekly report", lambda: gated(
                         gate, lambda: WeeklyReport(sessionmaker, router).run()))),
+                    tg.create_task(supervise("system sentinel", lambda: gated(
+                        gate, lambda: SystemSentinel(sessionmaker, redis).run()))),
                     tg.create_task(supervise("broker reconciliation", lambda: gated(
                         gate, lambda: ReconciliationJob(
                             sessionmaker, router, http,
@@ -289,6 +296,7 @@ async def run() -> None:
             with contextlib.suppress(NotImplementedError, RuntimeError):
                 loop.remove_signal_handler(sig)
         _recorder = None
+        errorlog.uninstall(error_counter)
         await redis.aclose()
         await engine.dispose()
 

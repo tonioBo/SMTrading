@@ -149,6 +149,35 @@ describe("SystemHealth", () => {
   });
 });
 
+describe("SystemHealth sentinel", () => {
+  it("shows the sentinel's open problems and last pass, outside the overall status", async () => {
+    body = {
+      ...HEALTH_OK,
+      sentinel: {
+        status: "attenzione", label: "Sentinella di sistema", summary: "1 problema aperto",
+        reasons: ["Agente Risk Manager in errore"], on: true, last_pass_at: "2026-11-19T09:58:00Z", last_error: null, alerts_7d: 4,
+        open: [{ key: "agent:a1", kind: "agent", label: "Agenti Paperclip", title: "Agente Risk Manager in errore", detail: "adapter crashed", level: "warning", since: "2026-11-19T09:30:00Z" }],
+      },
+    };
+    renderApp("/salute-sistema");
+    const sentinel = await screen.findByRole("region", { name: "Sentinella di sistema" });
+    expect(sentinel).toHaveTextContent("Attenzione");
+    expect(sentinel).toHaveTextContent("1 problema aperto");
+    const open = within(sentinel).getByRole("list", { name: "Problemi aperti della sentinella" });
+    expect(within(open).getByRole("listitem")).toHaveTextContent("Agente Risk Manager in errore");
+    expect(within(open).getByRole("listitem")).toHaveTextContent("adapter crashed");
+    expect(within(open).getByRole("listitem")).toHaveTextContent("Agenti Paperclip");
+    expect(sentinel).toHaveTextContent("Avvisi negli ultimi 7 giorni4");
+    expect(screen.getByRole("region", { name: "Stato complessivo" })).toHaveTextContent("Tutto ok");
+  });
+
+  it("is absent on an older api", async () => {
+    renderApp("/salute-sistema");
+    await screen.findByRole("region", { name: "Stato complessivo" });
+    expect(screen.queryByRole("region", { name: "Sentinella di sistema" })).not.toBeInTheDocument();
+  });
+});
+
 describe("SystemHealth price quality and quotas", () => {
   it("shows the suspect quotes and the providers' quota bars", async () => {
     body = {

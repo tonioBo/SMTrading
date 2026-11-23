@@ -58,6 +58,7 @@ export function useSaveTelegramExtras() {
       preopen_check?: Partial<PreopenCheck>;
       handoff_watchdog?: Partial<HandoffWatchdog>;
       weekly_report_pdf?: Partial<WeeklyReportPdf>;
+      system_sentinel?: { on?: boolean };
     }) =>
       apiFetch<AppSettings>("/api/settings/app", { method: "PUT", body }),
     onSuccess: (data) => {

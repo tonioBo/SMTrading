@@ -168,3 +168,38 @@ async def test_price_quality_and_quotas_sections(admin):
         await redis.flushdb()
         await redis.aclose()
         routes_system_health.clear_cache()
+
+
+async def test_health_shows_the_sentinel_open_problems_out_of_the_overall(admin):
+    from smtrading.risk.models import AppSetting
+    from smtrading.sentinel.settings import SETTINGS_KEY, STATE_KEY
+
+    r = await admin.client.get("/api/system-health")
+    sentinel = r.json()["sentinel"]
+    assert (sentinel["label"], sentinel["on"], sentinel["open"]) == (
+        "Sentinella di sistema", True, [])
+    assert sentinel["status"] == "attenzione"  # never ran yet
+    now = datetime.now(UTC)
+    async with admin.sm() as s:
+        await s.merge(AppSetting(key=STATE_KEY, value={
+            "open": {"agent:a1": {"kind": "agent", "title": "Agente Risk Manager in errore",
+                                  "detail": "timeout", "level": "warning",
+                                  "since": (now - timedelta(minutes=20)).isoformat(),
+                                  "told_at": now.isoformat(), "signature": "error"}},
+            "history": [{"kind": "agent", "at": now.isoformat()}],
+            "last_pass_at": now.isoformat()}))
+        await s.commit()
+    routes_system_health.clear_cache()
+    body = (await admin.client.get("/api/system-health")).json()
+    sentinel = body["sentinel"]
+    assert sentinel["status"] == "attenzione" and sentinel["summary"] == "1 problema aperto"
+    assert sentinel["open"][0]["title"] == "Agente Risk Manager in errore"
+    assert sentinel["open"][0]["label"] == "Agenti Paperclip"
+    assert sentinel["alerts_7d"] == 1
+    assert "Agente Risk Manager in errore" not in body["reasons"]  # not in the overall
+    async with admin.sm() as s:
+        await s.merge(AppSetting(key=SETTINGS_KEY, value={"on": False}))
+        await s.commit()
+    routes_system_health.clear_cache()
+    sentinel = (await admin.client.get("/api/system-health")).json()["sentinel"]
+    assert (sentinel["status"], sentinel["on"]) == ("spento", False)

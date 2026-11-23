@@ -2,7 +2,7 @@ import { RefreshCw } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useSystemHealth } from "@/api/hooks/system";
-import type { HealthCycleRoutine, HealthJob, HealthProvider, HealthQuoteClass, HealthSectionBase, SystemHealth as SystemHealthData } from "@/api/types";
+import type { HealthCycleRoutine, HealthJob, HealthProvider, HealthQuoteClass, HealthSectionBase, HealthSentinel, SystemHealth as SystemHealthData } from "@/api/types";
 import { DataTable, type Column } from "@/components/DataTable";
 import { PageHeader } from "@/components/PageHeader";
 import { QuotaBars } from "@/components/QuotaBars";
@@ -350,6 +350,38 @@ function Backup({ s }: { s: NonNullable<SystemHealthData["sections"]["backup"]> 
   );
 }
 
+/** «Sentinella di sistema»: what it told the owner on Telegram and is still open, and its last pass. */
+function Sentinel({ s }: { s: HealthSentinel }) {
+  return (
+    <Section id="sentinella" section={s} link={{ to: "/impostazioni", label: "Impostazioni" }}>
+      <p className="text-xs text-muted">
+        Ogni 5 minuti controlla salute del sistema, agenti Paperclip, cicli, errori MCP e nei log, identità e dati visibili agli agenti; avvisa su
+        Telegram quando un problema inizia, lo ricorda ogni 2 ore e dice quando è risolto. Non conta nello stato complessivo.
+      </p>
+      <Facts
+        items={[
+          ["Ultimo giro", when(s.last_pass_at)],
+          ["Avvisi negli ultimi 7 giorni", <span key="n" className="num">{s.alerts_7d}</span>],
+          ...(s.last_error ? ([["Controlli non riusciti", s.last_error]] as [string, ReactNode][]) : []),
+        ]}
+      />
+      {s.open.length > 0 && (
+        <ul className="space-y-2 text-sm" aria-label="Problemi aperti della sentinella">
+          {s.open.map((p) => (
+            <li key={p.key} className="rounded-md border border-border px-3 py-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className={cn("font-medium", p.level === "critical" && "text-loss")}>{p.title}</span>
+                <span className="text-xs text-muted">{`${p.label} · da ${when(p.since)}`}</span>
+              </div>
+              {p.detail && <p className="mt-1 whitespace-pre-line break-words text-xs text-muted">{p.detail}</p>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  );
+}
+
 function Version({ v }: { v: SystemHealthData["version"] }) {
   return (
     <Card role="region" aria-label="Versione">
@@ -420,6 +452,7 @@ export default function SystemHealth() {
             <Costs s={data.sections.costs} />
             <Mcp s={data.sections.mcp} />
             {data.sections.backup && <Backup s={data.sections.backup} />}
+            {data.sentinel && <Sentinel s={data.sentinel} />}
           </div>
           <Version v={data.version} />
         </>

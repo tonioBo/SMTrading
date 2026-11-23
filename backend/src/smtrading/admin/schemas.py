@@ -241,10 +241,14 @@ class WeeklyReportIn(BaseModel):
     at: str | None = None  # HH:MM, local time
 
 
+class SystemSentinelIn(BaseModel):
+    on: StrictBool | None = None
+
+
 class AppSettingsIn(BaseModel):
     """Per asset class maps and the default timezone; absent fields are left unchanged,
     a present map is merged class by class (and so are `weekly_goal`, `preopen_check`,
-    `handoff_watchdog`, `weekly_report_pdf`)."""
+    `handoff_watchdog`, `weekly_report_pdf`, `system_sentinel`)."""
 
     stale_quote_s: dict[str, StrictInt] | None = None
     default_spread_bps: dict[str, StrictInt] | None = None
@@ -254,6 +258,7 @@ class AppSettingsIn(BaseModel):
     preopen_check: PreopenCheckIn | None = None
     handoff_watchdog: HandoffWatchdogIn | None = None
     weekly_report_pdf: WeeklyReportIn | None = None
+    system_sentinel: SystemSentinelIn | None = None
 
 
 class KillSwitchIn(BaseModel):

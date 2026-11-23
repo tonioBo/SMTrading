@@ -64,3 +64,19 @@ def test_an_invalid_cron_is_reported_not_raised():
     state["routines"][0]["triggers"][0]["cron"] = "bad"
     view = cycles.today_cycles(state, NOW, TZ)
     assert view["invalid_cron"] == ["Ciclo mattina"]
+
+
+def test_executions_keep_when_they_closed():
+    """The sentinel judges a fire coalesced into an execution open at that time: the
+    closing time of a closed execution (completedAt / cancelledAt, else updatedAt)."""
+    out = cycles.normalize_executions([
+        {"originKind": "routine_execution", "originId": "r1", "status": "done",
+         "createdAt": "2026-11-19T08:00:05Z", "completedAt": "2026-11-19T08:20:00Z",
+         "updatedAt": "2026-11-19T08:21:00Z"},
+        {"originKind": "routine_execution", "originId": "r1", "status": "cancelled",
+         "createdAt": "2026-11-19T08:30:00Z", "updatedAt": "2026-11-19T08:31:00Z"},
+        {"originKind": "routine_execution", "originId": "r1", "status": "in_progress",
+         "createdAt": "2026-11-19T08:40:00Z", "updatedAt": "2026-11-19T08:41:00Z"},
+    ], NOW)
+    assert [e["closed_at"] for e in out] == ["2026-11-19T08:20:00+00:00",
+                                            "2026-11-19T08:31:00+00:00", None]

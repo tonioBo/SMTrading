@@ -25,8 +25,10 @@ confirmed: one `broker.reconciliation_mismatch` activity on the portfolio (warni
 sent to Telegram by the planner; visible to the agents of that portfolio, no simulation
 words, no broker or link name) and one Telegram message to the owner (category system),
 once per portfolio, item key and local day (Europe/Rome; the dedup reads the activity
-rows, so a restart sends nothing again). Nothing is ever corrected: the Risk Manager
-decides (agent docs).
+rows, so a restart sends nothing again). A portfolio no agent can access (the owner's
+alone) gets the Telegram message only, no activity row (its dedup reads the alerted items
+of its checks of the day). Nothing is ever corrected: the Risk Manager decides (agent
+docs).
 """
 
 import contextlib
@@ -44,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from smtrading.activity.mapping import ActivityDraft
 from smtrading.activity.models import Activity, ActivityLevel
 from smtrading.activity.service import record_activity
+from smtrading.agents.access import portfolios_with_agents
 from smtrading.brokers.base import AccountSnapshot, BrokerOpenOrder
 from smtrading.brokers.live import LIVE_KINDS
 from smtrading.brokers.models import BrokerLink
@@ -227,7 +230,18 @@ def _day(now: datetime) -> str:
     return now.astimezone(ZoneInfo(get_settings().tz)).date().isoformat()
 
 
-async def _alerted_today(session: AsyncSession, pid: UUID, key: str, now: datetime) -> bool:
+async def _alerted_today(session: AsyncSession, pid: UUID, key: str, now: datetime, *,
+                         by_checks: bool = False) -> bool:
+    """The item was alerted today: its activity row, or (`by_checks`, a portfolio with no
+    activity rows) a check of today with the item marked alerted."""
+    if by_checks:
+        zone = ZoneInfo(get_settings().tz)
+        midnight = datetime.combine(now.astimezone(zone).date(), datetime.min.time(),
+                                    tzinfo=zone)
+        return await session.scalar(select(ReconciliationCheck.id).where(
+            ReconciliationCheck.portfolio_id == pid, ReconciliationCheck.ts >= midnight,
+            ReconciliationCheck.items.contains([{"key": key, "alerted": True}])
+        ).limit(1)) is not None
     return await session.scalar(select(Activity.id).where(
         Activity.type == ALERT_TYPE, Activity.portfolio_id == pid,
         Activity.data["key"].astext == key,
@@ -259,6 +273,7 @@ async def _write(session: AsyncSession, link: BrokerLink, ours: _Ours, items: li
     rows: list[ReconciliationCheck] = []
     names = ", ".join(name for _, name in ours.portfolios)
     telegrammed: set[str] = set()
+    reachable = await portfolios_with_agents(session, [pid for pid, _ in ours.portfolios])
     for pid, _ in ours.portfolios:
         if items is None:
             row = ReconciliationCheck(portfolio_id=pid, broker_link_id=link.id,
@@ -280,7 +295,8 @@ async def _write(session: AsyncSession, link: BrokerLink, ours: _Ours, items: li
         confirmed = []
         for item in mine:
             if (item["status"] == MISMATCH and item["streak"] >= CONFIRM_CHECKS
-                    and not await _alerted_today(session, pid, item["key"], now)):
+                    and not await _alerted_today(session, pid, item["key"], now,
+                                                 by_checks=pid not in reachable)):
                 item["alerted"] = True
                 confirmed.append(item)
         row = ReconciliationCheck(portfolio_id=pid, broker_link_id=link.id,
@@ -290,8 +306,9 @@ async def _write(session: AsyncSession, link: BrokerLink, ours: _Ours, items: li
         await session.flush()
         rows.append(row)
         for item in confirmed:
-            record_activity(session, alert_draft(item, row.id, now), portfolio_id=pid,
-                            agent_id=None)
+            if pid in reachable:  # an owner-only portfolio: Telegram only, no agent sees it
+                record_activity(session, alert_draft(item, row.id, now), portfolio_id=pid,
+                                agent_id=None)
             if item["key"] not in telegrammed:
                 telegrammed.add(item["key"])
                 await enqueue(session, source="system", category="system", level="warning",

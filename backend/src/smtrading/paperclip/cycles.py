@@ -6,7 +6,8 @@ The reader (GET only) stores in `app_settings["paperclip_cycles"]` the routines
 with their cron expression and time zone) and the recent routine executions (`GET
 …/issues?originKind=routine_execution`: one issue per execution, `originId` = the
 routine). Expected = the fires of the active routines' enabled schedule triggers from
-local midnight to now; done = the execution issues created today. A fire coalesced
+local midnight to now; done = the execution issues created today (each kept with its
+status and, once closed, when it closed: the sentinel's missed-cycle check). A fire coalesced
 into an execution still open («coalesce_if_active») creates no issue: done can be
 lower than expected without a missed cycle; the page says so."""
 
@@ -19,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from smtrading.paperclip.issues import CLOSED_STATUSES
 from smtrading.risk.models import AppSetting
 
 CYCLES_KEY = "paperclip_cycles"
@@ -137,6 +139,16 @@ def normalize_routines(routines: list[dict]) -> list[dict[str, Any]]:
     return out
 
 
+def _aware(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        ts = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return ts if ts.tzinfo else None
+
+
 def normalize_executions(issues: list[dict], now: datetime) -> list[dict[str, Any]]:
     first = now - timedelta(days=KEEP_EXECUTIONS_DAYS)
     out = []
@@ -150,9 +162,16 @@ def normalize_executions(issues: list[dict], now: datetime) -> list[dict[str, An
             ts = None
         if ts is None or ts.tzinfo is None or ts < first:
             continue
+        status = str(i.get("status") or "")
+        closed = None
+        if status.lower() in CLOSED_STATUSES:
+            closed = next((c for c in (_aware(i.get(k)) for k in
+                                       ("completedAt", "cancelledAt", "updatedAt")) if c),
+                          None)
         out.append({"routine_id": str(i.get("originId") or "") or None,
                     "identifier": str(i.get("identifier") or "")[:32] or None,
-                    "status": str(i.get("status") or ""), "created_at": ts.isoformat()})
+                    "status": status, "created_at": ts.isoformat(),
+                    "closed_at": closed.isoformat() if closed else None})
     return sorted(out, key=lambda e: e["created_at"])[-MAX_EXECUTIONS:]
 
 
