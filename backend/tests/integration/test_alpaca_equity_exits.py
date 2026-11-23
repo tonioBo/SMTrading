@@ -51,6 +51,21 @@ from smtrading.seed import run_seed
 D = Decimal
 SYM = "MSFT"
 NOW = datetime(2026, 11, 23, 15, 0, tzinfo=UTC)  # Monday 10:00 New York: NASDAQ open
+
+
+@pytest.fixture(autouse=True)
+def _frozen_risk_clock(monkeypatch):
+    """The risk check reads the wall clock for a quote's age; the quotes here are stamped
+    NOW (a fixed Monday morning), so the check must see NOW too (else the test breaks
+    two minutes after that time)."""
+    import smtrading.risk.checks as risk_checks
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW if tz is None else NOW.astimezone(tz)
+
+    monkeypatch.setattr(risk_checks, "datetime", _Frozen)
 QTY = D("4.35")
 CFG = {"key_id": "KID-CANARY-0001", "secret_key": "SEC-CANARY-0002"}
 REFUSED = "insufficient qty available for order (requested: 4.35, available: 0)"
