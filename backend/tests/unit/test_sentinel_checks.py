@@ -213,6 +213,25 @@ def test_identity_burst_is_a_critical_event():
     assert f.title == "4 identità di agenti diverse in un solo minuto su MCP (10:41)"
 
 
+def test_role_initials_are_the_same_author():
+    # «PM» is how the Portfolio Manager signs (seen on 23/11): not another agent
+    rows = [(1, "Portfolio Manager", "PM"), (2, "Risk Manager", "RM (sentinella)"),
+            (3, "Execution Supervisor", "PM")]
+    (f,) = checks.author_findings(rows)
+    assert f.key == "author:3"
+
+
+def test_quota_only_attention_is_not_a_problem_to_report():
+    # a provider over its quota is demoted and the router uses the others: no alert
+    view = {"status": "attenzione", "reasons": [
+        "twelvedata: quota giornaliera al 104%, usato per ultimo fino al reset",
+        "yahoo: ha risposto 429 (quota esaurita), usato per ultimo fino al reset"]}
+    assert checks.health_findings(view) == []
+    view["reasons"].append("worker: job «plan closer» in ritardo")
+    (f,) = checks.health_findings(view)
+    assert "plan closer" in f.detail and "twelvedata" not in f.detail
+
+
 def test_decision_author_mismatch():
     rows = [(1, "Risk Manager", "Risk Manager"), (2, "Executor", "il Risk Manager"),
             (3, "Portfolio Manager", "portfolio manager (CEO)")]

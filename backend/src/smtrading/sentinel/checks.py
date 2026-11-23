@@ -1,6 +1,7 @@
 """The sentinel's checks (pure): each turns what was read into `Finding`s. The thresholds
 are the module constants; the job (`sentinel.job`) does the reading."""
 
+import re
 from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -60,6 +61,9 @@ def _local(t: datetime, tz: str) -> str:
     return t.astimezone(ZoneInfo(tz)).strftime("%H:%M")
 
 
+# the health reason of a provider demoted for its quota (admin/system_health.py)
+QUOTA_REASON_SUFFIX = "usato per ultimo fino al reset"
+
 # -- 1. «Salute del sistema» ----------------------------------------------------------------
 
 def health_findings(view: dict[str, Any]) -> list[Finding]:
@@ -67,6 +71,11 @@ def health_findings(view: dict[str, Any]) -> list[Finding]:
     if status not in ("problema", "attenzione"):
         return []
     reasons = [str(r) for r in view.get("reasons") or []]
+    if status == "attenzione":
+        # a provider over its quota is demoted and the others serve: nothing to act on
+        reasons = [r for r in reasons if not r.endswith(QUOTA_REASON_SUFFIX)]
+        if not reasons:
+            return []
     lines = [f"• {r}" for r in reasons[:HEALTH_MAX_REASONS]]
     if len(reasons) > HEALTH_MAX_REASONS:
         lines.append(f"… e altri {len(reasons) - HEALTH_MAX_REASONS}")
@@ -260,8 +269,15 @@ def identity_findings(rows: list[tuple[datetime, int]], tz: str) -> list[Finding
 
 
 def author_mismatch(agent_name: str, by: str) -> bool:
-    first = (agent_name.split() or [""])[0].lower()
-    return bool(first) and first not in by.lower()
+    """`by` names someone else: neither the agent's first name nor its role initials
+    («PM» for Portfolio Manager) appear in it."""
+    words = agent_name.split()
+    first = (words or [""])[0].lower()
+    if not first or first in by.lower():
+        return False
+    initials = "".join(w[0] for w in words).lower()
+    tokens = {t.lower() for t in re.findall(r"[A-Za-zÀ-ÿ]+", by)}
+    return not (len(initials) >= 2 and initials in tokens)
 
 
 def author_findings(rows: list[tuple[int, str, str]]) -> list[Finding]:
