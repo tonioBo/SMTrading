@@ -349,7 +349,9 @@ async def test_identity_burst_and_decision_author_mismatch(env):
     await _sentinel(env, Clock(now)).tick()
     rows = await _outbox(sm)
     assert len(rows) == 1 and rows[0].level == "critical"
-    assert "4 identità di agenti diverse in un solo minuto su MCP" in rows[0].text
+    # none of the four has a Paperclip run at that time (the fake has no runs)
+    assert "Chiamate a SMTrading senza un ciclo in corso" in rows[0].text
+    assert "Analyst, CEO, Executor, Risk Manager" in rows[0].text
     assert "firmata da Executor ma scritta «da» Risk Manager" in rows[0].text
     assert "firmata da Risk Manager" not in rows[0].text
 

@@ -33,7 +33,8 @@ MCP_REPEATED = 5  # non-ok outcomes of one agent on one tool in MCP_WINDOW
 # 5. error logs
 ERRLOG_THRESHOLD = 5  # ERROR/CRITICAL records of one logger in errorlog.WINDOW_S
 # 6. identities
-IDENTITY_BURST = 4  # distinct agents calling MCP within one minute
+IDENTITY_BURST = 6  # without Paperclip runs to compare: distinct agents within one minute
+RUN_SLACK = timedelta(minutes=2)  # a call this close to one of the agent's runs is its own
 SECURITY_WINDOW = timedelta(minutes=30)
 # 7. leaks: global activity types meant for every agent
 GLOBAL_TYPES = frozenset({"kill_switch", "halt.set", "halt.cleared", "instrument.added"})
@@ -257,8 +258,47 @@ def errlog_findings(counts: dict[tuple[str, str], dict[str, Any]]) -> list[Findi
 
 # -- 6. identities and decision authors --------------------------------------------------------
 
+def _in_run(minute: datetime, spans: list[tuple[datetime, datetime | None]]) -> bool:
+    end_of_minute = minute + timedelta(minutes=1)
+    return any(start - RUN_SLACK <= end_of_minute and (end is None or end + RUN_SLACK >= minute)
+               for start, end in spans)
+
+
+def run_spans(agents: list[dict], runs: list[dict]) -> dict[str, list[tuple[datetime, datetime | None]]]:
+    """agent name -> (start, end or None while running) of its Paperclip runs."""
+    names = {str(a.get("id")): str(a.get("name")) for a in agents if a.get("id")}
+    out: dict[str, list[tuple[datetime, datetime | None]]] = {}
+    for r in runs:
+        name = names.get(str(r.get("agentId")))
+        start = _ts(r.get("startedAt") or r.get("createdAt"))
+        if not name or start is None:
+            continue
+        end = _ts(r.get("finishedAt") or r.get("endedAt"))
+        out.setdefault(name, []).append((start, end))
+    return out
+
+
+def unexplained_calls(calls: list[tuple[datetime, str]], tz: str,
+                      spans: dict[str, list[tuple[datetime, datetime | None]]]) -> list[Finding]:
+    """`calls`: (minute, agent name) with MCP calls. Several agents working in the same
+    minute is normal (routines start together); a call from an agent with no Paperclip
+    run of its own around that time is not: someone else is using its identity."""
+    by_minute: dict[datetime, list[str]] = defaultdict(list)
+    for minute, name in calls:
+        if not _in_run(minute, spans.get(name, [])):
+            by_minute[minute].append(name)
+    return [Finding(key=f"identity:{minute.isoformat()}", kind="identity", event=True,
+                    level="critical",
+                    title=f"Chiamate a SMTrading senza un ciclo in corso ({_local(minute, tz)})",
+                    detail=f"{', '.join(sorted(set(names)))}: nessuna esecuzione Paperclip "
+                           "di questi agenti in quel momento. Controlla che ogni agente usi "
+                           "solo il suo token.")
+            for minute, names in sorted(by_minute.items())]
+
+
 def identity_findings(rows: list[tuple[datetime, int]], tz: str) -> list[Finding]:
-    """`rows`: (minute, distinct agents calling MCP in it)."""
+    """`rows`: (minute, distinct agents calling MCP in it); used when Paperclip's runs
+    cannot be read."""
     return [Finding(key=f"identity:{minute.isoformat()}", kind="identity", event=True,
                     level="critical",
                     title=f"{n} identità di agenti diverse in un solo minuto su MCP "

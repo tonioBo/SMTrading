@@ -76,6 +76,8 @@ class SystemSentinel:
         self._tz = tz or get_settings().tz
         self._interval_s = interval_s
         self._health = health or _default_health
+        # this pass's Paperclip agents and runs (None: not read), for the identity check
+        self._paperclip: tuple[list[dict], list[dict]] | None = None
 
     async def run(self) -> None:
         while True:
@@ -110,6 +112,7 @@ class SystemSentinel:
             findings.extend(result)
             covered.update(kinds)
 
+        self._paperclip = None
         await guarded("salute", ("health",), lambda: self._check_health(now))
         await guarded("paperclip", (), lambda: self._check_paperclip(now, covered, errors))
         await guarded("mcp", ("mcp",), lambda: self._check_mcp(now))
@@ -140,6 +143,7 @@ class SystemSentinel:
             try:
                 agents = await client.agents()
                 runs = await client.heartbeat_runs(RUNS_LIMIT)
+                self._paperclip = (agents, runs)
                 out += checks.agent_findings(agents, runs, now)
                 covered.update(("agent", "run"))
             except PaperclipError as e:
@@ -175,6 +179,11 @@ class SystemSentinel:
         since = now - checks.SECURITY_WINDOW
         minute = func.date_trunc("minute", McpAuditLog.created_at)
         async with self._sm() as session:
+            calls = (await session.execute(
+                select(minute, Agent.name).distinct()
+                .join(Agent, Agent.id == McpAuditLog.agent_id)
+                .where(McpAuditLog.created_at >= since,
+                       ~McpAuditLog.method.like("admin:%")))).all()
             bursts = (await session.execute(
                 select(minute, func.count(func.distinct(McpAuditLog.agent_id)))
                 .where(McpAuditLog.created_at >= since, McpAuditLog.agent_id.is_not(None),
@@ -187,7 +196,12 @@ class SystemSentinel:
                 .join(Agent, Agent.id == Decision.agent_id)
                 .where(Decision.created_at >= since, Decision.details.has_key("by"))
                 .order_by(Decision.id))).all()
-        return (checks.identity_findings([(m, int(n)) for m, n in bursts], self._tz)
+        if self._paperclip is not None:
+            identity = checks.unexplained_calls(
+                [(m, n) for m, n in calls], self._tz, checks.run_spans(*self._paperclip))
+        else:
+            identity = checks.identity_findings([(m, int(n)) for m, n in bursts], self._tz)
+        return (identity
                 + checks.author_findings([(int(i), n, b or "") for i, n, b in decisions]))
 
     async def _check_leaks(self, now: datetime, cursor: Any,

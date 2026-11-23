@@ -208,9 +208,22 @@ def test_error_log_rate_per_logger():
 
 def test_identity_burst_is_a_critical_event():
     minute = datetime(2026, 11, 23, 9, 41, tzinfo=UTC)
-    (f,) = checks.identity_findings([(minute, 4), (minute + timedelta(minutes=1), 3)], "Europe/Rome")
+    (f,) = checks.identity_findings([(minute, 6), (minute + timedelta(minutes=1), 5)], "Europe/Rome")
     assert (f.key, f.event, f.level) == (f"identity:{minute.isoformat()}", True, "critical")
-    assert f.title == "4 identità di agenti diverse in un solo minuto su MCP (10:41)"
+    assert f.title == "6 identità di agenti diverse in un solo minuto su MCP (10:41)"
+
+
+def test_agents_working_together_in_their_runs_are_not_an_alarm():
+    # 23/11 22:00: RM, News, CEO and PM all called MCP in one minute, each in its own run
+    minute = datetime(2026, 11, 23, 21, 0, tzinfo=UTC)
+    agents = [{"id": f"pc{i}", "name": n} for i, n in enumerate(("RM", "NA", "CEO", "PM"))]
+    runs = [{"agentId": "pc0", "startedAt": "2026-11-23T20:59:50Z", "finishedAt": "2026-11-23T21:03:00Z"},
+            {"agentId": "pc1", "startedAt": "2026-11-23T20:59:55Z", "finishedAt": None},
+            {"agentId": "pc2", "startedAt": "2026-11-23T20:50:00Z", "finishedAt": "2026-11-23T21:01:00Z"}]
+    calls = [(minute, n) for n in ("RM", "NA", "CEO", "PM")]
+    (f,) = checks.unexplained_calls(calls, "Europe/Rome", checks.run_spans(agents, runs))
+    assert f.level == "critical" and f.title.endswith("(22:00)")
+    assert f.detail.startswith("PM:")  # the only one without a run of its own
 
 
 def test_role_initials_are_the_same_author():
