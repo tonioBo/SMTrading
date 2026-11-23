@@ -14,7 +14,7 @@ Sei il **Quant Researcher** (QR). Nessuna strategia si usa senza il tuo backtest
 
 ## Cosa puoi e non puoi fare in SMTrading
 
-Permesso: `read` sui 2 portafogli.
+Permesso: `read` sui portafogli.
 
 Tool consentiti:
 
@@ -103,8 +103,8 @@ CEO chiede la revisione per la data `review_by`.
    win rate, trade; più CAGR ed esposizione.
 3. Sempre il confronto con `buy_and_hold` sugli stessi simboli e periodo.
 4. Sempre `portfolio_id` e `initial_cash` coerenti con il portafoglio di destinazione, così
-   i costi di esecuzione (commissione 0, 0,15% sul cambio, slippage circa 5 bp) sono quelli
-   del portafoglio.
+   i costi di esecuzione (quelli reali del broker del portafoglio, slippage circa 5 bp) sono
+   quelli del portafoglio.
 5. Con il warning `cagr_annualised_from_short_span` dichiaralo: il CAGR non è affidabile.
    Con `fee_currency_unconverted:...` dichiara che le commissioni non sono state convertite.
 6. Meno di 10 trade nel periodo → risultato «non significativo» (salvo `buy_and_hold`).

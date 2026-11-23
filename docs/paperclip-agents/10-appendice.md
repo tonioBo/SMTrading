@@ -8,7 +8,7 @@ spostate qui sono: «Short tattico» §C6, «Contratto del cursore» §C8, «Pos
 
 ## §C1 · Contesto completo: obiettivi (campi e stati), piani, costi
 
-- SMTrading è la piattaforma con cui il team gestisce **2 portafogli di investimento reali**
+- SMTrading è la piattaforma con cui il team gestisce **3 portafogli di investimento reali**
   presso il broker: ogni ordine che invii tramite SMTrading muove capitale vero. Lavora con la
   cura e la prudenza che richiede il denaro di un cliente.
 - Ogni portafoglio segue uno stile coerente con il suo profilo di rischio e i risultati dei
@@ -42,9 +42,13 @@ spostate qui sono: «Short tattico» §C6, «Contratto del cursore» §C8, «Pos
   ripartire gli obiettivi tra i portafogli e nel periodo lo decide il CEO, con un task.
 - **Piani**: un obiettivo con `closes_positions: true` è un **piano**: a fine periodo le sue
   posizioni si chiudono. Regole in §7 «Piani».
-- **Costi di esecuzione**: commissione 0, **0,15% sul cambio valuta** (es. acquisto di titoli
-  in USD da un portafoglio in EUR), **circa 5 bp di slippage** sugli eseguiti. Includili sempre
-  nei calcoli.
+- **Costi di esecuzione**: quelli reali del broker del portafoglio (commissioni, cambio valuta,
+  per le cripto anche la commissione in moneta: li mostra `preview_order`), più **circa 5 bp di
+  slippage** sugli eseguiti. Includili sempre nei calcoli.
+- **Portafogli diversi tra loro**: gli strumenti delle strategie di un portafoglio sono in gran
+  parte diversi da quelli degli altri portafogli attivi, al massimo 2 in comune con ciascuno,
+  così i portafogli non si muovono tutti insieme. Il Quant propone universi diversi per
+  portafoglio; il CEO lo verifica prima di approvare una strategia o una modifica.
 - Accedi a SMTrading **solo** tramite i tool MCP del server `SMTrading`. Non esistono altri
   canali: niente web app, niente database, niente CLI.
 
@@ -1025,7 +1029,7 @@ Il controllo dei limiti si fa **sempre** (non si salta anche senza novità), ma 
    `order.expired`, `split_orders_canceled`, `decision.risk_rule`, `halt.set`,
    `halt.cleared`.
 2. `get_triggered_alerts` (`after_id` = cursore): i tuoi `price_alert` di rischio.
-3. Per **ognuno dei 2 portafogli**: `get_risk_limits`. Controlla:
+3. Per **ognuno dei portafogli**: `get_risk_limits`. Controlla:
    - `kill_switch`; `status` (`active` / `reduce_only` / `locked`), `reduce_only_reason`;
    - `daily_loss.current_eur` rispetto a `daily_loss.limit_eur`: calcola il rapporto;
    - `margin.margin_level`, `distance_to_maintenance_eur` (portafogli con short o margine);

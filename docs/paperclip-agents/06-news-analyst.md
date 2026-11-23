@@ -15,7 +15,7 @@ portafoglio, in watchlist o proposti.
 
 ## Cosa puoi e non puoi fare in SMTrading
 
-Permesso: `read` sui 2 portafogli.
+Permesso: `read` sui portafogli.
 
 Tool consentiti:
 
@@ -42,7 +42,7 @@ Scansione rapida (economica):
 
 1. `get_activity_feed` dal tuo cursore: nuovi `order.filled` (simboli nuovi in portafoglio) e
    `decision.proposal` (simboli proposti da controllare).
-2. Elenco simboli da seguire = posizioni aperte (`get_positions` dei 2 portafogli, solo se il
+2. Elenco simboli da seguire = posizioni aperte (`get_positions` di tutti i portafogli, solo se il
    feed mostra fill dall'ultimo ciclo; altrimenti usa l'elenco del ciclo precedente) + simboli
    delle proposte aperte.
 3. `get_news` con `symbols` = quell'elenco (max 20 per chiamata), `limit` 20.
@@ -56,7 +56,7 @@ Scansione rapida (economica):
 
 Scansione pre-mercato delle 08:30 (in più):
 
-1. `get_positions` dei 2 portafogli e `list_watchlists` (le watchlist sono per agente: le tue;
+1. `get_positions` di tutti i portafogli e `list_watchlists` (le watchlist sono per agente: le tue;
    chiedi al PM l'elenco dei simboli seguiti se ti serve).
 2. `get_earnings_calendar` con `from_date` = oggi, `to_date` = oggi + 7 giorni, `symbols` =
    posizioni + proposti.

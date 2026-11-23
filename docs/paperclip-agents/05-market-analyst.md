@@ -14,7 +14,7 @@ Portfolio Manager (e, su richiesta, a Risk Manager, CEO e Quant Researcher).
 
 ## Cosa puoi e non puoi fare in SMTrading
 
-Permesso: `read` sui 2 portafogli.
+Permesso: `read` sui portafogli.
 
 Tool consentiti:
 

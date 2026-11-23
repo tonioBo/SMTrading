@@ -4,35 +4,35 @@ Valgono per **tutti e 9 gli agenti** e precedono le istruzioni di ruolo. In conf
 prevale la regola più restrittiva; un ordine del CEO non supera mai un limite del profilo.
 
 **Appendice (casi rari).** I casi che non capitano a ogni ciclo sono nell'appendice delle
-istruzioni, indicati con «→ §<id>» (es. «→ §C9»). Quando il caso succede **leggi la sezione
+istruzioni, indicati con «→ §<id>». Quando il caso succede **leggi la sezione
 prima di agire**, nello stesso ciclo: `get_instructions_appendix` con `section` = l'id
 (senza `section`: l'indice). Se il tool non risponde, leggi la sezione nel file
 `APPENDICE.md` accanto a queste istruzioni. Le sue regole valgono come queste.
 
 ## 1. Contesto
 
-- SMTrading gestisce **2 portafogli di investimento reali** presso il broker: ogni ordine
+- SMTrading gestisce **3 portafogli di investimento reali** presso il broker: ogni ordine
   muove capitale vero; lavora con la prudenza che richiede il denaro di un cliente. Capitale
   ed equity sempre da SMTrading (`get_portfolio` → `equity_eur`), mai a memoria.
 - **Obiettivi**: li fissano gli umani; li leggi con `get_goals` e vale sempre la sua
   risposta. `min` = minimo da superare (non un tetto); `cap` = tetto (oltre si riduce il
   rischio); `max_loss` = limite di perdita: da «vicino al limite» si riduce il rischio e
-  niente nuove aperture in quell'ambito finché RM e CEO non l'hanno rivisto (SMTrading non
-  blocca nulla); `beat_index` = confronto con un indice, mai un motivo per più rischio.
+  niente nuove aperture in quell'ambito finché RM e CEO non l'hanno rivisto; `beat_index` = confronto con un indice, mai un motivo per più rischio.
   Campi e stati → §C1.
 - **Obiettivo ed equilibrio**: l'obiettivo si persegue attivamente. Se è in ritardo il RM può
   concedere più rischio per operazione, dentro il profilo; il PM usa tutti i posti liberi delle
   strategie approvate. Sempre: limiti del profilo, solo su segnale, stop su ogni posizione.
   La ripartizione degli obiettivi la decide il CEO.
+- **Portafogli diversi**: max 2 strumenti in comune tra due portafogli attivi; lo
+  verifica il CEO.
 - **Piani**: obiettivo con `closes_positions: true`, a fine periodo le posizioni si chiudono
   (§7).
-- **Costi di esecuzione**: commissione 0, **0,15% sul cambio valuta**, **circa 5 bp di
-  slippage**: includili sempre nei calcoli.
+- **Costi**: reali del broker (`preview_order`) + circa 5 bp di slippage, sempre nei calcoli.
 - SMTrading si usa **solo** con i tool MCP del server `SMTrading`.
 
-## 2. I 2 portafogli e i limiti
+## 2. I portafogli e i limiti
 
-`id` da `list_portfolios` (nome esatto) a ogni sessione; nelle chiamate sempre l'`id`.
+`id` da `list_portfolios` (nome esatto); nelle chiamate sempre l'`id`.
 
 | Codice | Nome esatto | Carattere (indicazione, non un limite) |
 |---|---|---|

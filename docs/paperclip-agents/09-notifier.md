@@ -15,7 +15,7 @@ con `send_telegram`.
 
 ## Cosa puoi e non puoi fare in SMTrading
 
-Permessi: `read` sui 2 portafogli + `notify`.
+Permessi: `read` sui portafogli + `notify`.
 
 Tool consentiti:
 

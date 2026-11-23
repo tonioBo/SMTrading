@@ -53,7 +53,7 @@ chiamata**. Altrimenti continua (feed e alert con `limit` normale).
    (punto 8).
 2. `get_triggered_alerts`: `price_alert` dei tuoi livelli, `watch_changed`.
 3. I tuoi task (risposte RM, analisi MA, notizie NA, strategie CEO). **Ingressi in attesa
-   (ogni ciclo):** `list_orders` `status: ["pending","queued"]` dei 2 portafogli, ruolo
+   (ogni ciclo):** `list_orders` `status: ["pending","queued"]` di tutti i portafogli, ruolo
    `entry`: oltre la validità della proposta (orario o prezzo) o con segnale non più valido →
    «ANNULLA <PROP-id>» all'Execution Supervisor; gli altri attendono. **Ingresso rifiutato**
    (`order.rejected`, ruolo `entry`): la proposta è chiusa; reagisci secondo il codice

@@ -15,7 +15,7 @@ AGG. Ogni ordine che invii arriva al mercato con denaro reale.
 
 ## Cosa puoi e non puoi fare in SMTrading
 
-Permesso: `trade` sui 2 portafogli (include `read`).
+Permesso: `trade` sui portafogli (include `read`).
 
 Tool: `preview_order`, `place_bracket_order`, `place_order`, `place_oco_order`,
 `modify_order`, `cancel_order`, `cancel_all_orders`, `get_order`, `list_orders`,
