@@ -126,7 +126,8 @@ difference is recorded in the activity feed; from *Riconcilia ora* it is sent to
 only when it differs from the portfolio's previous reconciliation). The periodic
 `reconcile_all` (scheduler, every 5 minutes) records it quietly, never on Telegram: the
 owner's alerts on broker differences come only from the reconciliation job
-(`smtrading.reconciliation`).
+(`smtrading.reconciliation`). A portfolio no agent can access (the owner's alone) gets no
+activity row at all: a changed difference goes to the owner on Telegram instead.
 """
 
 import asyncio
@@ -145,6 +146,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from smtrading.activity.mapping import ActivityDraft
 from smtrading.activity.models import ActivityLevel
 from smtrading.activity.service import record_activity
+from smtrading.agents.access import portfolios_with_agents
 from smtrading.brokers.base import (
     BROKER_REJECTED_MESSAGE,
     BrokerAdapter,
@@ -233,6 +235,7 @@ from smtrading.risk.settings import (
     get_stale_threshold,
     is_kill_switch_on,
 )
+from smtrading.telegram.outbox import enqueue
 
 log = logging.getLogger("smtrading.brokers.sync")
 
@@ -1690,7 +1693,9 @@ async def reconcile(
     strings). Portfolios sharing a link share the broker account, so `ours` is their
     sum. Nothing is corrected. A difference is always recorded in the activity feed; with
     `notify` (default) it is also sent to Telegram when it changed since the previous
-    reconciliation, without it never. Reads, broker calls and writes use separate sessions:
+    reconciliation, without it never. A portfolio no agent can access gets no activity
+    row: a difference changed since its previous reconciliation is sent to Telegram
+    (category system) whatever `notify`. Reads, broker calls and writes use separate sessions:
     no transaction is open during network I/O. A client the adapter needed of its own
     (a live link's LiveClient) is closed after the broker calls."""
     async with contextlib.AsyncExitStack() as stack:
@@ -1730,8 +1735,16 @@ async def reconcile(
     async with sessionmaker() as session:
         if diffs:
             previous = await _previous_diffs(session, link_id, portfolio_ids)
+            reachable = await portfolios_with_agents(session, portfolio_ids)
             noun = "differenza" if len(diffs) == 1 else "differenze"
             for row in rows:
+                if row.portfolio_id not in reachable:  # the owner's alone: no agent sees it
+                    if previous.get(row.portfolio_id) != diffs:
+                        await enqueue(session, source="system", category="system",
+                                      level="warning",
+                                      text=await _owner_diff_text(session, row.portfolio_id,
+                                                                  diffs))
+                    continue
                 # only a change is sent to Telegram; a repeat is recorded quietly
                 record_activity(session, ActivityDraft(
                     "broker.reconciliation_diff", ActivityLevel.warning,
@@ -1742,6 +1755,20 @@ async def reconcile(
         session.add_all(rows)
         await session.commit()
     return rows
+
+
+OWNER_DIFFS_SHOWN = 5
+
+
+async def _owner_diff_text(session: AsyncSession, portfolio_id: UUID, diffs: list[dict]) -> str:
+    name = await session.scalar(select(Portfolio.name).where(Portfolio.id == portfolio_id))
+    noun = "differenza" if len(diffs) == 1 else "differenze"
+    shown = "; ".join(f"{d['symbol']}: nostra {d['ours']}, broker {d['broker']}"
+                      for d in diffs[:OWNER_DIFFS_SHOWN])
+    more = f" e altre {len(diffs) - OWNER_DIFFS_SHOWN}" if len(diffs) > OWNER_DIFFS_SHOWN else ""
+    return (f"⚠️ Riconciliazione broker — {name or portfolio_id}: {len(diffs)} {noun} "
+            f"({shown}{more}). Nessuna correzione automatica; nessun agente ha accesso a "
+            "questo portafoglio: avviso solo a te.")
 
 
 async def _previous_diffs(

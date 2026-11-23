@@ -34,6 +34,7 @@ from smtrading.events import discard_post_commit, notify, queue_event
 from smtrading.portfolios.models import PortfolioStatus
 from smtrading.portfolios.service import create_portfolio
 from smtrading.seed import run_seed
+from smtrading.telegram.models import TelegramOutbox
 
 D = Decimal
 OPEN = datetime(2026, 11, 10, 15, 0, tzinfo=UTC)  # Tuesday: NASDAQ open
@@ -183,12 +184,18 @@ async def maker(fresh_db, redis_url, monkeypatch):
     await engine.dispose()
 
 
-async def _linked(maker, n=1):
+async def _linked(maker, n=1, *, agent=True):
+    """`n` portfolios on one fake link, each assigned to an agent (`agent=False`: the
+    owner's alone, no agent can access them)."""
     async with maker() as s:
         pids = [(await _portfolio(s)).id for _ in range(n)]
         link = await create_link(s, f"L-{uuid.uuid4().hex[:6]}", "fake_activity_test", {})
         for pid in pids:
             await link_portfolio(s, pid, link.id)
+        if agent:
+            a, _ = await create_agent(s, f"rec-{uuid.uuid4().hex[:6]}")
+            for pid in pids:
+                await assign_portfolio(s, a.id, pid, "read")
         await s.commit()
     return pids, link.id
 
@@ -250,6 +257,39 @@ async def test_periodic_reconcile_all_is_never_sent_to_telegram(maker):
     async with maker() as s:
         link = await s.get(BrokerLink, link_id)
         assert (link.status, link.last_error) == ("ok", None)
+
+
+async def _owner_texts(maker) -> list[str]:
+    async with maker() as s:
+        return list(await s.scalars(
+            select(TelegramOutbox.text).where(TelegramOutbox.text.like("%Riconciliazione broker —%"))
+            .order_by(TelegramOutbox.id)))
+
+
+@pytest.mark.parametrize("periodic", [False, True])
+async def test_reconcile_of_a_portfolio_no_agent_can_access_tells_only_the_owner(
+        maker, periodic):
+    """The owner's test portfolio: no broker.reconciliation_diff row (no agent may ever
+    see it), a changed difference on Telegram instead (also from the periodic job)."""
+    _, link_id = await _linked(maker, agent=False)
+
+    async def run():
+        if periodic:
+            await reconcile_all(maker, None)
+        else:
+            await reconcile(maker, link_id, None)
+
+    _ReconcileAdapter.positions = {"AAPL": D(5)}
+    await run()
+    await run()  # the same difference: told once
+    _ReconcileAdapter.positions = {"AAPL": D(5), "MSFT": D(1)}
+    await run()
+    assert await _diff_rows(maker) == []
+    texts = await _owner_texts(maker)
+    assert len(texts) == 2
+    assert "1 differenza (AAPL: nostra 0, broker 5)" in texts[0]
+    assert "nessun agente ha accesso a questo portafoglio" in texts[0]
+    assert "2 differenze" in texts[1]
 
 
 async def test_reconcile_compares_each_portfolio_with_its_previous(maker):

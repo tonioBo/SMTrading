@@ -29,7 +29,9 @@ not filled are not positions.
 
 Each new problem sends one Telegram warning (category `system`, never the activity feed
 the agents read) and, when the Paperclip reader is configured and enabled, one Paperclip
-issue per position assigned to the «Risk Manager» agent («PROTEGGI · …»). The open
+issue per position assigned to the «Risk Manager» agent («PROTEGGI · …»). A portfolio no
+agent can access (no `agent_portfolios` row: the owner's alone) gets the Telegram warning
+only, never an issue: nothing of it reaches the agents. The open
 problems live in `app_settings["protection_alarm"]`, so a restart sends nothing again; a
 problem no longer found is cleared, and alerts again if it comes back. A failed issue is
 tried again on the next runs (at most ISSUE_ATTEMPTS), its error kept in the state and
@@ -54,6 +56,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from smtrading.agents.access import portfolios_with_agents
 from smtrading.common.config import get_settings
 from smtrading.common.errors import SMTError
 from smtrading.common.money import decimal_to_str
@@ -237,9 +240,12 @@ def evaluate(pos: PositionView, orders: list[OrderView], now: datetime,
 
 # -- texts ------------------------------------------------------------------------------
 
-def telegram_text(pos: PositionView, problem: Problem) -> str:
+OWNER_ONLY_NOTE = " (nessun agente ha accesso a questo portafoglio: avviso solo a te)"
+
+
+def telegram_text(pos: PositionView, problem: Problem, *, owner_only: bool = False) -> str:
     return (f"⚠️ Posizione senza protezione — {pos.portfolio_name} · {pos.symbol}: "
-            f"{problem.text}")
+            f"{problem.text}" + (OWNER_ONLY_NOTE if owner_only else ""))
 
 
 def issue_title(pos: PositionView) -> str:
@@ -423,6 +429,8 @@ class ProtectionAlarm:
         now = self._clock()
         async with self._sm() as session:
             findings, skipped = await find_problems(session, now, self._zone)
+            reachable = await portfolios_with_agents(
+                session, {f.position.portfolio_id for f in findings})
         current = {Problem.key(f.position, p.kind): (f, p) for f in findings for p in f.problems}
         async with self._sm() as session, session.begin():
             state = await load_state(session, for_update=True)
@@ -433,26 +441,31 @@ class ProtectionAlarm:
                 if key in opened:
                     continue
                 await enqueue(session, source="system", category="system", level="warning",
-                              text=telegram_text(f.position, p))
+                              text=telegram_text(
+                                  f.position, p,
+                                  owner_only=f.position.portfolio_id not in reachable))
                 opened[key] = {"since": now.isoformat(), "issue": None, "attempts": 0}
                 log.warning("position without protection: %s %s: %s",
                             f.position.portfolio_name, f.position.symbol, p.kind)
             state["last_run_at"] = now.isoformat()
-            pending = self._pending(state, current)
+            pending = self._pending(state, current, reachable)
             await save_state(session, state)
         if pending:
             await self._create_issues(pending, current)
 
     @staticmethod
-    def _pending(state: dict, current: dict) -> dict[str, list[str]]:
+    def _pending(state: dict, current: dict, reachable: set[uuid.UUID]) -> dict[str, list[str]]:
         """Position key -> problem keys still waiting for an issue; a position that
-        already has an open issue lends it to its new problems (no second «PROTEGGI»)."""
+        already has an open issue lends it to its new problems (no second «PROTEGGI»).
+        A portfolio no agent can access (not in `reachable`) never waits for one."""
         opened = state["open"]
         issued = {_pos_key(k): e["issue"] for k, e in opened.items() if e.get("issue")}
         out: dict[str, list[str]] = defaultdict(list)
         for key, entry in opened.items():
             if entry.get("issue") or key not in current:
                 continue
+            if current[key][0].position.portfolio_id not in reachable:
+                continue  # the owner's alone: Telegram only
             if _pos_key(key) in issued:
                 entry["issue"] = issued[_pos_key(key)]
                 continue
