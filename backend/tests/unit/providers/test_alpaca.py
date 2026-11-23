@@ -11,6 +11,8 @@ Alpaca Market Data docs, checked 2026-11-13.
 - alpaca_ws_crypto_quote: https://docs.alpaca.markets/docs/real-time-crypto-pricing-data
 """
 
+import asyncio
+import contextlib
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -444,3 +446,59 @@ async def test_day_changes_from_snapshots(provider):
     assert aapl.ts == datetime(2026, 11, 19, 19, 59, 32, 22194, tzinfo=UTC)
     assert got["BTC-USD"].change_pct == Decimal("-3.125")
     assert AlpacaProvider.day_change_chunk == 200 and AlpacaProvider.day_change_cost == 1
+
+
+async def test_stream_burst_with_a_slow_consumer_is_coalesced_not_queued(monkeypatch):
+    """Live 23/11 from the US open: the consumer (guard + cache write per tick) was slower
+    than the burst, websockets' queue filled, reading paused, pongs went unread and the
+    keepalive dropped the socket about once a minute. The socket is now drained by its own
+    task: a slow consumer gets the latest merged quote per symbol, not the backlog."""
+    import smtrading.marketdata.providers.alpaca as alpaca_mod
+    from smtrading.marketdata.wscoalesce import PING_TIMEOUT_S
+
+    n = 300
+    opened: list[dict] = []
+    real_connect = alpaca_mod.websockets.connect
+
+    def connect(url, **kw):
+        opened.append(kw)
+        return real_connect(url, **kw)
+
+    monkeypatch.setattr(alpaca_mod.websockets, "connect", connect)
+    done = asyncio.Event()
+
+    async def handler(ws):
+        await ws.send('[{"T":"success","msg":"connected"}]')
+        await ws.recv()
+        await ws.send('[{"T":"success","msg":"authenticated"}]')
+        await ws.recv()
+        await ws.send('[{"T":"q","S":"SPY","bp":700,"ap":701,"t":"2026-11-23T14:30:00Z"}]')
+        for i in range(1, n + 1):  # the opening burst: trades and quotes, one frame each
+            await ws.send(f'[{{"T":"t","S":"SPY","p":{700 + i},"t":"2026-11-23T14:30:{i % 60:02d}Z"}},'
+                          f'{{"T":"q","S":"QQQ","bp":{600 + i},"ap":{601 + i},'
+                          f'"t":"2026-11-23T14:30:{i % 60:02d}Z"}}]')
+        await done.wait()
+
+    async with websockets.serve(handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        async with httpx.AsyncClient() as http:
+            p = AlpacaProvider({**CONFIG, "ws_url": f"ws://127.0.0.1:{port}"}, http)
+            seen = []
+
+            async def consume():
+                async with contextlib.aclosing(p.stream([("SPY", "SPY"), ("QQQ", "QQQ")])) as qs:
+                    async for q in qs:
+                        seen.append(q)
+                        await asyncio.sleep(0.01)  # slow consumer
+                        latest = {s.symbol: s for s in seen}
+                        if (latest.get("SPY") and latest["SPY"].last == 700 + n
+                                and latest.get("QQQ") and latest["QQQ"].bid == 600 + n):
+                            return latest
+
+            latest = await asyncio.wait_for(consume(), 10)
+            done.set()
+    assert opened and opened[0]["ping_timeout"] == PING_TIMEOUT_S >= 60
+    assert len(seen) < n  # coalesced: not every tick of the burst
+    # the merge survives the coalescing: SPY keeps the quote's bid/ask under the last trade
+    assert (latest["SPY"].bid, latest["SPY"].ask) == (Decimal(700), Decimal(701))
+    assert latest["QQQ"].ask == Decimal(601 + n)

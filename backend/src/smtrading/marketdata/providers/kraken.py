@@ -9,6 +9,7 @@ from smtrading.instruments.models import AssetClass
 from smtrading.marketdata.provider import DataProvider
 from smtrading.marketdata.registry import register
 from smtrading.marketdata.types import Bar, Capability, Quote, Timeframe
+from smtrading.marketdata.wscoalesce import PING_TIMEOUT_S, coalesced
 
 BASE_URL = "https://api.kraken.com/0/public"
 WS_URL = "wss://ws.kraken.com/v2"
@@ -174,15 +175,18 @@ class KrakenProvider(DataProvider):
         reverse = {self.ws_symbol(canonical): canonical for canonical, _ in items}
         url = self.config.get("ws_url", WS_URL)
         subscribe = {"method": "subscribe", "params": {"channel": "ticker", "symbol": list(reverse)}}
+
+        async def handle(raw) -> list[Quote]:
+            msg = json.loads(raw, parse_float=Decimal)
+            if msg.get("method") == "subscribe" and msg.get("success") is False:
+                raise ConnectionError(f"kraken subscribe rejected: {msg.get('error')}")
+            return parse_kraken_ws(msg, reverse)
+
         try:
-            async with websockets.connect(url) as ws:
+            async with websockets.connect(url, ping_timeout=PING_TIMEOUT_S) as ws:
                 await ws.send(json.dumps(subscribe))
-                async for raw in ws:
-                    msg = json.loads(raw, parse_float=Decimal)
-                    if msg.get("method") == "subscribe" and msg.get("success") is False:
-                        raise ConnectionError(f"kraken subscribe rejected: {msg.get('error')}")
-                    for quote in parse_kraken_ws(msg, reverse):
-                        yield quote
+                async for quote in coalesced(ws, handle):
+                    yield quote
         except (TimeoutError, websockets.WebSocketException, OSError) as exc:
             raise ConnectionError(f"kraken websocket: {exc}") from exc
         raise ConnectionError("kraken websocket closed")

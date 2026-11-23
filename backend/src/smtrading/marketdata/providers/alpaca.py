@@ -9,6 +9,7 @@ from smtrading.instruments.models import AssetClass
 from smtrading.marketdata.provider import DataProvider, StreamRefused, StreamSymbolLimit
 from smtrading.marketdata.registry import register
 from smtrading.marketdata.types import Bar, Capability, DayChange, NewsItem, Quote, Timeframe
+from smtrading.marketdata.wscoalesce import PING_TIMEOUT_S, coalesced
 
 BASE_URL = "https://data.alpaca.markets"
 WS_BASE = "wss://stream.data.alpaca.markets"
@@ -287,28 +288,31 @@ class AlpacaProvider(DataProvider):
         # trades too (free IEX and crypto feeds): quotes alone carry no last price
         subscribe = {"action": "subscribe", "quotes": list(reverse), "trades": list(reverse)}
         merged: dict[str, Quote] = {}
+
+        async def handle(raw) -> list[Quote]:
+            frame = json.loads(raw, parse_float=Decimal)
+            msgs = frame if isinstance(frame, list) else [frame]
+            for msg in msgs:
+                kind = msg.get("T")
+                if kind == "error":
+                    text = f"alpaca stream error {msg.get('code')}: {msg.get('msg')}"
+                    if msg.get("code") == SYMBOL_LIMIT:
+                        raise StreamSymbolLimit(text)
+                    if msg.get("code") == CONNECTION_LIMIT:
+                        raise StreamRefused(
+                            text + " (one socket per key: another session holds it)",
+                            retry_after_s=CONNECTION_LIMIT_RETRY_S)
+                    raise ConnectionError(text)
+                if kind == "success" and msg.get("msg") == "connected":
+                    await ws.send(json.dumps(auth))
+                elif kind == "success" and msg.get("msg") == "authenticated":
+                    await ws.send(json.dumps(subscribe))
+            return parse_alpaca_ws(msgs, reverse, merged)
+
         try:
-            async with websockets.connect(url) as ws:
-                async for raw in ws:
-                    frame = json.loads(raw, parse_float=Decimal)
-                    for msg in frame if isinstance(frame, list) else [frame]:
-                        kind = msg.get("T")
-                        if kind == "error":
-                            text = f"alpaca stream error {msg.get('code')}: {msg.get('msg')}"
-                            if msg.get("code") == SYMBOL_LIMIT:
-                                raise StreamSymbolLimit(text)
-                            if msg.get("code") == CONNECTION_LIMIT:
-                                raise StreamRefused(
-                                    text + " (one socket per key: another session holds it)",
-                                    retry_after_s=CONNECTION_LIMIT_RETRY_S)
-                            raise ConnectionError(text)
-                        if kind == "success" and msg.get("msg") == "connected":
-                            await ws.send(json.dumps(auth))
-                        elif kind == "success" and msg.get("msg") == "authenticated":
-                            await ws.send(json.dumps(subscribe))
-                    msgs = frame if isinstance(frame, list) else [frame]
-                    for quote in parse_alpaca_ws(msgs, reverse, merged):
-                        yield quote
+            async with websockets.connect(url, ping_timeout=PING_TIMEOUT_S) as ws:
+                async for quote in coalesced(ws, handle):
+                    yield quote
         except (StreamRefused, StreamSymbolLimit):
             raise
         except (TimeoutError, websockets.WebSocketException, OSError) as exc:
