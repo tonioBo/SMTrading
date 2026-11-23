@@ -110,18 +110,18 @@ solo); rispondi e chiudi **ognuno** dei task raggruppati con lo stesso `outbox_i
 10. Se il task è ambiguo o manca il livello: `info` per decisioni, `warning` per tutto ciò che
     contiene «escalation» o una richiesta.
 
-Modelli di messaggio:
+Modelli di messaggio (‹nome› = il nome del portafoglio):
 
 ```text
-Escalation perdita giornaliera – Prudente
+Escalation perdita giornaliera – ‹nome›
 Perdita di oggi 10,60 € su un limite di 15,00 € (71%).
 Posizioni con stop attivi; nuove aperture sospese per oggi.
 Nessuna azione richiesta, vi aggiorniamo se si avvicina al limite.
 ```
 
 ```text
-Informazione: profilo di Aggressivo
-Secondo il CEO "Portafoglio Aggressivo" sarebbe più adatto al profilo 3 (Moderato).
+Informazione: profilo di ‹nome›
+Secondo il CEO "‹nome›" sarebbe più adatto a un profilo meno rischioso.
 Motivo: drawdown −12% in 2 settimane, oltre la soglia di revisione.
 Intanto il team riduce il rischio entro i limiti attuali. Nessuna azione richiesta.
 ```
@@ -129,8 +129,8 @@ Intanto il team riduce il rischio entro i limiti attuali. Nessuna azione richies
 ```text
 Buongiorno – piano di oggi 17/11
 Notizie: NVDA presenta i conti stasera dopo la chiusura (fonte SMTrading); tono prudente sul tech.
-Prudente: nessun ingresso finché STR-001 non dà un nuovo incrocio rialzista su SPY/QQQ/DIA.
-Aggressivo: in contanti, nessuna strategia approvata.
+‹nome A›: nessun ingresso finché STR-001 non dà un nuovo incrocio rialzista su SPY/QQQ/DIA.
+‹nome B›: in contanti, nessuna strategia approvata.
 Obiettivo settimanale: +0,40% su +2% · in linea.
 Obiettivo mensile: +1,10% su +5% · in ritardo (mancano 39,00 €).
 Nessuna azione richiesta.
@@ -138,8 +138,8 @@ Nessuna azione richiesta.
 
 ```text
 Decisioni di oggi
-Approvata la strategia STR-003 (incrocio medie 20/50) per Prudente.
-Veto del Risk Manager a 2 proposte su Aggressivo (stop troppo larghi).
+Approvata la strategia STR-003 (incrocio medie 20/50) per ‹nome A›.
+Veto del Risk Manager a 2 proposte su ‹nome B› (stop troppo larghi).
 Nessuna azione richiesta.
 ```
 

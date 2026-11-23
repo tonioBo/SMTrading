@@ -61,7 +61,7 @@ Principi applicati (decisioni del titolare del 18/11, `00` §2 e §4):
 | C5 | Prezzo after-hours/pre-market già oltre lo stop | RM (`extended`) | annota la perdita stimata; **nessun ordine e nessun task** | nessuna esecuzione fuori seduta | **Lacuna corretta** (era «valuta con il PM»): `03` sentinella 4 |
 | C6 | Chiusura parziale (CHIUSURA parziale, RIDUZIONE RISCHIO, rischio) | RM, ES | CHIUDI con stop/target per la qty restante; ES rimette subito un OCO sulla qty restante | `close_position` annulla **tutte** le uscite del simbolo | **Lacuna corretta**: `00` §7 «Posizioni» 2, `03` CHIUSURA, `04` CHIUDI 3, `#41` |
 | C7 | Chiusura chiesta a mercato chiuso (22:15, weekend) | ES, poi allarme di protezione → RM | nessun OCO sopra una chiusura in coda; PROTEGGI chiuso con l'id della chiusura | chiusura `queued` fino all'apertura, uscite già annullate, allarme «senza stop» | **Lacuna corretta**: `00` §7 «Posizioni» 3, `03` PROTEGGI, `04` PROTEGGI 1 |
-| C8 | Posizione intraday AGG a fine giornata | PM (ultimo ciclo ≥ 30 min prima), RM (riserva) | CHIUSURA entro 16:05 UE / 21:05 USA (orari reali); negli ultimi 30 min PROTEGGI → CHIUDI invece dell'OCO | allarme `tif day` negli ultimi 30 min | **Lacuna corretta**: `02` regola 5, `03` sentinella 7 e PROTEGGI |
+| C8 | Posizione intraday a fine giornata | PM (ultimo ciclo ≥ 30 min prima), RM (riserva) | CHIUSURA entro 16:05 UE / 21:05 USA (orari reali); negli ultimi 30 min PROTEGGI → CHIUDI invece dell'OCO | allarme `tif day` negli ultimi 30 min | **Lacuna corretta**: `02` regola 5, `03` sentinella 7 e PROTEGGI |
 | C9 | Chiusura discrezionale (tesi invalidata, notizia) | PM | CHIUSURA al RM | — | Coperto: `02` regola 10 |
 | C10 | Piano in scadenza (`closes_positions: true`, ultima seduta prima di `period_end`) | PM, finestre pre-chiusura (17:05 UE, 21:05 USA; crypto ultimo ciclo) | CHIUSURA «fine piano» di **ogni** posizione, in utile o in perdita → RM approva senza veto → CHIUDI all'ES; ingressi solo con il tempo di funzionare | — | Coperto: `00` §7 «Piani», §C11 2 e 5, `02` regola 11, §PM5, `03` CHIUSURA, `#47` |
 | C11 | Posizione di un piano concluso ancora aperta (anche in perdita) | PM, RM (`plan_closing: true`, `plan.ended`) | nessuna aggiunta, inversione né stop allargato; a mercato aperto il RM può mandare il CHIUDI | rifiuta gli aumenti (`RISK_LIMIT_EXCEEDED`, `plan_grace`, «posizione in chiusura per fine piano»); annulla gli ingressi aperti | Coperto: §C11 3-4, §PM5, §RM3, `#48` |
@@ -72,12 +72,12 @@ Principi applicati (decisioni del titolare del 18/11, `00` §2 e §4):
 | # | Scenario | Chi se ne accorge | Cosa deve succedere | SMTrading da sé | Copertura |
 |---|---|---|---|---|---|
 | D1 | Stesso simbolo in due strategie dello stesso portafoglio | PM, RM | nessun secondo ingresso; l'uscita segue la strategia che l'ha aperta | posizione unica, prezzo medio | **Lacuna corretta**: `02` sentinella 8, `03` PROPOSTA 6 |
-| D2 | Stesso simbolo in due portafogli (es. QQQ in una strategia di PRU e in una di AGG) | PM | posizioni separate, ognuna con la sua strategia e le sue uscite; concentrazione valutata dal RM per portafoglio | posizioni separate | **Lacuna corretta** (chiarito): `02` sentinella 8 |
+| D2 | Stesso simbolo in due portafogli (es. QQQ in una strategia di ‹A› e in una di ‹B›) | PM | posizioni separate, ognuna con la sua strategia e le sue uscite; concentrazione valutata dal RM per portafoglio | posizioni separate | **Lacuna corretta** (chiarito): `02` sentinella 8 |
 | D3 | Posizione senza strategia (ordine manuale degli amministratori) | PM (09:05, 15:35), allarme di protezione | il PM decide tenere/chiudere e lo scrive; mai aumentarla; se senza stop, PROTEGGI con livelli del RM | allarme di protezione se manca lo stop | **Lacuna corretta**: `02` sentinella 8 |
 | D4 | Strategia sospesa o revocata con posizioni aperte | CEO, PM | CEO: `details.open_positions` mantieni/chiudi + «STRATEGIA SOSPESA» al PM; PM: via alert, ANNULLA ingressi, posizioni secondo decisione | la strategia esce dai segnali | **Lacuna corretta**: `01` revisione 6, `02` «STRATEGIA SOSPESA», `#36` |
 | D5 | Strategia modificata (nuovi parametri) | PM | nuovi parametri da subito, anche per l'uscita | — | **Lacuna corretta**: `02` sentinella 8 |
 | D6 | `review_by` scaduto o vicino | CEO (venerdì), PM (checklist) | RIVEDI STRATEGIA al QR; niente nuovi ingressi finché non rivista; posizioni gestite | — | **Lacuna corretta**: `01` revisione 6, `07` RIVEDI, `#37` |
-| D7 | Short tattico (ora possibile su entrambi i profili) | CEO, PM, RM | approvazione CEO, metà della dimensione di un acquisto, revisione ogni 2 settimane; su PRU solo eccezionale | `SHORT_NOT_ALLOWED` se profilo o strumento non lo consentono | **Lacuna corretta** (non più «solo AGG»): `00` §4, `01` regola 3, `02` regola 4, `03` regola 4 |
+| D7 | Short tattico (su ogni portafoglio il cui profilo lo consente) | CEO, PM, RM | approvazione CEO, metà della dimensione di un acquisto, revisione ogni 2 settimane; con un carattere a rischio piccolo solo eccezionale | `SHORT_NOT_ALLOWED` se profilo o strumento non lo consentono | **Lacuna corretta** (non più limitato a un portafoglio): `00` §4, `01` regola 3, `02` regola 4, `03` regola 4 |
 
 ## E. Eventi societari
 
@@ -107,6 +107,7 @@ Principi applicati (decisioni del titolare del 18/11, `00` §2 e §4):
 | F13 | Portafoglio bloccato (`PORTFOLIO_LOCKED`) | RM, ES | nessun ordine possibile; escalation `critical` se ci sono posizioni | **non esegue nemmeno gli stop** | **Lacuna corretta**: `00` §7 e §12, `03` PROTEGGI |
 | F14 | Portafoglio archiviato | tutti (`NOT_FOUND`) | rileggi `list_portfolios`, escalation | invisibile agli agenti | Coperto: `00` §12 |
 | F15 | Margine in calo / short in perdita | RM | chiusure parziali (con riprotezione) | `margin_warning`, liquidazione | Coperto: `03` regola 17 |
+| F16 | Portafoglio aggiunto o tolto dagli amministratori | tutti (`list_portfolios` a ogni ciclo) | il nuovo si tratta come gli altri dal primo ciclo (codice `code`, carattere `risk_profile.description`, limiti dal profilo; senza strategie il CEO avvia la RICERCA STRATEGIA); quello che non compare più non si usa | il codice si imposta nella pagina del portafoglio | **Lacuna corretta** (istruzioni senza elenco dei portafogli): `00` §2, appendice §C2 |
 
 ## G. Dati di mercato
 
@@ -180,7 +181,7 @@ decide e su quale base (scritto nei file indicati):
 | Disaccordo PM/RM dopo due veti | **CEO** | regole, limiti, criteri della strategia | `01` task 5 |
 | Fine della validità di una proposta serale (ingresso `limit` + `valid_until`) | **PM** (il RM verifica) | gap all'apertura | `02` «Chiusura USA» 2 |
 | Chiusura delle posizioni intraday | **PM**, riserva **RM** | orari reali di chiusura | `02` regola 5, `03` sentinella 7 |
-| Short tattico su PRU | **CEO** e **RM** (eccezionale) | carattere prudente | `00` §4 |
+| Short tattico con un carattere a rischio piccolo per operazione | **CEO** e **RM** (eccezionale) | carattere (`risk_profile.description`) | `00` §4 |
 | Ripresa dopo `LIVE_NOT_ARMED` | **ES/RM** al giorno di borsa successivo | esito di `preview_order` e dell'invio | `00` §12 |
 | Lezioni trasformate in regole del team, loro ritiro | **CEO** (chiunque registra le lezioni) | lezioni, audit, risultati; mai oltre profilo, kill switch, halt | `00` §9, `01`, `08` |
 

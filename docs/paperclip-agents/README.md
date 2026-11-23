@@ -1,8 +1,10 @@
 # Istruzioni degli agenti Paperclip per SMTrading
 
 Questa cartella contiene le istruzioni di ruolo, in italiano, dei 9 agenti Paperclip che
-lavorano sui 2 portafogli di SMTrading («Portafoglio Prudente» e «Portafoglio Aggressivo»,
-500 € ciascuno) tramite MCP. Il collegamento tecnico
+lavorano sui portafogli di SMTrading tramite MCP. Le istruzioni **non elencano i
+portafogli**: a ogni ciclo gli agenti leggono `list_portfolios` (i portafogli assegnati, con
+il codice `code`, il profilo di rischio `risk_profile` e il permesso), quindi un portafoglio
+aggiunto o archiviato dagli amministratori viene visto senza cambiare le istruzioni (§5). Il collegamento tecnico
 (token, rete, server MCP) è descritto in [`../paperclip-mcp.md`](../paperclip-mcp.md).
 
 | File | Agente | Permesso SMTrading | Modalità |
@@ -46,8 +48,9 @@ sui cicli) e il file serve all'agente solo se il tool non risponde.
 In SMTrading (pagina *Agenti* o CLI, vedi `../paperclip-mcp.md`):
 
 - un token per ogni agente;
-- `read` su `Portafoglio Prudente` e `Portafoglio Aggressivo` per tutti; `trade` su entrambi
-  **solo** per l'Execution Supervisor;
+- `read` su ogni portafoglio su cui il team lavora per tutti; `trade` **solo** per
+  l'Execution Supervisor (un agente vede solo i portafogli che gli sono assegnati: un
+  portafoglio nuovo va assegnato a tutti e 9);
 - `notify` **solo** per il Notifier (`python -m smtrading.cli agent notify Notifier on`);
 - permesso **halt** **solo** per il CEO SMTrading (necessario per `set_trading_halt`; si concede
   dalla scheda dell'agente). Un halt attivato da un amministratore nella web app può essere
@@ -181,12 +184,12 @@ Il modo principale di lavorare è il task: l'utente (o il CEO) crea un task e gl
 passano sotto-task fino al risultato. Esempio di primo avvio, da assegnare al **CEO SMTrading**:
 
 ```text
-Titolo: Avvio trading su Portafoglio Prudente e Portafoglio Aggressivo
+Titolo: Avvio trading sui portafogli
 Assegnatario: CEO SMTrading
 Descrizione:
-Obiettivo: avviare i 2 portafogli con uno stile coerente col profilo e confrontarne i risultati.
-1. Chiedi al Quant Researcher almeno una strategia backtestata per portafoglio
-   (PRU lungo/medio termine su ETF e large cap; AGG swing + intraday).
+Obiettivo: avviare i portafogli di list_portfolios con uno stile coerente col loro carattere
+(descrizione del profilo di rischio) e confrontarne i risultati.
+1. Chiedi al Quant Researcher almeno una strategia backtestata per portafoglio.
 2. Approva solo strategie con backtest ≥ 1 anno di barre giornaliere.
 3. Chiedi al Portfolio Manager un'allocazione per ciascun portafoglio e approvala.
 4. Quando le allocazioni sono approvate, il PM può proporre i primi trade (flusso PM → RM → ES).
@@ -195,7 +198,7 @@ Obiettivo: avviare i 2 portafogli con uno stile coerente col profilo e confronta
 
 Cosa succede dopo (senza altri interventi):
 
-1. il CEO crea 2 task «RICERCA STRATEGIA» per il Quant Researcher (uno per portafoglio);
+1. il CEO crea un task «RICERCA STRATEGIA» per il Quant Researcher per ogni portafoglio;
 2. il Quant esegue `run_backtest`, registra i risultati con `log_decision` e crea i task
    «APPROVA STRATEGIA» per il CEO;
 3. il CEO approva o respinge (`log_decision` `strategy`) e, se approva, crea «STRATEGIA
@@ -211,18 +214,35 @@ Cosa succede dopo (senza altri interventi):
 
 Altri task utili da creare a mano:
 
-- al **CEO**: «Revisione straordinaria: AGG ha perso il 6% questa settimana, valuta un halt»;
-- al **Quant Researcher**: «VALUTA IDEA: rsi_reversion su BTC-USD ed ETH-USD per PRU, 3 anni 1d»;
-- al **Notifier**: «NOTIFICA info: comunica che da lunedì AGG è sospeso per manutenzione strategie».
+- al **CEO**: «Revisione straordinaria: ‹codice› ha perso il 6% questa settimana, valuta un halt»;
+- al **Quant Researcher**: «VALUTA IDEA: rsi_reversion su BTC-USD ed ETH-USD per ‹codice›, 3 anni 1d»;
+- al **Notifier**: «NOTIFICA info: comunica che da lunedì ‹codice› è sospeso per manutenzione strategie».
+
+(‹codice› = il codice del portafoglio, campo «Codice (per gli agenti)» nella sua pagina.)
 
 ## 5. Note
 
-- Portafogli attivi (sostituiscono i 4 «Test 250», archiviati):
+- **Portafogli: tutto da SMTrading.** Le istruzioni non contengono nomi, codici né numero dei
+  portafogli. Per ogni portafoglio gli agenti usano:
+  - **codice** = «Codice (per gli agenti)» nella pagina del portafoglio (campo `code`, 2–6
+    lettere maiuscole o cifre, unico tra i portafogli non archiviati): compare nei titoli dei
+    task (`<codice>`) e negli id delle proposte; senza codice gli agenti usano il nome;
+  - **carattere** = la **descrizione del profilo di rischio** del portafoglio
+    (`risk_profile.description`): stile, orizzonte e rischio per operazione. **Scrivila per
+    ogni profilo usato** (es. «lungo/medio termine, ETF ampi e large cap, pochi trade,
+    rischio piccolo per operazione»): se non indica lo stile, lo fissa il CEO
+    nell'allocazione;
+  - **limiti** = il profilo di rischio (`get_risk_limits`).
 
-  | Codice | Nome | Profilo | Capitale iniziale | Carattere |
-  |---|---|---|---|---|
-  | PRU | `Portafoglio Prudente` | 2 · Prudente | 500 € | prudente, lungo/medio termine, rischio piccolo per operazione |
-  | AGG | `Portafoglio Aggressivo` | 4 · Aggressivo | 500 € | swing + intraday, rischio più ampio |
+  **Aggiungere un portafoglio**: crealo, assegnagli profilo (con la descrizione) e codice,
+  dai `read` a tutti gli agenti e `trade` all'Execution Supervisor: dal ciclo successivo il
+  team lo tratta come gli altri (il CEO avvia la ricerca di strategie). **Toglierlo**:
+  archivialo (sparisce da `list_portfolios`, gli agenti smettono di usarlo).
+
+  *Esempio, configurazione al 23/11/2026* (solo indicativa, può cambiare): «Portafoglio
+  eToro» (PRU, lungo/medio termine, rischio piccolo per operazione), «Portafoglio Alpaca»
+  (AGG, swing + intraday, rischio più ampio), «Portafoglio Moderato» (MOD, swing di giorni o
+  settimane, rischio medio). Al massimo 2 strumenti in comune tra due portafogli attivi.
 
   I limiti (perdita giornaliera, eventuali ordine e posizione massimi, mercati, short) sono
   **solo** nel profilo di rischio del portafoglio: gli agenti li leggono a ogni ciclo con
@@ -234,13 +254,14 @@ Altri task utili da creare a mano:
 
   Costi: commissione 0, 0,15% sul cambio valuta, slippage circa 5 bp (nei testi degli agenti:
   «costi di esecuzione»).
-- **Cosa sanno gli agenti.** Le istruzioni presentano i 2 portafogli come portafogli reali
+- **Cosa sanno gli agenti.** Le istruzioni presentano i portafogli come portafogli reali
   presso il broker gestiti tramite SMTrading: non contengono alcun riferimento a simulazione,
   denaro virtuale o test. Finché l'impostazione `mcp_hide_mode` è attiva, i tool MCP non
   espongono agli agenti il campo `mode` (né `live_state`) dei portafogli che non sono
-  collegati a un conto reale armato. Ad oggi i 2 portafogli non hanno un collegamento broker:
-  gli ordini vengono eseguiti dal motore interno di SMTrading con prezzi reali e nessun ordine
-  raggiunge un broker. Gli agenti non vengono informati di questo.
+  collegati a un conto reale armato. Un portafoglio senza collegamento broker armato è
+  eseguito dal motore interno di SMTrading con prezzi reali e nessun ordine raggiunge un
+  broker. Gli agenti non vengono informati di questo. Anche codice e descrizione del profilo
+  arrivano agli agenti: niente parole che rivelino la simulazione.
 - Gli obiettivi (settimana, mese, trimestre, anno o date fissate; sul totale o su un
   portafoglio) non sono nelle istruzioni: si fissano nella pagina «Obiettivi» di SMTrading e
   gli agenti li leggono con `get_goals` (ognuno vede quelli sul totale e quelli dei suoi
