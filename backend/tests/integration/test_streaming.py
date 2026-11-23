@@ -14,7 +14,7 @@ from smtrading.common.db import make_engine
 from smtrading.connectors.models import Connector, ProviderPriority
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.marketdata.cache import read_quote
-from smtrading.marketdata.provider import DataProvider, StreamRefused
+from smtrading.marketdata.provider import DataProvider, StreamRefused, StreamSymbolLimit
 from smtrading.marketdata.registry import PROVIDERS
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.marketdata.streaming import StreamManager, track, tracked_symbols, untrack
@@ -33,6 +33,8 @@ class FakeStream(DataProvider):
     active: ClassVar[int] = 0
     max_active: ClassVar[int] = 0  # the most sockets ever open at once
     refuse_first: ClassVar[int] = 0  # initial connections refused with a «connection limit»
+    stream_symbol_limit: ClassVar[int | None] = None
+    refuse_over: ClassVar[int | None] = None  # refuse («symbol limit») sets larger than this
     polls: ClassVar[list[list[str]]] = []
     first_quote_delay: ClassVar[float] = 0
 
@@ -53,6 +55,8 @@ class FakeStream(DataProvider):
         if len(cls.connections) <= cls.refuse_first:
             raise StreamRefused("stream error 406: connection limit exceeded",
                                 retry_after_s=0.4)
+        if cls.refuse_over is not None and len(items) > cls.refuse_over:
+            raise StreamSymbolLimit("stream error 405: symbol limit exceeded")
         cls.active += 1
         cls.max_active = max(cls.max_active, cls.active)
         try:
@@ -92,6 +96,8 @@ async def env(fresh_db, redis_url, monkeypatch):
     monkeypatch.setattr(FakeStream, "active", 0)
     monkeypatch.setattr(FakeStream, "max_active", 0)
     monkeypatch.setattr(FakeStream, "refuse_first", 0)
+    monkeypatch.setattr(FakeStream, "stream_symbol_limit", None)
+    monkeypatch.setattr(FakeStream, "refuse_over", None)
     monkeypatch.setattr(FakeStream, "polls", [])
     monkeypatch.setattr(FakeStream, "first_quote_delay", 0)
     monkeypatch.setattr(FakePoll, "polls", [])
@@ -492,3 +498,44 @@ async def test_backoff_progression_caps_and_resets(monkeypatch):
     # 1, 2, 4, 8, capped at 8; a delivered quote resets the delay to 1, then doubles again
     assert sleeps == [1, 2, 4, 8, 8, 1, 2, 4]
     assert stream.state == "backoff"
+
+
+async def test_symbol_limit_streams_the_important_symbols_and_polls_the_rest(manager):
+    """A provider with a symbol cap (Alpaca's free plan): symbols of orders, positions and
+    alerts first, watchlist symbols after; the ones over the cap are polled."""
+    _mgr, redis = manager
+    FakeStream.stream_symbol_limit = 1
+    await track(redis, ["ETH-USD"], source="watchlists")
+    await track(redis, ["BTC-USD"], source="orders")
+
+    async def streamed():
+        q = await read_quote(redis, "BTC-USD")
+        return q is not None and q.provider == "fake_stream"
+
+    async def polled():
+        q = await read_quote(redis, "ETH-USD")
+        return q is not None and q.provider == "poll"
+
+    await _until(streamed)
+    await _until(polled)
+    assert all(len(c) == 1 and c[0][0] == "BTC-USD" for c in FakeStream.connections)
+
+
+async def test_symbol_limit_refusal_shrinks_the_set_and_keeps_polling(manager):
+    """Alpaca's 405 «symbol limit exceeded»: the stream restarts with half the symbols
+    (the important ones kept), the others are polled, no reconnect hammering."""
+    mgr, redis = manager
+    FakeStream.refuse_over = 1
+    await track(redis, ["ETH-USD"], source="watchlists")
+    await track(redis, ["BTC-USD"], source="orders")
+
+    async def streamed():
+        q = await read_quote(redis, "BTC-USD")
+        return q is not None and q.provider == "fake_stream"
+
+    await _until(streamed, timeout=2)
+    assert len(FakeStream.connections[0]) == 2  # first try: everything, refused
+    assert [s for s, _ in FakeStream.connections[-1]] == ["BTC-USD"]
+    assert len(FakeStream.connections) <= 3
+    s = mgr.status()["streams"]["fake_stream:crypto"]
+    assert "ETH-USD" not in s.get("symbols", ["ETH-USD"]) or s.get("note")

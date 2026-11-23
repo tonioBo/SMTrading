@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 import websockets
 
 from smtrading.instruments.models import AssetClass
-from smtrading.marketdata.provider import DataProvider, StreamRefused
+from smtrading.marketdata.provider import DataProvider, StreamRefused, StreamSymbolLimit
 from smtrading.marketdata.registry import register
 from smtrading.marketdata.types import Bar, Capability, DayChange, NewsItem, Quote, Timeframe
 
@@ -19,6 +19,8 @@ INVALID_KEY = "alpaca: chiave non valida"
 # the free data plan allows one socket per key: a 406 means another session (another
 # client with the same key, or our own dropped one Alpaca has not timed out yet) holds it
 CONNECTION_LIMIT = 406
+# the free data plan also caps the symbols of a subscription: 405 «symbol limit exceeded»
+SYMBOL_LIMIT = 405
 CONNECTION_LIMIT_RETRY_S = 180
 
 TIMEFRAMES = {
@@ -105,6 +107,8 @@ def parse_alpaca_ws(
 
 @register
 class AlpacaProvider(DataProvider):
+    # free plan: 30 symbols per subscription (quotes and trades both subscribed)
+    stream_symbol_limit = 30
     name = "alpaca"
     capabilities = frozenset({Capability.quote, Capability.bars, Capability.stream, Capability.news})
     asset_classes = frozenset({AssetClass.us_equity, AssetClass.crypto})
@@ -291,6 +295,8 @@ class AlpacaProvider(DataProvider):
                         kind = msg.get("T")
                         if kind == "error":
                             text = f"alpaca stream error {msg.get('code')}: {msg.get('msg')}"
+                            if msg.get("code") == SYMBOL_LIMIT:
+                                raise StreamSymbolLimit(text)
                             if msg.get("code") == CONNECTION_LIMIT:
                                 raise StreamRefused(
                                     text + " (one socket per key: another session holds it)",
@@ -303,7 +309,7 @@ class AlpacaProvider(DataProvider):
                     msgs = frame if isinstance(frame, list) else [frame]
                     for quote in parse_alpaca_ws(msgs, reverse, merged):
                         yield quote
-        except StreamRefused:
+        except (StreamRefused, StreamSymbolLimit):
             raise
         except (TimeoutError, websockets.WebSocketException, OSError) as exc:
             raise ConnectionError(f"alpaca websocket: {exc}") from exc

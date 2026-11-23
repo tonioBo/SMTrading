@@ -35,8 +35,16 @@ class StreamRefused(ConnectionError):
         self.retry_after_s = retry_after_s
 
 
+class StreamSymbolLimit(ConnectionError):
+    """The provider refused the stream's symbol set as too large (e.g. Alpaca's 405
+    «symbol limit exceeded»): the stream manager restarts it with fewer symbols."""
+
+
 class DataProvider:
     name: ClassVar[str] = ""
+    # most symbols one stream may carry (None: no known limit); the stream manager streams
+    # the most important tracked symbols up to it and polls the others
+    stream_symbol_limit: ClassVar[int | None] = None
     capabilities: ClassVar[frozenset[Capability]] = frozenset()
     asset_classes: ClassVar[frozenset[AssetClass]] = frozenset()
     requires_key: ClassVar[bool] = False

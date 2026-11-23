@@ -40,7 +40,12 @@ from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.instruments.service import canonical_symbol
 from smtrading.marketdata.cache import write_quote
-from smtrading.marketdata.provider import DataProvider, ProviderUnsupported, StreamRefused
+from smtrading.marketdata.provider import (
+    DataProvider,
+    ProviderUnsupported,
+    StreamRefused,
+    StreamSymbolLimit,
+)
 from smtrading.marketdata.router import MarketDataRouter
 
 log = logging.getLogger(__name__)
@@ -183,6 +188,8 @@ class StreamManager:
         # symbols without a stream provider (or unmappable by it), by asset class
         self._poll_only: dict[AssetClass, list[str]] = {}
         self._unknown: set[str] = set()
+        # stream key -> symbol cap learnt from a «symbol limit» refusal (halved each time)
+        self._caps: dict[str, int] = {}
         self._markets: dict[str, str] = {}  # tracked symbol -> instrument market
         self._last_poll: dict[str, datetime] = {}
         self._confirming: dict[str, float] = {}  # symbol -> loop time of the last confirm
@@ -250,6 +257,12 @@ class StreamManager:
             self._poll_only = {}
             return
         instrs = await self._instruments(await tracked_symbols(self._redis))
+        sources = await tracked_sources(self._redis)
+
+        def rank(symbol: str) -> tuple[int, str]:
+            # orders, positions, alerts and the portal first; watchlist-only symbols after
+            return (0 if set(sources.get(symbol, [])) - {"watchlists"} else 1, symbol)
+
         self._markets = {i.symbol: i.market for i in instrs}
         self._last_poll = {s: t for s, t in self._last_poll.items() if s in self._markets}
         by_class: dict[AssetClass, list[Instrument]] = {}
@@ -268,9 +281,13 @@ class StreamManager:
                 else:
                     items.append((i.symbol, ps))
             if items:
-                wanted[f"{provider.name}:{asset_class}"] = (
-                    provider, asset_class, tuple(sorted(items)),
-                )
+                key = f"{provider.name}:{asset_class}"
+                cap = self._caps.get(key, provider.stream_symbol_limit)
+                if cap is not None and len(items) > cap:
+                    items.sort(key=lambda it: rank(it[0]))
+                    poll_only.setdefault(asset_class, []).extend(s for s, _ in items[cap:])
+                    items = items[:cap]
+                wanted[key] = (provider, asset_class, tuple(sorted(items)))
 
         stale = [
             key for key, s in self._streams.items()
@@ -414,6 +431,15 @@ class StreamManager:
                             log.warning("stream %s: writing %s failed", key, q.symbol,
                                         exc_info=True)
                 raise ConnectionError("stream ended")
+            except StreamSymbolLimit as e:  # too many symbols: the next set carries half
+                cap = max(1, len(stream.items) // 2)
+                self._caps[key] = cap
+                stream.state = BACKOFF
+                stream.note = (f"Troppi simboli per il provider ({e}): {cap} in tempo reale, "
+                               f"gli altri in polling")
+                log.warning("stream %s: symbol limit (%s); restarting with %s symbols",
+                            key, e, cap)
+                return  # the next reconcile restarts it with the smaller set
             except StreamRefused as e:  # refused for a while: the provider's own wait
                 stream.state = BACKOFF
                 stream.note = (f"Rifiutato dal provider ({e}): prezzi in polling, nuovo "
