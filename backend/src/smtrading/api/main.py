@@ -61,6 +61,7 @@ from smtrading.marketdata.router import MarketDataRouter
 from smtrading.mcp.auth import MCP_PATH, McpAuthMiddleware
 from smtrading.mcp.runtime import McpRuntime, get_runtime, set_runtime
 from smtrading.mcp.server import build_mcp, build_mcp_endpoint
+from smtrading.sentinel import errorlog
 from smtrading.useractivity.recorder import ActivityMiddleware
 
 log = logging.getLogger(__name__)
@@ -169,6 +170,9 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
         await _export_agent_docs(sessionmaker)
         # manual market closures: loaded now, then every 60 s (an admin write reloads too)
         closures = asyncio.create_task(ClosureRefresher(sessionmaker).run())
+        # ERROR/CRITICAL records per logger (uvicorn's too), for the system sentinel
+        error_counter = errorlog.install("api", extra_loggers=("uvicorn",))
+        error_flush = asyncio.create_task(errorlog.flusher(resources.redis, error_counter))
         try:
             async with httpx.AsyncClient() as http:
                 if runtime_factory is not None:
@@ -184,8 +188,12 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
                     yield
         finally:
             closures.cancel()
+            error_flush.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await closures
+            with contextlib.suppress(asyncio.CancelledError):
+                await error_flush
+            errorlog.uninstall(error_counter, extra_loggers=("uvicorn",))
             set_runtime(None)
             await resources.close()
 

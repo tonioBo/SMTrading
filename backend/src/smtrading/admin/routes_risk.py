@@ -46,6 +46,7 @@ from smtrading.risk.settings import (
     DEFAULT_STALE_QUOTE_S,
     is_kill_switch_on,
 )
+from smtrading.sentinel import settings as sentinel_settings
 from smtrading.telegram import preopen_settings, weekly_goal, weekly_report_settings
 
 router = APIRouter(prefix="/api", tags=["risk"], dependencies=[Depends(require_access)])
@@ -272,6 +273,8 @@ async def _app_settings(session: AsyncSession) -> dict[str, Any]:
             stored.get(watchdog_settings.SETTINGS_KEY)),
         "weekly_report_pdf": weekly_report_settings.weekly_report_dto(
             stored.get(weekly_report_settings.SETTINGS_KEY)),
+        "system_sentinel": sentinel_settings.sentinel_dto(
+            stored.get(sentinel_settings.SETTINGS_KEY)),
     }
 
 
@@ -324,6 +327,9 @@ async def put_app_settings(body: AppSettingsIn, session: DbSession, redis: Redis
     if body.weekly_report_pdf is not None:
         updates[weekly_report_settings.SETTINGS_KEY] = weekly_report_settings.clean_weekly_report(
             body.weekly_report_pdf.model_dump(), current["weekly_report_pdf"])
+    if body.system_sentinel is not None:
+        updates[sentinel_settings.SETTINGS_KEY] = sentinel_settings.clean_sentinel(
+            body.system_sentinel.model_dump(), current["system_sentinel"])
     async with _transaction(session, redis):
         for key, value in updates.items():
             await _store_setting(session, key, value)

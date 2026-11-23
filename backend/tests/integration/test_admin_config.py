@@ -693,6 +693,7 @@ async def test_app_settings_weekly_goal_and_preopen(admin):
     assert got["weekly_goal"] == {"on": True, "pct": "2.0"}
     assert got["preopen_check"] == {"on": True, "at": "08:45"}
     assert got["handoff_watchdog"] == {"on": True}
+    assert got["system_sentinel"] == {"on": True}
 
     r = await c.put("/api/settings/app", json={"weekly_goal": {"pct": "2.5"},
                                                "preopen_check": {"at": "09:05"}})
@@ -702,13 +703,16 @@ async def test_app_settings_weekly_goal_and_preopen(admin):
     assert body["preopen_check"] == {"on": True, "at": "09:05"}
     r = await c.put("/api/settings/app", json={"weekly_goal": {"on": False},
                                                "preopen_check": {"on": False},
-                                               "handoff_watchdog": {"on": False}})
+                                               "handoff_watchdog": {"on": False},
+                                               "system_sentinel": {"on": False}})
     body = r.json()
     assert body["handoff_watchdog"] == {"on": False}
+    assert body["system_sentinel"] == {"on": False}
     assert body["weekly_goal"] == {"on": False, "pct": "2.5"}
     assert body["preopen_check"] == {"on": False, "at": "09:05"}
 
     from smtrading.paperclip.watchdog_settings import watchdog_on
+    from smtrading.sentinel.settings import sentinel_on
     from smtrading.telegram.preopen_settings import load_preopen_settings
     from smtrading.telegram.weekly_goal import load_weekly_goal
 
@@ -716,13 +720,14 @@ async def test_app_settings_weekly_goal_and_preopen(admin):
         goal = await load_weekly_goal(s)
         pre = await load_preopen_settings(s)
         assert await watchdog_on(s) is False
+        assert await sentinel_on(s) is False
     assert (goal.on, goal.pct) == (False, Decimal("2.5"))
     assert (pre.on, pre.at.isoformat()) == (False, "09:05:00")
 
     for bad in ({"weekly_goal": {"pct": "0"}}, {"weekly_goal": {"pct": "x"}},
                 {"weekly_goal": {"pct": "1500"}}, {"preopen_check": {"at": "24:00"}},
                 {"preopen_check": {"at": "nove"}}, {"weekly_goal": {"pct": "1.234"}},
-                {"handoff_watchdog": {"on": "si"}}):
+                {"handoff_watchdog": {"on": "si"}}, {"system_sentinel": {"on": 1}}):
         assert (await c.put("/api/settings/app", json=bad)).status_code == 400, bad
     assert (await c.get("/api/settings/app")).json() == body
 

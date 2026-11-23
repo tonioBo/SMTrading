@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from smtrading.sentinel import errorlog
 from smtrading.worker import main as worker
 
 REAL_GATE = worker.StartupGate  # the autouse fixture replaces it with an open one
@@ -112,6 +113,7 @@ def _idle_telegram_loops(monkeypatch):
     monkeypatch.setattr(worker, "register_live_secrets", _no_live_keys)
     monkeypatch.setattr(worker, "HandoffWatchdog", _IdleProcessor)
     monkeypatch.setattr(worker, "ReconciliationJob", _IdleProcessor)
+    monkeypatch.setattr(worker, "SystemSentinel", _IdleProcessor)
     monkeypatch.setattr(worker, "StartupGate", _OpenGate)
 
 
@@ -162,10 +164,22 @@ async def test_sigterm_shuts_down_cleanly(monkeypatch):
     monkeypatch.setattr(worker, "StreamManager", FakeManager)
     monkeypatch.setattr(worker, "OrderProcessor", _IdleProcessor)
     monkeypatch.setattr(worker, "AlertEvaluator", _IdleProcessor)
+    counters: list = []
+
+    class Manager2(FakeManager):
+        async def run(self):
+            counters.extend(h for h in logging.getLogger().handlers
+                            if isinstance(h, errorlog.ErrorCounter))
+            await super().run()
+
+    monkeypatch.setattr(worker, "StreamManager", Manager2)
     await asyncio.wait_for(worker.run(), 2)
     assert cancelled == [True]
     assert redis.closed
     assert engine.disposed
+    # the system sentinel's error counter is on while the worker runs, removed after
+    assert len(counters) == 1 and counters[0].process == "worker"
+    assert counters[0] not in logging.getLogger().handlers
 
 
 async def test_health_checks_first_after_30s_then_every_300s(monkeypatch, caplog):
@@ -572,8 +586,9 @@ async def test_startup_gate_waiters_share_one_wait():
 
 async def test_run_holds_the_alerting_jobs_behind_the_gate(monkeypatch):
     """Protection alarm, goal alerts, plan closer, pre-open check, hand-off watchdog,
-    broker reconciliation, the weekly PDF report, the market screener and the personal
-    price alerts start only once the startup gate opens; the other jobs start at once."""
+    broker reconciliation, the weekly PDF report, the market screener, the personal
+    price alerts and the system sentinel start only once the startup gate opens; the
+    other jobs start at once."""
     waits: list[int] = []
     before: list = []
     release = asyncio.Event()
@@ -625,10 +640,10 @@ async def test_run_holds_the_alerting_jobs_behind_the_gate(monkeypatch):
     monkeypatch.setattr(worker, "StartupGate", HeldGate)
     for name in ("ProtectionAlarm", "GoalAlerts", "PlanCloser", "PreopenCheck",
                  "HandoffWatchdog", "ReconciliationJob", "WeeklyReport", "ScreenerJob",
-                 "PersonalAlerts"):
+                 "PersonalAlerts", "SystemSentinel"):
         monkeypatch.setattr(worker, name, job(name))
     await asyncio.wait_for(worker.run(), 2)
-    assert before == [[], 9]
+    assert before == [[], 10]
     assert sorted(started) == ["GoalAlerts", "HandoffWatchdog", "PersonalAlerts", "PlanCloser",
                                "PreopenCheck", "ProtectionAlarm", "ReconciliationJob",
-                               "ScreenerJob", "WeeklyReport"]
+                               "ScreenerJob", "SystemSentinel", "WeeklyReport"]
