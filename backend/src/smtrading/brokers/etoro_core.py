@@ -351,9 +351,10 @@ def _buy_unleveraged_real(entry: dict) -> bool:
 
 def _block(item: dict, entry: dict) -> str:
     """Why a found instrument cannot be bought unleveraged (a `brokers.tradable` code):
-    closed to new positions; else offered only as a CFD (with leverage), and when the
-    eligibility says the account needs the tax form for it (`requiresW8Ben`, seen with no
-    real settlement on US ETFs such as SPY on the demo, 23/11/2026) the form."""
+    closed to new positions; else offered only as a CFD (with leverage). `requiresW8Ben` is
+    not a reason: it is set also on US shares bought unleveraged (AAPL), and SPY stayed
+    CFD-only after the owner's form was filed (23/11/2026) — US-domiciled ETFs are CFD-only
+    for EU clients."""
     if (item.get("isBuyEnabled") is not True or item.get("isDelisted") is True
             or entry.get("allowOpenPosition") is not True):
         return "not_tradable"
@@ -363,7 +364,7 @@ def _block(item: dict, entry: dict) -> str:
         for cfg in entry.get("leverageConfigs") or [])
     if not cfd_long:
         return "not_tradable"
-    return "tax_form" if entry.get("requiresW8Ben") is True else "leverage_only"
+    return "leverage_only"
 
 
 def _fractional(entry: dict) -> bool | None:

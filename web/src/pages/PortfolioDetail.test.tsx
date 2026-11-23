@@ -243,7 +243,7 @@ const server = setupServer(
     tradabilityRequests.push(url);
     const asked = (url.searchParams.get("symbols") ?? "").split(",").filter(Boolean);
     const known: Record<string, object> = {
-      SPY: { tradable: false, long_unleveraged: false, short: false, fractional: true, partial_close: true, reason: "richiede un modulo fiscale presso il broker" },
+      SPY: { tradable: false, long_unleveraged: false, short: false, fractional: true, partial_close: true, reason: "solo con leva presso il broker" },
       DIA: { tradable: true, long_unleveraged: true, short: false, fractional: true, partial_close: true, reason: null },
     };
     const unknown = { tradable: null, long_unleveraged: null, short: null, fractional: null, partial_close: null, reason: "verifica presso il broker non riuscita: riprova più tardi" };
@@ -1067,7 +1067,7 @@ describe("PortfolioDetail halt banner", () => {
     const table = await screen.findByRole("table", { name: "Strumenti presso il broker" });
     const rows = within(table).getAllByRole("row").slice(1).map((r) => r.textContent);
     expect(rows).toEqual([
-      "SPYNon acquistabilenosìrichiede un modulo fiscale presso il broker",
+      "SPYNon acquistabilenosìsolo con leva presso il broker",
       "XYZNon verificato——verifica presso il broker non riuscita: riprova più tardi",
     ]);
     await user.click(within(card).getByRole("button", { name: "STR-7 · ETF USA" }));

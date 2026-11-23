@@ -148,8 +148,8 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
   portafoglio, come li accetta il suo broker (al massimo 50 simboli; permesso `read`). Risponde
   per simbolo `{tradable, long_unleveraged, short, fractional, partial_close, reason}`:
   `tradable` `true` (si apre una posizione), `false` (non si puo': `reason` in italiano dice
-  perche', es. «non disponibile presso il broker», «solo con leva presso il broker», «richiede
-  un modulo fiscale presso il broker», «strumento non trovato»), `null` (non noto ora:
+  perche', es. «non disponibile presso il broker», «solo con leva presso il broker»,
+  «strumento non trovato»), `null` (non noto ora:
   «verifica presso il broker non riuscita: riprova più tardi»). `long_unleveraged`: acquisto
   senza leva accettato; `short`: vendita allo scoperto possibile; `fractional`: quantita'
   frazionarie; `partial_close`: si puo' vendere una parte della posizione. Un portafoglio

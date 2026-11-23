@@ -833,7 +833,7 @@ async def test_tradability_of_a_linked_portfolio(admin, monkeypatch):
     by = {i["symbol"]: i for i in body["items"]}
     assert list(by) == ["SPY", "DIA", "NOPE-XYZ"]
     assert by["SPY"]["tradable"] is False
-    assert by["SPY"]["reason"] == "richiede un modulo fiscale presso il broker"
+    assert by["SPY"]["reason"] == "solo con leva presso il broker"
     assert by["DIA"]["tradable"] is True and by["NOPE-XYZ"]["reason"] == "strumento non trovato"
     r = await admin.client.get(f"/api/portfolios/{free['id']}/tradability",
                                params={"symbols": "SPY"})

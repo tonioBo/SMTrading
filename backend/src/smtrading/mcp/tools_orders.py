@@ -162,7 +162,7 @@ def register(mcp: MCPServer) -> None:
         allows: {symbol: {tradable, long_unleveraged, short, fractional, partial_close,
         reason}}. tradable true: a position can be opened; false: it cannot (reason, in
         Italian, says why: e.g. «non disponibile presso il broker», «solo con leva presso
-        il broker», «richiede un modulo fiscale presso il broker», «strumento non
+        il broker», «strumento non
         trovato»); null: not known now (retry later). long_unleveraged: a buy without
         leverage is accepted; short: a short sale can be opened; fractional: fractional
         quantities; partial_close: part of a position can be sold. A buy of an instrument

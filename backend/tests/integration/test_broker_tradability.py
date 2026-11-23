@@ -57,7 +57,7 @@ async def http(fake):
 # --- adapters --------------------------------------------------------------------------
 
 
-async def test_etoro_reads_found_unleveraged_cfd_only_and_tax_form(http):
+async def test_etoro_reads_found_unleveraged_cfd_only_and_leverage_only(http):
     a = EtoroDemoAdapter(dict(ETORO_KEYS), http)
     got = await a.tradability([
         _inst("AAPL"), _inst("SPY"), _inst("NSDQ100"), _inst("DIA"),
@@ -65,8 +65,8 @@ async def test_etoro_reads_found_unleveraged_cfd_only_and_tax_form(http):
         _inst("EURUSD", AssetClass.forex)])
     assert got["AAPL"] == Tradability(True, True, False, True, True, None)  # W8Ben, real
     assert got["DIA"].tradable and got["ENEL.MI"].tradable
-    assert got["SPY"] == Tradability(False, False, False, True, True, "tax_form")
-    assert got["SPY"].reason == "richiede un modulo fiscale presso il broker"
+    assert got["SPY"] == Tradability(False, False, False, True, True, "leverage_only")
+    assert got["SPY"].reason == "solo con leva presso il broker"
     assert got["NSDQ100"].code == "leverage_only"
     assert got["NSDQ100"].reason == "solo con leva presso il broker"
     assert got["EUNH.DE"].code == "not_found"
@@ -160,7 +160,7 @@ async def test_portfolio_check_caches_and_answers_the_catalog(maker, redis, http
         got = await tr.portfolio_tradability(s, maker, redis, pid,
                                              ["spy", "AAPL", "NOPE-XYZ", "EURUSD"], http=http)
     assert list(got) == ["SPY", "AAPL", "NOPE-XYZ", "EURUSD"]
-    assert got["SPY"].code == "tax_form" and got["AAPL"].tradable is True
+    assert got["SPY"].code == "leverage_only" and got["AAPL"].tradable is True
     assert got["NOPE-XYZ"].code == "not_in_catalog"
     assert got["NOPE-XYZ"].reason == "strumento non trovato"
     assert got["EURUSD"].code == "asset_class"
@@ -214,18 +214,18 @@ async def test_placement_refuses_at_once_what_the_cache_says_the_broker_refuses(
     async with maker() as s:
         check = await preview_order(s, qs, _req(pid), redis=redis)
         assert (check.ok, check.code, check.message) == (
-            False, ErrorCode.INVALID_ORDER, "richiede un modulo fiscale presso il broker")
+            False, ErrorCode.INVALID_ORDER, "solo con leva presso il broker")
         with pytest.raises(SMTError) as e:
             await place_order(s, qs, _req(pid), redis=redis)
         assert e.value.code == ErrorCode.INVALID_ORDER
-        assert e.value.message == "richiede un modulo fiscale presso il broker"
+        assert e.value.message == "solo con leva presso il broker"
         await s.commit()  # the rejection is stored
         ok = await place_order(s, qs, _req(pid, "AAPL"), redis=redis)
         assert ok.status != OrderStatus.rejected and ok.broker_link_id is not None
         # a sell is never refused for it (a position elsewhere is closed as usual)
         sell = await preview_order(s, qs, _req(pid, side=OrderSide.sell, reduce_only=True),
                                    redis=redis)
-        assert sell.message != "richiede un modulo fiscale presso il broker"
+        assert sell.message != "solo con leva presso il broker"
 
 
 async def test_bracket_entry_refused_at_once(maker, redis, http):
@@ -241,7 +241,7 @@ async def test_bracket_entry_refused_at_once(maker, redis, http):
             await place_bracket_order(s, qs, _req(pid), take_profit=D(120),
                                       stop_loss=D(80), redis=redis)
     assert e.value.code == ErrorCode.INVALID_ORDER
-    assert e.value.message == "richiede un modulo fiscale presso il broker"
+    assert e.value.message == "solo con leva presso il broker"
 
 
 async def test_refresher_reads_what_matters_first_in_chunks(maker, redis, http, fake):
@@ -256,7 +256,7 @@ async def test_refresher_reads_what_matters_first_in_chunks(maker, redis, http, 
     job = tr.TradabilityRefresher(maker, redis, http, chunk=3)
     assert await job.tick() >= 1
     first = await tr.read_cached(redis, link_id, ["SPY"])
-    assert first["SPY"].code == "tax_form"
+    assert first["SPY"].code == "leverage_only"
     assert len(await tr.cached_at(redis, link_id)) == 3
     await job.tick()
     assert len(await tr.cached_at(redis, link_id)) == 6
@@ -299,7 +299,7 @@ async def test_mcp_check_tradable_preview_and_place(mcp_server, mcp_call, mcp_li
     assert not is_error, got
     assert got["SPY"] == {"tradable": False, "long_unleveraged": False, "short": False,
                           "fractional": True, "partial_close": True,
-                          "reason": "richiede un modulo fiscale presso il broker"}
+                          "reason": "solo con leva presso il broker"}
     assert got["DIA"]["tradable"] is True and got["DIA"]["reason"] is None
     assert got["NOPE-XYZ"] == {"tradable": False, "long_unleveraged": False, "short": False,
                                "fractional": None, "partial_close": None,
@@ -315,9 +315,9 @@ async def test_mcp_check_tradable_preview_and_place(mcp_server, mcp_call, mcp_li
     is_error, preview = await call("preview_order", order)
     assert not is_error, preview
     assert preview["ok"] is False and preview["code"] == "INVALID_ORDER"
-    assert preview["tradable"]["reason"] == "richiede un modulo fiscale presso il broker"
+    assert preview["tradable"]["reason"] == "solo con leva presso il broker"
     is_error, err = await call("place_order", order)
     assert is_error and err["code"] == "INVALID_ORDER", err
-    assert err["message"] == "richiede un modulo fiscale presso il broker"
+    assert err["message"] == "solo con leva presso il broker"
     is_error, ok = await call("preview_order", {**order, "symbol": "DIA"})
     assert not is_error and ok["tradable"]["tradable"] is True, ok
