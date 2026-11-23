@@ -144,7 +144,23 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
 - `get_transactions`: movimenti del ledger del portafoglio, dal piu' recente, con filtri e paginazione (`before_seq`).
 - `get_performance`: serie dell'equity e statistiche (rendimento, max drawdown, sharpe) su un periodo.
 - `get_risk_limits`: stato di rischio: soglie di margine, profilo effettivo (con `description`, il «Quando usarlo» del profilo), perdita giornaliera, kill switch.
-- `preview_order`: esegue i controlli pre-trade senza inserire l'ordine (stima di prezzo, costi, potere d'acquisto).
+- `check_tradable` (`portfolio_id`, `symbols`): quali strumenti si possono davvero comprare nel
+  portafoglio, come li accetta il suo broker (al massimo 50 simboli; permesso `read`). Risponde
+  per simbolo `{tradable, long_unleveraged, short, fractional, partial_close, reason}`:
+  `tradable` `true` (si apre una posizione), `false` (non si puo': `reason` in italiano dice
+  perche', es. «non disponibile presso il broker», «solo con leva presso il broker», «richiede
+  un modulo fiscale presso il broker», «strumento non trovato»), `null` (non noto ora:
+  «verifica presso il broker non riuscita: riprova più tardi»). `long_unleveraged`: acquisto
+  senza leva accettato; `short`: vendita allo scoperto possibile; `fractional`: quantita'
+  frazionarie; `partial_close`: si puo' vendere una parte della posizione. Un portafoglio
+  senza broker risponde dal catalogo. La risposta del broker resta valida 12 ore (un lavoro
+  del worker, dopo l'avvio, la rinnova per gli strumenti delle strategie approvate, delle
+  watchlist degli agenti del portafoglio, delle posizioni e degli ordini aperti, poi per il
+  resto del catalogo, a piccoli blocchi). Un acquisto di uno strumento con `tradable: false`
+  e' rifiutato subito con `INVALID_ORDER` e quel motivo (`place_order`, `place_bracket_order`,
+  `place_oco_order`); le vendite non sono toccate. Nel portale: pagina del portafoglio,
+  riquadro «Strumenti presso il broker».
+- `preview_order`: esegue i controlli pre-trade senza inserire l'ordine (stima di prezzo, costi, potere d'acquisto); `tradable` e' lo strumento come lo risponde `check_tradable`, e un acquisto che il broker rifiuterebbe e' `ok: false` con `INVALID_ORDER` e il motivo.
 - `place_order`: inserisce un ordine (market, limit, stop, stop_limit, trailing_stop); `client_order_id` rende l'invio idempotente.
 - `place_bracket_order`: ingresso piu' take profit e stop loss in un gruppo OCO.
 - Campo facoltativo `valid_until` di `place_order` e `place_bracket_order`: data e ora ISO con fuso

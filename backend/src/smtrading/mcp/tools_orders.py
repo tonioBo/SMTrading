@@ -1,4 +1,4 @@
-"""Order tools: preview_order, place_order, place_bracket_order, place_oco_order,
+"""Order tools: check_tradable, preview_order, place_order, place_bracket_order, place_oco_order,
 modify_order, cancel_order, cancel_all_orders, get_order, list_orders, close_position,
 close_all_positions.
 
@@ -27,9 +27,10 @@ from smtrading.mcp.dto import (
     parse_enum,
     parse_int,
     parse_uuid,
+    to_jsonable,
 )
 from smtrading.mcp.instruments import ensure_instrument
-from smtrading.mcp.runtime import ToolCtx, run_tool
+from smtrading.mcp.runtime import ToolCtx, get_runtime, run_tool
 
 MAX_ORDERS = 500
 SOURCE = "agent"
@@ -132,7 +133,54 @@ async def _fills(ctx: ToolCtx, order_id: UUID) -> list[dict]:
     return [fill_dto(f) for f in rows]
 
 
+async def _tradable(ctx: ToolCtx, pid: UUID, symbols: list[str]) -> dict[str, dict]:
+    """Plan 44: symbol -> {tradable, long_unleveraged, short, fractional, partial_close,
+    reason} on the portfolio (cached, else asked to its broker now)."""
+    from smtrading.brokers.tradability import portfolio_tradability
+
+    answers = await portfolio_tradability(
+        ctx.session, get_runtime().sessionmaker, ctx.redis, pid, symbols)
+    return {s: t.dto() for s, t in answers.items()}
+
+
+def _symbols(v: Any) -> list[str]:
+    from smtrading.brokers.tradability import MAX_SYMBOLS
+
+    values = [v] if isinstance(v, str) else v
+    if (not isinstance(values, list) or not values
+            or not all(isinstance(x, str) and x.strip() for x in values)):
+        raise _invalid("symbols", "symbols must be a non-empty list of symbols")
+    if len(values) > MAX_SYMBOLS:
+        raise _invalid("symbols", f"at most {MAX_SYMBOLS} symbols per call")
+    return [x.strip() for x in values]
+
+
 def register(mcp: MCPServer) -> None:
+    @mcp.tool(structured_output=False)
+    async def check_tradable(portfolio_id: str, symbols: list[str] | str) -> CallToolResult:
+        """Which instruments can really be bought in this portfolio, as its broker
+        allows: {symbol: {tradable, long_unleveraged, short, fractional, partial_close,
+        reason}}. tradable true: a position can be opened; false: it cannot (reason, in
+        Italian, says why: e.g. «non disponibile presso il broker», «solo con leva presso
+        il broker», «richiede un modulo fiscale presso il broker», «strumento non
+        trovato»); null: not known now (retry later). long_unleveraged: a buy without
+        leverage is accepted; short: a short sale can be opened; fractional: fractional
+        quantities; partial_close: part of a position can be sold. A buy of an instrument
+        with tradable false is refused (INVALID_ORDER). At most 50 symbols. Needs read."""
+        params = {"portfolio_id": portfolio_id, "symbols": symbols}
+
+        async def fn(ctx: ToolCtx) -> Any:
+            pid = await _portfolio(ctx, portfolio_id, "read")
+            syms = _symbols(symbols)
+            for sym in syms:  # discover what the catalog lacks; a refusal is not found
+                try:
+                    await ensure_instrument(ctx, sym)
+                except SMTError:
+                    pass
+            return await _tradable(ctx, pid, syms)
+
+        return await run_tool("check_tradable", params, fn)
+
     @mcp.tool(structured_output=False)
     async def preview_order(
         portfolio_id: str, symbol: str, side: str, type: str, qty: Num = None,
@@ -141,7 +189,8 @@ def register(mcp: MCPServer) -> None:
     ) -> CallToolResult:
         """Run the pre-trade checks without placing anything: {ok, code, message,
         estimated_price, estimated_notional_eur, estimated_fee, estimated_fx_fee_eur,
-        buying_power_after_eur}. A refused check is ok=false with its code, not an error.
+        buying_power_after_eur, tradable}. A refused check is ok=false with its code, not an error.
+        tradable: the instrument in this portfolio, as check_tradable answers it.
         side: buy|sell; type: market|limit|stop|stop_limit|trailing_stop; give qty or
         notional (market only). Needs read."""
         params = {
@@ -158,7 +207,9 @@ def register(mcp: MCPServer) -> None:
                 trail_amount=trail_amount,
             )
             await ensure_instrument(ctx, req.symbol)
-            return await engine.preview_order(ctx.session, ctx.qs, req, redis=ctx.redis)
+            tradable = await _tradable(ctx, pid, [req.symbol])
+            result = await engine.preview_order(ctx.session, ctx.qs, req, redis=ctx.redis)
+            return {**to_jsonable(result), "tradable": next(iter(tradable.values()), None)}
 
         return await run_tool("preview_order", params, fn)
 

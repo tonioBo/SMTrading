@@ -21,7 +21,7 @@ ALL_TOOLS = {
     "list_portfolios", "get_portfolio", "get_positions", "get_transactions",
     "get_performance", "get_risk_limits",
     # orders
-    "preview_order", "place_order", "place_bracket_order", "place_oco_order", "modify_order",
+    "check_tradable", "preview_order", "place_order", "place_bracket_order", "place_oco_order", "modify_order",
     "cancel_order", "cancel_all_orders", "get_order", "list_orders", "close_position",
     "close_all_positions",
     # market

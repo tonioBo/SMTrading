@@ -350,6 +350,14 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
                                                         monkeypatch, redis_url):
     _market(mcp_server.qs)
     pid = await _setup(mcp_server, flavor)
+    import httpx
+
+    from smtrading.brokers import tradability
+    from smtrading.brokers.live.fake import FakeLiveBroker
+
+    broker = FakeLiveBroker(price=D(50000))  # check_tradable asks the paper/demo broker
+    monkeypatch.setattr(tradability, "http_client",
+                        lambda: httpx.AsyncClient(transport=broker.transport()))
     if flavor == "etoro_source":
         await _etoro_source(mcp_server, redis_url)
     outputs: list[tuple[str, object]] = []
@@ -405,6 +413,7 @@ async def test_no_simulation_fingerprint_reaches_agents(mcp_server, mcp_call, fl
         ("list_watchlists", {}),
         ("list_alerts", {}),
         ("get_quote", {"symbols": [SYM]}),
+        ("check_tradable", {"portfolio_id": pid, "symbols": [SYM, "AAPL", "NOPE-XYZ"]}),
         ("get_instrument", {"symbol": SYM}),
         ("search_instruments", {"query": "BTC", "include_provider": False}),
         ("get_market_status", {}),

@@ -42,7 +42,10 @@ adapter can take (`routable`) is not executed here: after the local checks it is
 and final states. Canceling an order that is (or may be) at the broker only marks it
 `cancel_requested`; it stays open until the broker confirms, with any last fills applied.
 Modifying one marks it `replace_requested` (cancel, then send again). No network I/O
-happens here, so no lock is ever held while waiting for a broker.
+happens here, so no lock is ever held while waiting for a broker. An opening buy the
+broker is known to refuse (plan 44: its cached tradability, `brokers.tradability`, says
+not found, leverage only...) is rejected at once with INVALID_ORDER and that reason; the
+preview answers the same.
 
 Synthetic orders (plan 29): on a link whose broker takes only market orders (eToro,
 `adapter.market_only`), a limit, stop, stop-limit or trailing order the broker would take
@@ -632,6 +635,18 @@ async def _oco_short_leg(session: AsyncSession, adm: _Admission) -> str | None:
     return None
 
 
+async def _broker_refusal(session: AsyncSession, redis, portfolio: Portfolio,
+                          instrument: Instrument, side: OrderSide, reduce_only: bool
+                          ) -> str | None:
+    """Plan 44: why the broker of the linked portfolio would refuse this opening buy,
+    from its cached tradability (Redis only, no network); None: nothing known against."""
+    if side != OrderSide.buy or reduce_only or portfolio.broker_link_id is None:
+        return None
+    from smtrading.brokers.tradability import cached_refusal
+
+    return await cached_refusal(session, redis, portfolio, instrument)
+
+
 async def _route(session: AsyncSession, order: Order, adm: _Admission) -> bool:
     """True when the order was handed to the portfolio's broker, or refused because the
     broker cannot take it (Ruling R10: nothing fills locally on a linked portfolio; a
@@ -642,6 +657,11 @@ async def _route(session: AsyncSession, order: Order, adm: _Admission) -> bool:
     link = await session.get(BrokerLink, link_id)
     if link is None or not link.enabled:
         _reject(order, ErrorCode.PROVIDER_UNAVAILABLE, "Collegamento al broker disattivato")
+        return True
+    refusal = await _broker_refusal(session, adm.redis, adm.portfolio, adm.instrument,
+                                    order.side, order.reduce_only)
+    if refusal is not None:  # plan 44: the broker is known to refuse it
+        _reject(order, ErrorCode.INVALID_ORDER, refusal)
         return True
     async with open_adapter(session, link_id, None) as adapter:  # no network: config only
         routable = adapter.routable(order, adm.instrument)
@@ -739,6 +759,10 @@ async def preview_order(
         instrument = await get_instrument(session, req.symbol)
         _resolve_valid_until(req.valid_until, instrument, now)
         market = market_status(instrument.market, now)
+        refusal = await _broker_refusal(session, redis, portfolio, instrument, req.side,
+                                        req.reduce_only)
+        if refusal is not None:
+            return CheckResult(ok=False, code=ErrorCode.INVALID_ORDER, message=refusal)
         return await _run_check(session, qs, req, portfolio, instrument, market, redis,
                                 now=now, live_effects=False)
     except SMTError as e:
