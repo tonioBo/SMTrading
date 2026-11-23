@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { errorField, errorMessage } from "@/lib/errors";
 import { buildPortfolioPatch, initialForm, PORTFOLIO_FIELDS as FIELDS, type PortfolioField as Field, type PortfolioForm as Form } from "@/lib/portfolioPatch";
+import { CODE_HINT } from "@/lib/portfolioCode";
 import { timezones } from "@/lib/timezones";
 
 function SettingsForm({
@@ -29,8 +30,9 @@ function SettingsForm({
   const fieldError = (f: Field) => errors[f] ?? (patch.error && serverField === f ? errorMessage(patch.error) : null);
   const generalError = patch.error && !(serverField && FIELDS.includes(serverField)) ? errorMessage(patch.error) : null;
   const set = (f: Field) => (e: { target: { value: string } }) => setForm((cur) => ({ ...cur, [f]: e.target.value }));
-  const { patch: body } = buildPortfolioPatch(portfolio, form);
-  const dirty = Object.keys(body).length > 0;
+  const { patch: body, errors: invalid } = buildPortfolioPatch(portfolio, form);
+  // an invalid change counts too: saving shows its error
+  const dirty = Object.keys(body).length > 0 || Object.keys(invalid).length > 0;
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -53,6 +55,9 @@ function SettingsForm({
         </FormField>
         <NameWarning warning={nameWarning} />
       </div>
+      <FormField label="Codice (per gli agenti)" error={fieldError("code")} hint={CODE_HINT}>
+        <Input value={form.code} onChange={set("code")} maxLength={6} />
+      </FormField>
       <FormField label="Leva" error={fieldError("leverage")} hint="da 1 a 10">
         <Input value={form.leverage} onChange={set("leverage")} inputMode="decimal" />
       </FormField>

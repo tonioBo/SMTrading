@@ -24,6 +24,7 @@ import { errorField, errorMessage } from "@/lib/errors";
 import { formatDecimal } from "@/lib/format";
 import { AdminOnly } from "@/components/AdminOnly";
 import { useIsAdmin } from "@/api/hooks/auth";
+import { CODE_ERROR, CODE_HINT, CODE_RE } from "@/lib/portfolioCode";
 
 const baseColumns: Column<Portfolio>[] = [
   {
@@ -48,6 +49,12 @@ const baseColumns: Column<Portfolio>[] = [
       </>
     ),
   },
+  {
+    key: "code",
+    header: "Codice",
+    sortValue: (p) => p.code ?? "",
+    cell: (p) => (p.code ? <span className="font-mono text-xs">{p.code}</span> : <span className="text-muted">—</span>),
+  },
   { key: "equity", header: "Equity", align: "right", cell: (p) => <Money value={p.equity_eur} /> },
   {
     key: "pnl",
@@ -66,6 +73,7 @@ const baseColumns: Column<Portfolio>[] = [
 
 const EMPTY_FORM = {
   name: "",
+  code: "",
   initial_cash: "",
   base_currency: "EUR",
   leverage: "1",
@@ -125,7 +133,7 @@ function CreatePortfolioDialog({ onClose }: { onClose: () => void }) {
     localErrors[field] ?? (create.error && serverField === field ? errorMessage(create.error) : null);
   const generalError = create.error && !serverField ? errorMessage(create.error) : null;
   // a server error on a field not in the form is shown as a general error
-  const formFields = ["name", "initial_cash", "base_currency", "leverage", "slippage_bps", "risk_profile_id", "timezone"];
+  const formFields = ["name", "code", "initial_cash", "base_currency", "leverage", "slippage_bps", "risk_profile_id", "timezone"];
   const orphanError = create.error && serverField && !formFields.includes(serverField) ? errorMessage(create.error) : null;
 
   function submit(e: FormEvent) {
@@ -137,6 +145,8 @@ function CreatePortfolioDialog({ onClose }: { onClose: () => void }) {
     const leverage = normalizeAmount(form.leverage);
     if (leverage === null) errors.leverage = "Leva non valida";
     if (!/^\d+$/.test(form.slippage_bps.trim())) errors.slippage_bps = "Inserisci un intero (bps)";
+    const code = form.code.trim().toUpperCase();
+    if (code && !CODE_RE.test(code)) errors.code = CODE_ERROR;
     setLocalErrors(errors);
     if (Object.keys(errors).length) return;
     create.mutate(
@@ -148,6 +158,7 @@ function CreatePortfolioDialog({ onClose }: { onClose: () => void }) {
         slippage_bps: Number(form.slippage_bps.trim()),
         timezone: form.timezone.trim(),
         risk_profile_id: form.risk_profile_id || null,
+        code: code || null,
       },
       {
         onSuccess: (p) => {
@@ -176,6 +187,9 @@ function CreatePortfolioDialog({ onClose }: { onClose: () => void }) {
             </FormField>
             <NameWarning warning={saved?.name_warning} />
           </div>
+          <FormField label="Codice (per gli agenti)" error={fieldError("code")} hint={CODE_HINT}>
+            <Input value={form.code} onChange={set("code")} maxLength={6} placeholder="es. PRU" />
+          </FormField>
           <FormField
             label="Saldo iniziale"
             error={fieldError("initial_cash")}

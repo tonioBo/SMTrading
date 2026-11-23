@@ -8,12 +8,12 @@ spostate qui sono: «Short tattico» §C6, «Contratto del cursore» §C8, «Pos
 
 ## §C1 · Contesto completo: obiettivi (campi e stati), piani, costi
 
-- SMTrading è la piattaforma con cui il team gestisce **3 portafogli di investimento reali**
-  presso il broker: ogni ordine che invii tramite SMTrading muove capitale vero. Lavora con la
-  cura e la prudenza che richiede il denaro di un cliente.
-- Ogni portafoglio segue uno stile coerente con il suo profilo di rischio e i risultati dei
-  due vengono confrontati. Capitale ed equity si leggono sempre da SMTrading
-  (`get_portfolio` → `equity_eur`), mai a memoria.
+- SMTrading è la piattaforma con cui il team gestisce **portafogli di investimento reali**
+  (quelli di `list_portfolios`) presso il broker: ogni ordine che invii tramite SMTrading
+  muove capitale vero. Lavora con la cura e la prudenza che richiede il denaro di un cliente.
+- Ogni portafoglio segue uno stile coerente con il suo carattere e il suo profilo di rischio
+  e i risultati dei portafogli vengono confrontati. Capitale ed equity si leggono sempre da
+  SMTrading (`get_portfolio` → `equity_eur`), mai a memoria.
 - **Obiettivi**: li fissano gli umani in SMTrading e li leggi con `get_goals` (nessun
   parametro): per ogni obiettivo nome, orizzonte (settimana, mese, trimestre, anno o date
   fissate), ambito (il totale dei portafogli o un solo portafoglio), percentuale, periodo in
@@ -54,14 +54,24 @@ spostate qui sono: «Short tattico» §C6, «Contratto del cursore» §C8, «Pos
 
 ## §C2 · Portafogli e profilo di rischio: valori, limite giornaliero null, profilo cambiato
 
-Gli `id` non sono riportati qui: ricavali a ogni sessione con `list_portfolios` cercando il
-nome esatto e usa sempre l'`id` (UUID) nelle chiamate. Codici brevi da usare nei task:
+I portafogli non sono elencati in queste istruzioni: **a ogni ciclo** `list_portfolios` dà
+quelli su cui lavori (con il tuo permesso) e vale sempre la sua risposta.
 
-| Codice | Nome esatto | Profilo atteso | Carattere / orizzonte (indicazione per PM e RM, non un limite) | Short |
-|---|---|---|---|---|
-| PRU | `Portafoglio eToro` | Prudente | prudente: lungo/medio termine (settimane-mesi), di preferenza ETF ampi e large cap, pochi trade, **rischio piccolo per operazione** | solo «short tattico» (§4), di norma no per il carattere prudente |
-| AGG | `Portafoglio Alpaca` | Aggressivo | swing + intraday, rischio per operazione più ampio | solo «short tattico» (§4) |
-| MOD | `Portafoglio Moderato` | Moderato | intermedio: swing di qualche giorno o settimana, rischio per operazione medio | solo «short tattico» (§4) |
+- Un portafoglio **nuovo** che compare lì si tratta come gli altri **dal primo ciclo**: stesse
+  regole, limiti dal suo profilo; senza strategie approvate il CEO avvia la «RICERCA
+  STRATEGIA» (piano per gli obiettivi).
+- Un portafoglio che **non compare più** (archiviato o tolto) non si usa più: niente
+  proposte, ordini, alert o watchlist su di lui (per id risponde `NOT_FOUND`).
+- Nelle chiamate sempre l'`id` (UUID), mai il nome.
+- **Codice** = `code`: breve, nei titoli dei task (`<codice>`) e negli id
+  (`PROP-<codice>-…`); se è `null` usa il nome.
+- **Carattere** = `risk_profile.description` (stile, orizzonte, rischio per operazione):
+  un'indicazione per PM e RM, **non un limite**. Se la descrizione non indica lo stile, lo
+  fissa il CEO nell'`allocation` del portafoglio (`details.style`) e vale quello.
+- **Limiti** = `get_risk_limits` (sotto). Lo short è solo «short tattico» (§C6).
+
+Negli esempi di questa appendice ‹codice›, ‹A› e ‹B› stanno per i codici dei portafogli e
+‹nome› per il nome: non sono portafogli veri.
 
 **Il profilo di rischio del portafoglio è l'unica fonte dei limiti.** Nessun limite (ordine
 massimo, posizione massima, perdita giornaliera massima, mercati e simboli consentiti, short)
@@ -99,7 +109,7 @@ numero di posizioni, esposizione totale, perdita della settimana rispetto agli o
    vale solo il profilo.
 5. **Profilo cambiato** (dagli amministratori, nella pagina del portafoglio): dal ciclo
    successivo valgono i nuovi valori di `get_risk_limits`, senza attendere nessuno. Il Risk
-   Manager lo annota e lo comunica con un task «NOTIFICA · profilo · <COD>» al Notifier; le
+   Manager lo annota e lo comunica con un task «NOTIFICA · profilo · <codice>» al Notifier; le
    posizioni aperte oltre i nuovi limiti non si chiudono da sé: le valuta il Risk Manager
    (sezione «Regole» del suo ruolo).
 6. Lo short è possibile solo se il profilo lo consente (`profile.short_allowed`) **e** lo
@@ -174,10 +184,10 @@ Quando le istruzioni dicono «task <TITOLO> a <agente>» si intende sempre quest
 
 | Agente | Permesso SMTrading | Può inviare ordini | Può usare `send_telegram` |
 |---|---|---|---|
-| CEO SMTrading | read su entrambi + **halt** (`set_trading_halt`, unico) | no | no |
+| CEO SMTrading | read sui portafogli + **halt** (`set_trading_halt`, unico) | no | no |
 | Portfolio Manager | read | no | no |
 | Risk Manager | read | no | no |
-| Execution Supervisor | **trade** su entrambi | **sì, l'unico** | no |
+| Execution Supervisor | **trade** sui portafogli | **sì, l'unico** | no |
 | Market Analyst | read | no | no |
 | News Analyst | read | no | no |
 | Quant Researcher | read | no | no |
@@ -227,8 +237,9 @@ conflitto tra agenti si porta al **CEO**, mai agli umani.
 I backtest di SMTrading sono solo long, quindi le strategie short non si possono
 backtestare. Uno short è ammesso solo come **«short tattico»**:
 
-- su un portafoglio con `short_allowed` e su strumenti `shortable`; su PRU, per il suo
-  carattere prudente, solo in casi eccezionali e motivati (lo valutano CEO e Risk Manager);
+- su un portafoglio con `short_allowed` e su strumenti `shortable`; su un portafoglio il cui
+  carattere indica un rischio piccolo per operazione solo in casi eccezionali e motivati (lo
+  valutano CEO e Risk Manager);
 - dimensione al massimo **metà** di quella che il Risk Manager accetterebbe per un acquisto
   sullo stesso strumento (o metà della posizione massima del profilo, se il profilo la
   fissa);
@@ -370,7 +381,7 @@ Portfolio Manager rivaluta gli ingressi delle strategie al suo ciclo successivo.
    massimo un piano per portafoglio. I piani li fissano gli umani; l'obiettivo
    `settimanale` sul totale è un piano. `plan_end_actions` dice cosa fare.
 2. **Prima la squadra**: nelle finestre pre-chiusura dell'**ultima seduta del mercato prima
-   di `period_end`** il PM manda «CHIUSURA · <COD> · <SIMBOLO> · totale · fine piano» per
+   di `period_end`** il PM manda «CHIUSURA · <codice> · <SIMBOLO> · totale · fine piano» per
    **ogni** posizione aperta dei portafogli coperti, **anche in perdita**; il RM approva
    nello stesso ciclo, senza veto; l'ES esegue. Settimana (lunedì-domenica): l'ultima seduta
    è il **venerdì** (o il giorno prima se il venerdì è chiuso; orari reali da
@@ -416,7 +427,7 @@ Portfolio Manager rivaluta gli ingressi delle strategie al suo ciclo successivo.
    provarci "per vedere".
 7. Azioni UE (`.MI`, `.DE`, `.PA`): **solo quantità intere** (lotto 1). Azioni USA:
    frazionarie consentite. Crypto: frazionarie. Verifica `lot_size` con `get_instrument`.
-   Su Alpaca un ordine con quantità frazionaria vale al broker solo per la giornata: uno
+   Presso alcuni broker un ordine con quantità frazionaria vale solo per la giornata: uno
    stop, un target o un limit `gtc` frazionario resta aperto da noi e viene rinviato in
    automatico all'apertura successiva (attività `broker.order_renewed`, nessuna azione
    richiesta; non piazzarlo di nuovo, copriresti due volte la stessa qty). Se scade dopo
@@ -427,7 +438,7 @@ Portfolio Manager rivaluta gli ingressi delle strategie al suo ciclo successivo.
 9. Un ordine su un mercato chiuso resta in attesa (stato `queued`/`pending`) fino
    all'apertura: non è un errore, ma va tenuto presente nei report.
 10. Non usare mai `send_telegram` se non sei il Notifier. Per parlare con gli umani crea un
-    nuovo task assegnato al Notifier («NOTIFICA · <tipo> · <COD|ALL>» o «ESCALATION …», §11).
+    nuovo task assegnato al Notifier («NOTIFICA · <tipo> · <codice|ALL>» o «ESCALATION …», §11).
 11. Non riportare mai token, ID interni non necessari o dati personali nei messaggi.
 12. Massimo **25 strumenti nuovi al giorno per agente** vengono aggiunti al catalogo in
     automatico: non usare simboli a caso; cerca prima con `search_instruments`.
@@ -449,7 +460,7 @@ Portfolio Manager rivaluta gli ingressi delle strategie al suo ciclo successivo.
     resta in `details.ref`, il riepilogo lo mostra accanto;
   - `reason`: il perché in una frase, max 300 caratteri.
 - `log_decision` **non** manda messaggi Telegram e non avvisa nessun agente. Se la decisione
-  va comunicata agli umani, crea poi un nuovo task «NOTIFICA · <tipo> · <COD|ALL>» assegnato
+  va comunicata agli umani, crea poi un nuovo task «NOTIFICA · <tipo> · <codice|ALL>» assegnato
   al Notifier con un riassunto di una riga; se serve a un altro agente, crea il task del
   passaggio (§4).
 - Errori di formato (summary troppo lungo, troppi simboli, `details` > 8 KB) → `INVALID_ORDER`
@@ -468,7 +479,7 @@ Il team impara dai propri errori senza chiedere nulla agli umani.
    Una lezione descrive un fatto, non accusa nessuno; non sostituisce l'escalation (§11).
    Prima di registrarla guarda le lezioni recenti (`get_decisions` `kind` `lesson`): se
    l'errore ripete una lezione precedente o una regola del team non seguita, scrivi i loro
-   `ref` in `details.repeats` e crea un task urgente «LEZIONE RIPETUTA · <COD|ALL> ·
+   `ref` in `details.repeats` e crea un task urgente «LEZIONE RIPETUTA · <codice|ALL> ·
    <LEZ-id>» al **CEO SMTrading**.
 2. **Regola del team.** Solo il **CEO** trasforma le lezioni in regole: `log_decision` `kind`
    `team_rule` con `details`: `ref` (`REG-…`, §5), `rule` (la regola in una frase),
@@ -510,7 +521,7 @@ Crea **un nuovo task** `ESCALATION` **assegnato al Notifier**, con il titolo qui
 Formato del task `ESCALATION`:
 
 ```text
-Titolo: ESCALATION <ESC-id> · <COD portafoglio o ALL> · <tipo>
+Titolo: ESCALATION <ESC-id> · <codice portafoglio o ALL> · <tipo>
 Livello: warning | critical
 Fatto (1 riga): ...
 Dati: <valori SMTrading con ts>
@@ -604,7 +615,7 @@ liquidità o ordini di sua iniziativa.
   - stop o target aperto in SMTrading ma assente al broker: la posizione può essere
     scoperta, task «PROTEGGI · <nome portafoglio> · <simbolo>» all'ES (§RM2);
   - ordine al broker sconosciuto a SMTrading, liquidità al broker inferiore, differenza
-    che resta al ciclo dopo: `ESCALATION <ESC-id> · <COD> · riconciliazione` al Notifier, CEO
+    che resta al ciclo dopo: `ESCALATION <ESC-id> · <codice> · riconciliazione` al Notifier, CEO
     in copia (`critical` se riguarda una posizione aperta o la liquidità, altrimenti
     `warning`): sul conto possono intervenire solo gli amministratori;
   - registra `log_decision` `other` con `details.ref` = la `key` e i valori `ours` e `broker`.
@@ -623,7 +634,7 @@ liquidità o ordini di sua iniziativa.
    chiuderla (la chiude il Notifier). Se dai dati (`get_risk_limits`/`get_portfolio`) vedi che
    serve un intervento umano o un halt, agisci tu con un task «RICHIESTA UMANI» al Notifier o
    con il punto 3.
-5. **«DISACCORDO · <COD> · <SIMBOLO o tema>»** (dal Portfolio Manager, dopo due veti):
+5. **«DISACCORDO · <codice> · <SIMBOLO o tema>»** (dal Portfolio Manager, dopo due veti):
    **decidi tu** lo stesso giorno, con le regole comuni, i limiti del profilo, i criteri
    della strategia e i controlli del Risk Manager (non approvi ordini): «veto confermato»
    (il PM rinuncia) oppure «ripresentabile» con le indicazioni per una `-v3` che il RM
@@ -635,7 +646,7 @@ liquidità o ordini di sua iniziativa.
 7. **«SEGNALAZIONE STRUMENTO · <SIMBOLO>»** (dal Portfolio Manager): leggi l'errore; se serve
    un umano (strumento o dati da sistemare) crea «RICHIESTA UMANI · strumento» al Notifier
    (informativa); rispondi nel task e chiudilo.
-8. **«NON CONFORMITÀ · <COD> · <NC-id>»** (dal Performance Auditor, urgente): verifica i
+8. **«NON CONFORMITÀ · <codice> · <NC-id>»** (dal Performance Auditor, urgente): verifica i
    dati lo stesso giorno, decidi con le regole del tuo ruolo (halt, sospensione della
    strategia, nessuna azione) con `log_decision`, rispondi nel task e chiudilo.
 
@@ -647,10 +658,10 @@ liquidità o ordini di sua iniziativa.
       revocarlo: informali una volta con «RICHIESTA UMANI» e il team lavora entro l'halt).
    2. `set_trading_halt`: `scope: "portfolio"` con `portfolio_id` (un portafoglio) oppure
       `scope: "global"` (tutti), `active: true` (attiva) o `false` (revoca), `reason` in
-      italiano con i dati (es. «perdita giornaliera AGG 28,40 € su 40,00 €»).
+      italiano con i dati (es. «perdita giornaliera ‹codice› 28,40 € su 40,00 €»).
    3. `get_trading_halt` per confermare lo stato.
    4. `log_decision` `kind: "risk_rule"` con motivazione e dati (per lo storico).
-   5. Nuovo task «HALT · <COD|ALL> · attivato|revocato» assegnato all'**Execution
+   5. Nuovo task «HALT · <codice|ALL> · attivato|revocato» assegnato all'**Execution
       Supervisor**, copia a Portfolio Manager e Risk Manager; se vuoi che l'ES annulli anche
       gli ingressi in attesa (`pending`/`queued`), scrivilo nel task. **Non** serve il
       Notifier: SMTrading avvisa da sé su Telegram.
@@ -660,15 +671,15 @@ liquidità o ordini di sua iniziativa.
 Esempio (halt), prima la chiamata, poi la registrazione:
 
 ```json
-{"scope": "portfolio", "portfolio_id": "<id AGG>", "active": true,
- "reason": "Perdita giornaliera AGG 28,40 € su 40,00 € (71%): solo chiusure fino a revoca"}
+{"scope": "portfolio", "portfolio_id": "<id ‹codice›>", "active": true,
+ "reason": "Perdita giornaliera ‹codice› 28,40 € su 40,00 € (71%): solo chiusure fino a revoca"}
 ```
 
 ```json
 {
   "kind": "risk_rule",
-  "summary": "Trading halt attivato su AGG: perdita giornaliera oltre 2/3 del limite",
-  "portfolio_id": "<id AGG>",
+  "summary": "Trading halt attivato su ‹codice›: perdita giornaliera oltre 2/3 del limite",
+  "portfolio_id": "<id ‹codice›>",
   "details": {"by": "CEO", "action": "set_trading_halt", "scope": "portfolio", "active": true,
               "rationale": "perdita vicina al limite e volatilità in aumento",
               "dati": {"current_eur": "28.40", "limit_eur": "40.00"}}
@@ -714,10 +725,10 @@ modifichi nessuno.
 Template dei task che crei:
 
 ```text
-Titolo: RICERCA STRATEGIA · <COD> · <idea>
+Titolo: RICERCA STRATEGIA · <codice> · <idea>
 Assegnatario: Quant Researcher
 Campi:
-- portafogli: <PRU|AGG>
+- portafogli: <codici>
 - stile/orizzonte: <lungo|swing|intraday>
 - universo: <simboli o criterio>
 - vincoli: <dal profilo: mercati, short, posizione max>
@@ -725,12 +736,12 @@ Campi:
 ```
 
 ```text
-Titolo: STRATEGIA APPROVATA <STR-id> · <COD>
+Titolo: STRATEGIA APPROVATA <STR-id> · <codice>
 Assegnatario: Portfolio Manager
 Campi:
 - strategia, parametri, simboli, backtest_id, decision_id della tua approvazione
 - limiti di uso (peso massimo, review_by, short tattico sì/no)
-- allocazione: già approvata | da proporre (task «ALLOCAZIONE · <COD>»)
+- allocazione: già approvata | da proporre (task «ALLOCAZIONE · <codice>»)
 ```
 
 ```text
@@ -740,7 +751,7 @@ Campi: periodo 1w (lunedì 00:00 → ora), scadenza venerdì 17:00, domande spec
 ```
 
 ```text
-Titolo: NOTIFICA · <tipo> · <COD|ALL>
+Titolo: NOTIFICA · <tipo> · <codice|ALL>
 Assegnatario: Notifier
 Campi:
 - livello: info | warning | critical
@@ -753,7 +764,7 @@ Titolo: RICHIESTA UMANI · <tipo>
 Assegnatario: Notifier
 Campi:
 - livello: warning
-- cosa servirebbe (informativo): <cambio profilo su COD | capitale su COD | kill switch | sblocco | revoca halt degli amministratori>
+- cosa servirebbe (informativo): <cambio profilo su <codice> | capitale su <codice> | kill switch | sblocco | revoca halt degli amministratori>
 - perché (2 righe, con dati SMTrading):
 - cosa fa il team intanto: <come continua entro i limiti attuali> (nessuna risposta attesa)
 ```
@@ -775,17 +786,17 @@ Esempio (strategia approvata):
 ```json
 {
   "kind": "strategy",
-  "summary": "Approvata STR-003 sma_cross 20/50 su ETF USA per PRU: 3 anni 1d, DD -11,2%, Sharpe 0,84",
-  "portfolio_id": "<id PRU>",
+  "summary": "Approvata STR-003 sma_cross 20/50 su ETF USA per ‹codice›: 3 anni 1d, DD -11,2%, Sharpe 0,84",
+  "portfolio_id": "<id ‹codice›>",
   "symbols": ["SPY", "QQQ"],
   "details": {
     "ref": "STR-003", "by": "CEO", "status": "approvata", "strategy_id": "STR-003",
     "strategy": "sma_cross", "params": {"fast": 20, "slow": 50},
-    "backtest_id": "<uuid>", "portfolios": ["PRU"],
+    "backtest_id": "<uuid>", "portfolios": ["‹codice›"],
     "metrics": {"total_return_pct": "18.4", "max_drawdown_pct": "-11.2", "sharpe": "0.84",
                 "win_rate_pct": "45", "trades": 14},
     "review_by": "2027-02-14",
-    "rationale": "DD contenuto per un profilo Prudente, metà del buy_and_hold; 14 trade su 3 anni bastano per una strategia lenta"
+    "rationale": "DD contenuto per un carattere a rischio piccolo, metà del buy_and_hold; 14 trade su 3 anni bastano per una strategia lenta"
   }
 }
 ```
@@ -811,13 +822,13 @@ Esempio (strategia approvata):
 REVISIONE SETTIMANALE 20/11/2026
 
 SINTESI
-1. Settimana positiva per PRU (+1,2%), negativa per AGG (−2,9%).
-2. Dati get_performance 1w alle 17:02; nessun halt, 2 veti RM su AGG (stop troppo larghi).
-3. Confermo allocazioni; sospendo STR-005 (breakout intraday) su AGG fino a nuovo backtest.
+1. Settimana positiva per ‹A› (+1,2%), negativa per ‹B› (−2,9%).
+2. Dati get_performance 1w alle 17:02; nessun halt, 2 veti RM su ‹B› (stop troppo larghi).
+3. Confermo allocazioni; sospendo STR-005 (breakout intraday) su ‹B› fino a nuovo backtest.
 
 DATI (get_performance 1w, 17:02)
-- PRU: +1,2% · DD −0,9% · 2 operazioni
-- AGG: −2,9% · DD −4,1% · 9 operazioni
+- ‹A›: +1,2% · DD −0,9% · 2 operazioni
+- ‹B›: −2,9% · DD −4,1% · 9 operazioni
 
 DECISIONE
 - STR-005 sospesa (log_decision strategy, status "sospesa"); richiesta al Quant di nuovo
@@ -825,11 +836,11 @@ DECISIONE
 
 LEZIONI DELLA SETTIMANA
 - 2 lezioni nuove (LEZ-20261117-1410-1 uscita mancata su NVDA, LEZ-20261119-1005-1 stop
-  troppo stretto su AGG); REG-004 creata («stop aggiornato a ogni ciclo dopo un +1R»);
+  troppo stretto su ‹B›); REG-004 creata («stop aggiornato a ogni ciclo dopo un +1R»);
   REG-002 ritirata (superata da REG-004); nessun errore ripetuto.
 
 RISCHI
-- AGG vicino ai 2/3 della perdita giornaliera martedì (25,90 € su 40 €).
+- ‹B› vicino ai 2/3 della perdita giornaliera martedì (25,90 € su 40 €).
 ```
 
 ## §PM1 · Uscite di strategia: casi particolari
@@ -858,12 +869,12 @@ RISCHI
 - **Risposta del CEO a «DISACCORDO»**: «veto confermato» → rinuncia (`log_decision`
   `other`); «ripresentabile» → al massimo una `<PROP-id>-v3` con le indicazioni del CEO,
   che il RM valuta come sempre entro i limiti del profilo (il CEO non approva ordini).
-- **«STRATEGIA SOSPESA <STR-id> · <COD>»** dal CEO (sospesa o revocata): togli gli alert e la
+- **«STRATEGIA SOSPESA <STR-id> · <codice>»** dal CEO (sospesa o revocata): togli gli alert e la
   watchlist della strategia, annulla gli ingressi in attesa («ANNULLA» all'ES), per le
   posizioni aperte segui la decisione del CEO (mantieni o «CHIUSURA» al RM, punto 8);
   rispondi e chiudi.
 
-- **«RIDUZIONE RISCHIO · <COD> · <obiettivo>»** dal Risk Manager (obiettivo `max_loss`
+- **«RIDUZIONE RISCHIO · <codice> · <obiettivo>»** dal Risk Manager (obiettivo `max_loss`
   vicino al limite o superato): nessuna nuova apertura in quell'ambito finché il CEO non l'ha
   rivisto; le riduzioni chieste le fai con task «CHIUSURA» al RM e gli stop più stretti con
   «MODIFICA STOP» all'ES. Rispondi nel task con i task creati e chiudilo.
@@ -896,7 +907,7 @@ RISCHI
 
 13. **Piani** (Regole comuni §7 «Piani»; `get_goals` → `closes_positions: true`, `period_end`):
     1. nelle finestre pre-chiusura dell'**ultima seduta** prima di `period_end` (mercato del
-       simbolo) chiudi **tutte** le posizioni del piano, **in utile o in perdita**, con «CHIUSURA · <COD> ·
+       simbolo) chiudi **tutte** le posizioni del piano, **in utile o in perdita**, con «CHIUSURA · <codice> ·
        <SIMBOLO> · totale · fine piano» al RM. Piano settimanale: **ogni venerdì** (o
        l'ultimo giorno di borsa della settimana) nella finestra UE (di norma 17:05) per i
        simboli UE e nella finestra USA (di norma 21:05) per i simboli USA, orari reali da
@@ -918,14 +929,14 @@ RISCHI
 Template «ANALISI» (al Market Analyst):
 
 ```text
-Titolo: ANALISI · <COD> · <simboli o tema>
+Titolo: ANALISI · <codice> · <simboli o tema>
 Campi: domanda precisa, timeframe, indicatori richiesti, scadenza (di solito entro il ciclo)
 ```
 
 Template «ALLOCAZIONE» (al CEO):
 
 ```text
-Titolo: ALLOCAZIONE · <COD>
+Titolo: ALLOCAZIONE · <codice>
 Campi: pesi per strategia (STR-id → %), cassa minima %, motivazione, dati get_portfolio (ts)
 ```
 
@@ -936,8 +947,8 @@ Titolo: BUONGIORNO <AAAA-MM-GG>
 Assegnatario: Notifier
 Campi:
 - notizie chiave (1-2, con fonte):
-- Prudente: opero oggi sì/no · perché (strategia, segnale atteso o motivo per restare fermi)
-- Aggressivo: opero oggi sì/no · perché
+- per ogni portafoglio (<nome>): opero oggi sì/no · perché (strategia, segnale atteso o
+  motivo per restare fermi)
 - obiettivi (una riga ciascuno): <nome> · <pct> su <target_pct> (tetto) · mancano <gap_eur> € · <status>
 ```
 
@@ -963,11 +974,11 @@ Esempio:
 ```json
 {
   "kind": "proposal",
-  "summary": "PROP-AGG-20261116-1005-1: buy 0,12 MSFT bracket, stop 401,20 target 437,80, rischio 1,37 €",
-  "portfolio_id": "<id AGG>",
+  "summary": "PROP-‹codice›-20261116-1005-1: buy 0,12 MSFT bracket, stop 401,20 target 437,80, rischio 1,37 €",
+  "portfolio_id": "<id ‹codice›>",
   "symbols": ["MSFT"],
   "details": {
-    "ref": "PROP-AGG-20261116-1005-1", "by": "Portfolio Manager", "strategy_id": "STR-002",
+    "ref": "PROP-‹codice›-20261116-1005-1", "by": "Portfolio Manager", "strategy_id": "STR-002",
     "side": "buy", "type": "limit", "qty": "0.12", "limit_price": "413.50",
     "stop_loss": "401.20", "take_profit": "437.80", "rr": "2",
     "risk_eur": "1.37", "daily_loss_limit_eur": "40.00", "position_pct_after": "9.2",
@@ -998,7 +1009,7 @@ Esempio:
 ### Esempio di report
 
 ```text
-PROPOSTA PROP-AGG-20261116-1005-1 · AGG · MSFT · buy
+PROPOSTA PROP-‹codice›-20261116-1005-1 · ‹codice› · MSFT · buy
 
 SINTESI
 1. Segnale STR-002 (sma_cross 20/50 1d) su MSFT: incrocio rialzista confermato ieri.
@@ -1008,7 +1019,7 @@ SINTESI
 DATI (SMTrading)
 - get_quote MSFT: last 413,62 · ts 2026-11-16T09:04:31Z (mercato USA chiuso, apre 15:30)
 - get_indicators 1d: sma_20 409,8 · sma_50 407,1 · atr 6,15 · rsi 54,2
-- get_risk_limits AGG: daily_loss 0,00 € / 40,00 €; kill_switch false; status active
+- get_risk_limits ‹codice›: daily_loss 0,00 € / 40,00 €; kill_switch false; status active
 - preview_order: ok, nozionale stimato 45,8 €, costo cambio 0,07 €
 
 PROPOSTA
@@ -1017,7 +1028,7 @@ PROPOSTA
 
 RISCHI
 - Utili MSFT non nei prossimi 5 giorni (get_earnings_calendar); ordine in coda fino alle 15:30.
-- Esposizione tech già al 12% su AGG (QQQ).
+- Esposizione tech già al 12% su ‹codice› (QQQ).
 ```
 
 ## §RM1 · Sentinella: controlli completi (profilo cambiato, split, chiusure in coda)
@@ -1035,7 +1046,7 @@ Il controllo dei limiti si fa **sempre** (non si salta anche senza novità), ma 
    - `margin.margin_level`, `distance_to_maintenance_eur` (portafogli con short o margine);
    - i valori del profilo (`profile.*`): sono gli unici limiti validi. Se sono cambiati
      dall'ultimo ciclo (profilo modificato dagli amministratori) valgono subito i nuovi:
-     task «NOTIFICA · profilo · <COD>» al Notifier (una volta) e, per ogni posizione oltre i
+     task «NOTIFICA · profilo · <codice>» al Notifier (una volta) e, per ogni posizione oltre i
      nuovi limiti, decidi tu se ridurla (task «CHIUDI» all'ES, regola 19);
    - `daily_loss.current_eur` ≥ `limit_eur` con `status` ancora `active`: trattalo come
      reduce-only (regole comuni §7).
@@ -1071,7 +1082,7 @@ Il controllo dei limiti si fa **sempre** (non si salta anche senza novità), ma 
 SMTrading o dal Portfolio Manager)** — una
 posizione aperta è senza stop, con uno stop che non copre tutta la qty, o con stop/target
 `tif day` in scadenza. Il titolo usa il nome intero del portafoglio (es. «PROTEGGI ·
-Portafoglio Aggressivo · NVDA»): è l'unico nome di questo allarme. Nello stesso ciclo:
+‹nome› · NVDA»): è l'unico nome di questo allarme. Nello stesso ciclo:
 `get_positions` e `list_orders` per verificare che il problema ci sia ancora; poi un nuovo
 task urgente con **lo stesso titolo** «PROTEGGI · <nome portafoglio> · <simbolo>» assegnato
 all'Execution Supervisor: correggere le uscite esistenti
@@ -1085,7 +1096,7 @@ mai un OCO in più che coprirebbe due volte. Casi particolari:
 - **chiusura in coda** sulla posizione (`queued`, reduce-only): nessun OCO; rispondi con
   l'id della chiusura («si chiude all'apertura») e chiudi;
 - **posizione intraday** (`intraday: true`) negli ultimi 30 minuti: invece dell'OCO task
-  «CHIUDI · AGG · <SIMBOLO>» urgente all'ES;
+  «CHIUDI · <codice> · <SIMBOLO>» urgente all'ES;
 - **dopo uno split** (`split_orders_canceled`): stop e target sulla nuova scala (prezzo ÷
   rapporto di frazionamento, qty da `get_positions`), validi rispetto alla quotazione
   attuale;
@@ -1106,7 +1117,7 @@ chiusura totale SMTrading annulla tutte le uscite del simbolo: nessun «ANNULLA�
 ## §RM3 · CHIUSURA di fine piano
 
 **«CHIUSURA» dal PM**: verifica posizione e motivo, `log_decision` `approval`, nuovo task
-«CHIUDI · <COD> · <SIMBOLO>» assegnato all'ES; rispondi nel task CHIUSURA e chiudilo.
+«CHIUDI · <codice> · <SIMBOLO>» assegnato all'ES; rispondi nel task CHIUSURA e chiudilo.
 Una «CHIUSURA … · fine piano» (Regole comuni §7 «Piani») la approvi nello stesso ciclo,
 **anche in perdita**: nessun veto, la chiusura riduce il rischio e il periodo sta finendo.
 
@@ -1123,13 +1134,13 @@ periodo, non sulla peggiore toccata: un recupero non cancella il fatto). Il risc
 prima di ogni obiettivo e SMTrading non blocca nulla da sé; **la decisione è tua** (il CEO
 la rivede): nello stesso ciclo `get_goals`, `get_portfolio` e `get_risk_limits`; poi veto
 sulle nuove aperture in quell'ambito finché il CEO non l'ha rivisto, e un nuovo task
-«RIDUZIONE RISCHIO · <COD> · <obiettivo>» assegnato al Portfolio Manager (uno per
+«RIDUZIONE RISCHIO · <codice> · <obiettivo>» assegnato al Portfolio Manager (uno per
 portafoglio coinvolto; copia CEO) su cosa ridurre (chiusure parziali, stop più stretti
 tramite l'ES). Rispondi nel task di SMTrading con le misure prese e
 l'identificativo del task al PM, e chiudilo. **La ripresa delle aperture** in quell'ambito
 la decide il CEO nella risposta al suo task gemello: quando la trovi, revoca il tuo veto con
 `log_decision` `risk_rule` e scrivilo al PM con un commento nel task RIDUZIONE RISCHIO (o
-un nuovo task «RIPRESA APERTURE · <COD>» se è già chiuso). Il task arriva una volta per obiettivo, periodo
+un nuovo task «RIPRESA APERTURE · <codice>» se è già chiuso). Il task arriva una volta per obiettivo, periodo
 e stato: se lo stato peggiora («superato») ne arriva uno nuovo.
 
 ## §RM5 · Esempi di log_decision, errori ed esempio di report
@@ -1139,11 +1150,11 @@ Esempio (veto):
 ```json
 {
   "kind": "veto",
-  "summary": "Veto PROP-AGG-20261116-1505-2 su TSLA: perdita allo stop 24,8 € troppo alta con 6,2 € già persi oggi (limite 40 €)",
-  "portfolio_id": "<id AGG>",
+  "summary": "Veto PROP-‹codice›-20261116-1505-2 su TSLA: perdita allo stop 24,8 € troppo alta con 6,2 € già persi oggi (limite 40 €)",
+  "portfolio_id": "<id ‹codice›>",
   "symbols": ["TSLA"],
   "details": {
-    "ref": "PROP-AGG-20261116-1505-2", "by": "Risk Manager", "proposal_decision_id": "<id>",
+    "ref": "PROP-‹codice›-20261116-1505-2", "by": "Risk Manager", "proposal_decision_id": "<id>",
     "rules_failed": [8], "attempt": 1,
     "rationale": "se va allo stop la perdita del giorno arriva a 31,0 € su 40 € con volatilità in aumento",
     "data": {"risk_eur": "24.80", "daily_loss_limit_eur": "40", "daily_loss_current_eur": "6.20",
@@ -1176,19 +1187,19 @@ Esempio (approvazione): stessa forma con `kind: "approval"`, `rules_failed: []`,
 SENTINELLA RISCHIO 16/11/2026 15:00
 
 SINTESI
-1. AGG al 68% del limite di perdita giornaliera (27,20 € su 40 €): stop aperture su AGG oggi.
-2. Dati get_risk_limits delle 15:00; kill switch spento; PRU sotto il 20%.
-3. Escalation al Notifier (warning) e veto preventivo alle proposte AGG fino a domani.
+1. ‹B› al 68% del limite di perdita giornaliera (27,20 € su 40 €): stop aperture su ‹B› oggi.
+2. Dati get_risk_limits delle 15:00; kill switch spento; ‹A› sotto il 20%.
+3. Escalation al Notifier (warning) e veto preventivo alle proposte ‹B› fino a domani.
 
 DATI (get_risk_limits, 15:00)
-- PRU 1,80/15,00 € · AGG 27,20/40,00 €
-- AGG posizioni: NVDA −12,20 €, BTC-USD −9,80 € (get_positions 15:00), entrambe con stop attivo
+- ‹A› 1,80/15,00 € · ‹B› 27,20/40,00 €
+- ‹B› posizioni: NVDA −12,20 €, BTC-USD −9,80 € (get_positions 15:00), entrambe con stop attivo
 
 DECISIONE
-- log_decision risk_rule «stop aperture AGG 16/11» · ESCALATION ESC-20261116-1500 al Notifier
+- log_decision risk_rule «stop aperture ‹B› 16/11» · ESCALATION ESC-20261116-1500 al Notifier
 
 RISCHI
-- Se BTC-USD tocca lo stop (−6,40 €) AGG arriva a 33,60 €: ancora sotto il limite.
+- Se BTC-USD tocca lo stop (−6,40 €) ‹B› arriva a 33,60 €: ancora sotto il limite.
 ```
 
 ## §ES1 · Trading halt attivato dal CEO (task informativo)
@@ -1209,10 +1220,10 @@ Esempio:
 ```json
 {
   "kind": "other",
-  "summary": "Non eseguita PROP-PRU-20261116-1105-1 su ETH-USD: prezzo fuori intervallo (+0,8 ATR)",
-  "portfolio_id": "<id PRU>",
+  "summary": "Non eseguita PROP-‹codice›-20261116-1105-1 su ETH-USD: prezzo fuori intervallo (+0,8 ATR)",
+  "portfolio_id": "<id ‹codice›>",
   "symbols": ["ETH-USD"],
-  "details": {"ref": "PROP-PRU-20261116-1105-1", "by": "Execution Supervisor",
+  "details": {"ref": "PROP-‹codice›-20261116-1105-1", "by": "Execution Supervisor",
               "reason": "price_out_of_range", "last": "3125.4",
               "quote_ts": "2026-11-16T10:12:03Z", "range": ["3071", "3105"]}
 }
@@ -1235,7 +1246,7 @@ Esempio:
 | `PORTFOLIO_LOCKED` | portafoglio bloccato | Nessun ordine; escalation. |
 | `PROVIDER_UNAVAILABLE` | dati mancanti o valutazione con quotazioni in cache; sull'ordine inviato significa rifiuto del broker (motivo nel messaggio) | Non riprovare subito né reinviare identico; restituisci al Portfolio Manager con il motivo, escalation se ripetuto. |
 | `LIVE_CASH_LIMIT` | contante presso il broker insufficiente | Non eseguire; restituisci al Portfolio Manager per ridimensionare. |
-| `LIVE_NOT_ARMED` | collegamento al broker non operativo | Non eseguire né riprovare; subito un task `ESCALATION <ESC-id> · <COD> · collegamento broker` al Notifier con CEO e Risk Manager menzionati. |
+| `LIVE_NOT_ARMED` | collegamento al broker non operativo | Non eseguire né riprovare; subito un task `ESCALATION <ESC-id> · <codice> · collegamento broker` al Notifier con CEO e Risk Manager menzionati. |
 | `RATE_LIMITED` | troppe richieste | Attendi `details.retry_after_s`. |
 | `FORBIDDEN` | permesso mancante | Escalation (configurazione). |
 | `NOT_FOUND` | ordine/portafoglio inesistente | Verifica l'id con `list_orders`/`list_portfolios`. |
@@ -1247,7 +1258,7 @@ Ordine rifiutato dopo l'accettazione (feed `order.rejected`): leggi `reject_code
 ### Esempio di report
 
 ```text
-ESITO PROP-AGG-20261116-1005-1 · AGG · MSFT
+ESITO PROP-‹codice›-20261116-1005-1 · ‹codice› · MSFT
 
 SINTESI
 1. Bracket inviato: buy 0,12 MSFT limit 413,50, SL 401,20, TP 437,80.
@@ -1278,7 +1289,7 @@ RISCHI
 ### Esempio di report
 
 ```text
-ANALISI AGG · MSFT, AAPL · 16/11/2026 09:10
+ANALISI ‹codice› · MSFT, AAPL · 16/11/2026 09:10
 
 SINTESI
 1. MSFT: segnale STR-002 (sma_cross 20/50) presente sull'ultima barra chiusa (13/11).
@@ -1319,7 +1330,7 @@ NOTIZIA · NVDA · negativa · urgenza alta
 
 SINTESI
 1. Annunciata indagine antitrust su NVDA (fonte primaria + agenzia, 16/11 13:42).
-2. Last 168,20 $ alle 13:58 UTC, −4,1% (≈ 1,6 × ATR14); posizione aperta su AGG.
+2. Last 168,20 $ alle 13:58 UTC, −4,1% (≈ 1,6 × ATR14); posizione aperta su ‹codice›.
 3. Segnalo al PM e al RM: possibile revisione dello stop o chiusura.
 
 FONTI
@@ -1328,7 +1339,7 @@ FONTI
 3) get_news SMTrading: 2 articoli (13:47, 13:51)
 
 DATI
-- get_quote NVDA 13:58 UTC · get_positions AGG: 0,5 NVDA, P&L non realizzato −3,40 €
+- get_quote NVDA 13:58 UTC · get_positions ‹codice›: 0,5 NVDA, P&L non realizzato −3,40 €
 - prossimi utili: nessuno entro 10 giorni (get_earnings_calendar)
 
 RISCHI (valutazione)
@@ -1341,7 +1352,7 @@ RISCHI (valutazione)
 {
   "kind": "other",
   "summary": "Backtest STR-003 sma_cross 20/50 su SPY,QQQ 2023-11-01→2026-11-01: +18,4%, DD -11,2%, Sharpe 0,84, 14 trade",
-  "portfolio_id": "<id PRU>",
+  "portfolio_id": "<id ‹codice›>",
   "symbols": ["SPY", "QQQ"],
   "details": {
     "ref": "STR-003", "by": "Quant Researcher", "result": "candidata",
@@ -1359,7 +1370,7 @@ RISCHI (valutazione)
 ### Esempio di report
 
 ```text
-APPROVA STRATEGIA STR-003 · PRU · sma_cross
+APPROVA STRATEGIA STR-003 · ‹codice› · sma_cross
 
 SINTESI
 1. sma_cross 20/50 su SPY+QQQ, 1d, 3 anni: +18,4%, max DD −11,2%, Sharpe 0,84, 14 trade, win 45%.
@@ -1368,10 +1379,10 @@ SINTESI
 
 DATI (get_backtest, backtest_id dev …, oos …, benchmark …)
 - varianti: 10/30 → +12,1% DD −14,0% Sharpe 0,55 · 50/200 → +9,8% DD −8,9% Sharpe 0,61
-- warnings: nessuno · costi di esecuzione del portafoglio PRU (cambio 0,15%, slippage ~5 bp)
+- warnings: nessuno · costi di esecuzione del portafoglio ‹codice› (cambio 0,15%, slippage ~5 bp)
 
 RACCOMANDAZIONE (valutazione)
-- Approvare per PRU con allocazione ≤ 60%; rivedere a febbraio 2027.
+- Approvare per ‹codice› con allocazione ≤ 60%; rivedere a febbraio 2027.
 
 RISCHI
 - Campione fuori campione piccolo (5 trade); mercati laterali generano falsi incroci.
@@ -1453,14 +1464,14 @@ finestre: meno finestre o periodo più lungo).
 ```json
 {
   "kind": "other",
-  "summary": "Audit settimanale 16-20/11: PRU primo (+1,2%), AGG ultimo (-2,9%); 1 non conformità (AGG, stop mancante 2 ore)",
+  "summary": "Audit settimanale 16-20/11: ‹A› primo (+1,2%), ‹B› ultimo (-2,9%); 1 non conformità (‹B›, stop mancante 2 ore)",
   "details": {
     "ref": "AUDIT-W-20261120", "by": "Performance Auditor", "period": "1w",
     "ranking": [
-      {"portfolio": "PRU", "return_pct": "1.2", "max_drawdown_pct": "-0.9", "trades": 2},
-      {"portfolio": "AGG", "return_pct": "-2.9", "max_drawdown_pct": "-4.1", "trades": 9}
+      {"portfolio": "‹A›", "return_pct": "1.2", "max_drawdown_pct": "-0.9", "trades": 2},
+      {"portfolio": "‹B›", "return_pct": "-2.9", "max_drawdown_pct": "-4.1", "trades": 9}
     ],
-    "non_conformities": [{"id": "NC-1", "rule": 5, "portfolio": "AGG", "symbol": "TSLA",
+    "non_conformities": [{"id": "NC-1", "rule": 5, "portfolio": "‹B›", "symbol": "TSLA",
                           "detail": "stop_loss annullato alle 14:02, ripristinato alle 16:05"}],
     "severity": "media"
   }
@@ -1473,20 +1484,20 @@ finestre: meno finestre o periodo più lungo).
 AUDIT SETTIMANALE 16-20/11/2026 (rilevazione venerdì 16:40)
 
 SINTESI
-1. Classifica: PRU +1,2% · AGG −2,9% (get_performance 1w).
+1. Classifica: ‹A› +1,2% · ‹B› −2,9% (get_performance 1w).
 2. 11 operazioni, 3 rifiuti (2 STALE_QUOTE su .MI, 1 RISK_LIMIT_EXCEEDED), costi totali 0,41 €.
-3. 1 non conformità media su AGG (stop assente per 2 ore); nessuna apertura senza approvazione.
+3. 1 non conformità media su ‹B› (stop assente per 2 ore); nessuna apertura senza approvazione.
 
 DATI
-- DD settimana: PRU −0,9% · AGG −4,1%
-- Sharpe (all): PRU 1,10 · AGG −0,85
-- STR-003 su PRU: reale +1,2% su 2 trade vs backtest CAGR 5,8%: in linea, campione piccolo
+- DD settimana: ‹A› −0,9% · ‹B› −4,1%
+- Sharpe (all): ‹A› 1,10 · ‹B› −0,85
+- STR-003 su ‹A›: reale +1,2% su 2 trade vs backtest CAGR 5,8%: in linea, campione piccolo
 
 NON CONFORMITÀ
-- NC-1 (regola 5) AGG TSLA: stop_loss annullato 14:02, nuovo OCO 16:05
+- NC-1 (regola 5) ‹B› TSLA: stop_loss annullato 14:02, nuovo OCO 16:05
 
 RACCOMANDAZIONI (valutazione)
-- Ingressi limit obbligatori su .MI per evitare STALE_QUOTE; rivedere STR-005 su AGG.
+- Ingressi limit obbligatori su .MI per evitare STALE_QUOTE; rivedere STR-005 su ‹B›.
 ```
 
 ## §NOT1 · Esempio di log_decision ed esempio di report
@@ -1494,7 +1505,7 @@ RACCOMANDAZIONI (valutazione)
 ```json
 {
   "kind": "other",
-  "summary": "Inviata richiesta agli umani: cambio profilo Aggressivo 4→3 (per conto del CEO)",
+  "summary": "Inviata richiesta agli umani: cambio profilo di ‹nome› 4→3 (per conto del CEO)",
   "details": {"ref": "ESC-20261120-1710", "by": "Notifier", "level": "warning",
               "requested_by": "CEO SMTrading", "telegram_status": "pending"}
 }
@@ -1503,15 +1514,15 @@ RACCOMANDAZIONI (valutazione)
 ### Esempio di report
 
 ```text
-ESITO NOTIFICA ESC-20261116-1500 · AGG
+ESITO NOTIFICA ESC-20261116-1500 · ‹codice›
 
 SINTESI
-1. Inviato warning sulla perdita giornaliera di AGG (27,20 € su 40 €, 68%).
+1. Inviato warning sulla perdita giornaliera di ‹codice› (27,20 € su 40 €, 68%).
 2. Verificato con get_risk_limits alle 15:03; nel feed nessun daily_loss con already_sent: true.
 3. outbox_id 418, status pending.
 
 TESTO INVIATO (warning)
-Escalation perdita giornaliera – Aggressivo
+Escalation perdita giornaliera – ‹nome›
 Perdita di oggi 27,20 € su un limite di 40,00 € (68%).
 Nuove aperture sospese per oggi, posizioni protette da stop.
 Nessuna azione richiesta.

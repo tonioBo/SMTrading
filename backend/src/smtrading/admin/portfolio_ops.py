@@ -315,7 +315,8 @@ async def unarchive_portfolio(
     session: AsyncSession, portfolio_id: UUID, *, qs: QuoteSource, by: str,
     now: datetime | None = None,
 ) -> Portfolio:
-    """Back to the status it had when archived (active when unknown). Idempotent.
+    """Back to the status it had when archived (active when unknown). Idempotent. Its
+    `code` is cleared when a live portfolio took it while it was archived.
 
     The dividends and splits whose ex-date fell while it was archived (skipped by the
     daily job) are applied first, in the same transaction, with the daily job's per-event
@@ -341,6 +342,11 @@ async def unarchive_portfolio(
         restored = PortfolioStatus.active
     if restored == PortfolioStatus.archived:
         restored = PortfolioStatus.active
+    if portfolio.code is not None and await session.scalar(
+            select(Portfolio.id).where(Portfolio.code == portfolio.code,
+                                       Portfolio.id != portfolio.id,
+                                       Portfolio.status != PortfolioStatus.archived)):
+        portfolio.code = None  # taken meanwhile by a live portfolio: the admin sets a new one
     portfolio.status = restored
     portfolio.archived_at = None
     portfolio.archived_by = None

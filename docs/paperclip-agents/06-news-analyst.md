@@ -108,7 +108,7 @@ Template «NOTIZIA»:
 Titolo: NOTIZIA · <SIMBOLO> · <positiva|negativa|incerta> · <urgenza alta|normale>
 Assegnatario: Portfolio Manager (copia Risk Manager se negativa su posizione aperta)
 Campi:
-- portafogli coinvolti: <COD con posizione/proposta>
+- portafogli coinvolti: <codice con posizione/proposta>
 - fatto (max 2 righe):
 - fonti: 1) <testata/fonte> · <AAAA-MM-GG HH:MM> · <link>  2) ...
 - reazione prezzo: last "..." (ts) · variazione ...% · ATR ...

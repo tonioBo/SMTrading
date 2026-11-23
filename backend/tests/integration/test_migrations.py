@@ -845,3 +845,49 @@ async def test_0044_eu_etoro_and_yahoo_coin_ids(fresh_db):
     assert prio[("eu_equity", "quote")] == ["yahoo", "twelvedata", "finnhub"]
     assert syms == {"HYPE-USD": {"coingecko": "hyperliquid:usd"}, "CC-USD": {"yahoo": "MINE-USD"}}
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+
+
+async def test_0045_portfolio_code(fresh_db):
+    """0045: `portfolios.code`; the three named active portfolios get AGG/PRU/MOD, an
+    archived one and the others none; the code is checked (2-6 A-Z0-9) and unique among
+    the portfolios that are not archived; the downgrade drops it."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0044")
+    engine = make_engine(fresh_db)
+    ins = text(
+        "insert into portfolios (id, name, base_currency, leverage, maintenance_margin_pct,"
+        " warning_margin_pct, slippage_bps, status, timezone, in_totals) values"
+        " (gen_random_uuid(), :n, 'EUR', 1, 50, 75, 0, :s, 'Europe/Rome', true)")
+    async with engine.begin() as conn:
+        for name, status in (("Portafoglio Alpaca", "active"), ("Portafoglio eToro", "locked"),
+                             ("Portafoglio Moderato", "archived"), ("Altro", "active")):
+            await conn.execute(ins, {"n": name, "s": status})
+    await engine.dispose()
+
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    engine = make_engine(fresh_db)
+    async with engine.connect() as conn:
+        codes = dict((await conn.execute(text("select name, code from portfolios"))).all())
+    assert codes["Portafoglio Alpaca"] == "AGG" and codes["Portafoglio eToro"] == "PRU"
+    assert codes["Portafoglio Moderato"] is None and codes["Altro"] is None
+    for bad, match in (("agg", "ck_portfolios_code"), ("AGG", "uq_portfolios_code_live")):
+        async with engine.begin() as conn:
+            with pytest.raises(DBAPIError, match=match):
+                await conn.execute(text("update portfolios set code = :c where name = 'Altro'"),
+                                   {"c": bad})
+    async with engine.begin() as conn:  # an archived portfolio may keep a live one's code
+        await conn.execute(text(
+            "update portfolios set code = 'AGG' where name = 'Portafoglio Moderato'"))
+    await engine.dispose()
+
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0044")
+    engine = make_engine(fresh_db)
+    async with engine.connect() as conn:
+        assert await conn.scalar(text(
+            "select count(*) from information_schema.columns"
+            " where table_name = 'portfolios' and column_name = 'code'")) == 0
+    await engine.dispose()
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")

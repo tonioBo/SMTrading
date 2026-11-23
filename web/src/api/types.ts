@@ -154,6 +154,8 @@ export type PortfolioStatus = "active" | "reduce_only" | "locked" | "archived";
 export interface Portfolio {
   id: string;
   name: string;
+  /** the agents' short code (2–6 A-Z/0-9, unique among the live portfolios), null: none */
+  code?: string | null;
   base_currency: string;
   leverage: string;
   maintenance_margin_pct: string;
@@ -196,6 +198,7 @@ export interface PortfolioCreate {
   slippage_bps: number;
   timezone: string;
   risk_profile_id: string | null;
+  code?: string | null;
 }
 
 export interface PortfolioPatch {
@@ -208,6 +211,8 @@ export interface PortfolioPatch {
   risk_profile_id?: string | null;
   timezone?: string;
   in_totals?: boolean;
+  /** empty / null clears it */
+  code?: string | null;
 }
 
 export interface PositionValuation {

@@ -907,6 +907,30 @@ describe("PortfolioDetail", () => {
     );
   });
 
+  it("edits the agents' code: uppercased, validated, emptied to clear it", async () => {
+    current = { ...portfolio, code: "ALF" };
+    const user = await openTab("Impostazioni");
+    const code = await screen.findByLabelText("Codice (per gli agenti)");
+    expect(code).toHaveValue("ALF");
+    const save = screen.getByRole("button", { name: "Salva impostazioni" });
+    await user.clear(code);
+    await user.type(code, "a");
+    await user.click(save);
+    expect(screen.getByText("Da 2 a 6 lettere maiuscole o cifre")).toBeInTheDocument();
+    expect(patches).toEqual([]);
+    await user.type(code, "b2");
+    await user.click(save);
+    await waitFor(() => expect(patches).toEqual([{ code: "AB2" }]));
+  });
+
+  it("clears the agents' code with an empty field", async () => {
+    current = { ...portfolio, code: "ALF" };
+    const user = await openTab("Impostazioni");
+    await user.clear(await screen.findByLabelText("Codice (per gli agenti)"));
+    await user.click(screen.getByRole("button", { name: "Salva impostazioni" }));
+    await waitFor(() => expect(patches).toEqual([{ code: null }]));
+  });
+
   it("shows the portfolio's fee rules and applies the linked broker's fees after confirmation", async () => {
     current = { ...portfolio, broker_kind: "etoro_demo", broker_link_id: "b1", mode: "paper", mode_label: "eToro · prova" };
     feeRules = [

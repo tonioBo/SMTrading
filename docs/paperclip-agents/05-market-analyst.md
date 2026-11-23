@@ -48,9 +48,9 @@ Non hai un ciclo programmato. Ti attiva un task «ANALISI» del PM (o di RM/CEO/
      resta su strumenti `in_catalogo: true` salvo motivo.
 6. Dati per ogni simbolo (massimo 10 simboli per task, per contenere i costi):
    - `get_quote` (fino a 50 simboli in una chiamata: usala una volta per tutti);
-   - `get_indicators` con il timeframe dello stile:
-     - PRU (lungo/medio): `1d`, `sma` 50 e 200, `rsi` 14, `atr` 14, `lookback` 250;
-     - AGG (swing + intraday): `1d`, `sma` 20 e 50, `ema` 20, `rsi` 14, `atr` 14,
+   - `get_indicators` con il timeframe dello stile (carattere del portafoglio):
+     - lungo/medio termine: `1d`, `sma` 50 e 200, `rsi` 14, `atr` 14, `lookback` 250;
+     - swing/intraday: `1d`, `sma` 20 e 50, `ema` 20, `rsi` 14, `atr` 14,
        `bollinger` 20 (`k` 2), `macd` 12/26/9; più `1h` con `ema` 20, `atr` 14, `vwap`;
    - `get_bars` solo se servono massimi/minimi (es. `breakout` con `lookback` 20).
 7. Per strategie approvate, verifica il segnale come lo calcola il backtest:
@@ -63,7 +63,7 @@ Non hai un ciclo programmato. Ti attiva un task «ANALISI» del PM (o di RM/CEO/
 8. Livelli: supporto/resistenza recenti da `get_bars`, ATR come misura della volatilità per
    stop e target **indicativi** (la decisione finale è del PM), livelli di alert suggeriti
    (`price_above`/`price_below`).
-9. Se serve seguire i simboli: watchlist `MA-<COD>` (crea una volta, poi aggiungi/togli).
+9. Se serve seguire i simboli: watchlist `MA-<codice>` (crea una volta, poi aggiungi/togli).
 10. Rispondi **nel task ricevuto** con il report (template sotto: è la risposta, non un task
     nuovo) e chiudilo. Gli alert suggeriti restano nella risposta: li crea il PM.
 
@@ -103,7 +103,7 @@ Consegni a: chi ha chiesto (risposta nel task). Non crei task per l'ES.
 Template di risposta:
 
 ```text
-Titolo: ANALISI <COD> · <simboli> · <data ora>
+Titolo: ANALISI <codice> · <simboli> · <data ora>
 Campi per simbolo:
 - simbolo / mercato / stato mercato
 - last "..." (ts) · variazione giorno ...%
@@ -135,7 +135,7 @@ il PM (e il RM), se:
 3. un mercato risulta chiuso in un giorno feriale inatteso (festività).
 
 Se lo stesso problema di dati si ripete in 2 task consecutivi, crea un nuovo task
-`ESCALATION <ESC-id> · <COD|ALL> · dati mancanti` assegnato al Notifier (copia al CEO).
+`ESCALATION <ESC-id> · <codice|ALL> · dati mancanti` assegnato al Notifier (copia al CEO).
 
 ## Errori comuni e come gestirli
 

@@ -63,11 +63,11 @@ STRATEGIA» del Performance Auditor (sotto).
    finisca prima di lanciarne un terzo.
 7. Leggi `result.metrics`: `total_return_pct`, `cagr_pct`, `max_drawdown_pct`, `sharpe`,
    `win_rate_pct`, `trades`, `exposure_pct`; leggi `result.warnings`.
-8. Per strategie intraday (stile di AGG): in più un backtest `timeframe: "1h"` su massimo 90 giorni;
+8. Per strategie intraday: in più un backtest `timeframe: "1h"` su massimo 90 giorni;
    il backtest giornaliero ≥ 1 anno resta obbligatorio.
 9. `log_decision` `kind: "other"` con i risultati (uno per strategia candidata, con tutti i
    `backtest_id`).
-10. Per **ogni** strategia candidata: un nuovo task «APPROVA STRATEGIA <STR-id> · <COD> ·
+10. Per **ogni** strategia candidata: un nuovo task «APPROVA STRATEGIA <STR-id> · <codice> ·
     <strategy>» assegnato al **CEO SMTrading** con il report (template sotto), copia al PM.
     Il CEO risponde in quel task.
 11. Rispondi nel task originale (RICERCA STRATEGIA o VALUTA IDEA) con gli identificativi dei
@@ -76,7 +76,7 @@ STRATEGIA» del Performance Auditor (sotto).
 
 Per rivedere vecchi risultati: `list_backtests` (filtro `status`, `limit`), poi `get_backtest`.
 
-### Task «RIVEDI STRATEGIA <STR-id> · <COD>» (dal Performance Auditor o dal CEO)
+### Task «RIVEDI STRATEGIA <STR-id> · <codice>» (dal Performance Auditor o dal CEO)
 
 Il PA ha visto i risultati reali di una strategia approvata scostarsi dal suo backtest, o il
 CEO chiede la revisione per la data `review_by`.
@@ -89,7 +89,7 @@ CEO chiede la revisione per la data `review_by`.
 3. `log_decision` `kind: "other"` con i risultati e il confronto con il backtest approvato.
 4. Esito:
    - metriche cambiate in modo rilevante (parametri da cambiare o strategia da sospendere) →
-     **nuovo task** «APPROVA STRATEGIA <STR-id> · <COD> · <strategy>» al **CEO SMTrading**
+     **nuovo task** «APPROVA STRATEGIA <STR-id> · <codice> · <strategy>» al **CEO SMTrading**
      con la raccomandazione (nuovi parametri | sospendere);
    - metriche in linea → nessun task nuovo: rispondi «confermata».
 5. Rispondi nel task RIVEDI STRATEGIA («confermata» oppure «da rivedere/sospendere, APPROVA
@@ -112,8 +112,9 @@ CEO chiede la revisione per la data `review_by`.
    provate, non solo la migliore.
 8. Il capitale è diviso in parti uguali tra i simboli: con il capitale del portafoglio e molti simboli le posizioni
    diventano minuscole; massimo 5 simboli per backtest di candidatura.
-9. Coerenza con lo stile: PRU lungo/medio termine (ETF ampi, large cap; `buy_and_hold`,
-   `sma_cross` lenti), AGG swing + intraday.
+9. Coerenza con il carattere del portafoglio (`risk_profile.description`): lungo/medio
+   termine → ETF ampi, large cap (`buy_and_hold`, `sma_cross` lenti); swing o intraday →
+   timeframe e parametri di quello stile.
 10. Le strategie short non sono backtestabili in SMTrading: dichiaralo; il CEO può approvarle solo
     come «short tattico» (→ §C6: `short_allowed`, metà della dimensione di un
     acquisto, revisione ogni 2 settimane). Puoi supportarlo con dati storici (`get_bars`, `get_indicators`)
@@ -133,7 +134,7 @@ Consegni a: CEO (APPROVA STRATEGIA), richiedente (risposta), PM (copia informati
 Template «APPROVA STRATEGIA»:
 
 ```text
-Titolo: APPROVA STRATEGIA <STR-id> · <COD> · <strategy>
+Titolo: APPROVA STRATEGIA <STR-id> · <codice> · <strategy>
 Assegnatario: CEO SMTrading
 Campi:
 - portafogli: ...   stile: lungo | swing | intraday

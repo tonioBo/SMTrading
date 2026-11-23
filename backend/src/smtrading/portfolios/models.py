@@ -3,7 +3,20 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Select, String, func, select, true
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Select,
+    String,
+    func,
+    select,
+    text,
+    true,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,13 +34,23 @@ class PortfolioStatus(enum.StrEnum):
 
 
 ARCHIVED_MESSAGE = "Portafoglio archiviato"
+# the short code the agents use for a portfolio (task titles, messages)
+CODE_PATTERN = r"^[A-Z0-9]{2,6}$"
 
 
 class Portfolio(Base):
     __tablename__ = "portfolios"
+    __table_args__ = (
+        CheckConstraint(f"code ~ '{CODE_PATTERN}'", name="ck_portfolios_code"),
+        # unique among the portfolios that are not archived (an archived one keeps its code)
+        Index("uq_portfolios_code_live", "code", unique=True,
+              postgresql_where=text("status <> 'archived' AND code IS NOT NULL")),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(128), unique=True)
+    # optional short code for the agents (2-6 uppercase letters/digits), e.g. «PRU»
+    code: Mapped[str | None] = mapped_column(String(6))
     base_currency: Mapped[str] = mapped_column(String(16), default="EUR")
     leverage: Mapped[Decimal] = mapped_column(NUM, default=Decimal(1))
     maintenance_margin_pct: Mapped[Decimal] = mapped_column(NUM, default=Decimal(50))
