@@ -7,7 +7,8 @@ Fractional quantities and notional orders (equities): Alpaca takes them only as 
 orders and never as a trailing stop (https://docs.alpaca.markets/docs/fractional-trading;
 the paper API applies the same rules). A `gtc` one is sent as `day`; a resting one
 (limit, stop, stop limit) is renewed by BrokerSync at the next session after the broker
-expires it (`renewed_daily`), so a fractional bracket exit stays protected. A market
+expires it (`renewed_daily`), so a fractional stop placed alone stays protected (the
+exits of a bracket or an OCO are kept here: see below). A market
 order fills at once: it is sent as `day` and never renewed.
 
 Crypto (https://docs.alpaca.markets/docs/crypto-fees): Alpaca charges its fee by rate,
@@ -24,6 +25,20 @@ SMTrading and sent at market at its trigger (`synthetic`, plan 29), so a resting
 the broker never holds the coins a stop needs, and a stop never waits on a limit price.
 A sell is sized at the send to the coins the account holds (`asset_balance`), within the
 fee residue (`fee_dust`).
+
+Equities, OCO groups (plan 47; found on the paper API on 23/11, MSFT 4.35 shares): Alpaca
+holds a position's shares for its first resting sell, so a second sell of the position
+is refused («insufficient qty available for order (requested: 4.35, available: 0)»): the
+two exits of a bracket or an OCO can never rest side by side as independent orders, and
+whichever went second (the take profit, or worse the stop) was refused. Alpaca's own
+order classes (`oco`, `bracket`) take whole quantities only («fractional orders must be
+simple orders»), and most positions here are fractional. So every resting leg of an OCO
+group on an equity (bracket exits included; `oco_group_id` set) is kept and watched by
+SMTrading and sent at market at its trigger (`synthetic`), as on crypto: one exit at a
+time reaches Alpaca, the other is suspended meanwhile (`oco_in_flight`) and canceled
+here once it fills. A stop (or limit) placed alone still rests at Alpaca. A synthetic
+sell waits while another sell of the portfolio holds the position at Alpaca
+(`market_only_sell`), so it is never sent into the refusal above.
 """
 
 import json
@@ -210,13 +225,16 @@ class _AlpacaProtocol(BrokerAdapter):
 
     @staticmethod
     def _kept_local(order: Order, instrument: Instrument) -> bool:
-        """A resting crypto order SMTrading keeps and sends at market at its trigger: a
+        """A resting order SMTrading keeps and sends at market at its trigger. Crypto: a
         stop or trailing stop (Alpaca has none on crypto) and every resting sell (no OCO
-        at Alpaca: a resting sell would hold the coins a stop needs)."""
-        return (
-            instrument.asset_class is AssetClass.crypto and order.type in SYNTHETIC_TYPES
-            and not (order.side == OrderSide.buy and order.type in _CRYPTO_RESTING_BUYS)
-        )
+        at Alpaca: a resting sell would hold the coins a stop needs). Equities: every
+        leg of an OCO group (module docstring: Alpaca holds the shares for the first
+        resting sell, and its native OCO takes no fractional quantity)."""
+        if order.type not in SYNTHETIC_TYPES:
+            return False
+        if instrument.asset_class is AssetClass.crypto:
+            return not (order.side == OrderSide.buy and order.type in _CRYPTO_RESTING_BUYS)
+        return order.oco_group_id is not None
 
     def routable(self, order: Order, instrument: Instrument) -> bool:
         return not self._kept_local(order, instrument) and self.supports(order, instrument)

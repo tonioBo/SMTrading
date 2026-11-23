@@ -17,6 +17,14 @@ position holds the filled quantity less it) and out of the USD proceeds on a sel
 order entity reports no fee. A sell beyond the coins free (held less the open sells)
 is refused (403 «insufficient balance»). Positions list the pair as BTCUSD with
 `qty_available`; GET /v2/positions/BTCUSD and GET /v2/assets/BTC/USD (min_order_size).
+
+Alpaca equities (as the paper API answered on 23/11, MSFT 4.35 shares): the shares of a
+long position are held for its open sells, so a sell beyond what is left of them (a
+second resting sell of the whole position: a stop, then a take profit) is refused (403
+«insufficient qty available for order (requested: 4.35, available: 0)»). A native
+`order_class` (bracket, oco, oto) with a fractional quantity is refused (422 «fractional
+orders must be simple orders»); SMTrading never sends one, a whole one is refused too
+(not modeled).
 """
 
 import itertools
@@ -308,6 +316,18 @@ class FakeLiveBroker:
         signed = qty if body["side"] == "buy" else -qty
         symbol = str(body.get("symbol"))
         crypto = "/" in symbol
+        if body.get("order_class") not in (None, "", "simple"):
+            if qty != qty.to_integral_value():
+                return httpx.Response(422, json={
+                    "code": 42210000, "message": "fractional orders must be simple orders"})
+            return httpx.Response(422, json={"message": "order_class not modeled by the fake"})
+        held = acct.positions.get(symbol, Decimal(0))
+        if not crypto and body["side"] == "sell" and held > 0 and qty > self._alpaca_free(
+                symbol):
+            return httpx.Response(403, json={
+                "code": 40310000,
+                "message": f"insufficient qty available for order (requested: {_num(qty)},"
+                           f" available: {_num(self._alpaca_free(symbol))})"})
         order = {"id": f"fake-{next(self._ids)}", "client_order_id": body.get("client_order_id"),
                  "symbol": body.get("symbol"), "asset_class": "crypto" if crypto else "us_equity",
                  "side": body["side"], "type": body.get("type"),

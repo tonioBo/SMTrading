@@ -62,7 +62,10 @@ stored); at the trigger and again at the send a sell is clamped to the position 
 portfolio's sells already at the broker (eToro closes FIFO on the whole account). Once
 handed over the order cannot be modified any more. Alpaca crypto keeps its resting
 orders the same way (`adapter.synthetic`: stops, trailing stops, every resting sell; a buy
-limit / stop limit goes to Alpaca), its bracket exits and OCO legs included. A sell beyond
+limit / stop limit goes to Alpaca), its bracket exits and OCO legs included; so do Alpaca
+equities with every leg of an OCO group, bracket exits included (plan 47: Alpaca holds the
+shares for the first resting sell and refuses a second one; a stop placed alone still
+rests at Alpaca). A sell beyond
 the long position by no more than the broker's fee residue in the asset (`fee_dust`:
 Alpaca keeps its crypto buy fee in the coin, so a sell of the quantity ordered on the
 entry exceeds the position) is sized to the position at placement (`_fee_sized`).
