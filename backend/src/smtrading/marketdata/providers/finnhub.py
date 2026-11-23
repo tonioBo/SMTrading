@@ -12,6 +12,7 @@ from smtrading.instruments.models import AssetClass
 from smtrading.marketdata.provider import DataProvider, ProviderUnsupported
 from smtrading.marketdata.registry import register
 from smtrading.marketdata.types import CalendarEvent, Capability, Fundamentals, NewsItem, Quote
+from smtrading.marketdata.wscoalesce import PING_TIMEOUT_S, coalesced
 
 BASE_URL = "https://finnhub.io/api/v1"
 WS_URL = "wss://ws.finnhub.io"
@@ -208,16 +209,19 @@ class FinnhubProvider(DataProvider):
         token = self._token()
         reverse = {ps: canonical for canonical, ps in items}
         url = self.config.get("ws_url") or f"{WS_URL}?token={urlquote(token)}"
+
+        async def handle(raw) -> list[Quote]:
+            msg = json.loads(raw, parse_float=Decimal)
+            if msg.get("type") == "error":
+                raise ConnectionError(f"finnhub stream error: {msg.get('msg')}")
+            return parse_finnhub_ws(msg, reverse)
+
         try:
-            async with websockets.connect(url) as ws:
+            async with websockets.connect(url, ping_timeout=PING_TIMEOUT_S) as ws:
                 for ps in reverse:
                     await ws.send(json.dumps({"type": "subscribe", "symbol": ps}))
-                async for raw in ws:
-                    msg = json.loads(raw, parse_float=Decimal)
-                    if msg.get("type") == "error":
-                        raise ConnectionError(f"finnhub stream error: {msg.get('msg')}")
-                    for quote in parse_finnhub_ws(msg, reverse):
-                        yield quote
+                async for quote in coalesced(ws, handle):
+                    yield quote
         except ConnectionError:
             raise
         except (TimeoutError, websockets.WebSocketException, OSError) as exc:

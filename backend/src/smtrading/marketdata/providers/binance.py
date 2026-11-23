@@ -9,6 +9,7 @@ from smtrading.instruments.models import AssetClass
 from smtrading.marketdata.provider import DataProvider
 from smtrading.marketdata.registry import register
 from smtrading.marketdata.types import Bar, Capability, Quote, Timeframe
+from smtrading.marketdata.wscoalesce import PING_TIMEOUT_S, coalesced
 
 BASE_URL = "https://api.binance.com/api/v3"
 WS_URL = "wss://stream.binance.com:9443/stream"
@@ -130,11 +131,14 @@ class BinanceProvider(DataProvider):
         reverse = {ps: canonical for canonical, ps in items}
         streams = "/".join(f"{ps.lower()}@bookTicker" for ps in reverse)
         url = f"{self.config.get('ws_url', WS_URL)}?streams={streams}"
+
+        async def handle(raw) -> list[Quote]:
+            return parse_binance_ws(json.loads(raw), reverse)
+
         try:
-            async with websockets.connect(url) as ws:
-                async for raw in ws:
-                    for quote in parse_binance_ws(json.loads(raw), reverse):
-                        yield quote
+            async with websockets.connect(url, ping_timeout=PING_TIMEOUT_S) as ws:
+                async for quote in coalesced(ws, handle):
+                    yield quote
         except (TimeoutError, websockets.WebSocketException, OSError) as exc:
             raise ConnectionError(f"binance websocket: {exc}") from exc
         raise ConnectionError("binance websocket closed")
