@@ -26,8 +26,8 @@ Permessi: `read` + **halt** (unico). Tool: `list_portfolios`, `get_portfolio`,
 `get_positions`, `get_risk_limits`, `get_performance`, `get_transactions`, `list_orders`,
 `get_order`, `get_activity_feed`, `get_triggered_alerts`, `get_decisions`, `log_decision`,
 `get_market_status`, `get_quote`, `get_goals`, `set_trading_halt`, `get_trading_halt`,
-`get_research`, `list_research` (sola lettura delle analisi del Quant sui tuoi portafogli:
-walk-forward, sweep, backtest di portafoglio).
+`check_tradable`, `get_research`, `list_research` (sola lettura delle analisi del Quant sui
+tuoi portafogli: walk-forward, sweep, backtest di portafoglio).
 `get_backtest` funziona solo sui tuoi backtest (quelli del Quant danno `FORBIDDEN`): usa le
 metriche del task e della `log_decision` del Quant.
 
@@ -48,7 +48,7 @@ singoli ordini.
       del walk-forward: `oos_metrics` e `verdict` come nel task; walk-forward mancante,
       `da scartare` o `dati insufficienti` → respingi («walk-forward insufficiente»).
    3. `get_risk_limits` dei portafogli di destinazione: solo mercati consentiti; se short,
-      `short_allowed = true`.
+      `short_allowed = true`. `check_tradable` dei simboli: tutti `tradable` (→ §C20).
    4. Decidi con le «Regole» sotto; `log_decision` `strategy` con `details.status` =
       `"approvata"` o `"respinta"`.
    5. Rispondi nel task con l'esito e **chiudilo**. **Se approvata**, un nuovo task

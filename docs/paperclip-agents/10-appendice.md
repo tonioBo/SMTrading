@@ -628,6 +628,23 @@ liquidità o ordini di sua iniziativa.
 - Quando SMTrading e il broker tornano a coincidere la voce sparisce; se la differenza
   torna, torna anche l'avviso.
 
+## §C20 · Strumenti presso il broker (`check_tradable`)
+
+Il broker di un portafoglio può non offrire uno strumento del catalogo, o offrirlo solo con
+leva: SMTrading compra solo senza leva. `check_tradable` (`portfolio_id`, `symbols`, al
+massimo 50) risponde per simbolo `tradable`, `long_unleveraged`, `short`, `fractional`,
+`partial_close` e `reason` (il motivo, in italiano).
+
+- La risposta vale solo per quel portafoglio: un altro può avere un altro broker.
+- `tradable: false`: il simbolo non entra nell'universo, in una strategia o in una
+  proposta per quel portafoglio (un acquisto è rifiutato subito con `INVALID_ORDER` e il
+  motivo); cerca un'alternativa equivalente (stesso indice o settore) e verificala.
+- `tradable: null`: non noto ora; riprova al ciclo dopo e non procedere finché non è `true`.
+- **Quant**: nel task «APPROVA STRATEGIA» scrivi l'esito di `check_tradable` (ora e
+  portafoglio) per ogni simbolo. **CEO**: senza quell'esito, o con un simbolo non
+  `tradable`, verifichi tu e respingi i simboli esclusi. **PM**: `preview_order` riporta
+  anche `tradable`.
+
 ## §CEO1 · Task rari: DISACCORDO, ESCALATION in copia, SMTrading non raggiungibile, SEGNALAZIONE STRUMENTO, NON CONFORMITÀ
 
 4. **"ESCALATION"** ricevuta in copia (menzione, solo informativa): non devi rispondere né
