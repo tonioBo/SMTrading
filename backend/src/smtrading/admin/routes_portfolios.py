@@ -13,6 +13,7 @@ effects are dropped. Decimals go out as plain strings (`mcp.dto.to_jsonable`).
 import csv
 import io
 import logging
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from decimal import Decimal
 from typing import Annotated, Any
@@ -66,7 +67,7 @@ from smtrading.mcp.dto import (
 from smtrading.performance.service import get_performance
 from smtrading.portfolios.locks import lock_broker_link, lock_live_portfolio
 from smtrading.portfolios.mode import admin_mode_fields
-from smtrading.portfolios.models import Portfolio, PortfolioStatus
+from smtrading.portfolios.models import CODE_PATTERN, Portfolio, PortfolioStatus
 from smtrading.portfolios.queries import day_pnl, list_portfolio_journals
 from smtrading.portfolios.service import (
     create_portfolio,
@@ -167,6 +168,35 @@ async def _check_risk_profile(session: AsyncSession, profile_id: UUID | None) ->
         )
 
 
+def _clean_code(code: str | None) -> str | None:
+    """The agents' code: uppercased, empty -> None, else 2-6 letters/digits."""
+    cleaned = (code or "").strip().upper()
+    if not cleaned:
+        return None
+    if not re.fullmatch(CODE_PATTERN, cleaned):
+        raise _invalid("code", "il codice deve avere da 2 a 6 lettere maiuscole o cifre")
+    return cleaned
+
+
+async def _code_taken(session: AsyncSession, code: str | None,
+                      exclude: UUID | None = None) -> bool:
+    """`code` used by another portfolio that is not archived."""
+    if code is None:
+        return False
+    query = select(Portfolio.id).where(Portfolio.code == code,
+                                       Portfolio.status != PortfolioStatus.archived)
+    if exclude is not None:
+        query = query.where(Portfolio.id != exclude)
+    return await session.scalar(query) is not None
+
+
+def _duplicate_code(code: str) -> SMTError:
+    return SMTError(
+        ErrorCode.INVALID_ORDER, "esiste già un portafoglio con questo codice",
+        {"field": "code", "code": code},
+    )
+
+
 async def _name_taken(session: AsyncSession, name: str, exclude: UUID | None = None) -> bool:
     query = select(Portfolio.id).where(Portfolio.name == name)
     if exclude is not None:
@@ -177,7 +207,7 @@ async def _name_taken(session: AsyncSession, name: str, exclude: UUID | None = N
 # --- portfolio views -----------------------------------------------------------------
 
 PORTFOLIO_FIELDS = (
-    "id", "name", "base_currency", "leverage", "maintenance_margin_pct",
+    "id", "name", "code", "base_currency", "leverage", "maintenance_margin_pct",
     "warning_margin_pct", "slippage_bps", "status", "timezone", "risk_profile_id",
     "reduce_only_reason", "reduce_only_until", "created_at", "broker_link_id",
     "archived_at", "archived_by", "in_totals",
@@ -243,18 +273,24 @@ async def create(
     leverage = _leverage(body.leverage)
     slippage = _slippage(body.slippage_bps)
     tz = _timezone(body.timezone)
+    code = _clean_code(body.code)
     try:
         async with _transaction(session, redis):
             await _check_risk_profile(session, body.risk_profile_id)
+            if await _code_taken(session, code):
+                raise _duplicate_code(code)  # type: ignore[arg-type]
             portfolio = await create_portfolio(
                 session, name=name, initial_cash=initial_cash, base_currency=body.base_currency,
                 leverage=leverage, slippage_bps=slippage, timezone=tz,
                 author_id=admin.email, risk_profile_id=body.risk_profile_id,
             )
             portfolio.in_totals = body.in_totals
-    except IntegrityError:  # a concurrent creation with the same name won the race
+            portfolio.code = code
+    except IntegrityError:  # a concurrent creation with the same name/code won the race
         if await _name_taken(session, name):
             raise _duplicate_name(name) from None
+        if await _code_taken(session, code):
+            raise _duplicate_code(code) from None  # type: ignore[arg-type]
         raise
     return _with_name_warning(await _summary(session, qs, redis, portfolio))
 
@@ -282,6 +318,11 @@ async def patch_portfolio(
                 if await _name_taken(session, name, exclude=p.id):
                     raise _duplicate_name(name)
                 p.name = name
+            if "code" in fields:
+                code = _clean_code(body.code)
+                if await _code_taken(session, code, exclude=p.id):
+                    raise _duplicate_code(code)  # type: ignore[arg-type]
+                p.code = code
             if "leverage" in fields:
                 p.leverage = _leverage(body.leverage)
             if "slippage_bps" in fields:
@@ -323,6 +364,9 @@ async def patch_portfolio(
     except IntegrityError:
         if "name" in fields and await _name_taken(session, _clean_name(body.name), portfolio_id):
             raise _duplicate_name(_clean_name(body.name)) from None
+        code = _clean_code(body.code) if "code" in fields else None
+        if await _code_taken(session, code, portfolio_id):
+            raise _duplicate_code(code) from None  # type: ignore[arg-type]
         raise
     return _with_name_warning(await _summary(session, qs, redis, p))
 

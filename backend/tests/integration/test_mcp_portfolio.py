@@ -468,6 +468,36 @@ async def test_portfolio_in_totals_is_visible_to_agents(mcp_server, mcp_call, bo
         assert not is_error and got["in_totals"] is expected
 
 
+async def test_portfolio_code_and_character_are_visible_to_agents(mcp_server, mcp_call, book):
+    """list_portfolios carries `code` and `risk_profile` {name, description} (the
+    portfolio's character, the effective profile: the seeded Default when none is set);
+    get_portfolio carries `code`."""
+    from smtrading.risk.models import RiskProfile
+
+    url, token = mcp_server.url, mcp_server.token
+    async with _Db(mcp_server.db_url) as s:
+        await agents.assign_portfolio(s, mcp_server.agent_id, book["other_id"], "read")
+        profile = RiskProfile(name="Cauto", description="Crescita lenta, pochi strumenti")
+        s.add(profile)
+        await s.flush()
+        other = await s.get(Portfolio, book["other_id"])
+        other.code, other.risk_profile_id = "OTH", profile.id
+        await s.commit()
+    is_error, listed = await mcp_call(url, token, "list_portfolios")
+    assert not is_error
+    by_name = {p["name"]: p for p in listed}
+    assert by_name["Other"]["code"] == "OTH"
+    assert by_name["Other"]["risk_profile"] == {
+        "name": "Cauto", "description": "Crescita lenta, pochi strumenti"}
+    assert by_name["Demo"]["code"] is None
+    assert by_name["Demo"]["risk_profile"]["name"] == "Default"
+    assert {"id", "name", "base_currency", "status", "in_totals", "permission"} <= set(
+        by_name["Demo"])
+    is_error, got = await mcp_call(url, token, "get_portfolio",
+                                   {"portfolio_id": str(book["other_id"])})
+    assert not is_error and got["code"] == "OTH"
+
+
 async def _set_hide_mode(db_url, on):
     from sqlalchemy.dialects.postgresql import insert
 

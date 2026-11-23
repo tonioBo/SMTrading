@@ -99,22 +99,26 @@ async def _list_portfolios(ctx: ToolCtx) -> list[dict]:
     )).all()
     links = await portfolio_links(ctx.session, [p for p, _ in rows])
     hide = await get_mcp_hide_mode(ctx.session)
-    return [
-        {
+    out = []
+    for p, permission in rows:
+        profile = await effective_risk_profile(ctx.session, p)
+        out.append({
             "id": p.id,
             "name": p.name,
+            "code": p.code,
             "base_currency": p.base_currency,
             "status": p.status,
             "in_totals": p.in_totals,
             **await _mode_field(ctx, p, links.get(p.broker_link_id), hide=hide),
+            "risk_profile": None if profile is None else {
+                "name": profile.name, "description": profile.description},
             "permission": permission,
-        }
-        for p, permission in rows
-    ]
+        })
+    return out
 
 
 async def portfolio_snapshot(ctx: ToolCtx, portfolio_id: str | None) -> dict:
-    """get_portfolio: valuation_dto + status, in_totals, reduce_only_reason, leverage and
+    """get_portfolio: valuation_dto + code, status, in_totals, reduce_only_reason, leverage and
     the day P&L (equity - today's day_open equity - net deposits since it, EUR and %; None
     without a day_open). External cash flows are not P&L, as in risk.daily_loss."""
     portfolio = await _readable_portfolio(ctx, portfolio_id)
@@ -122,6 +126,7 @@ async def portfolio_snapshot(ctx: ToolCtx, portfolio_id: str | None) -> dict:
     pnl, pct = await day_pnl(ctx.session, ctx.qs, portfolio, valuation)
     return {
         **valuation_dto(valuation),
+        "code": portfolio.code,
         "status": portfolio.status,
         "in_totals": portfolio.in_totals,
         **await _mode_field(ctx, portfolio),
@@ -250,17 +255,21 @@ async def _risk_limits(ctx: ToolCtx, portfolio_id: str | None) -> dict:
 def register(mcp: MCPServer) -> None:
     @mcp.tool(structured_output=False)
     async def list_portfolios() -> CallToolResult:
-        """The portfolios this agent may use: [{id, name, base_currency, status,
-        in_totals, permission}] where permission is "read" or "trade" (trade implies
-        read); in_totals false: the portfolio is left out of the team's total goals (it
-        has only its own goals)."""
+        """The portfolios this agent may use, read it every cycle (a new one appears
+        here, a removed one disappears): [{id, name, code, base_currency, status,
+        in_totals, risk_profile: {name, description}, permission}]. code: the
+        portfolio's short code for task titles and messages (null: none, use the name);
+        risk_profile: its effective risk profile, the description is the portfolio's
+        character (the limits: get_risk_limits); permission is "read" or "trade" (trade
+        implies read); in_totals false: the portfolio is left out of the team's total
+        goals (it has only its own goals)."""
         return await run_tool("list_portfolios", {}, _list_portfolios)
 
     @mcp.tool(structured_output=False)
     async def get_portfolio(portfolio_id: str) -> CallToolResult:
         """Mark-to-market valuation of a portfolio (EUR, cents): cash, equity_eur,
         exposure_eur, margin requirements, buying_power_eur, margin_level, positions,
-        stale_symbols, plus status, in_totals (false: left out of the team's total goals),
+        stale_symbols, plus code (as in list_portfolios), status, in_totals (false: left out of the team's total goals),
         reduce_only_reason, leverage and the day P&L
         (day_pnl_eur / day_pnl_pct vs today's day_open equity, net of deposits and
         withdrawals; null before the day_open is taken)."""

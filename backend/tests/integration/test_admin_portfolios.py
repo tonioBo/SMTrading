@@ -158,6 +158,42 @@ async def test_duplicate_name(admin):
     assert r.json()["code"] == "INVALID_ORDER" and r.json()["details"]["field"] == "name"
 
 
+async def test_portfolio_code(admin):
+    """`code` (the agents' short code): optional, uppercased, 2-6 letters/digits, unique
+    among the portfolios that are not archived; empty clears it; shown in the list. An
+    archived portfolio's code can be reused; restored, it loses it when taken."""
+    c = admin.client
+    a = await _create(c, code="xa1")
+    assert a["code"] == "XA1"
+    assert (await _create(c))["code"] is None
+    listed = (await c.get("/api/portfolios")).json()
+    assert next(p for p in listed if p["id"] == a["id"])["code"] == "XA1"
+
+    for bad in ("X", "TOOLONG7", "A-B", "àè"):
+        r = await c.post("/api/portfolios", json={"name": "Bad " + bad, "initial_cash": "1",
+                                                   "code": bad})
+        assert r.status_code == 400 and r.json()["details"]["field"] == "code", bad
+    dup = await c.post("/api/portfolios", json={"name": "Dup", "initial_cash": "1",
+                                                "code": "XA1"})
+    assert dup.status_code == 400 and dup.json()["details"]["field"] == "code"
+
+    b = await _create(c)
+    r = await c.patch(f"/api/portfolios/{b['id']}", json={"code": "XA1"})
+    assert r.status_code == 400 and r.json()["details"]["field"] == "code"
+    r = await c.patch(f"/api/portfolios/{a['id']}", json={"code": "XA1"})  # its own: ok
+    assert r.status_code == 200 and r.json()["code"] == "XA1"
+    r = await c.patch(f"/api/portfolios/{a['id']}", json={"code": ""})
+    assert r.status_code == 200 and r.json()["code"] is None
+    r = await c.patch(f"/api/portfolios/{a['id']}", json={"code": "XA1"})
+    assert r.json()["code"] == "XA1"
+
+    assert (await c.post(f"/api/portfolios/{a['id']}/archive")).status_code == 200
+    r = await c.patch(f"/api/portfolios/{b['id']}", json={"code": "XA1"})
+    assert r.status_code == 200 and r.json()["code"] == "XA1"
+    r = await c.post(f"/api/portfolios/{a['id']}/unarchive")
+    assert r.status_code == 200 and r.json()["code"] is None
+
+
 async def test_patch_leverage_above_10(admin):
     pid = (await _create(admin.client))["id"]
     r = await admin.client.patch(f"/api/portfolios/{pid}", json={"leverage": "11"})

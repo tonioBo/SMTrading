@@ -64,6 +64,7 @@ class PortfolioCreateIn(BaseModel):
     timezone: str = "Europe/Rome"
     risk_profile_id: uuid.UUID | None = None
     in_totals: StrictBool = True
+    code: str | None = None  # the agents' short code; empty/null: none
 
 
 class PortfolioPatchIn(BaseModel):
@@ -79,6 +80,7 @@ class PortfolioPatchIn(BaseModel):
     status: str | None = None
     # false: left out of the total (goals on the total, dashboard totals)
     in_totals: StrictBool | None = None
+    code: str | None = None  # the agents' short code; empty/null clears it
 
 
 class CashMoveIn(BaseModel):
