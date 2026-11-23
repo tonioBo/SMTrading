@@ -37,6 +37,7 @@ export const JOB_LABELS: Record<string, string> = {
   "pre-open check": "Controllo pre-apertura",
   "hand-off watchdog": "Controllo passaggi agenti",
   "price quality alarm": "Allarme prezzi non affidabili",
+  "system sentinel": "Sentinella di sistema",
 };
 
 export const ASSET_CLASS_LABELS: Record<string, string> = {

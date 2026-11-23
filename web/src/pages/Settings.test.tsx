@@ -24,6 +24,7 @@ const extras = () => ({
   weekly_goal: { on: true, pct: "2.0" },
   preopen_check: { on: true, at: "08:45" },
   handoff_watchdog: { on: true },
+  system_sentinel: { on: true },
   weekly_report_pdf: { on: true, weekday: 4, at: "22:30" },
 });
 let stored: Record<string, unknown> = extras();
@@ -54,7 +55,7 @@ const server = setupServer(
   http.put("*/api/settings/app", async ({ request }) => {
     const body = (await request.json()) as Record<string, unknown>;
     tzPuts.push(body);
-    for (const key of ["weekly_goal", "preopen_check", "handoff_watchdog", "weekly_report_pdf"]) {
+    for (const key of ["weekly_goal", "preopen_check", "handoff_watchdog", "weekly_report_pdf", "system_sentinel"]) {
       if (body[key]) stored = { ...stored, [key]: { ...(stored[key] as object), ...(body[key] as object) } };
     }
     return HttpResponse.json({ stale_quote_s: {}, default_spread_bps: {}, ...body, ...stored });
@@ -186,6 +187,16 @@ describe("Settings", () => {
     await user.click(watchdog);
     await waitFor(() => expect(tzPuts).toEqual([{ handoff_watchdog: { on: false } }]));
     await waitFor(() => expect(screen.getByLabelText(/Avvisa su Telegram quando un passaggio/)).not.toBeChecked());
+  });
+
+  it("switches the system sentinel off", async () => {
+    const user = userEvent.setup();
+    renderApp("/impostazioni");
+    const box = await screen.findByLabelText(/Avvisa su Telegram quando il sistema ha un problema/);
+    expect(box).toBeChecked();
+    await user.click(box);
+    await waitFor(() => expect(tzPuts).toEqual([{ system_sentinel: { on: false } }]));
+    await waitFor(() => expect(screen.getByLabelText(/Avvisa su Telegram quando il sistema ha un problema/)).not.toBeChecked());
   });
 
   it("saves the weekly PDF report's day and time and turns it off", async () => {
