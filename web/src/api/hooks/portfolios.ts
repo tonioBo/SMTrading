@@ -18,6 +18,7 @@ import type {
   ResetRequest,
   ResetResult,
   RiskProfile,
+  TradabilityCheck,
   Transaction,
   TransactionPage,
   Valuation,
@@ -58,6 +59,18 @@ export function usePortfolios({ includeArchived = false }: { includeArchived?: b
 
 export function usePortfolio(id: string) {
   return useQuery({ queryKey: portfolioKey(id), queryFn: () => apiFetch<Portfolio>(`/api/portfolios/${id}`) });
+}
+
+/** «Strumenti presso il broker»: `symbols` as the portfolio's broker takes them, plus the
+ * universes of its approved strategies (no symbols: the universes only). */
+export function useTradability(id: string, symbols: string[], refresh = false) {
+  const query = new URLSearchParams({ symbols: symbols.join(",") });
+  if (refresh) query.set("refresh", "true");
+  return useQuery({
+    queryKey: [...portfolioKey(id), "tradability", symbols.join(","), refresh],
+    queryFn: () => apiFetch<TradabilityCheck>(`/api/portfolios/${id}/tradability?${query}`),
+    staleTime: 60_000,
+  });
 }
 
 export function useValuation(id: string) {

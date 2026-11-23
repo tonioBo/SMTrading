@@ -19,6 +19,7 @@ import { useLiveFlatten, useLiveLinks, useLiveResume } from "@/api/hooks/live";
 import type { LiveState, Order, Portfolio, Position, Valuation } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
+import { BrokerTradability } from "@/components/BrokerTradability";
 import { EquityHistoryCard } from "@/components/EquityHistoryCard";
 import { Money } from "@/components/Money";
 import { HaltBanner } from "@/components/HaltBanner";
@@ -117,6 +118,7 @@ function Overview({ portfolio }: { portfolio: Portfolio }) {
           )}
         </CardContent>
       </Card>
+      {portfolio.broker_link_id && portfolio.status !== "archived" && <BrokerTradability portfolioId={portfolio.id} />}
     </div>
   );
 }

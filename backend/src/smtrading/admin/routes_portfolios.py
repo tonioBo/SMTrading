@@ -371,6 +371,32 @@ async def patch_portfolio(
     return _with_name_warning(await _summary(session, qs, redis, p))
 
 
+@router.get("/portfolios/{portfolio_id}/tradability")
+async def get_tradability(
+    portfolio_id: UUID, request: Request, session: DbSession, redis: RedisClient,
+    symbols: str = "", refresh: bool = False,
+) -> dict:
+    """«Strumenti presso il broker» (plan 44): `symbols` (comma separated, at most 50)
+    as the portfolio's broker takes them (the cached answer, else the broker's now;
+    `refresh`: the broker's always), plus the universes of the approved strategies of the
+    portfolio. Without a broker the catalog answers (`linked` false)."""
+    from smtrading.brokers.tradability import MAX_SYMBOLS, portfolio_tradability
+    from smtrading.signals.service import approved_strategies
+
+    p = await _portfolio(session, portfolio_id)
+    wanted = [s.strip() for s in symbols.split(",") if s.strip()]
+    if len(wanted) > MAX_SYMBOLS:
+        raise _invalid("symbols", f"al massimo {MAX_SYMBOLS} simboli")
+    universes = [{"ref": a.ref, "name": a.name, "symbols": a.symbols}
+                 for a in await approved_strategies(session)
+                 if a.symbols and any(x.id == p.id for x in a.portfolios)]
+    answers = await portfolio_tradability(
+        session, request.app.state.sessionmaker, redis, p.id, wanted,
+        refresh=refresh) if wanted else {}
+    return {"linked": p.broker_link_id is not None, "universes": universes,
+            "items": [{"symbol": sym, **t.dto()} for sym, t in answers.items()]}
+
+
 @router.get("/portfolios/{portfolio_id}/valuation")
 async def get_valuation(
     portfolio_id: UUID, session: DbSession, redis: RedisClient, qs: Quotes

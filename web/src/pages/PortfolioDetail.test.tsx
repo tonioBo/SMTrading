@@ -212,6 +212,7 @@ const compositionFixture: Composition = {
   unpriced_symbols: [],
 };
 let composition: Composition = compositionFixture;
+let tradabilityRequests: URL[] = [];
 
 const server = setupServer(
   ...commonHandlers,
@@ -236,6 +237,21 @@ const server = setupServer(
     patches.push(await request.json());
     current = { ...current, status: "active", reduce_only_reason: null };
     return HttpResponse.json(current);
+  }),
+  http.get("*/api/portfolios/p1/tradability", ({ request }) => {
+    const url = new URL(request.url);
+    tradabilityRequests.push(url);
+    const asked = (url.searchParams.get("symbols") ?? "").split(",").filter(Boolean);
+    const known: Record<string, object> = {
+      SPY: { tradable: false, long_unleveraged: false, short: false, fractional: true, partial_close: true, reason: "richiede un modulo fiscale presso il broker" },
+      DIA: { tradable: true, long_unleveraged: true, short: false, fractional: true, partial_close: true, reason: null },
+    };
+    const unknown = { tradable: null, long_unleveraged: null, short: null, fractional: null, partial_close: null, reason: "verifica presso il broker non riuscita: riprova più tardi" };
+    return HttpResponse.json({
+      linked: true,
+      universes: [{ ref: "STR-7", name: "ETF USA", symbols: ["SPY", "DIA"] }],
+      items: asked.map((symbol) => ({ symbol, ...(known[symbol] ?? unknown) })),
+    });
   }),
   http.get("*/api/portfolios/p1/valuation", () => HttpResponse.json(valuation)),
   http.get("*/api/portfolios/p1/composition", () => HttpResponse.json(composition)),
@@ -319,6 +335,7 @@ afterEach(() => {
   server.resetHandlers();
   current = portfolio;
   composition = compositionFixture;
+  tradabilityRequests = [];
   positionsMark = "190.5";
   queryClient = null;
   txRequests = [];
@@ -1038,5 +1055,34 @@ describe("PortfolioDetail halt banner", () => {
     expect(banner).toHaveTextContent("Aperture sospese dal CEO su Alfa — Troppa volatilità");
     expect(screen.getAllByRole("alert", { name: "Blocco aperture" })).toHaveLength(1);
     expect(screen.queryByText(/Non qui/)).not.toBeInTheDocument();
+  });
+
+  it("«Strumenti presso il broker»: typed symbols and a strategy universe, only on a linked portfolio", async () => {
+    current = { ...portfolio, broker_kind: "etoro_demo", broker_link_id: "b1", mode: "paper", mode_label: "eToro · prova" };
+    const user = userEvent.setup();
+    renderApp("/portafogli/p1");
+    const card = await screen.findByRole("region", { name: "Strumenti presso il broker" });
+    await user.type(await screen.findByLabelText("Simboli da verificare"), "spy, xyz");
+    await user.click(screen.getByRole("button", { name: "Verifica" }));
+    const table = await screen.findByRole("table", { name: "Strumenti presso il broker" });
+    const rows = within(table).getAllByRole("row").slice(1).map((r) => r.textContent);
+    expect(rows).toEqual([
+      "SPYNon acquistabilenosìrichiede un modulo fiscale presso il broker",
+      "XYZNon verificato——verifica presso il broker non riuscita: riprova più tardi",
+    ]);
+    await user.click(within(card).getByRole("button", { name: "STR-7 · ETF USA" }));
+    await waitFor(() =>
+      expect(within(screen.getByRole("table", { name: "Strumenti presso il broker" })).getAllByRole("row")[2]).toHaveTextContent("DIAAcquistabile"),
+    );
+    await user.click(screen.getByRole("button", { name: "Chiedi di nuovo al broker" }));
+    await waitFor(() => expect(tradabilityRequests.at(-1)?.searchParams.get("refresh")).toBe("true"));
+    expect(tradabilityRequests.at(-1)?.searchParams.get("symbols")).toBe("SPY,DIA");
+  });
+
+  it("no «Strumenti presso il broker» without a broker", async () => {
+    renderApp("/portafogli/p1");
+    expect(await screen.findByText("Cash per valuta")).toBeInTheDocument();
+    expect(screen.queryByText("Strumenti presso il broker")).not.toBeInTheDocument();
+    expect(tradabilityRequests).toEqual([]);
   });
 });
