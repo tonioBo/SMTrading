@@ -45,6 +45,7 @@ from smtrading.brokers.base import (
     BrokerStatus,
     market_view,
 )
+from smtrading.brokers.tradable import Tradability, buyable, not_found, unknown
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.models import Order, OrderSide, OrderType, TimeInForce
 from smtrading.instruments.models import AssetClass, Instrument
@@ -312,6 +313,52 @@ class _AlpacaProtocol(BrokerAdapter):
     async def prepare(self, instruments: Iterable[Instrument] = ()) -> None:
         await self.load_fee_dust(
             [i.symbol for i in instruments if i.asset_class is AssetClass.crypto])
+
+    async def tradability(self, instruments: Iterable[Instrument]) -> dict[str, Tradability]:
+        """Plan 44: GET /v2/assets/{symbol} (crypto pairs as BTC/USD) per instrument:
+        `tradable` and `status` active, `shortable` (never for crypto), `fractionable`.
+        A 404 is not found; any other failure leaves the symbol unknown (a 429 stops
+        the pass). Raises RuntimeError when no symbol could be read."""
+        out: dict[str, Tradability] = {}
+        asked = 0
+        failure: RuntimeError | None = None
+        for inst in instruments:
+            if inst.asset_class not in self.supported_asset_classes:
+                out[inst.symbol] = not_found("asset_class")
+                continue
+            if failure is not None:
+                out[inst.symbol] = unknown()
+                continue
+            asked += 1
+            sym = to_alpaca_symbol(inst.symbol, inst.asset_class)
+            try:
+                resp = await self._request("GET", f"/v2/assets/{sym}")
+                if resp.status_code == 404:
+                    out[inst.symbol] = not_found()
+                    continue
+                if resp.status_code == 429:
+                    raise RuntimeError(f"{self.kind}: HTTP 429")
+                if resp.status_code >= 300:
+                    raise self._fail(resp)
+                data = self._parse(resp)
+            except (RuntimeError, ValueError) as e:
+                failure = e if isinstance(e, RuntimeError) else RuntimeError(str(e))
+                out[inst.symbol] = unknown()
+                continue
+            if not isinstance(data, dict):
+                out[inst.symbol] = unknown()
+                continue
+            crypto = inst.asset_class is AssetClass.crypto
+            fractional = data.get("fractionable") is True
+            ok = data.get("tradable") is True and str(data.get("status", "active")) == "active"
+            short = not crypto and data.get("shortable") is True
+            out[inst.symbol] = (buyable(short=short, fractional=fractional) if ok else
+                                Tradability(False, False, False, fractional, True,
+                                            "not_tradable"))
+        if failure is not None and asked and all(
+                out[s].code == "unknown" for s in out if out[s].code != "asset_class"):
+            raise failure
+        return out
 
     async def load_fee_dust(self, symbols: Iterable[str]) -> None:
         """The minimum order size of each crypto symbol not known yet (GET

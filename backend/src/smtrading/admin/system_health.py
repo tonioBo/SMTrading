@@ -85,10 +85,12 @@ JOB_INTERVALS: dict[str, float] = {
     "health checks": 300, "job scheduler": 30, "paperclip reader": 300,
     "hand-off watchdog": 300, "protection alarm": 300, "goal alerts": 300,
     "telegram summaries": 30, "price quality alarm": 60, "system sentinel": 300,
+    "broker tradability": 300,
 }
 LATE_FACTOR = 3  # a pass later than 3 intervals is late
 GATED_JOBS = ("protection alarm", "goal alerts", "plan closer", "pre-open check",
-              "hand-off watchdog", "weekly report", "system sentinel")
+              "hand-off watchdog", "weekly report", "system sentinel",
+              "broker tradability")
 GATE_GRACE_S = 15 * 60  # the gated jobs may wait for the startup gate this long
 CONNECTOR_CHECK_LATE_S = 15 * 60
 PAPERCLIP_LATE_S = 15 * 60

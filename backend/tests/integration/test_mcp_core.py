@@ -94,7 +94,12 @@ async def test_list_portfolios_only_assigned(mcp_server, mcp_call, hide_mode):
     by_name = {p["name"]: p for p in payload}
     assert set(by_name) == {"Demo", "ReadOnly"}
     assert str(other_id) not in {p["id"] for p in payload}
-    assert by_name["Demo"] == {
+    demo = dict(by_name["Demo"])
+    # the portfolio's code and its risk profile (its «carattere» for the agents)
+    assert demo.pop("code") is None
+    profile = demo.pop("risk_profile")  # None here: no profile seeded in this test database
+    assert profile is None or set(profile) == {"name", "description"}
+    assert demo == {
         "id": str(mcp_server.demo_id),
         "name": "Demo",
         "base_currency": "EUR",

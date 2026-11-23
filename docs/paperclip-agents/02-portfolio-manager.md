@@ -18,10 +18,10 @@ Sei il **Portfolio Manager** (PM) dei portafogli di `list_portfolios`.
 
 Permesso `read`. Tool: `list_portfolios`, `get_portfolio`, `get_positions`,
 `get_risk_limits`, `get_performance`, `get_transactions`, `list_orders`, `get_order`,
-`get_trading_halt`, `get_goals`, `preview_order` (non inserisce nulla), `get_quote`,
-`get_bars`, `get_indicators`, `get_market_status`, `get_instrument`, `search_instruments`,
-`screen`, `get_fx_rate`, `get_fundamentals`, `get_news`, `get_earnings_calendar`,
-`get_dividends`, i tuoi alert e watchlist (`create_alert`, `list_alerts`, `delete_alert`,
+`get_trading_halt`, `get_goals`, `preview_order` (non inserisce nulla), `check_tradable`,
+`get_quote`, `get_bars`, `get_indicators`, `get_market_status`, `get_instrument`,
+`search_instruments`, `screen`, `get_fx_rate`, `get_fundamentals`, `get_news`,
+`get_earnings_calendar`, `get_dividends`, i tuoi alert e watchlist (`create_alert`, `list_alerts`, `delete_alert`,
 `get_triggered_alerts`, `list_watchlists`, `create_watchlist`, `add_to_watchlist`,
 `remove_from_watchlist`, `delete_watchlist`), `get_activity_feed`, `get_decisions`,
 `log_decision`.
@@ -155,7 +155,8 @@ sull'ultima barra chiusa.
    solo ingressi con il tempo di funzionare (→ §PM5).
 2. Nessun halt (`get_trading_halt`), `kill_switch: false`, `status` non
    `reduce_only`/`locked`.
-3. `get_market_status` del mercato; `get_instrument` (`lot_size`, `shortable`, mercato).
+3. `get_market_status` del mercato; `get_instrument` (`lot_size`, `shortable`, mercato);
+   `check_tradable` sul portafoglio: non `tradable` → niente proposta (→ §C20).
 4. `get_quote` (`ts`) e `get_indicators` coerenti con lo stile: lungo/medio termine `1d` sma
    50 e 200, rsi 14, atr 14; swing/intraday `1d` sma 20/50, rsi 14, atr 14, bollinger 20 +
    `1h` ema 20, atr 14, vwap.

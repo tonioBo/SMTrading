@@ -40,6 +40,7 @@ from smtrading.brokers.base import (
     RateLimited,
 )
 from smtrading.brokers.t212_core import _body, _dec, _jsonable, _num
+from smtrading.brokers.tradable import Tradability, buyable, not_found, unknown
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.logsetup import redact_log_text, register_secret
 from smtrading.engine.models import Order, OrderSide, OrderType
@@ -106,8 +107,10 @@ def account_digest(user_key: str) -> str:
 
 @dataclass
 class InstrumentCache:
-    """Symbol -> {instrument_id, eligible, partial_close} of one scope ("demo", "real",
-    "data"), each entry valid for 24 h. `reverse`: instrument id -> our symbol."""
+    """Symbol -> {instrument_id, eligible, partial_close, block, fractional} of one scope
+    ("demo", "real", "data"), each entry valid for 24 h. `block`: why a found instrument
+    is not eligible (a `brokers.tradable` code); `fractional`: fractional units (None:
+    not said). `reverse`: instrument id -> our symbol."""
 
     entries: dict[str, dict] = field(default_factory=dict)
     reverse: dict[int, str] = field(default_factory=dict)
@@ -120,9 +123,11 @@ class InstrumentCache:
         return entry
 
     def put(self, symbol: str, instrument_id: int | None, *, eligible: bool = False,
-            partial_close: bool = False) -> dict:
+            partial_close: bool = False, block: str | None = None,
+            fractional: bool | None = None) -> dict:
         entry = {"instrument_id": instrument_id, "eligible": eligible,
-                 "partial_close": partial_close, "at": time.monotonic()}
+                 "partial_close": partial_close, "block": block, "fractional": fractional,
+                 "at": time.monotonic()}
         self.entries[symbol] = entry
         return entry
 
@@ -342,6 +347,30 @@ def _buy_unleveraged_real(entry: dict) -> bool:
                 and any(_dec(v) == 1 for v in values)):
             return True
     return False
+
+
+def _block(item: dict, entry: dict) -> str:
+    """Why a found instrument cannot be bought unleveraged (a `brokers.tradable` code):
+    closed to new positions; else offered only as a CFD (with leverage), and when the
+    eligibility says the account needs the tax form for it (`requiresW8Ben`, seen with no
+    real settlement on US ETFs such as SPY on the demo, 23/11/2026) the form."""
+    if (item.get("isBuyEnabled") is not True or item.get("isDelisted") is True
+            or entry.get("allowOpenPosition") is not True):
+        return "not_tradable"
+    cfd_long = any(
+        isinstance(cfg, dict) and str(cfg.get("settlementType", "")).lower() == "cfd"
+        and str(cfg.get("direction", "")).lower() in {"buy", "long"}
+        for cfg in entry.get("leverageConfigs") or [])
+    if not cfd_long:
+        return "not_tradable"
+    return "tax_form" if entry.get("requiresW8Ben") is True else "leverage_only"
+
+
+def _fractional(entry: dict) -> bool | None:
+    kind = entry.get("unitsQuantityType")
+    if not isinstance(kind, str) or not kind:
+        return None
+    return kind.lower() == "fractional"
 
 
 def _conforming(p: dict) -> bool:
@@ -568,8 +597,47 @@ class _EtoroProtocol(BrokerAdapter):
                     and _buy_unleveraged_real(elig)
                 )
                 cache.put(sym, iid, eligible=eligible,
-                          partial_close=elig.get("allowPartialClosePosition") is True)
+                          partial_close=elig.get("allowPartialClosePosition") is True,
+                          block=None if eligible else _block(item, elig),
+                          fractional=_fractional(elig))
                 cache.reverse[iid] = inst.symbol
+
+    async def tradability(self, instruments: Iterable[Instrument]) -> dict[str, Tradability]:
+        """Plan 44: read again (search + eligibility, `prepare`) the instruments given:
+        found, bought without leverage, fractional units, partial closes. SMTrading
+        never opens a short here. Symbols `prepare` could not read are unknown."""
+        instruments = list(instruments)
+        supported = [i for i in instruments if i.asset_class in self.supported_asset_classes]
+        cache = self._instruments
+        async with cache.lock:  # fresh answers: drop what the 24 h cache holds
+            for inst in supported:
+                cache.entries.pop(self.etoro_symbol(inst), None)
+        failure: RuntimeError | None = None
+        try:
+            await self.prepare(supported)
+        except RuntimeError as e:  # what was read before the failure stands
+            failure = e
+        out: dict[str, Tradability] = {}
+        for inst in instruments:
+            if inst.asset_class not in self.supported_asset_classes:
+                out[inst.symbol] = not_found("asset_class")
+                continue
+            entry = self._entry(inst)
+            if entry is None:
+                out[inst.symbol] = unknown()
+            elif entry["instrument_id"] is None:
+                out[inst.symbol] = not_found()
+            elif entry["eligible"]:
+                out[inst.symbol] = buyable(fractional=entry.get("fractional"),
+                                           partial_close=entry["partial_close"])
+            else:
+                out[inst.symbol] = Tradability(False, False, False, entry.get("fractional"),
+                                               entry["partial_close"],
+                                               entry.get("block") or "not_tradable")
+        if failure is not None and supported and all(
+                out[i.symbol].code == "unknown" for i in supported):
+            raise failure  # nothing read: the broker did not answer
+        return out
 
     def _reason(self, order: Order, instrument: Instrument, *, strict: bool) -> str | None:
         if order.type not in self.supported_types:

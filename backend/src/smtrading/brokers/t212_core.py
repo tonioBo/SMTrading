@@ -28,6 +28,7 @@ from smtrading.brokers.base import (
     BrokerStatus,
     RateLimited,
 )
+from smtrading.brokers.tradable import Tradability, buyable, not_found
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.models import Order, OrderType, TimeInForce
 from smtrading.instruments.models import AssetClass, Instrument
@@ -293,6 +294,21 @@ class _T212Protocol(BrokerAdapter):
         await self._load_instruments()
         for inst in instruments:
             self._ticker(inst.symbol, inst)
+
+    async def tradability(self, instruments: Iterable[Instrument]) -> dict[str, Tradability]:
+        """Plan 44: the instrument list of the environment (`_load_instruments`): a
+        ticker found is bought as is (no leverage, no short sale here)."""
+        instruments = list(instruments)
+        await self._load_instruments()
+        out: dict[str, Tradability] = {}
+        for inst in instruments:
+            if inst.asset_class not in self.supported_asset_classes:
+                out[inst.symbol] = not_found("asset_class")
+            elif self._ticker(inst.symbol, inst) is None:
+                out[inst.symbol] = not_found()
+            else:
+                out[inst.symbol] = buyable()
+        return out
 
     def _rate_key(self, method: str, path: str) -> tuple[str, str, str]:
         endpoint = _ID_SEGMENT.sub("/{id}", path.split("?", 1)[0])

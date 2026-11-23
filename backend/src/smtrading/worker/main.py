@@ -17,6 +17,7 @@ from smtrading.brokers.live.gate import make_live_client
 from smtrading.brokers.live.monitor import LiveMonitor
 from smtrading.brokers.live.startup import warn_if_fake_broker
 from smtrading.brokers.sync import BrokerSync
+from smtrading.brokers.tradability import TradabilityRefresher
 from smtrading.common.config import get_settings
 from smtrading.common.db import make_engine
 from smtrading.common.heartbeat import write_heartbeat
@@ -281,6 +282,8 @@ async def run() -> None:
                         gate, lambda: WeeklyReport(sessionmaker, router).run()))),
                     tg.create_task(supervise("system sentinel", lambda: gated(
                         gate, lambda: SystemSentinel(sessionmaker, redis).run()))),
+                    tg.create_task(supervise("broker tradability", lambda: gated(
+                        gate, lambda: TradabilityRefresher(sessionmaker, redis, http).run()))),
                     tg.create_task(supervise("broker reconciliation", lambda: gated(
                         gate, lambda: ReconciliationJob(
                             sessionmaker, router, http,

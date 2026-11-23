@@ -23,7 +23,7 @@ Tool consentiti:
   `list_research`
 - Dati: `get_bars`, `get_indicators`, `get_quote`, `get_instrument`, `search_instruments`,
   `screen`, `get_fundamentals`, `get_dividends`, `get_market_status`
-- Contesto: `list_portfolios`, `get_risk_limits`, `get_performance`
+- Contesto: `list_portfolios`, `get_risk_limits`, `get_performance`, `check_tradable`
 - Storico: `get_activity_feed`, `get_decisions`, `log_decision`
 
 Vietato: tool d'ordine, `send_telegram`, `create_alert`.
@@ -40,7 +40,8 @@ STRATEGIA» del Performance Auditor (sotto).
 
 1. Leggi portafoglio/i, stile, universo, vincoli.
 2. `get_risk_limits` del portafoglio: mercati consentiti, short (i backtest sono solo long).
-3. Verifica i simboli: `get_instrument` (o `search_instruments`); scarta quelli fuori profilo.
+3. Verifica i simboli: `get_instrument` (o `search_instruments`) e `check_tradable` sul
+   portafoglio di destinazione; scarta quelli fuori profilo o non `tradable` (→ §C20).
 4. Piano dei backtest (massimo **2 backtest in coda o in esecuzione** alla volta per agente):
    1. benchmark `buy_and_hold`;
    2. strategia con parametri di default;

@@ -799,3 +799,45 @@ async def test_composition_short_and_leveraged(admin, monkeypatch):
     assert by_symbol["AAPL"]["qty"] == "-5"
     pieces = D(body["cash_eur"]) + sum(D(p["value_eur"]) for p in body["positions"])
     assert abs(pieces - D(body["equity_eur"])) <= D("0.02")
+
+
+async def test_tradability_of_a_linked_portfolio(admin, monkeypatch):
+    """«Strumenti presso il broker» (plan 44): the broker's answer per symbol, the
+    universes of the portfolio's approved strategies, the catalog without a broker."""
+    from smtrading.activity.models import Decision, DecisionKind
+    from smtrading.agents.service import create_agent
+    from smtrading.brokers import tradability
+    from smtrading.brokers.live.fake import FakeLiveBroker
+    from smtrading.brokers.service import create_link, link_portfolio
+
+    fake = FakeLiveBroker(price=D(100))
+    monkeypatch.setattr(tradability, "http_client",
+                        lambda: httpx.AsyncClient(transport=fake.transport()))
+    linked, free = await _create(admin.client), await _create(admin.client)
+    async with admin.sm() as s:
+        link = await create_link(s, "Conto eToro", "etoro_demo",
+                                 {"api_key": "CANARYAPIKEY0001", "user_key": "CANARYUSER-2"})
+        await link_portfolio(s, uuid.UUID(linked["id"]), link.id)
+        ceo, _ = await create_agent(s, f"ceo-{uuid.uuid4().hex[:6]}")
+        s.add(Decision(agent_id=ceo.id, kind=DecisionKind.strategy, summary="ETF USA", subject="ETF USA",
+                       portfolio_id=uuid.UUID(linked["id"]), symbols=["SPY", "DIA"],
+                       details={"ref": "STR-7", "status": "approvata",
+                                "strategy": "sma_cross"}))
+        await s.commit()
+    r = await admin.client.get(f"/api/portfolios/{linked['id']}/tradability",
+                               params={"symbols": "spy,DIA,NOPE-XYZ"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["linked"] is True
+    assert body["universes"] == [{"ref": "STR-7", "name": "ETF USA", "symbols": ["SPY", "DIA"]}]
+    by = {i["symbol"]: i for i in body["items"]}
+    assert list(by) == ["SPY", "DIA", "NOPE-XYZ"]
+    assert by["SPY"]["tradable"] is False
+    assert by["SPY"]["reason"] == "richiede un modulo fiscale presso il broker"
+    assert by["DIA"]["tradable"] is True and by["NOPE-XYZ"]["reason"] == "strumento non trovato"
+    r = await admin.client.get(f"/api/portfolios/{free['id']}/tradability",
+                               params={"symbols": "SPY"})
+    assert r.json()["linked"] is False and r.json()["items"][0]["tradable"] is True
+    r = await admin.client.get(f"/api/portfolios/{free['id']}/tradability",
+                               params={"symbols": ",".join(f"S{i}" for i in range(51))})
+    assert r.status_code == 400

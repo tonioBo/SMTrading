@@ -586,9 +586,9 @@ async def test_startup_gate_waiters_share_one_wait():
 
 async def test_run_holds_the_alerting_jobs_behind_the_gate(monkeypatch):
     """Protection alarm, goal alerts, plan closer, pre-open check, hand-off watchdog,
-    broker reconciliation, the weekly PDF report, the market screener, the personal
-    price alerts and the system sentinel start only once the startup gate opens; the
-    other jobs start at once."""
+    broker reconciliation, the broker tradability refresh, the weekly PDF report, the
+    market screener, the personal price alerts and the system sentinel start only once the
+    startup gate opens; the other jobs start at once."""
     waits: list[int] = []
     before: list = []
     release = asyncio.Event()
@@ -640,10 +640,12 @@ async def test_run_holds_the_alerting_jobs_behind_the_gate(monkeypatch):
     monkeypatch.setattr(worker, "StartupGate", HeldGate)
     for name in ("ProtectionAlarm", "GoalAlerts", "PlanCloser", "PreopenCheck",
                  "HandoffWatchdog", "ReconciliationJob", "WeeklyReport", "ScreenerJob",
-                 "PersonalAlerts", "SystemSentinel"):
+                 "PersonalAlerts", "SystemSentinel",
+                 "TradabilityRefresher"):
         monkeypatch.setattr(worker, name, job(name))
     await asyncio.wait_for(worker.run(), 2)
-    assert before == [[], 10]
+    assert before == [[], 11]
     assert sorted(started) == ["GoalAlerts", "HandoffWatchdog", "PersonalAlerts", "PlanCloser",
                                "PreopenCheck", "ProtectionAlarm", "ReconciliationJob",
-                               "ScreenerJob", "SystemSentinel", "WeeklyReport"]
+                               "ScreenerJob", "SystemSentinel", "TradabilityRefresher",
+                               "WeeklyReport"]

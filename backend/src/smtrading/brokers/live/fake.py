@@ -39,7 +39,27 @@ _ETORO_INSTRUMENTS = {
     "AAPL": 1001,
     "MSFT": 1002,
     "BTC": 100000,
+    "SPY": 3000,  # a CFD only, the tax form flag on (as on the demo, 23/11/2026)
+    "DIA": 100580,
+    "NSDQ100": 28,  # a CFD only, no tax form flag
+    "ENEL.MI": 1282,
 }
+# the leverage configs of an instrument bought unleveraged (shape read on the demo)
+_ETORO_REAL_LONG = [
+    {"settlementType": "real", "direction": "long", "leverageValues": [1],
+     "isPotential": False, "minPositionAmount": "10.0"},
+    {"settlementType": "cfd", "direction": "short", "leverageValues": [1, 2, 5, 10, 20],
+     "isPotential": False, "minPositionAmount": "10.0"},
+    {"settlementType": "cfd", "direction": "long", "leverageValues": [2, 5, 10, 20],
+     "isPotential": False, "minPositionAmount": "10.0"},
+]
+_ETORO_CFD_ONLY = [
+    {"settlementType": "cfd", "direction": "long", "leverageValues": [1],
+     "isPotential": False, "minPositionAmount": "10.0"},
+    *_ETORO_REAL_LONG[1:],
+]
+_ETORO_CFD = {3000: True, 28: False}  # CFD-only instrument id -> requiresW8Ben
+_ETORO_W8BEN = {1001, 1002, 3000}  # US instruments flagged requiresW8Ben
 _ETORO_SEARCH = "/api/v1/market-data/search"
 _ETORO_RATES = "/api/v1/market-data/instruments/rates"
 _ETORO_CANDLES = re.compile(
@@ -60,6 +80,9 @@ _ETORO_ELIGIBILITY = re.compile(r"^/api/v2/trading/info/(demo/)?eligibility$")
 _ALPACA_ORDER = re.compile(r"^/v2/orders/([^/]+)$")
 _ALPACA_POSITION = re.compile(r"^/v2/positions/([^/]+)$")
 _ALPACA_ASSET = re.compile(r"^/v2/assets/(.+)$")
+# GET /v2/assets/{symbol} of an equity (shape read on the paper API); `alpaca_assets`
+# overrides it per symbol (None: 404 «asset not found»)
+_ALPACA_EQUITY = {"tradable": True, "fractionable": True, "shortable": True}
 ALPACA_CRYPTO_FEES = {1: (Decimal("0.0015"), Decimal("0.0025"))}  # (maker, taker)
 ALPACA_MIN_ORDER = Decimal("0.00001709")
 _T212_ORDER = re.compile(rf"^{_T212}/orders/(\d+)$")
@@ -113,6 +136,7 @@ class FakeLiveBroker:
         self.price = price
         self.alpaca = _Account("USD")
         self.alpaca_crypto_tier = 1
+        self.alpaca_assets: dict[str, dict | None] = {}  # symbol -> asset fields override
         self.t212 = _Account("EUR")
         self.etoro = {"demo": _EtoroEnv(), "real": _EtoroEnv()}
         self.etoro_partial_close = True  # allowPartialClosePosition of every instrument
@@ -229,8 +253,15 @@ class FakeLiveBroker:
         m = _ALPACA_ASSET.match(path)
         if m and method == "GET":
             if "/" not in m.group(1):
-                return httpx.Response(200, json={"class": "us_equity", "symbol": m.group(1),
-                                                 "tradable": True, "fractionable": True})
+                asset = self.alpaca_assets.get(m.group(1), _ALPACA_EQUITY)
+                if asset is None:
+                    return httpx.Response(404, json={
+                        "code": 40410000, "message": f"asset not found for {m.group(1)}"})
+                return httpx.Response(200, json={
+                    "id": f"fake-asset-{m.group(1)}", "class": "us_equity",
+                    "exchange": "NASDAQ", "symbol": m.group(1), "name": m.group(1),
+                    "status": "active", "marginable": True,
+                    "easy_to_borrow": asset["shortable"], **asset})
             return httpx.Response(200, json={
                 "class": "crypto", "exchange": "CRYPTO", "symbol": m.group(1),
                 "status": "active", "tradable": True, "fractionable": True,
@@ -378,12 +409,13 @@ class FakeLiveBroker:
             return self._etoro_open(env, body, request.headers.get("x-request-id") or "")
         if method == "POST" and _ETORO_ELIGIBILITY.match(path):
             ids = body.get("instrumentIds") or []
-            return httpx.Response(200, json={"currency": "usd", "eligibilities": [
-                {"instrumentId": iid, "allowOpenPosition": True,
-                 "allowPartialClosePosition": self.etoro_partial_close,
-                 "leverageConfigs": [{"settlementType": "real", "direction": "long",
-                                      "leverageValues": [1]}]}
-                for iid in ids if iid in _ETORO_INSTRUMENTS.values()]})
+            known = set(_ETORO_INSTRUMENTS.values())
+            return httpx.Response(200, json={
+                "currency": "usd",
+                "eligibilities": [self._etoro_eligibility(iid) for iid in ids
+                                  if iid in known],
+                "notFoundInstrumentIds": [iid for iid in ids if iid not in known],
+                "notFoundSymbols": []})
         if method == "GET" and _ETORO_LOOKUP.match(path):
             oid = params.get("orderId")
             if oid is None and params.get("referenceId") in env.refs:
@@ -410,6 +442,19 @@ class FakeLiveBroker:
                 "positions": list(env.positions.values()), "orders": [],
                 "ordersForOpen": [], "ordersForClose": [], "mirrors": []}})
         return httpx.Response(404, json={"errorMessage": "Not found"})
+
+    def _etoro_eligibility(self, iid: int) -> dict:
+        """One eligibility item, in the shape the demo answers (23/11/2026)."""
+        symbol = next(s for s, i in _ETORO_INSTRUMENTS.items() if i == iid)
+        cfd = iid in _ETORO_CFD
+        return {
+            "instrumentId": iid, "symbol": symbol, "minPositionExposure": "10.0",
+            "allowOpenPosition": True, "allowClosePosition": True,
+            "allowPartialClosePosition": self.etoro_partial_close,
+            "requiresW8Ben": _ETORO_CFD[iid] if cfd else iid in _ETORO_W8BEN,
+            "unitsQuantityType": "fractional", "tradeUnitType": "units",
+            "leverageConfigs": _ETORO_CFD_ONLY if cfd else _ETORO_REAL_LONG,
+        }
 
     def _etoro_market_data(self, method: str, path: str, params) -> httpx.Response:
         """search, rates and candles: the same answers on both environments (market

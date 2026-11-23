@@ -328,6 +328,26 @@ export interface OrderInput {
 }
 
 /** POST /api/portfolios/{id}/orders/preview: a refused check is ok=false with its code. */
+/** One instrument as the portfolio's broker takes it (plan 44); null: not known now. */
+export interface TradabilityItem {
+  symbol: string;
+  tradable: boolean | null;
+  long_unleveraged: boolean | null;
+  short: boolean | null;
+  fractional: boolean | null;
+  partial_close: boolean | null;
+  /** why it is not tradable (Italian), null when it is */
+  reason: string | null;
+}
+
+export interface TradabilityCheck {
+  /** false: no broker, the catalog answers */
+  linked: boolean;
+  /** the universes of the portfolio's approved strategies */
+  universes: { ref: string; name: string | null; symbols: string[] }[];
+  items: TradabilityItem[];
+}
+
 export interface OrderPreview {
   ok: boolean;
   code: string | null;

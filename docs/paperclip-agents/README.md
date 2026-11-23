@@ -74,6 +74,7 @@ Performance Auditor, NOT = Notifier. ✎ = azione di scrittura.
 | `get_goals` | **Allowed** | **Allowed** | **Allowed** | Off | Off | Off | Off | Off | **Allowed** |
 | `list_orders` | **Allowed** | **Allowed** | **Allowed** | **Allowed** | Off | Off | Off | **Allowed** | Off |
 | `get_order` | **Allowed** | **Allowed** | **Allowed** | **Allowed** | Off | Off | Off | **Allowed** | Off |
+| `check_tradable` | **Allowed** | **Allowed** | Off | Off | Off | Off | **Allowed** | Off | Off |
 | `preview_order` | Off | **Allowed** | **Allowed** | **Allowed** | Off | Off | Off | Off | Off |
 | `place_order` ✎ | Off | Off | Off | **Allowed** | Off | Off | Off | Off | Off |
 | `place_bracket_order` ✎ | Off | Off | Off | **Allowed** | Off | Off | Off | Off | Off |

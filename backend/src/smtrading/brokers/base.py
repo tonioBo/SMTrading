@@ -6,6 +6,7 @@ from typing import ClassVar, Literal
 
 from sqlalchemy import inspect
 
+from smtrading.brokers.tradable import Tradability, buyable, not_found
 from smtrading.engine.models import Order, OrderType
 from smtrading.instruments.models import AssetClass, Instrument
 
@@ -160,6 +161,13 @@ class BrokerAdapter:
 
     async def prepare(self, instruments: Iterable[Instrument] = ()) -> None:
         """Load what `supports` and the symbol mapping need (network); no-op by default."""
+
+    async def tradability(self, instruments: Iterable[Instrument]) -> dict[str, Tradability]:
+        """What the broker lets SMTrading do with each instrument, by symbol (network
+        allowed; plan 44). Raises RuntimeError when the broker cannot answer at all.
+        Default: by asset class only."""
+        return {i.symbol: (buyable(short=None) if i.asset_class in self.supported_asset_classes
+                           else not_found("asset_class")) for i in instruments}
 
     @staticmethod
     def client_ref(order: Order) -> str:

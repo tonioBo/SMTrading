@@ -38,6 +38,7 @@ export const JOB_LABELS: Record<string, string> = {
   "hand-off watchdog": "Controllo passaggi agenti",
   "price quality alarm": "Allarme prezzi non affidabili",
   "system sentinel": "Sentinella di sistema",
+  "broker tradability": "Strumenti presso il broker",
 };
 
 export const ASSET_CLASS_LABELS: Record<string, string> = {
