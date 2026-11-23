@@ -8,7 +8,7 @@ account holds; nothing is left behind here or at the broker; the reconciliation 
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import httpx
@@ -223,7 +223,10 @@ async def test_resting_buy_limit_pays_the_maker_fee(maker, redis, qs, alpaca):
     o = await _order(maker, oid)
     assert o.broker_order_id and not o.synthetic  # a buy limit rests at Alpaca
     fake.alpaca_fill(o.broker_order_id, D(59000))
-    fake.alpaca.orders[o.broker_order_id]["filled_at"] = "2026-11-21T22:00:00.123456789Z"
+    # it rested: filled an hour after its submission (a date relative to the run, not fixed)
+    sub = datetime.fromisoformat(fake.alpaca.orders[o.broker_order_id]["submitted_at"])
+    fake.alpaca.orders[o.broker_order_id]["filled_at"] = (
+        (sub + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z")
     await _settle(sync)
     net = QTY - QTY * D("0.0015")  # maker, tier 1
     assert fake.alpaca.positions == {PAIR: net}
