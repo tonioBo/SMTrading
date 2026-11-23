@@ -495,3 +495,17 @@ async def test_volatility_filter_blocks_the_entry(env):
     passing = await _closed(env, "STR-F3", "breakout", {**params, "max_atr_pct": 30},
                             _bars([10] * 10 + [15]))
     assert passing.triggered_closed is True and passing.filters[0]["passed"] is True
+
+
+async def test_backtest_execution_settings_in_params_are_ignored(env):
+    # the Quant may register the backtest's slippage with the strategy parameters
+    # (seen on 23/11/2026): it is a backtest setting, not a rule of the strategy
+    env.qs.set_bars("ZZSPY", _bars(list(range(100, 130))))
+    await env.decision(portfolio=env.pru, symbols=["ZZSPY"], ref="STR-SLP",
+                       status="approvata", strategy="rsi_reversion", timeframe="1d",
+                       params={"period": 2, "buy_below": "10", "sell_above": "60",
+                               "slippage_bps": 5})
+    [s] = await env.run()
+    assert s.status == "ok"
+    assert "slippage_bps" not in s.params
+    assert [x.symbol for x in s.symbols] == ["ZZSPY"]

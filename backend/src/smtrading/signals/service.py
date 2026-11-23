@@ -95,6 +95,8 @@ from smtrading.risk.settings import get_stale_threshold
 
 OK = "ok"
 INCOMPLETE = "dati incompleti"
+# backtest execution settings sometimes registered with the parameters: not entry rules
+EXECUTION_KEYS = frozenset({"slippage_bps"})
 UNSUPPORTED = "non supportata"
 APPROVED = "approvata"
 MODIFIED = "modificata"
@@ -457,7 +459,8 @@ async def strategy_signals(
             status = UNSUPPORTED
         else:
             try:
-                params = validate_params(a.type, a.params)
+                params = validate_params(a.type, {k: v for k, v in a.params.items()
+                                                  if k not in EXECUTION_KEYS})
                 tf = Timeframe(a.timeframe)
             except (SMTError, ValueError):
                 status = INCOMPLETE
