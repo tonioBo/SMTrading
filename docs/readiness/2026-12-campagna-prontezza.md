@@ -28,6 +28,7 @@ errata senza danno diretto · **C** = fastidio, rumore, estetica.
 | 12 | 21/11 | Alpaca cripto | A? | Stop semplice non supportato da Alpaca sulle cripto: rifiutato (e un bracket con stop potrebbe lasciare la posizione senza protezione) | Solo market/limit/stop-limit sulle cripto | b5ff62c: stop e uscite cripto tenuti da SMTrading e inviati a mercato; verificato | — |
 | 13 | 21/11 | Commissioni | B | Portafogli della campagna senza regola propria → «Default globale» 1 € + 0,1% anche dove il broker non addebita | Regole non impostate alla creazione | applicati i listini dei broker (Alpaca, eToro; Moderato = Alpaca) | — |
 | 14 | 21/11 | Protezione | B | L'allarme «posizione senza stop» guarda anche i portafogli senza agenti (apre un task al Risk Manager) | Ambito dell'allarme | da valutare: escludere i portafogli senza accesso agenti | — |
+| 15 | 23/11 | Agenti | C | Avvio campagna: passaggi di consegna creati due volte (3 «STRATEGIA APPROVATA» doppi, 1 «ALLOCAZIONE · MOD» doppio rimasto in attesa); ~8,7 $ per l'avvio | da capire (CEO e Quant creano entrambi il passaggio?) | da osservare alla pagella | — |
 
 ## 2. Pagella settimanale (venerdì sera, Telegram)
 
