@@ -1,8 +1,10 @@
 import type { Portfolio, PortfolioPatch } from "@/api/types";
 import { parseAmount, toInputDecimal } from "@/lib/decimal";
+import { CODE_ERROR, CODE_RE } from "@/lib/portfolioCode";
 
 export type PortfolioForm = {
   name: string;
+  code: string;
   leverage: string;
   maintenance_margin_pct: string;
   warning_margin_pct: string;
@@ -12,11 +14,12 @@ export type PortfolioForm = {
 };
 export type PortfolioField = keyof PortfolioForm;
 
-export const PORTFOLIO_FIELDS: PortfolioField[] = ["name", "leverage", "maintenance_margin_pct", "warning_margin_pct", "slippage_bps", "risk_profile_id", "timezone"];
+export const PORTFOLIO_FIELDS: PortfolioField[] = ["name", "code", "leverage", "maintenance_margin_pct", "warning_margin_pct", "slippage_bps", "risk_profile_id", "timezone"];
 
 export function initialForm(p: Portfolio): PortfolioForm {
   return {
     name: p.name,
+    code: p.code ?? "",
     leverage: toInputDecimal(p.leverage),
     maintenance_margin_pct: toInputDecimal(p.maintenance_margin_pct),
     warning_margin_pct: toInputDecimal(p.warning_margin_pct),
@@ -45,6 +48,11 @@ export function buildPortfolioPatch(p: Portfolio, form: PortfolioForm): { patch:
   if (changed("name")) {
     if (!form.name.trim()) errors.name = "Campo obbligatorio";
     else patch.name = form.name.trim();
+  }
+  const code = form.code.trim().toUpperCase();
+  if (code !== initial.code) {
+    if (code && !CODE_RE.test(code)) errors.code = CODE_ERROR;
+    else patch.code = code || null;
   }
   const decimals: [PortfolioField & keyof PortfolioPatch, string, number, number][] = [
     ["leverage", "Leva", 1, 10],
