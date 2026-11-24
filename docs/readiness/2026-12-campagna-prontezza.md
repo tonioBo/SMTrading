@@ -30,6 +30,9 @@ errata senza danno diretto · **C** = fastidio, rumore, estetica.
 | 14 | 21/11 | Protezione | B | L'allarme «posizione senza stop» guarda anche i portafogli senza agenti (apre un task al Risk Manager) | Ambito dell'allarme | da valutare: escludere i portafogli senza accesso agenti | — |
 | 15 | 23/11 | Agenti | C | Avvio campagna: passaggi di consegna creati due volte (3 «STRATEGIA APPROVATA» doppi, 1 «ALLOCAZIONE · MOD» doppio rimasto in attesa); ~8,7 $ per l'avvio | da capire (CEO e Quant creano entrambi il passaggio?) | da osservare alla pagella | — |
 | 16 | 23/11 | Agenti (RM, Sonnet) | C | Ciclo delle 15:00: id del Portafoglio Alpaca trascritto male 4 volte (INVALID_ORDER), corretto da solo in 14 s | il modello ricopia a memoria l'id lungo | da valutare: accettare anche il codice del portafoglio (AGG) negli strumenti MCP | — |
+| 17 | 23/11 | Ordini Alpaca | A | Bracket su azioni: l'obiettivo rifiutato («quantità insufficiente»), Alpaca blocca le azioni per il primo ordine di vendita | due vendite separate per la stessa quantità | 128fd8c: uscite tenute da SMTrading, una sola inviata; MSFT ripristinato | — |
+| 18 | 23/11 | Flusso Alpaca | B | Disconnessione ogni minuto dall'apertura USA, quotazioni in ritardo | lettura più lenta dell'arrivo delle quotazioni | f6eab58: lettura continua, ultimo prezzo per titolo | — |
+| 19 | 24/11 | Stop | A | Stop MSFT 478,33 scattato all'apertura su una quotazione con forbice del 10% (bid 470,77 / ask 521,51): venduto a 490,47, prezzo mai sotto lo stop; costo ~55 $ | il denaro di una forbice larga trattato come prezzo | 7d54bd9: con forbice >1% decide l'ultimo scambio, senza scambio si aspetta | — |
 
 ## 2. Pagella settimanale (venerdì sera, Telegram)
 
