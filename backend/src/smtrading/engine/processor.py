@@ -92,6 +92,7 @@ from smtrading.events import (
 )
 from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
+from smtrading.marketdata.quality import MAX_SPREAD
 from smtrading.marketdata.serialization import loads_quote
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.locks import lock_portfolio
@@ -531,7 +532,16 @@ class OrderProcessor:
         if quote.suspect is not None:
             self._note_suspect(session, order, quote, now)
             return False  # wait for a confirmed quote
-        bid, ask = effective_bid_ask(QuoteView(quote.bid, quote.ask, quote.last, quote.ts), spread)
+        view = QuoteView(quote.bid, quote.ask, quote.last, quote.ts)
+        if quote.bid is not None and quote.ask is not None:
+            mid = (quote.bid + quote.ask) / 2
+            if mid <= 0 or quote.ask - quote.bid > mid * MAX_SPREAD:
+                # a book this wide (an opening or thin quote) is no price: the last trade
+                # decides, and without one the order waits (24/11: a stop fired on such a bid)
+                if quote.last is None:
+                    return False
+                view = QuoteView(None, None, quote.last, quote.ts)
+        bid, ask = effective_bid_ask(view, spread)
         if _decide(order, bid, ask).action == TriggerAction.none:
             return False
 

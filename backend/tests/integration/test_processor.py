@@ -883,3 +883,28 @@ async def test_genuine_gap_on_a_lone_stream_fires_the_stop_in_bounded_time(
     async with maker() as s:
         texts = list(await s.scalars(select(TelegramOutbox.text)))
     assert any("MSFT" in t and "Prezzo non affidabile" in t for t in texts)
+
+
+def _wide(qs, bid, ask, last, ts):
+    qs.set_quote("AAPL", D(bid), D(ask), None if last is None else D(last), ts=ts)
+    return qs._quotes["AAPL"]
+
+
+async def test_a_wide_spread_bid_does_not_trigger_a_stop(maker, redis, qs):
+    """24/11 15:30: at the US open the first quote of MSFT was bid 470.77 / ask 521.51
+    (last 489.80); the stop at 478.33 fired on that bid and sold at 490.47. With a spread
+    over MAX_SPREAD the last trade decides, and without one the order waits."""
+    pid = await _portfolio(maker)
+    await _place(maker, redis, qs, pid)  # long 10
+    oid = await _place(
+        maker, redis, qs, pid, side=OrderSide.sell, type=OrderType.stop, stop_price=D("95.00")
+    )
+    clock = Clock(OPEN + timedelta(minutes=1))
+    proc = _proc(maker, redis, qs, clock)
+    assert await proc.on_tick("AAPL", _wide(qs, "90.00", "110.00", "100.00", clock.now)) == 0
+    clock.advance(1)
+    assert await proc.on_tick("AAPL", _wide(qs, "90.00", "110.00", None, clock.now)) == 0
+    assert (await _order(maker, oid)).status == OrderStatus.pending
+    clock.advance(1)
+    # the real price crosses the stop: the last trade under it
+    assert await proc.on_tick("AAPL", _wide(qs, "90.00", "110.00", "94.00", clock.now)) == 1
