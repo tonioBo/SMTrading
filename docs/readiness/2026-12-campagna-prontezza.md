@@ -81,3 +81,7 @@ scritta del proprietario).
 | Backup | ripristino provato riuscito |
 | Costi agenti | entro il budget mensile |
 | Obiettivo | non è un criterio di sicurezza: si riporta il risultato |
+
+## 5. Idee per dopo la campagna
+
+- **Opzioni (Alpaca)** — 24/11, richiesta di Matteo di segnarla per il futuro: opzioni su azioni ed ETF anche in orari estesi (dal 4/12/2026 sul reale, già provabili sul conto di prova). Oggi SMTrading non ha opzioni (catalogo, prezzi, ordini, rischio, strumenti degli agenti). Da valutare come progetto separato solo dopo il passaggio al denaro vero sulle azioni.
