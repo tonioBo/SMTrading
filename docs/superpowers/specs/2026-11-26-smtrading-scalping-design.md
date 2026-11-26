@@ -172,3 +172,25 @@ segno «di giornata» e riquadro PDT sulle posizioni; casella «di giornata» ne
 ## Lasciato a chi costruisce
 Nomi esatti, protocollo di pubblicazione interna dei prezzi, struttura del processo `scalper`, limiti
 dei parametri dei modelli, testi italiani, ordine dei lavori.
+
+## Correzione del 26/11/2026 sera — la regola PDT non esiste più
+Verificato sul conto vero e nelle fonti: FINRA ha tolto la regola «pattern day trader» (3 operazioni
+di giornata ogni 5 sedute sotto 25.000 $) dalla Rule 4210 **dal 4/6/2026**, sostituendola con un
+margine di giornata basato sul rischio. Alpaca l'ha applicata e dal 6/7/2026 il suo `/v2/account`
+non restituisce più `daytrade_count` né `pattern_day_trader` (confermato sui due conti di prova:
+campi assenti, presente `intraday_adjustments`). Resta il minimo di 2.000 $ per i conti con margine;
+nei conti **in contanti** restano le regole di regolamento (denaro di una vendita disponibile dal
+giorno dopo; riusarlo prima è una violazione di «buona fede»).
+Conseguenze (scelte di Claude, sostituiscono le parti PDT sopra e nel progetto del modo A):
+1. **Niente più regola PDT per collegamento**: nessun budget di 3 operazioni, nessun rifiuto per
+   «quarta operazione», nessun confronto con il conteggio di Alpaca.
+2. **Resta il conteggio delle operazioni di giornata** (stesso algoritmo) per: il freno facoltativo
+   `max_day_trades_5d` del portafoglio (rifiuta le entrate `day_trade` a tetto raggiunto, mai le
+   vendite), la misura nei risultati e il portale.
+3. **Lettura del conto** (al posto del confronto PDT): per i collegamenti con un portafoglio in giornata
+   SMTrading legge `buying_power`, `multiplier`, `equity`, `trading_blocked`, `account_blocked` e li
+   mostra nel portale; avviso Telegram se il conto risulta bloccato. Un'entrata di giornata con importo
+   oltre il `buying_power` letto è rifiutata da SMTrading (il broker la rifiuterebbe comunque).
+4. **Modo B solo su conti con margine**: su un collegamento in contanti (come il reale Alpaca di oggi)
+   il portale non lo lascia accendere, per le regole di regolamento. Tolto il vincolo dei 25.000 $.
+5. Il nuovo conto di prova da 30.000 $ va benissimo; la prova del rifiuto si fa con `max_day_trades_5d`.
