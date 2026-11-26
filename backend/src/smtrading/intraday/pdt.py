@@ -14,12 +14,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.brokers.models import BrokerLink
-from smtrading.engine.models import FILLABLE_STATUSES, Fill, Order, OrderSide
+from smtrading.engine.models import FILLABLE_STATUSES, Fill, Order, OrderSide, OrderStatus
 from smtrading.instruments.market_hours import local_date, session_on
 from smtrading.instruments.models import AssetClass, Instrument
-from smtrading.intraday.calendar import last_sessions, session_after
+from smtrading.intraday.calendar import last_sessions, session_after, session_window
 from smtrading.intraday.day_positions import day_quantities
-from smtrading.portfolios.models import Portfolio
+from smtrading.intraday.models import DAY_SCOPE, day_scope
+from smtrading.portfolios.models import Portfolio, PortfolioStatus
+from smtrading.telegram.outbox import enqueue
 
 PDT_KINDS = frozenset({"alpaca_paper", "alpaca_live"})
 PDT_MARKET = "NYSE"
@@ -229,3 +231,51 @@ async def entry_budget(
     if not limited:
         return candidates[0]
     return min(limited, key=lambda c: c.remaining)
+
+
+async def _would_close_day_quantity(
+    session: AsyncSession, order: Order, now: datetime
+) -> bool:
+    """True if the sell closes quantity its portfolio bought in the current session (the
+    fills of the order itself, if any, are not counted)."""
+    window = session_window(PDT_MARKET, now)
+    if window is None:
+        return False
+    rows = (await session.execute(
+        select(Fill.side, Fill.qty)
+        .join(Instrument, Instrument.symbol == Fill.symbol)
+        .where(Fill.portfolio_id == order.portfolio_id, Fill.symbol == order.symbol,
+               Fill.order_id != order.id, Fill.created_at >= window[0],
+               Fill.created_at < window[1], Instrument.asset_class == AssetClass.us_equity)
+    )).all()
+    net = sum((q if side == OrderSide.buy else -q for side, q in rows), Decimal(0))
+    return net > 0
+
+
+async def warn_day_trade_sell(session: AsyncSession, order: Order, now: datetime) -> None:
+    """A sell is never refused. For a portfolio out of `day_scope` on a PDT link shared with
+    a portfolio in it, warn (Telegram, system) when this sell would be the last operation of
+    the link's budget or beyond it."""
+    if order.side != OrderSide.sell or order.status == OrderStatus.rejected:
+        return
+    portfolio = await session.get(Portfolio, order.portfolio_id)
+    if portfolio is None or day_scope(portfolio) or portfolio.broker_link_id is None:
+        return
+    link = await session.get(BrokerLink, portfolio.broker_link_id)
+    if link is None or link.kind not in PDT_KINDS:
+        return
+    shared = await session.scalar(
+        select(Portfolio.id).where(
+            Portfolio.broker_link_id == link.id, DAY_SCOPE,
+            Portfolio.status != PortfolioStatus.archived).limit(1))
+    if shared is None or not await _would_close_day_quantity(session, order, now):
+        return
+    budget = await link_budget(session, link.id, now)
+    n = budget.used + 1
+    if not budget.applies or n < PDT_MAX:
+        return
+    await enqueue(
+        session, source="system", category="system", level="warning",
+        text=(f"Attenzione regola USA sui conti piccoli: la vendita di {order.symbol} su "
+              f"{portfolio.name} sarebbe l'operazione di giornata n. {n} su {PDT_MAX} nelle "
+              f"ultime {PDT_SESSIONS} sedute del collegamento {link.name}"))

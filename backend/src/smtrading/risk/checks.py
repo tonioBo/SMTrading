@@ -43,6 +43,8 @@ from smtrading.fees.resolver import FeeQuote, load_rules, resolve_rule
 from smtrading.goals.plans import adds_to, open_closure, plan_closing_error
 from smtrading.instruments.models import Instrument
 from smtrading.instruments.service import validate_price, validate_quantity
+from smtrading.intraday.models import day_scope
+from smtrading.intraday.pdt import entry_budget
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.marketdata.quality import SUSPECT_REASON
 from smtrading.marketdata.types import Quote
@@ -175,12 +177,29 @@ async def _estimate_price(
     return price, quote
 
 
+async def _check_day_trade_budget(
+    session: AsyncSession, portfolio: Portfolio, instrument: Instrument, now: datetime
+) -> None:
+    budget = await entry_budget(session, portfolio, instrument.symbol, now)
+    if budget.remaining is None or budget.remaining > 0:
+        return
+    when = (f"la prossima si libera il {budget.frees_on:%d/%m}" if budget.frees_on
+            else "quando una delle aperte si chiude senza operazione")
+    raise _Reject(
+        ErrorCode.DAY_TRADE_LIMIT,
+        f"Operazioni di giornata esaurite: {budget.used} usate su {budget.limit} nelle "
+        f"ultime 5 sedute (più {budget.pending} già aperte), ne restano 0; {when}",
+        {"used": budget.used, "limit": budget.limit, "remaining": 0,
+         "frees_on": budget.frees_on.isoformat() if budget.frees_on else None},
+    )
+
+
 async def _run(
     session: AsyncSession, qs: QuoteSource, *, portfolio: Portfolio, instrument: Instrument,
     side: OrderSide, qty: Decimal | None, notional: Decimal | None, order_type: OrderType,
     limit_price: Decimal | None, stop_price: Decimal | None, check_quote_age: bool,
     reduce_only: bool, redis, live_flatten: bool = False, now: datetime | None = None,
-    live_effects: bool = True, exclude_order=None,
+    live_effects: bool = True, exclude_order=None, day_trade: bool = False,
 ) -> CheckResult:
     # 1-3: switches and whitelist; Ruling R25: with the kill switch on, only orders that
     # strictly reduce the position pass (settled below, once the quantity is known)
@@ -312,6 +331,11 @@ async def _run(
     if increases and bp_after < 0:
         raise _Reject(ErrorCode.INSUFFICIENT_BUYING_POWER, "insufficient buying power")
 
+    # 10: day-trade budget (PDT): only buys flagged `day_trade` of a portfolio with an
+    # intraday switch on; sells are never refused
+    if side == OrderSide.buy and day_trade and day_scope(portfolio):
+        await _check_day_trade_budget(session, portfolio, instrument, now or datetime.now(UTC))
+
     return CheckResult(
         ok=True, estimated_price=price, estimated_notional_eur=notional_eur,
         estimated_fee=FeeQuote(rule.id, fee, rule.currency),
@@ -338,6 +362,7 @@ async def pre_trade_check(
     now: datetime | None = None,
     live_effects: bool = True,
     exclude_order=None,
+    day_trade: bool = False,
 ) -> CheckResult:
     try:
         return await _run(
@@ -345,7 +370,7 @@ async def pre_trade_check(
             notional=notional, order_type=order_type, limit_price=limit_price,
             stop_price=stop_price, check_quote_age=check_quote_age,
             reduce_only=reduce_only, redis=redis, live_flatten=live_flatten, now=now,
-            live_effects=live_effects, exclude_order=exclude_order,
+            live_effects=live_effects, exclude_order=exclude_order, day_trade=day_trade,
         )
     except _Reject as r:
         return CheckResult(ok=False, code=r.code, message=r.message, details=r.details)
