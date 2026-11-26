@@ -174,6 +174,17 @@ async def test_wide_spread_limit_order(sm, qs):
     assert "AAPL: 10 in vendita con limite 99,50 (forbice larga)" in row.text
 
 
+async def test_wide_spread_limit_with_the_seeded_tick_is_in_cents(sm, qs):
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, 10, BOUGHT)
+    qs.set_quote("AAPL", D(95), D(105), D("100.013"))  # seeded tick 0.0001: no sub-penny
+    await _tick(sm, qs, CUTOFF)
+    [o] = await _system_orders(sm)
+    assert (o.type, o.limit_price) == (OrderType.limit, D("99.51"))
+    [row] = await _outbox(sm)
+    assert "con limite 99,51 (forbice larga)" in row.text
+
+
 async def test_wide_spread_without_last_sends_nothing(sm, qs):
     pid = await _portfolio(sm)
     await _buy(sm, qs, pid, 10, BOUGHT)

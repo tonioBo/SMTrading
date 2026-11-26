@@ -54,14 +54,17 @@ def close_limit_price(
     quote: Quote, margin_pct: Decimal, tick_size: Decimal | None
 ) -> tuple[bool, Decimal | None]:
     """(wide spread, limit price): tight → (False, None), at market; wide with a last trade
-    → (True, last × (1 − margin/100) floored to the tick, 2 decimals without a tick); wide
-    without a last trade → (True, None)."""
+    → (True, last × (1 − margin/100) floored to the tick, 2 decimals without a tick, and
+    to the cent at or above 1: brokers refuse sub-penny prices there); wide without a last
+    trade → (True, None)."""
     if not is_wide(quote):
         return False, None
     if quote.last is None or quote.last <= 0:
         return True, None
     tick = tick_size.normalize() if tick_size else _CENT  # 0.0100 from the database: 0.01
     raw = quote.last * (1 - margin_pct / 100)
+    if raw >= 1 and tick < _CENT:
+        tick = _CENT
     return True, (raw / tick).to_integral_value(ROUND_FLOOR) * tick
 
 

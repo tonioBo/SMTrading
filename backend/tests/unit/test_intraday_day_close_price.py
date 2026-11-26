@@ -37,3 +37,11 @@ def test_limit_without_tick_floors_to_cents():
 
 def test_wide_without_last_is_none():
     assert close_limit_price(_q("95", "105", None), D("0.5"), D("0.01")) == (True, None)
+
+
+def test_sub_penny_tick_is_clamped_to_the_cent_at_or_above_one():
+    assert close_limit_price(_q("95", "105", "100.013"), D("0.5"), D("0.0001")) == (
+        True, D("99.51"))
+    # below 1 the sub-penny tick stays
+    assert close_limit_price(_q("0.40", "0.60", "0.5013"), D("0.5"), D("0.0001")) == (
+        True, D("0.4987"))
