@@ -125,6 +125,16 @@ versione). Gestite dal portale (solo admin). Attivabili solo su portafogli con `
    riposo, sorvegliata dal motore delle uscite esistente (resta attiva anche se il motore delle regole
    si ferma); uscita a tempo e di fine seduta le manda il motore delle regole, con la rete di fine
    seduta del worker come ultima garanzia.
+6. **Un solo nuovo conto di prova (30.000 $)** per i due modi: il conteggio delle operazioni di
+   giornata si confronta comunque con `daytrade_count` di Alpaca; i rifiuti si provano con
+   `max_day_trades_5d`. Il blocco del broker sotto i 25.000 $ non si vede dal vivo (coperto dai test).
+7. **Budget delle operazioni di giornata:** la regola USA è per collegamento (somma di tutti i
+   portafogli e dei due modi); `max_day_trades_5d` conta solo le operazioni del proprio portafoglio.
+   Sui collegamenti con margine sotto 25.000 $ il modo B **non si può accendere** (il portale lo
+   rifiuta spiegando perché); le uscite a tempo e di fine seduta contano come ogni altra operazione
+   di giornata e non sono mai rifiutate.
+8. **Valuta dei freni di perdita:** quella del portafoglio (conversione con il cambio già usato dal
+   portafoglio).
 
 ### Freni
 Per regola e per portafoglio, dal portale: max operazioni per ora e per giorno, perdita massima del
