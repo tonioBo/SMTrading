@@ -29,6 +29,7 @@ from smtrading.admin.routes_explore import router as explore_router
 from smtrading.admin.routes_fees import router as fees_router
 from smtrading.admin.routes_goals import router as goals_router
 from smtrading.admin.routes_halts import router as halts_router
+from smtrading.admin.routes_intraday import router as intraday_router
 from smtrading.admin.routes_live import emergency_router as live_emergency_router
 from smtrading.admin.routes_live import router as live_router
 from smtrading.admin.routes_markets import router as markets_router
@@ -239,6 +240,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(trades_router)
     app.include_router(agent_results_router)
     app.include_router(watch_router)
+    app.include_router(intraday_router)  # portal only, never MCP
     app.include_router(telegram_router)
     app.include_router(paperclip_router)
     app.include_router(users_router)

@@ -119,9 +119,9 @@ async def test_shape_and_cache(admin):
     assert port["portfolio_id"] == str(p.id)
     assert port["portfolio_name"] == "Portafoglio Prudente"
     [st] = port["strategies"]
-    assert {k: st[k] for k in ("ref", "name", "type", "timeframe", "status")} == {
+    assert {k: st[k] for k in ("ref", "name", "type", "timeframe", "status", "intraday")} == {
         "ref": "STR-001", "name": "Approvata STR-001", "type": "rsi_reversion",
-        "timeframe": "1d", "status": "ok"}
+        "timeframe": "1d", "status": "ok", "intraday": False}
     assert st["params"] == {"period": 2, "buy_below": "10", "sell_above": "70"}
     [x] = st["symbols"]
     assert set(x) == {"symbol", "last", "indicator", "value_closed", "value_now",
@@ -140,7 +140,33 @@ async def test_shape_and_cache(admin):
     admin.qs.set_quote("BTC-USD", D(199), D(201), None)
     again = (await admin.client.get("/api/signals")).json()
     assert again == body
-    assert 0 < await admin.redis.ttl("signals:v3") <= 60
+    assert 0 < await admin.redis.ttl("signals:v4") <= 60
+
+
+async def test_signals_intraday_flag(admin):
+    """`intraday`: the strategy is on an intraday timeframe and its portfolio has mode A
+    on; a daily strategy of the same portfolio and an intraday one of a switched-off
+    portfolio are not."""
+    from smtrading.activity.models import Decision
+    from smtrading.agents import service as agents
+    from smtrading.portfolios.service import create_portfolio
+
+    async with admin.sm() as s:
+        on = await create_portfolio(s, name="Giornata", initial_cash=D(500))
+        on.intraday_enabled = True
+        off = await create_portfolio(s, name="Campagna", initial_cash=D(500))
+        ceo, _ = await agents.create_agent(s, "CEO")
+        for i, (p, tf) in enumerate([(on, "15m"), (on, "1d"), (off, "15m")]):
+            s.add(Decision(agent_id=ceo.id, kind="strategy", summary=f"S{i}",
+                           portfolio_id=p.id, symbols=["BTC-USD"], details={
+                               "ref": f"STR-{i}", "status": "approvata", "timeframe": tf,
+                               "strategy": "rsi_reversion",
+                               "params": {"period": 2, "buy_below": 10, "sell_above": 70}}))
+        await s.commit()
+    body = (await admin.client.get("/api/signals")).json()
+    flags = {st["ref"]: st["intraday"] for port in body["portfolios"]
+             for st in port["strategies"]}
+    assert flags == {"STR-0": True, "STR-1": False, "STR-2": False}
 
 
 async def test_signals_show_the_position(admin):

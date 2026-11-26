@@ -37,6 +37,10 @@ distance and the risk at the stop stay on the regular session.
 
 `plan_state` (pending | closing, else null) when the position is being closed at the end
 of a «piano» (`goals.plans`).
+
+`day_qty` (intraday): the quantity bought today by day-trade orders and still open
+(`intraday.day_positions`), 0 included, for the portfolios with an intraday switch on
+(`day_scope`); null for the others (no query for them).
 """
 
 import uuid
@@ -64,6 +68,8 @@ from smtrading.goals.plan_closer import view_state
 from smtrading.goals.plans import open_closures
 from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
+from smtrading.intraday.day_positions import day_quantities
+from smtrading.intraday.models import day_scope
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.marketdata.cache import read_quote
 from smtrading.marketdata.extended import extended_hours
@@ -287,6 +293,8 @@ async def open_positions(
         pnl_sum: Decimal | None = Decimal(0)
         unprotected = partial = expiring = unknown_risk = 0
         count = 0
+        day_qtys = (await day_quantities(session, p.id, now)
+                    if held.get(p.id) and day_scope(p) else None)
         for sym, qty in sorted(held.get(p.id, {}).items()):
             count += 1
             instr = instruments.get(sym)
@@ -351,6 +359,7 @@ async def open_positions(
                 "extended": ext, "extended_beyond_stop": beyond,
                 "plan_state": (view_state(plan.state)
                                if (plan := closing.get((p.id, sym))) else None),
+                "day_qty": None if day_qtys is None else day_qtys.get(sym, Decimal(0)),
             })
         if not count:
             continue

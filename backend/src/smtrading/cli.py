@@ -35,6 +35,14 @@
                              (the same protections as /api/users, «at least one active
                              admin» included; the user's sessions are closed after the
                              commit)
+    intraday drill-strategy --portfolio ID|NAME --agent NAME --ref REF --type TYPE
+                 --params JSON --timeframe 5m|15m|1h --symbols A,B
+                             (the drill strategy of intraday work: an approved strategy
+                             decision of the agent named, on a portfolio with mode A on and
+                             no agent at all, so no agent ever sees it)
+    intraday drill-revoke --portfolio ID|NAME --agent NAME --ref REF [--purge]
+                             (adds the «revocata» decision; with --purge deletes instead
+                             every decision of that test portfolio)
 
 A temporary password is printed only by `users create` / `users reset-password`, once.
 A token is printed only by `agent create` / `agent rotate`, once: it is never stored in
@@ -56,7 +64,7 @@ from uuid import UUID
 
 import httpx
 from redis.asyncio import Redis
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import smtrading.models  # noqa: F401  (complete mapper registry, e.g. broker_links FK)
@@ -192,6 +200,21 @@ def build_parser() -> argparse.ArgumentParser:
     users_sub.add_parser(
         "reset-password", help="new temporary password, printed once (sessions closed)"
     ).add_argument("email")
+    intraday = sub.add_parser("intraday", help="intraday work (drill strategy)")
+    intraday_sub = intraday.add_subparsers(dest="intraday_command", required=True)
+    drill = intraday_sub.add_parser(
+        "drill-strategy", help="approved drill strategy on a portfolio without agents")
+    revoke = intraday_sub.add_parser(
+        "drill-revoke", help="revoke the drill strategy (--purge: delete the decisions)")
+    for p in (drill, revoke):
+        p.add_argument("--portfolio", required=True)
+        p.add_argument("--agent", required=True)
+        p.add_argument("--ref", required=True)
+    drill.add_argument("--type", required=True)
+    drill.add_argument("--params", default="{}")
+    drill.add_argument("--timeframe", required=True)
+    drill.add_argument("--symbols", required=True)
+    revoke.add_argument("--purge", action="store_true")
     return parser
 
 
@@ -437,6 +460,89 @@ async def execute_users(args: argparse.Namespace, session: AsyncSession) -> obje
     return result
 
 
+DRILL_SUMMARY = "Esercitazione lavoro in giornata"
+DRILL_HAS_AGENTS = ("Esercitazione solo su un portafoglio senza agenti: questo portafoglio "
+                    "è visibile ad almeno un agente")
+DRILL_NOT_INTRADAY = ("Esercitazione solo su un portafoglio con il lavoro in giornata "
+                      "acceso")
+
+
+def _drill_invalid(field: str, message: str) -> SMTError:
+    return SMTError(ErrorCode.INVALID_ORDER, message, {"field": field})
+
+
+async def _drill_portfolio(session: AsyncSession, ref: str) -> Portfolio:
+    """The portfolio by id (else by name), only without agent_portfolios rows and with
+    mode A on: a decision on it stays invisible to the agents (activity.service._visible
+    shows them only their portfolios and the global decisions)."""
+    try:
+        p = await session.get(Portfolio, UUID(ref))
+    except ValueError:
+        p = await session.scalar(select(Portfolio).where(Portfolio.name == ref))
+    if p is None:
+        raise SMTError(ErrorCode.NOT_FOUND, "portfolio not found", {"portfolio": ref})
+    if await session.scalar(select(AgentPortfolio.agent_id)
+                            .where(AgentPortfolio.portfolio_id == p.id).limit(1)) is not None:
+        raise _drill_invalid("portfolio", DRILL_HAS_AGENTS)
+    if not p.intraday_enabled:
+        raise _drill_invalid("portfolio", DRILL_NOT_INTRADAY)
+    return p
+
+
+def _drill_details(args: argparse.Namespace) -> tuple[dict, list[str]]:
+    from smtrading.backtest.strategies import validate_params
+    from smtrading.intraday.models import INTRADAY_TIMEFRAMES
+
+    if args.timeframe not in INTRADAY_TIMEFRAMES:
+        raise _drill_invalid("timeframe", "timeframe: uno tra " + ", ".join(INTRADAY_TIMEFRAMES))
+    try:
+        params = json.loads(args.params)
+    except ValueError:
+        raise _drill_invalid("params", "params: JSON non valido") from None
+    if not isinstance(params, dict):
+        raise _drill_invalid("params", "params: serve un oggetto JSON")
+    validate_params(args.type, params)
+    symbols = list(dict.fromkeys(x.strip().upper() for x in args.symbols.split(",")
+                                 if x.strip()))
+    if not symbols:
+        raise _drill_invalid("symbols", "symbols: almeno un simbolo")
+    return {"ref": args.ref, "status": "approvata", "strategy": args.type, "params": params,
+            "timeframe": args.timeframe}, symbols
+
+
+async def execute_intraday(args: argparse.Namespace, session: AsyncSession) -> object:
+    """`intraday drill-strategy` / `drill-revoke [--purge]`, audited as
+    `admin:intraday.drill`."""
+    from smtrading.activity.models import Decision, DecisionKind
+
+    p = await _drill_portfolio(session, args.portfolio)
+    agent = await _agent(session, args.agent)
+    if args.intraday_command == "drill-strategy":
+        details, symbols = _drill_details(args)
+        action = "strategy"
+    elif args.purge:
+        details, symbols, action = None, [], "purge"
+    else:
+        details, symbols, action = {"ref": args.ref, "status": "revocata"}, [], "revoke"
+    if details is None:
+        result = await session.execute(delete(Decision).where(Decision.portfolio_id == p.id))
+        out: dict = {"deleted": result.rowcount or 0}
+    else:
+        decision = Decision(agent_id=agent.id, kind=DecisionKind.strategy.value,
+                            portfolio_id=p.id, summary=DRILL_SUMMARY, symbols=symbols,
+                            details=details)
+        session.add(decision)
+        await session.flush()
+        out = {"decision_id": decision.id, "ref": args.ref, "portfolio_id": p.id}
+    await agents.write_audit(
+        session, agent_id=None, method="admin:intraday.drill",
+        params={"action": action, "portfolio_id": p.id, "ref": args.ref,
+                "agent": agent.name, "by": SOURCE_CLI, **out},
+        outcome="ok", latency_ms=0,
+    )
+    return out
+
+
 def _read_token_stdin() -> str:
     return sys.stdin.read()
 
@@ -467,6 +573,8 @@ async def execute(
     match args.command:
         case "users":
             return await execute_users(args, session)
+        case "intraday":
+            return await execute_intraday(args, session)
         case "telegram":
             return await execute_telegram(args, session)
         case "names":

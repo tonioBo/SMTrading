@@ -332,3 +332,20 @@ async def test_order_dto_has_no_day_trade(env):
     assert not is_error, o
     assert "day_trade" not in o and "auto_rule_id" not in o
     assert set(o) == set(ORDER_FIELDS)
+
+
+async def test_day_trade_flag_never_in_mcp_answers(mcp_server, env):
+    """`day_trade` is set only from the portal: a day-trade order reads through MCP
+    exactly as before (no new key)."""
+    from sqlalchemy import update
+
+    is_error, o = await _buy(env)
+    assert not is_error, o
+    async with _Db(mcp_server.db_url) as s:
+        await s.execute(update(Order).where(Order.id == uuid.UUID(o["id"]))
+                        .values(day_trade=True))
+        await s.commit()
+    _, full = await env["call"]("get_order", {"order_id": o["id"]})
+    assert full["id"] == o["id"] and "day_trade" not in full
+    _, listed = await env["call"]("list_orders", {"portfolio_id": env["pid"]})
+    assert listed and all("day_trade" not in x for x in listed)

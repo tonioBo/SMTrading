@@ -6,7 +6,9 @@ Read-only (a viewer can read it).
 value_closed, value_now, threshold, direction, distance, triggered_closed, triggered_now,
 as_of, position: {qty, avg_price}|null, open_entry, exit: {rule, value, threshold,
 distance, triggered}|null (only in position), filters: [{rule, value, threshold,
-passed}] (the entry filters; empty without)}]}]}]}: numbers as strings, value_now null
+passed}] (the entry filters; empty without)}], intraday}]}]}: numbers as strings,
+`intraday` true for a strategy on an intraday timeframe of a portfolio with mode A on
+(INTRADAY_TIMEFRAMES, `intraday_enabled`), value_now null
 without a forming bar (market closed,
 stale quote...). Portfolios by name (a strategy without portfolio last, portfolio_id
 null). The answer is cached CACHE_TTL_S in redis: open tabs refreshing every minute
@@ -20,20 +22,24 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from redis.exceptions import RedisError
+from sqlalchemy import select
 
 from smtrading.admin.auth import DbSession, RedisClient, require_access
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.intraday.models import INTRADAY_TIMEFRAMES
 from smtrading.mcp.dto import to_jsonable
+from smtrading.portfolios.models import Portfolio
 from smtrading.signals.service import StrategySignal, strategy_signals
 
 log = logging.getLogger("smtrading.admin.signals")
 router = APIRouter(prefix="/api", tags=["signals"], dependencies=[Depends(require_access)])
 
-CACHE_KEY = "signals:v3"  # v2: `exit`; v3: `filters`
+CACHE_KEY = "signals:v4"  # v2: `exit`; v3: `filters`; v4: `intraday`
 CACHE_TTL_S = 60
 
 
-def _payload(items: list[StrategySignal], as_of: datetime) -> dict[str, Any]:
+def _payload(items: list[StrategySignal], as_of: datetime,
+             intraday_ids: frozenset = frozenset()) -> dict[str, Any]:
     groups: dict[Any, dict[str, Any]] = {}
     for s in items:
         g = groups.setdefault(s.portfolio_id, {
@@ -43,6 +49,7 @@ def _payload(items: list[StrategySignal], as_of: datetime) -> dict[str, Any]:
         g["strategies"].append({
             "ref": s.ref, "name": s.name, "type": s.type, "params": s.params,
             "timeframe": s.timeframe, "status": s.status, "symbols": s.symbols,
+            "intraday": s.timeframe in INTRADAY_TIMEFRAMES and s.portfolio_id in intraday_ids,
         })
     return to_jsonable({"as_of": as_of, "portfolios": list(groups.values())})
 
@@ -75,7 +82,10 @@ async def signals_body(request: Request, session, redis) -> dict:
     if router_ is None:
         raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE, "dati di mercato non disponibili")
     now = datetime.now(UTC)
-    body = _payload(await strategy_signals(session, router_, now), now)
+    items = await strategy_signals(session, router_, now)
+    intraday_ids = frozenset(await session.scalars(
+        select(Portfolio.id).where(Portfolio.intraday_enabled.is_(True))))
+    body = _payload(items, now, intraday_ids)
     try:
         await redis.set(CACHE_KEY, json.dumps(body), ex=CACHE_TTL_S)
     except RedisError:

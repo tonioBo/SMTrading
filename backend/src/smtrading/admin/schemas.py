@@ -81,6 +81,14 @@ class PortfolioPatchIn(BaseModel):
     # false: left out of the total (goals on the total, dashboard totals)
     in_totals: StrictBool | None = None
     code: str | None = None  # the agents' short code; empty/null clears it
+    # intraday (mode A and the mode B switch); checked in routes_portfolios
+    intraday_enabled: StrictBool | None = None
+    auto_rules_enabled: StrictBool | None = None
+    intraday_timeframes: list[str] | None = None
+    intraday_wake_agent_id: uuid.UUID | None = None  # null: nobody is woken
+    day_close_minutes: StrictInt | None = None
+    max_day_trades_5d: StrictInt | None = None  # null: no cap
+    intraday_max_wakes_per_hour: StrictInt | None = None
 
 
 class CashMoveIn(BaseModel):
@@ -213,6 +221,7 @@ class RiskProfilePatchIn(BaseModel):
     short_allowed: bool | None = None
     description: str | None = None
     max_live_orders_per_hour: StrictInt | None = None
+    day_close_limit_margin_pct: Num | None = None  # 0 < x <= 5
 
 
 class InterestRateIn(BaseModel):

@@ -62,7 +62,7 @@ _CURRENCY = re.compile(r"^[A-Z0-9]{2,16}$")
 PROFILE_FIELDS = (
     "id", "name", "max_order_notional_eur", "max_position_pct", "max_daily_loss_pct",
     "max_daily_loss_eur", "allowed_symbols", "allowed_asset_classes", "allowed_markets",
-    "short_allowed", "description", "max_live_orders_per_hour",
+    "short_allowed", "description", "max_live_orders_per_hour", "day_close_limit_margin_pct",
 )
 _LIMIT_FIELDS = (
     "max_order_notional_eur", "max_position_pct", "max_daily_loss_pct", "max_daily_loss_eur",
@@ -70,6 +70,8 @@ _LIMIT_FIELDS = (
 _LIST_FIELDS = ("allowed_symbols", "allowed_asset_classes", "allowed_markets")
 _PCT_FIELDS = ("max_position_pct", "max_daily_loss_pct")
 FUSE_MIN, FUSE_MAX, FUSE_DEFAULT = 1, 1000, 30  # Ruling R8.1: real orders per hour
+MARGIN_FIELD = "day_close_limit_margin_pct"  # intraday safety net: 0 < x <= MAX_DAY_MARGIN
+MAX_DAY_MARGIN = Decimal(5)
 
 
 # --- risk profiles -------------------------------------------------------------------
@@ -129,6 +131,12 @@ async def _validated_profile(
                        f"max_live_orders_per_hour deve essere un intero tra {FUSE_MIN} e"
                        f" {FUSE_MAX}")
     out["max_live_orders_per_hour"] = fuse
+    if raw.get(MARGIN_FIELD) is not None:  # absent on a creation: the default (0.5)
+        margin = parse_decimal(raw[MARGIN_FIELD], MARGIN_FIELD)
+        if not 0 < margin <= MAX_DAY_MARGIN:  # type: ignore[operator]
+            raise _invalid(MARGIN_FIELD, f"{MARGIN_FIELD} deve essere maggiore di 0 e al "
+                                         f"massimo {MAX_DAY_MARGIN}")
+        out[MARGIN_FIELD] = margin
     for cls in out["allowed_asset_classes"]:
         parse_enum(AssetClass, cls, "allowed_asset_classes")
     taken = select(RiskProfile.id).where(RiskProfile.name == name)
@@ -184,11 +192,12 @@ async def patch_risk_profile(
             ErrorCode.NOT_FOUND, "profilo di rischio non trovato", {"profile_id": str(profile_id)}
         )
     raw = {f: getattr(profile, f) for f in PROFILE_FIELDS if f != "id"}
-    for f in _LIMIT_FIELDS:
+    for f in (*_LIMIT_FIELDS, MARGIN_FIELD):
         raw[f] = None if raw[f] is None else decimal_to_str(raw[f])
     for f in body.model_fields_set:
         raw[f] = getattr(body, f)
-    for f in ("name", "short_allowed", "max_live_orders_per_hour", *_LIST_FIELDS):
+    for f in ("name", "short_allowed", "max_live_orders_per_hour", MARGIN_FIELD,
+              *_LIST_FIELDS):
         if raw[f] is None:
             raise _invalid(f, f"{f} non può essere nullo")
     try:

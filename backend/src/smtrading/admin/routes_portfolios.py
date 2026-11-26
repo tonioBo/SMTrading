@@ -34,6 +34,14 @@ from smtrading.admin.portfolio_ops import (
     reset_portfolio,
     unarchive_portfolio,
 )
+from smtrading.admin.routes_intraday import (
+    DAY_FIELDS,
+    audit_day_changes,
+    check_auto_rules_account,
+    check_day_mode,
+    check_wake_agent,
+    day_values,
+)
 from smtrading.admin.schemas import (
     CashMoveIn,
     PortfolioCreateIn,
@@ -210,7 +218,7 @@ PORTFOLIO_FIELDS = (
     "id", "name", "code", "base_currency", "leverage", "maintenance_margin_pct",
     "warning_margin_pct", "slippage_bps", "status", "timezone", "risk_profile_id",
     "reduce_only_reason", "reduce_only_until", "created_at", "broker_link_id",
-    "archived_at", "archived_by", "in_totals",
+    "archived_at", "archived_by", "in_totals", *DAY_FIELDS,
 )
 
 
@@ -302,17 +310,42 @@ async def get_portfolio(
     return await _summary(session, qs, redis, await _portfolio(session, portfolio_id))
 
 
+def _day_state(p: Portfolio, body: PortfolioPatchIn, fields: set[str]
+               ) -> tuple[bool, bool, Decimal, bool]:
+    """(intraday_enabled, auto_rules_enabled, leverage) after the PATCH, and whether the
+    day leverage is to be checked (a switch or the leverage sent)."""
+    intraday = body.intraday_enabled if "intraday_enabled" in fields else p.intraday_enabled
+    auto = body.auto_rules_enabled if "auto_rules_enabled" in fields else p.auto_rules_enabled
+    lev = _leverage(body.leverage) if "leverage" in fields else p.leverage
+    checked = bool(fields & {"leverage", "intraday_enabled", "auto_rules_enabled"})
+    return bool(intraday), bool(auto), lev, checked
+
+
 @router.patch("/portfolios/{portfolio_id}")
 async def patch_portfolio(
-    portfolio_id: UUID, body: PortfolioPatchIn, session: DbSession, redis: RedisClient,
-    qs: Quotes,
+    portfolio_id: UUID, body: PortfolioPatchIn, request: Request, admin: CurrentAdmin,
+    session: DbSession, redis: RedisClient, qs: Quotes,
 ) -> dict:
     """Only the fields sent change. status: "active" (also clears a reduce_only and its
-    reason/until) or "locked"."""
+    reason/until) or "locked". The intraday fields (routes_intraday.DAY_FIELDS) are
+    checked there and audited as `admin:portfolio.intraday`; turning the automatic rules on
+    reads the broker account first, before the write transaction opens."""
     fields = body.model_fields_set
+    by = admin.email  # read now: the session may be rolled back before the broker read
+    day = day_values(body, fields)
+    checked_link: UUID | None = None
+    if day.get("auto_rules_enabled") is True:
+        current = await _portfolio(session, portfolio_id)
+        if not current.auto_rules_enabled:
+            check_day_mode(*_day_state(current, body, fields))  # before the broker read
+            checked_link = await check_auto_rules_account(
+                session, request.app.state.sessionmaker, current)
     try:
         async with _transaction(session, redis):
             p = await lock_live_portfolio(session, portfolio_id)
+            if checked_link is not None and p.broker_link_id != checked_link:
+                raise _invalid("auto_rules_enabled", "il collegamento del portafoglio è "
+                                                     "cambiato: riprova")
             if "name" in fields:
                 name = _clean_name(body.name)
                 if await _name_taken(session, name, exclude=p.id):
@@ -360,6 +393,13 @@ async def patch_portfolio(
                     )
                 # a live anomaly's reduce-only is cleared only with the TOTP resume
                 set_portfolio_status(session, p, status)
+            check_day_mode(*_day_state(p, body, fields))
+            if day:
+                if "intraday_wake_agent_id" in day:
+                    await check_wake_agent(session, p.id, day["intraday_wake_agent_id"])
+                for f, v in day.items():
+                    setattr(p, f, v)
+                await audit_day_changes(session, p.id, day, by)
             await session.flush()
     except IntegrityError:
         if "name" in fields and await _name_taken(session, _clean_name(body.name), portfolio_id):
@@ -435,12 +475,13 @@ async def performance(portfolio_id: UUID, session: DbSession, period: str = "1m"
 # --- orders --------------------------------------------------------------------------
 
 ORDER_BROKER_FIELDS = (
-    "broker_link_id", "broker_replicated", "broker_status", "broker_order_id",
+    "broker_link_id", "broker_replicated", "broker_status", "broker_order_id", "day_trade",
 )
 
 
 def _order_dto(o) -> dict[str, Any]:
-    """order_dto (truthful `source`) plus the broker replication state (admin only)."""
+    """order_dto (truthful `source`) plus the broker replication state and `day_trade`
+    (admin only: the MCP ORDER_FIELDS stay as they are)."""
     out = order_dto(o)
     out.update({f: to_jsonable(getattr(o, f)) for f in ORDER_BROKER_FIELDS})
     return out

@@ -20,7 +20,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.admin.auth import CurrentAdmin, DbSession, RedisClient, require_access
@@ -52,6 +52,8 @@ class OrderIn(BaseModel):
     trail_amount: Decimal | None = None
     # plan 16: an ISO datetime with offset or "close" (checked by the engine)
     valid_until: str | None = None
+    # intraday: a day-trade order (the day cap, the leverage of the day, the safety close)
+    day_trade: StrictBool = False
     totp: str | None = None
 
 
@@ -64,6 +66,7 @@ def _request(portfolio_id: UUID, body: OrderIn) -> PlaceOrderRequest:
         qty=body.qty, notional=body.notional, limit_price=body.limit_price,
         stop_price=body.stop_price, trail_pct=body.trail_pct, trail_amount=body.trail_amount,
         agent_id=None, source="admin", valid_until=body.valid_until,
+        day_trade=body.day_trade,
     )
 
 
@@ -85,7 +88,7 @@ async def _audit(session: AsyncSession, req: PlaceOrderRequest, order: Order, *,
         session, agent_id=None, method="admin:order.place",
         params={"portfolio_id": req.portfolio_id, "symbol": order.symbol,
                 "side": req.side, "type": req.type, "qty": req.qty, "notional": req.notional,
-                "valid_until": order.valid_until, "real": real, "order_id": order.id, "status": order.status, "by": by},
+                "valid_until": order.valid_until, "day_trade": req.day_trade, "real": real, "order_id": order.id, "status": order.status, "by": by},
         outcome=outcome, latency_ms=0,
     )
 
