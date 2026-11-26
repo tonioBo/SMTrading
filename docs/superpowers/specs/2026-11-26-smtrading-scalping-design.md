@@ -1,6 +1,6 @@
 # SMTrading — Lavoro in giornata in due modi: sveglia dell'agente e regole automatiche (scalping)
 
-Data: 2026-11-26 · Stato: BOZZA da approvare · Ramo: `feat/intraday` (worktree), in linea solo **spento**.
+Data: 2026-11-26 · Stato: APPROVATO dall'utente il 2026-11-26 · Ramo: `feat/intraday` (worktree), in linea solo **spento**.
 Unisce due modi di lavorare, **entrambi da provare** (Matteo, 26/11: «vorrei entrambe le possibilità
 da testare»), ognuno con il suo interruttore per portafoglio:
 - **Modo A — sveglia dell'agente** (minuti): esattamente come `2026-11-26-smtrading-intraday-design.md`
