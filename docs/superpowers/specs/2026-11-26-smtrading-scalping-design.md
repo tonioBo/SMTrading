@@ -199,3 +199,11 @@ Conseguenze (scelte di Claude, sostituiscono le parti PDT sopra e nel progetto d
    letto dal broker. Sui collegamenti di **prova** la leva può arrivare a 2 (il portafoglio di prova
    si imposta a 2 nel manuale della prova); sui collegamenti **reali** le entrate di giornata e
    automatiche sono limitate a leva 1 qualunque sia l'impostazione, finché Matteo non decide.
+7. **Conti Alpaca sono tutti con margine** (verificato sulla configurazione del conto reale, 26/11):
+   il moltiplicatore (4/2/1, scelto dal titolare in «Max Margin Multiplier») limita solo la leva; con
+   moltiplicatore 1 il denaro delle vendite si riusa subito senza leva. SMTrading oggi deduce «cash»
+   da `multiplier <= 1` (alpaca_core) e la regola R8.10 resta così (reale = moltiplicatore 1).
+   Il punto 4 sopra diventa: il modo B si rifiuta solo sui collegamenti di tipo realmente in contanti
+   (oggi nessuno su Alpaca; eToro escluso per costi e lentezza), **non** sui conti Alpaca con
+   moltiplicatore 1. Consiglio al titolare per il reale: «Max Margin Multiplier = 1», «Shorting
+   Enabled» spento.
