@@ -2,6 +2,7 @@
 broker's `daytrade_count` is only compared): a sell that closes quantity bought in the same
 session counts once per sell order. The budget of a broker link is shared by all its
 portfolios and both intraday modes; `max_day_trades_5d` counts only its own portfolio."""
+import logging
 import uuid
 from collections import defaultdict
 from collections.abc import Iterable
@@ -22,6 +23,8 @@ from smtrading.intraday.day_positions import day_quantities
 from smtrading.intraday.models import DAY_SCOPE, day_scope
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.telegram.outbox import enqueue
+
+log = logging.getLogger("smtrading.intraday.pdt")
 
 PDT_KINDS = frozenset({"alpaca_paper", "alpaca_live"})
 PDT_MARKET = "NYSE"
@@ -252,7 +255,7 @@ async def _would_close_day_quantity(
     return net > 0
 
 
-async def warn_day_trade_sell(session: AsyncSession, order: Order, now: datetime) -> None:
+async def _warn(session: AsyncSession, order: Order, now: datetime) -> None:
     """A sell is never refused. For a portfolio out of `day_scope` on a PDT link shared with
     a portfolio in it, warn (Telegram, system) when this sell would be the last operation of
     the link's budget or beyond it."""
@@ -260,6 +263,10 @@ async def warn_day_trade_sell(session: AsyncSession, order: Order, now: datetime
         return
     portfolio = await session.get(Portfolio, order.portfolio_id)
     if portfolio is None or day_scope(portfolio) or portfolio.broker_link_id is None:
+        return
+    asset_class = await session.scalar(
+        select(Instrument.asset_class).where(Instrument.symbol == order.symbol))
+    if asset_class != AssetClass.us_equity:
         return
     link = await session.get(BrokerLink, portfolio.broker_link_id)
     if link is None or link.kind not in PDT_KINDS:
@@ -279,3 +286,12 @@ async def warn_day_trade_sell(session: AsyncSession, order: Order, now: datetime
         text=(f"Attenzione regola USA sui conti piccoli: la vendita di {order.symbol} su "
               f"{portfolio.name} sarebbe l'operazione di giornata n. {n} su {PDT_MAX} nelle "
               f"ultime {PDT_SESSIONS} sedute del collegamento {link.name}"))
+
+
+async def warn_day_trade_sell(session: AsyncSession, order: Order, now: datetime) -> None:
+    """`_warn` in a SAVEPOINT: best-effort, an error is logged and never fails the order."""
+    try:
+        async with session.begin_nested():
+            await _warn(session, order, now)
+    except Exception:
+        log.exception("day-trade warning for order %s failed", order.id)

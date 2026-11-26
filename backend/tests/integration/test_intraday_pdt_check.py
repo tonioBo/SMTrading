@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from decimal import Decimal as D
 
 import pytest
-from sqlalchemy import event, func, select
+from sqlalchemy import event, func, select, update
 
 from smtrading.brokers.models import BrokerLink
 from smtrading.common.errors import ErrorCode, SMTError
@@ -256,4 +256,73 @@ async def test_preview_reports_day_trade_limit(db_session, seeded, qs):
     _, p = await _full_budget(db_session, intraday_enabled=True)
     r = await _preview(db_session, qs, _req(p, day_trade=True))
     assert r.ok is False and r.code == ErrorCode.DAY_TRADE_LIMIT
+    assert await _outbox(db_session) == []
+
+
+async def _linked_sell_setup(db_session, qs):
+    """A portfolio out of day_scope with a position bought today, on a link shared with a
+    day_scope portfolio that has 2 operations used."""
+    link = await _link(db_session)
+    on = await _pf(db_session, link, intraday_enabled=True)
+    off = await _pf(db_session)
+    await _round_trips(db_session, on, 2)
+    await place_order(db_session, qs, _req(off, qty=D(5)), now=WED)  # local fill today
+    await db_session.execute(update(Fill).where(Fill.portfolio_id == off.id)
+                             .values(created_at=WED))
+    off.broker_link_id = link.id
+    await db_session.flush()
+    return off
+
+
+async def test_place_order_sell_warns(db_session, seeded, qs):
+    off = await _linked_sell_setup(db_session, qs)
+    # the broker routing of a linked portfolio is not under test: activation is a no-op
+    from smtrading.engine import service as svc
+    real = svc._activate
+
+    async def activate(session, qs, order, adm):
+        return None
+
+    svc._activate = activate
+    try:
+        sell = await place_order(db_session, qs, _req(off, side=OrderSide.sell, qty=D(5)),
+                                 now=WED)
+    finally:
+        svc._activate = real
+    assert sell.status != OrderStatus.rejected
+    rows = await _outbox(db_session)
+    assert len(rows) == 1 and "n. 3 su 3" in rows[0].text
+
+
+async def test_warning_failure_never_fails_the_placement(db_session, seeded, qs, monkeypatch):
+    off = await _linked_sell_setup(db_session, qs)
+    from smtrading.engine import service as svc
+    from smtrading.intraday import pdt
+
+    async def activate(session, qs, order, adm):
+        return None
+
+    async def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(svc, "_activate", activate)
+    monkeypatch.setattr(pdt, "link_budget", boom)
+    sell = await place_order(db_session, qs, _req(off, side=OrderSide.sell, qty=D(5)), now=WED)
+    assert sell.id is not None and sell.status != OrderStatus.rejected
+    assert await _outbox(db_session) == []
+    monkeypatch.undo()
+    monkeypatch.setattr(pdt, "enqueue", boom)
+    sell2 = await place_order(db_session, qs, _req(off, side=OrderSide.sell, qty=D(1)), now=WED)
+    assert sell2.id is not None
+
+
+async def test_rejected_sell_does_not_warn(db_session, seeded):
+    link = await _link(db_session)
+    on = await _pf(db_session, link, intraday_enabled=True)
+    off = await _pf(db_session, link)
+    await _round_trips(db_session, on, 2)
+    await _order(db_session, off, OrderSide.buy, 5, WED, symbol="AAPL")
+    sell = await _order(db_session, off, OrderSide.sell, 5, WED, symbol="AAPL",
+                        status=OrderStatus.rejected, fill=False)
+    await warn_day_trade_sell(db_session, sell, WED)
     assert await _outbox(db_session) == []
