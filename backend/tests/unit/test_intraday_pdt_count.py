@@ -65,3 +65,8 @@ def test_symbols_are_separate():
 ])
 def test_pdt_applies(kind, state, expected):
     assert pdt_applies(kind, state) is expected
+
+
+def test_equal_timestamps_buys_sort_first():
+    fills = [_f(B, SELL, 10, 0), _f(A, BUY, 10, 0)]  # sell listed first, same ts
+    assert count_day_trades(fills) == {MON: 1}

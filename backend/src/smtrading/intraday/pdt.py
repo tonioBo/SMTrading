@@ -55,7 +55,8 @@ def count_day_trades(fills: Iterable[FillRow]) -> dict[date, int]:
     the same session counts once (buy-buy-sell = 1, buy-sell-buy-sell = 2,
     buy-sell-sell = 2); a sell of overnight shares alone counts 0."""
     out: dict[date, int] = defaultdict(int)
-    ordered = sorted(fills, key=lambda f: (f.day, f.symbol, f.ts))
+    # equal timestamps (one transaction): buys first, never undercount
+    ordered = sorted(fills, key=lambda f: (f.day, f.symbol, f.ts, f.side != OrderSide.buy))
     for (day, _symbol), rows in groupby(ordered, key=lambda f: (f.day, f.symbol)):
         bought = Decimal(0)
         counted: set[uuid.UUID] = set()
