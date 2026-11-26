@@ -44,6 +44,7 @@ _DURATION = {
     Timeframe.d1: timedelta(days=1),
     Timeframe.w1: timedelta(weeks=1),
 }
+TIMEFRAME_DURATION = _DURATION  # public alias: the one timeframe-duration map
 
 
 def close_grace(market: str) -> timedelta:
