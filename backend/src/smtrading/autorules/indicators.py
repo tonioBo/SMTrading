@@ -65,17 +65,30 @@ class SessionVwap:
         self.start: datetime | None = None
         self._pv = Decimal(0)
         self._v = Decimal(0)
+        self._last: tuple[datetime, Decimal, Decimal] | None = None  # ts, pv, v
 
     def reset(self, start: datetime) -> None:
         self.start = start
         self._pv = Decimal(0)
         self._v = Decimal(0)
+        self._last = None
 
     def add(self, bar: Bar) -> None:
+        """Like MinuteSeries.add: a bar with the last bar's `ts` replaces its contribution
+        (a corrected minute), an older one is ignored; bars before `start` are ignored."""
         if self.start is None or bar.ts < self.start:
             return
-        self._pv += (bar.high + bar.low + bar.close) * bar.volume  # / 3 once, in value
+        pv = (bar.high + bar.low + bar.close) * bar.volume  # / 3 once, in value
+        if self._last is not None:
+            last_ts, last_pv, last_v = self._last
+            if bar.ts < last_ts:
+                return
+            if bar.ts == last_ts:
+                self._pv -= last_pv
+                self._v -= last_v
+        self._pv += pv
         self._v += bar.volume
+        self._last = (bar.ts, pv, bar.volume)
 
     @property
     def value(self) -> Decimal | None:

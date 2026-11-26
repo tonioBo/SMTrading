@@ -5,6 +5,7 @@ session VWAP), the current price and the validated parameters; it returns the tr
 values (stored in `auto_trades.trigger_values`) or None. Long entries only."""
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
@@ -28,6 +29,7 @@ class Bound:
 class MarketState:
     series: MinuteSeries
     vwap: Decimal | None
+    session_start: datetime | None = None  # start of the VWAP's session
 
 
 @dataclass(frozen=True)
@@ -61,7 +63,7 @@ def _breakout(state: MarketState, price: Decimal, p: dict) -> dict | None:
     last = state.series.closed(1)[-1]
     avg = state.series.avg_volume(n)
     mult = p["volume_mult"]
-    if mult is not None and not last.volume >= mult * avg:
+    if mult is not None and (avg is None or avg <= 0 or not last.volume >= mult * avg):
         return None
     return {"high": high, "volume": last.volume, "avg_volume": avg}
 
@@ -79,9 +81,13 @@ def _mean_reversion(state: MarketState, price: Decimal, p: dict) -> dict | None:
 def _vwap_pullback(state: MarketState, price: Decimal, p: dict) -> dict | None:
     vwap = state.vwap
     n = p["min_above_min"]
-    if vwap is None or vwap <= 0 or state.series.count() < n:
+    if vwap is None or vwap <= 0 or state.session_start is None:
         return None
-    if not all(b.close > vwap for b in state.series.closed(n)):
+    bars = state.series.closed(n)
+    # only this session's bars count: the VWAP knows nothing of earlier ones
+    if len(bars) < n or any(b.ts < state.session_start for b in bars):
+        return None
+    if not all(b.close > vwap for b in bars):
         return None
     if not vwap <= price <= vwap * (1 + p["pullback_pct"] / 100):
         return None

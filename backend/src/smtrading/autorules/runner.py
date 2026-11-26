@@ -36,6 +36,12 @@ def _to_tick(value: Decimal, tick: Decimal, rounding: str) -> Decimal:
     return (value / tick).to_integral_value(rounding) * tick
 
 
+def _aware(ts: datetime) -> datetime:
+    if ts.tzinfo is None:
+        raise ValueError("datetime must be timezone-aware")
+    return ts
+
+
 class RuleRunner:
     """`session_exit_before` = (day_close_minutes + 2) minutes, from the caller: the rule
     exits before the worker's end-of-session safety net."""
@@ -82,7 +88,13 @@ class RuleRunner:
     # --- inputs ------------------------------------------------------------------
 
     def on_bar(self, bar: Bar) -> None:
-        """A closed one-minute bar (live or history)."""
+        """A closed one-minute bar (live or history). Markets with a calendar keep only
+        regular-session bars (pre/after-market bars are thin); lookbacks may still span
+        earlier sessions."""
+        if self._has_session:
+            window = session_window(self.market, bar.ts)
+            if window is None or not window[0] <= bar.ts < window[1]:
+                return
         self._roll_session(bar.ts)
         self.series.add(bar)
         self._vwap.add(bar)
@@ -91,6 +103,7 @@ class RuleRunner:
         self, ts: datetime, price: Decimal, bid: Decimal | None, ask: Decimal | None
     ) -> Entry | Exit | None:
         """The intent at a new price: an Entry (flat), an Exit (long) or None."""
+        _aware(ts)
         if self.state == "pending":
             return None
         if self.state == "long":
@@ -102,7 +115,7 @@ class RuleRunner:
             seconds=self.params["cooldown_s"]
         ):
             return None
-        values = self.model.entry(MarketState(self.series, self.vwap), price, self.params)
+        values = self.model.entry(MarketState(self.series, self.vwap, self._vwap.start), price, self.params)
         return None if values is None else Entry(ts, price, values)
 
     def _entry_window(self, ts: datetime) -> bool:
@@ -133,9 +146,11 @@ class RuleRunner:
     # --- state updates from the caller ------------------------------------------
 
     def sent(self, ts: datetime) -> None:
+        _aware(ts)
         self.state = "pending"
 
     def entered(self, ts: datetime, fill_price: Decimal) -> None:
+        _aware(ts)
         self.state = "long"
         self.filled_at = ts
         self.fill_price = fill_price
@@ -143,6 +158,7 @@ class RuleRunner:
         self._fill_close = None if window is None else window[1]
 
     def exited(self, ts: datetime) -> None:
+        _aware(ts)
         self.state = "flat"
         self.last_exit = ts
         self.filled_at = self.fill_price = self._fill_close = None

@@ -67,6 +67,17 @@ def test_session_vwap_typical_price():
     assert v.value == D("101.5")
 
 
+def test_session_vwap_replaced_bar_counts_once():
+    v = SessionVwap()
+    v.reset(T0)
+    v.add(bar(0, 102, 98, 100, 10))
+    v.add(bar(1, 102, 98, 100, 10))
+    v.add(bar(1, 104, 100, 102, 30))  # corrected minute: replaces, not added
+    assert v.value == D("101.5")
+    v.add(bar(0, 500, 400, 450, 1000))  # older than the last bar: ignored
+    assert v.value == D("101.5")
+
+
 def test_session_vwap_zero_volume_is_none():
     v = SessionVwap()
     v.reset(T0)
@@ -96,6 +107,13 @@ def test_breakout_volume_filter():
     assert got == {"high": D(100), "volume": D(19), "avg_volume": D("9.5")}
 
 
+def test_breakout_volume_filter_needs_volume():
+    bars = [bar(i, 100, 99, 100, 0) for i in range(20)]
+    state = MarketState(series=series_of(bars), vwap=None)
+    assert fire("breakout", state, "100.5", volume_mult=D(1)) is None
+    assert fire("breakout", state, "100.5") is not None  # no filter: volume irrelevant
+
+
 def test_mean_reversion_fires_below_band():
     bars = [bar(i, 102, 98, 99 if i % 2 else 101) for i in range(30)]  # mean 100, std 1
     state = MarketState(series=series_of(bars), vwap=None)
@@ -114,15 +132,19 @@ def test_vwap_pullback():
     for b in above:
         v.add(b)
     assert v.value == D(100)
-    state = MarketState(series=series_of(above), vwap=v.value)
+    state = MarketState(series=series_of(above), vwap=v.value, session_start=T0)
     got = fire("vwap_pullback", state, "100.05", pullback_pct=D("0.1"))
     assert got == {"vwap": D(100), "distance_pct": D("0.05")}
     assert fire("vwap_pullback", state, "99.99", pullback_pct=D("0.1")) is None
     assert fire("vwap_pullback", state, "100.2", pullback_pct=D("0.1")) is None
     one_below = above[:4] + [bar(4, "101.2", 99, "99.8", 10)]  # typical price 100, close below
-    state = MarketState(series=series_of(one_below), vwap=D(100))
+    state = MarketState(series=series_of(one_below), vwap=D(100), session_start=T0)
     assert fire("vwap_pullback", state, "100.05", pullback_pct=D("0.1")) is None
-    assert fire("vwap_pullback", MarketState(series_of(above), None), "100.05") is None
+    assert fire("vwap_pullback", MarketState(series_of(above), None, T0), "100.05") is None
+    # a bar from before the session start does not count toward min_above_min
+    late = MarketState(series_of(above), D(100), T0 + timedelta(minutes=1))
+    assert fire("vwap_pullback", late, "100.05", pullback_pct=D("0.1")) is None
+    assert fire("vwap_pullback", late, "100.05", pullback_pct=D("0.1"), min_above_min=4)
 
 
 def test_warmup_per_model():
