@@ -847,3 +847,49 @@ async def test_drill_revoke_purge_deletes_decisions(admin):
         from smtrading.activity.models import Decision as Dc
 
         assert await s.scalar(select(func.count()).select_from(Dc)) == 1
+
+
+async def test_drill_refuses_a_ref_used_outside_the_drill_portfolio(admin):
+    """Strategy state is keyed by ref alone: a drill on an agent's ref (or a global one,
+    or one written as strategy_id with blanks) is refused and changes nothing."""
+    from smtrading.activity.models import Decision
+    from smtrading.signals.service import approved_strategies
+
+    ceo = await _ceo(admin.sm)
+    team = await _portfolio(admin)
+    await _agent(admin, team, "trade")
+    hidden = await _portfolio(admin, intraday_enabled=True)
+    async with admin.sm() as s:
+        for pid, det in ((uuid.UUID(team), {"ref": "STR-007"}),
+                         (None, {"ref": "STR-GLOB"}),
+                         (uuid.UUID(team), {"strategy_id": " STR-ID "})):
+            s.add(Decision(agent_id=ceo.id, kind="strategy", summary="Squadra",
+                           portfolio_id=pid, symbols=["AAPL"], details={
+                               **det, "status": "approvata", "timeframe": "1d",
+                               "strategy": "rsi_reversion",
+                               "params": {"period": 2, "buy_below": 10, "sell_above": 70}}))
+        await s.commit()
+
+    async def approved():
+        async with admin.sm() as s:
+            return {(a.ref, tuple(p.id for p in a.portfolios), a.timeframe)
+                    for a in await approved_strategies(s)}
+
+    before = await approved()
+    assert {r for r, _, _ in before} == {"STR-007", "STR-GLOB", "STR-ID"}
+    for ref in ("STR-007", " STR-007 ", "STR-GLOB", "STR-ID"):
+        code, out = await _cli(admin.sm, admin.redis_url, *_drill_args(hidden, ref=ref))
+        assert code == 1 and out["error"]["code"] == "INVALID_ORDER", (ref, out)
+        assert "Riferimento già usato" in out["error"]["message"]
+        code, out = await _cli(admin.sm, admin.redis_url, "intraday", "drill-revoke",
+                               "--portfolio", hidden, "--agent", "CEO", "--ref", ref)
+        assert code == 1 and out["error"]["code"] == "INVALID_ORDER", (ref, out)
+    assert await approved() == before
+    assert await _decisions(admin.sm, hidden) == []
+    # a fresh ref works, and its own revoke too (the ref lives only on the drill portfolio)
+    code, out = await _cli(admin.sm, admin.redis_url, *_drill_args(hidden, ref="DRILL-9"))
+    assert code == 0, out
+    code, out = await _cli(admin.sm, admin.redis_url, "intraday", "drill-revoke",
+                           "--portfolio", hidden, "--agent", "CEO", "--ref", "DRILL-9")
+    assert code == 0, out
+    assert await approved() == before

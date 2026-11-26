@@ -58,13 +58,14 @@ import argparse
 import asyncio
 import dataclasses
 import json
+import re
 import sys
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
 import httpx
 from redis.asyncio import Redis
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import smtrading.models  # noqa: F401  (complete mapper registry, e.g. broker_links FK)
@@ -465,6 +466,8 @@ DRILL_HAS_AGENTS = ("Esercitazione solo su un portafoglio senza agenti: questo p
                     "è visibile ad almeno un agente")
 DRILL_NOT_INTRADAY = ("Esercitazione solo su un portafoglio con il lavoro in giornata "
                       "acceso")
+DRILL_REF_TAKEN = ("Riferimento già usato da una strategia fuori dal portafoglio di prova: "
+                   "scegline un altro")
 
 
 def _drill_invalid(field: str, message: str) -> SMTError:
@@ -510,6 +513,11 @@ def _drill_details(args: argparse.Namespace) -> tuple[dict, list[str]]:
             "timeframe": args.timeframe}, symbols
 
 
+def _ref_pattern(ref: str) -> str:
+    """The ref as signals.service._ref reads it (surrounding blanks ignored)."""
+    return r"^\s*" + re.escape(ref) + r"\s*$"
+
+
 async def execute_intraday(args: argparse.Namespace, session: AsyncSession) -> object:
     """`intraday drill-strategy` / `drill-revoke [--purge]`, audited as
     `admin:intraday.drill`."""
@@ -517,6 +525,21 @@ async def execute_intraday(args: argparse.Namespace, session: AsyncSession) -> o
 
     p = await _drill_portfolio(session, args.portfolio)
     agent = await _agent(session, args.agent)
+    args.ref = args.ref.strip()
+    if not args.ref:
+        raise _drill_invalid("ref", "ref: obbligatorio")
+    # strategy state is keyed by ref alone (signals.service._choose): a ref used by any
+    # strategy decision outside the drill portfolio (global ones included) is refused, so
+    # a drill never changes or revokes an agent's strategy
+    if await session.scalar(
+        select(Decision.id).where(
+            Decision.kind == DecisionKind.strategy.value,
+            or_(Decision.details["ref"].astext.regexp_match(_ref_pattern(args.ref)),
+                Decision.details["strategy_id"].astext.regexp_match(
+                    _ref_pattern(args.ref))),
+            Decision.portfolio_id.is_distinct_from(p.id),
+        ).limit(1)) is not None:
+        raise _drill_invalid("ref", DRILL_REF_TAKEN)
     if args.intraday_command == "drill-strategy":
         details, symbols = _drill_details(args)
         action = "strategy"
