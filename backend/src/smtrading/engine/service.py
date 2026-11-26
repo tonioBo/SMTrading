@@ -187,6 +187,8 @@ class PlaceOrderRequest:
     live_flatten: bool = False
     # plan 16: an aware datetime (normalized to UTC), "close", or None (no end)
     valid_until: datetime | str | None = None
+    # mode B: the automatic rule an order belongs to (set by the scalper, never by tools)
+    auto_rule_id: UUID | None = None
 
 
 VALID_UNTIL_CLOSE = "close"
@@ -355,7 +357,7 @@ def _same_params(order: Order, req: PlaceOrderRequest, symbol: str) -> bool:
     return (
         order.symbol == symbol and order.side == req.side and order.type == req.type
         and order.tif == req.tif and order.reduce_only == req.reduce_only
-        and order.day_trade == req.day_trade
+        and order.day_trade == req.day_trade and order.auto_rule_id == req.auto_rule_id
         and all(getattr(order, name) == getattr(req, name) for name in _PARAMS)
         and _same_valid_until(order, req.valid_until)
     )
@@ -387,6 +389,7 @@ async def _run_check(
         stop_price=req.stop_price, check_quote_age=market.is_open,
         reduce_only=req.reduce_only, redis=redis, live_flatten=req.live_flatten, now=now,
         live_effects=live_effects, exclude_order=exclude_order, day_trade=req.day_trade,
+        auto_rule_id=req.auto_rule_id,
     )
 
 
@@ -482,7 +485,8 @@ async def _persist(session: AsyncSession, adm: _Admission, **extra) -> Order:
         limit_price=req.limit_price, stop_price=req.stop_price, trail_pct=req.trail_pct,
         trail_amount=req.trail_amount, filled_qty=Decimal(0), status=OrderStatus.new,
         source=req.source, reduce_only=req.reduce_only, day_trade=req.day_trade,
-        live_flatten=req.live_flatten, valid_until=req.valid_until, **extra,
+        live_flatten=req.live_flatten, valid_until=req.valid_until,
+        auto_rule_id=req.auto_rule_id, **extra,
     )
     if check is not None and not check.ok:
         _reject(order, check.code, check.message)

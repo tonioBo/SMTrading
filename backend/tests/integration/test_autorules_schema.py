@@ -19,6 +19,7 @@ from smtrading.activity.models import Decision
 from smtrading.agents import service as agents
 from smtrading.autorules import rules
 from smtrading.autorules.models import PORTFOLIO_BRAKE_DEFAULTS, RULE_BRAKE_DEFAULTS
+from smtrading.autorules.ownership import owned_symbols
 from smtrading.autorules.tables import (
     ACTIVE,
     BRAKED,
@@ -35,7 +36,6 @@ from smtrading.engine.quotesource import FakeQuoteSource
 from smtrading.engine.service import PlaceOrderRequest, place_order
 from smtrading.events import discard_post_commit, dispatch_post_commit
 from smtrading.instruments.models import AssetClass, Instrument
-from smtrading.intraday.job import auto_rule_owned_pairs
 from smtrading.marketdata.streaming import SOURCES
 from smtrading.mcp.dto import order_dto
 from smtrading.portfolios.models import Portfolio
@@ -357,13 +357,13 @@ async def test_active_rules_single_query(db_session, seeded):
     assert (a.day_close_minutes, a.base_currency) == (10, "EUR")
 
 
-async def test_auto_rule_owned_pairs(db_session, seeded):
-    p = await _pf(db_session)
+async def test_owned_symbols(db_session, seeded):
+    p = await _pf(db_session, intraday=True)
     active, draft = await _rule(db_session, p), await _rule(db_session, p, symbol="MSFT")
-    assert await auto_rule_owned_pairs(db_session) == frozenset()
+    assert await owned_symbols(db_session) == frozenset()
     await rules.activate(db_session, active.id, by=BY, now=OPEN)
     await db_session.flush()
-    assert await auto_rule_owned_pairs(db_session) == frozenset({(p.id, "AAPL")})
+    assert await owned_symbols(db_session) == frozenset({(p.id, "AAPL")})
     assert draft.status == DRAFT
 
 

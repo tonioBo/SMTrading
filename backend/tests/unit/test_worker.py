@@ -705,4 +705,4 @@ async def test_worker_registers_intraday_behind_gate(monkeypatch):
     assert gate_waits  # gated
     assert seen["sessionmaker"] is not None and seen["router"] is not None
     assert seen["http"] is not None and seen["redis"] is not None
-    assert seen["kwargs"] == {"exclude_provider": worker.auto_rule_owned_pairs}
+    assert seen["kwargs"] == {"exclude_provider": worker.owned_symbols}

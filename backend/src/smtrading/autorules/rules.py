@@ -282,13 +282,6 @@ async def pause_all(session: AsyncSession, portfolio_id: uuid.UUID, *, by: str,
     return rules
 
 
-async def auto_rule_owned_pairs(session: AsyncSession) -> frozenset[tuple[uuid.UUID, str]]:
-    """The (portfolio, symbol) pairs of the active rules."""
-    rows = await session.execute(
-        select(AutoRule.portfolio_id, AutoRule.symbol).where(AutoRule.status == ACTIVE))
-    return frozenset((pid, sym) for pid, sym in rows.all())
-
-
 # --- the active rules (scalper) -----------------------------------------------------
 
 @dataclass(frozen=True)

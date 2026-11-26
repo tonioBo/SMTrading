@@ -10,6 +10,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 import smtrading.models  # noqa: F401  (complete mapper registry before any session)
+from smtrading.autorules.ownership import owned_symbols
 from smtrading.backtest.research_runner import ResearchRunner
 from smtrading.backtest.runner import BacktestRunner
 from smtrading.brokers.live.account import register_live_secrets
@@ -26,7 +27,7 @@ from smtrading.engine.processor import OrderProcessor
 from smtrading.goals.alerts import GoalAlerts
 from smtrading.goals.plan_closer import PlanCloser
 from smtrading.instruments.closures import ClosureRefresher
-from smtrading.intraday.job import IntradayJob, auto_rule_owned_pairs
+from smtrading.intraday.job import IntradayJob
 from smtrading.jobs.scheduler import JobScheduler
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.marketdata.streaming import StreamManager
@@ -288,7 +289,7 @@ async def run() -> None:
                     tg.create_task(supervise("intraday", lambda: gated(
                         gate, lambda: IntradayJob(
                             sessionmaker, router, redis, http,
-                            exclude_provider=auto_rule_owned_pairs).run()))),
+                            exclude_provider=owned_symbols).run()))),
                     tg.create_task(supervise("broker reconciliation", lambda: gated(
                         gate, lambda: ReconciliationJob(
                             sessionmaker, router, http,

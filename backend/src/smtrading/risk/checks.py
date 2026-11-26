@@ -34,6 +34,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from smtrading.autorules.ownership import owner_rule
 from smtrading.brokers.models import BrokerLink
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import decimal_to_str, quantize_money
@@ -62,6 +63,10 @@ EUR = "EUR"
 _PREC = 60
 _LIMIT_TYPES = (OrderType.limit, OrderType.stop_limit)
 _STOP_TYPES = (OrderType.stop, OrderType.stop_limit)
+OWNED_MESSAGE = ("{symbol} è gestito da una regola automatica attiva su questo portafoglio: "
+                 "mettila in pausa prima di operare a mano")
+INACTIVE_MESSAGE = ("la regola automatica di {symbol} non è attiva e non ha operazioni "
+                    "aperte: l'ordine non può partire")
 
 
 @dataclass
@@ -256,6 +261,7 @@ async def _run(
     limit_price: Decimal | None, stop_price: Decimal | None, check_quote_age: bool,
     reduce_only: bool, redis, live_flatten: bool = False, now: datetime | None = None,
     live_effects: bool = True, exclude_order=None, day_trade: bool = False,
+    auto_rule_id=None,
 ) -> CheckResult:
     # 1-3: switches and whitelist; Ruling R25: with the kill switch on, only orders that
     # strictly reduce the position pass (settled below, once the quantity is known)
@@ -398,6 +404,19 @@ async def _run(
         await _check_broker_buying_power(qs, portfolio, link, instrument, order_notional,
                                          increases, at)
 
+    # 11: symbol owned by an automatic rule. Only with the portfolio's switch on (no query
+    # otherwise); orders that close are never refused; the rule's own orders pass
+    if portfolio.auto_rules_enabled and not (reduce_only or reduces):
+        owner = await owner_rule(session, portfolio.id, instrument.symbol)
+        if owner is not None and owner != auto_rule_id:
+            raise _Reject(ErrorCode.RISK_LIMIT_EXCEEDED, OWNED_MESSAGE.format(
+                symbol=instrument.symbol), {"reason": "auto_rule_owner",
+                                            "rule_id": str(owner)})
+        if owner is None and auto_rule_id is not None:
+            raise _Reject(ErrorCode.RISK_LIMIT_EXCEEDED, INACTIVE_MESSAGE.format(
+                symbol=instrument.symbol), {"reason": "auto_rule_inactive",
+                                            "rule_id": str(auto_rule_id)})
+
     return CheckResult(
         ok=True, estimated_price=price, estimated_notional_eur=notional_eur,
         estimated_fee=FeeQuote(rule.id, fee, rule.currency),
@@ -425,6 +444,7 @@ async def pre_trade_check(
     live_effects: bool = True,
     exclude_order=None,
     day_trade: bool = False,
+    auto_rule_id=None,
 ) -> CheckResult:
     try:
         return await _run(
@@ -433,6 +453,7 @@ async def pre_trade_check(
             stop_price=stop_price, check_quote_age=check_quote_age,
             reduce_only=reduce_only, redis=redis, live_flatten=live_flatten, now=now,
             live_effects=live_effects, exclude_order=exclude_order, day_trade=day_trade,
+            auto_rule_id=auto_rule_id,
         )
     except _Reject as r:
         return CheckResult(ok=False, code=r.code, message=r.message, details=r.details)
