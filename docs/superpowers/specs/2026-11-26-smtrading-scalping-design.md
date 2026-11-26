@@ -207,3 +207,10 @@ Conseguenze (scelte di Claude, sostituiscono le parti PDT sopra e nel progetto d
    (oggi nessuno su Alpaca; eToro escluso per costi e lentezza), **non** sui conti Alpaca con
    moltiplicatore 1. Consiglio al titolare per il reale: «Max Margin Multiplier = 1», «Shorting
    Enabled» spento.
+8. **Agenti e portafogli** (Matteo, 26/11): gli **stessi agenti** per tutti i modi (nessun secondo
+   gruppo); **un modo per portafoglio**: `intraday_enabled` e `auto_rules_enabled` non possono essere
+   accesi insieme sullo stesso portafoglio (il portale/API lo rifiuta), così risultati, rischio e costi
+   restano separati per stile. Ruoli proposti (istruzioni da approvare prima dell'accensione): Quant
+   propone le regole provate sullo storico, CEO approva, Portfolio Manager attiva/pausa, Risk Manager
+   freni, News Analyst pause per eventi, Execution Supervisor qualità delle esecuzioni, Performance
+   Auditor valutazione e ritiro.
