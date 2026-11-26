@@ -1352,11 +1352,13 @@ async def cancel_plan_additions(session: AsyncSession, orders: list[Order], *,
 async def _close(
     session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, symbol: str,
     held: Decimal, qty: Decimal | None, *, source: str, agent_id: str | None,
-    now: datetime | None, redis=None,
+    now: datetime | None, redis=None, limit_price: Decimal | None = None,
+    client_order_id: str | None = None,
 ) -> tuple[Order, bool]:
-    """A reduce_only market order against `held` (Ruling R22); unless it is rejected,
-    the symbol's open bracket exits are canceled (Ruling R16), and its resting orders on
-    the closing side that are not reduce-only (`cancel_closing_side`)."""
+    """A reduce_only market order against `held` (Ruling R22), or with `limit_price` a
+    reduce_only DAY limit (it expires at the session end, never rests overnight); unless
+    it is rejected, the symbol's open bracket exits are canceled (Ruling R16), and its
+    resting orders on the closing side that are not reduce-only (`cancel_closing_side`)."""
     size = abs(held)
     if qty is None:
         qty = size
@@ -1368,7 +1370,11 @@ async def _close(
     req = PlaceOrderRequest(
         portfolio_id=portfolio_id, symbol=symbol, side=side, type=OrderType.market,
         qty=qty, source=source, agent_id=agent_id, reduce_only=True,
+        client_order_id=client_order_id,
     )
+    if limit_price is not None:
+        req = dataclasses.replace(req, type=OrderType.limit, limit_price=limit_price,
+                                  tif=TimeInForce.day)
     order, created = await _place(session, qs, req, now, redis)
     if order.status != OrderStatus.rejected:
         await _cancel_exits(session, portfolio_id, symbol, by=source)
@@ -1380,11 +1386,14 @@ async def _close(
 async def close_position(
     session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, symbol: str,
     qty: Decimal | None = None, *, source: str = "agent", agent_id: str | None = None,
-    now: datetime | None = None, redis=None,
+    now: datetime | None = None, redis=None, limit_price: Decimal | None = None,
+    client_order_id: str | None = None,
 ) -> Order:
     """Reduce-only market order on the opposite side for |position| (or `qty` <=
-    |position|); the symbol's open bracket exits are canceled (Ruling R16), and its
-    standalone exits that the close leaves oversized (`cancel_closing_side`)."""
+    |position|); with `limit_price` a reduce-only DAY limit at that price instead;
+    `client_order_id` makes it idempotent. The symbol's open bracket exits are canceled
+    (Ruling R16), and its standalone exits that the close leaves oversized
+    (`cancel_closing_side`)."""
     await lock_live_portfolio(session, portfolio_id)
     symbol = (await get_instrument(session, symbol)).symbol
     held = (await _position_balances(session, portfolio_id, symbol)).get(symbol)
@@ -1392,7 +1401,7 @@ async def close_position(
         raise _invalid("no open position", symbol=symbol)
     order, _ = await _close(
         session, qs, portfolio_id, symbol, held, qty, source=source, agent_id=agent_id,
-        now=now, redis=redis,
+        now=now, redis=redis, limit_price=limit_price, client_order_id=client_order_id,
     )
     _raise_if_rejected(order)
     return order
