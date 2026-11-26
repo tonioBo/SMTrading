@@ -84,4 +84,18 @@ scritta del proprietario).
 
 ## 5. Idee per dopo la campagna
 
+- **Lavoro in giornata (intraday) — prossimo sviluppo** — 26/11, richiesta di Matteo. Oggi i segnali sono
+  quasi tutti su barre giornaliere e gli agenti guardano i portafogli circa ogni ora. Cosa serve:
+  1. prezzi davvero in tempo reale (il flusso gratuito Alpaca vede una sola borsa e max 30 titoli; UE da
+     Yahoo/eToro può essere in ritardo) → scegliere una fonte a pagamento per i mercati trattati in giornata;
+  2. SMTrading sorveglia i segnali in continuo (come già fa con stop e obiettivi) e sveglia l'agente con un
+     compito solo quando un segnale scatta, invece di cicli più frequenti (costo e lentezza);
+  3. strategie su barre brevi (5m/15m/1h, già supportate) con storico sufficiente (Alpaca o fornitore) e
+     costi veri del broker nelle prove;
+  4. regole di giornata: limite USA per conti < 25.000 $ (max 3 operazioni aperte e chiuse in giornata
+     ogni 5 giorni, contate da SMTrading), chiusura delle posizioni di giornata prima della fine seduta
+     (chi la fa, sempre in orario di borsa), taratura di ordini/ora e perdita giornaliera nei profili;
+  5. stile «in giornata» nei profili dei portafogli (letto da SMTrading, istruzioni generiche) e stima
+     del costo degli agenti.
+  Proposta: partire dopo il go/no-go del 23/12 con un solo portafoglio sul conto di prova Alpaca.
 - **Opzioni (Alpaca)** — 24/11, richiesta di Matteo di segnarla per il futuro: opzioni su azioni ed ETF anche in orari estesi (dal 4/12/2026 sul reale, già provabili sul conto di prova). Oggi SMTrading non ha opzioni (catalogo, prezzi, ordini, rischio, strumenti degli agenti). Da valutare come progetto separato solo dopo il passaggio al denaro vero sulle azioni.
