@@ -34,6 +34,10 @@ class RiskProfile(Base):
             "max_live_orders_per_hour BETWEEN 1 AND 1000",
             name="ck_risk_profiles_max_live_orders_per_hour",
         ),
+        CheckConstraint(
+            "day_close_limit_margin_pct > 0 AND day_close_limit_margin_pct <= 5",
+            name="ck_risk_profiles_day_close_limit_margin_pct",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -50,6 +54,10 @@ class RiskProfile(Base):
     # R8.1 fuse: real orders sent per portfolio in a sliding hour
     max_live_orders_per_hour: Mapped[int] = mapped_column(
         Integer, default=30, server_default=text("30")
+    )
+    # intraday safety net: the limit of a wide-spread close is the last trade minus this %
+    day_close_limit_margin_pct: Mapped[Decimal] = mapped_column(
+        NUM, default=Decimal("0.5"), server_default=text("0.5")
     )
 
 

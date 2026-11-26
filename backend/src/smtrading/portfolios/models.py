@@ -12,12 +12,13 @@ from sqlalchemy import (
     Integer,
     Select,
     String,
+    false,
     func,
     select,
     text,
     true,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from smtrading.common.db import Base
@@ -43,6 +44,12 @@ class Portfolio(Base):
     __table_args__ = (
         CheckConstraint(f"code ~ '{CODE_PATTERN}'", name="ck_portfolios_code"),
         # unique among the portfolios that are not archived (an archived one keeps its code)
+        CheckConstraint("day_close_minutes BETWEEN 2 AND 60",
+                        name="ck_portfolios_day_close_minutes"),
+        CheckConstraint("max_day_trades_5d IS NULL OR max_day_trades_5d >= 0",
+                        name="ck_portfolios_max_day_trades_5d"),
+        CheckConstraint("intraday_max_wakes_per_hour BETWEEN 1 AND 60",
+                        name="ck_portfolios_intraday_max_wakes_per_hour"),
         Index("uq_portfolios_code_live", "code", unique=True,
               postgresql_where=text("status <> 'archived' AND code IS NOT NULL")),
     )
@@ -78,6 +85,25 @@ class Portfolio(Base):
     # false: left out of the total (the goals on the total, the dashboard totals); its own
     # goals work as usual (a time-boxed experiment beside the team's portfolios)
     in_totals: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    # intraday, mode A (agent wake on a signal) and mode B (automatic rules): two independent
+    # switches, both off by default (intraday.models.day_scope is true if either is on)
+    intraday_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false())
+    auto_rules_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false())
+    intraday_timeframes: Mapped[list[str]] = mapped_column(
+        JSONB, default=lambda: ["15m", "1h"],
+        server_default=text("'[\"15m\",\"1h\"]'::jsonb"))
+    # the agent woken on a signal (mode A); cleared if the agent is deleted
+    intraday_wake_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("agents.id", ondelete="SET NULL"))
+    # minutes before the close at which the safety net closes the day's quantity (both modes)
+    day_close_minutes: Mapped[int] = mapped_column(
+        Integer, default=10, server_default=text("10"))
+    # own day-trade budget in 5 rolling sessions (None: only the broker's)
+    max_day_trades_5d: Mapped[int | None] = mapped_column(Integer)
+    intraday_max_wakes_per_hour: Mapped[int] = mapped_column(
+        Integer, default=6, server_default=text("6"))
 
 
 def live_portfolio_ids() -> Select:

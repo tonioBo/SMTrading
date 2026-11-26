@@ -126,6 +126,10 @@ class Order(Base):
     reduce_only: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false")
     )
+    # intraday: a buy that opens a position meant to be closed the same session (PDT count)
+    day_trade: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
     # R8.2: reduce-only market order of "Chiudi tutte le posizioni reali" (passes the kill switch)
     live_flatten: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false")

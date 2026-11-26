@@ -53,6 +53,9 @@ class BrokerLink(Base):
     # real-money links: {currency: units of the account currency per unit}, the last FX
     # rates at which the linked cash matched the broker's (risk.live_checks, reconcile)
     fx_ref_rates: Mapped[dict | None] = mapped_column(JSONB)
+    # intraday: the broker's day-trade state (daytrade_count, equity, margin account), no secrets
+    pdt_state: Mapped[dict | None] = mapped_column(JSONB)
+    pdt_state_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Reconciliation(Base):

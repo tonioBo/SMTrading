@@ -14,6 +14,7 @@ import smtrading.fees.models
 import smtrading.goals.models
 import smtrading.instruments.closures
 import smtrading.instruments.models
+import smtrading.intraday.models
 import smtrading.ledger.models
 import smtrading.marketsportal.models
 import smtrading.paperclip.models

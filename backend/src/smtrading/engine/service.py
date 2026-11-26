@@ -180,6 +180,9 @@ class PlaceOrderRequest:
     agent_id: str | None = None
     source: str = "agent"
     reduce_only: bool = False
+    # intraday: a buy meant to be closed the same session (set by the portal/internal code,
+    # never by the agents' tools)
+    day_trade: bool = False
     # R8.2: a reduce-only market order of "Chiudi tutte le posizioni reali" (passes the kill switch)
     live_flatten: bool = False
     # plan 16: an aware datetime (normalized to UTC), "close", or None (no end)
@@ -352,6 +355,7 @@ def _same_params(order: Order, req: PlaceOrderRequest, symbol: str) -> bool:
     return (
         order.symbol == symbol and order.side == req.side and order.type == req.type
         and order.tif == req.tif and order.reduce_only == req.reduce_only
+        and order.day_trade == req.day_trade
         and all(getattr(order, name) == getattr(req, name) for name in _PARAMS)
         and _same_valid_until(order, req.valid_until)
     )
@@ -477,8 +481,8 @@ async def _persist(session: AsyncSession, adm: _Admission, **extra) -> Order:
         type=req.type, tif=req.tif, qty=req.qty, notional=req.notional,
         limit_price=req.limit_price, stop_price=req.stop_price, trail_pct=req.trail_pct,
         trail_amount=req.trail_amount, filled_qty=Decimal(0), status=OrderStatus.new,
-        source=req.source, reduce_only=req.reduce_only, live_flatten=req.live_flatten,
-        valid_until=req.valid_until, **extra,
+        source=req.source, reduce_only=req.reduce_only, day_trade=req.day_trade,
+        live_flatten=req.live_flatten, valid_until=req.valid_until, **extra,
     )
     if check is not None and not check.ok:
         _reject(order, check.code, check.message)
