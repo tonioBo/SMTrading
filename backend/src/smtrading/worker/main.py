@@ -26,6 +26,7 @@ from smtrading.engine.processor import OrderProcessor
 from smtrading.goals.alerts import GoalAlerts
 from smtrading.goals.plan_closer import PlanCloser
 from smtrading.instruments.closures import ClosureRefresher
+from smtrading.intraday.job import IntradayJob, auto_rule_owned_pairs
 from smtrading.jobs.scheduler import JobScheduler
 from smtrading.marketdata.router import MarketDataRouter
 from smtrading.marketdata.streaming import StreamManager
@@ -55,7 +56,7 @@ RESTART_DELAY_S = 5
 HEALTH_FIRST_DELAY_S = 30
 HEALTH_INTERVAL_S = 300
 # the alerting jobs (protection alarm, goal alerts, plan closer, pre-open check, hand-off
-# watchdog, broker reconciliation, weekly PDF report, system sentinel) wait
+# watchdog, broker reconciliation, weekly PDF report, system sentinel, intraday) wait
 # STARTUP_DELAY_S after the worker start and until the api health endpoint answers, so a
 # deploy restart fires nothing; after STARTUP_MAX_WAIT_S they start anyway (fail open)
 STARTUP_DELAY_S = 180
@@ -284,6 +285,10 @@ async def run() -> None:
                         gate, lambda: SystemSentinel(sessionmaker, redis).run()))),
                     tg.create_task(supervise("broker tradability", lambda: gated(
                         gate, lambda: TradabilityRefresher(sessionmaker, redis, http).run()))),
+                    tg.create_task(supervise("intraday", lambda: gated(
+                        gate, lambda: IntradayJob(
+                            sessionmaker, router, redis, http,
+                            exclude_provider=auto_rule_owned_pairs).run()))),
                     tg.create_task(supervise("broker reconciliation", lambda: gated(
                         gate, lambda: ReconciliationJob(
                             sessionmaker, router, http,
