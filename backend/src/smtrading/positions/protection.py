@@ -74,7 +74,7 @@ from smtrading.instruments.market_hours import CALENDARS, local_date, market_sta
 from smtrading.instruments.models import Instrument
 from smtrading.paperclip.client import PaperclipError
 from smtrading.paperclip.config import PaperclipConfig, load_config
-from smtrading.paperclip.issues import RISK_MANAGER, PaperclipIssues, find_agent_id
+from smtrading.paperclip.issues import RISK_MANAGER, PaperclipIssues, resolve_agent
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.positions.models import Position
 from smtrading.risk.models import AppSetting
@@ -486,9 +486,7 @@ class ProtectionAlarm:
         error: str | None = None
         try:
             async with self._issues_factory(cfg) as client:
-                assignee = find_agent_id(await client.agents(), RISK_MANAGER)
-                if assignee is None:
-                    raise PaperclipError(f"agente «{RISK_MANAGER}» non trovato")
+                assignee = await resolve_agent(client, RISK_MANAGER)
                 for pos_key, keys in pending.items():
                     finding = current[keys[0]][0]
                     title = issue_title(finding.position)

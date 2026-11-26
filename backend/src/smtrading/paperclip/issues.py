@@ -49,6 +49,14 @@ def find_agent_id(agents: list[dict], name: str = RISK_MANAGER) -> str | None:
     return None
 
 
+async def resolve_agent(client: "PaperclipIssues", name: str) -> str:
+    """The id of the Paperclip agent called `name`, else PaperclipError."""
+    agent_id = find_agent_id(await client.agents(), name)
+    if agent_id is None:
+        raise PaperclipError(f"agente «{name}» non trovato")
+    return agent_id
+
+
 class PaperclipIssues:
     def __init__(self, cfg: PaperclipConfig, *, transport: httpx.AsyncBaseTransport | None = None,
                  timeout: float = 10.0) -> None:
@@ -113,3 +121,15 @@ class PaperclipIssues:
                 if ident:
                     return str(ident)
         return None
+
+    async def open_identifiers(self) -> set[str]:
+        """The identifiers (else ids) of the issues not done or cancelled, from one GET."""
+        body = await self._call("GET", f"{self._company_path}/issues")
+        found: set[str] = set()
+        for issue in unwrap_list(body, "issues"):
+            if (isinstance(issue, dict)
+                    and str(issue.get("status") or "").lower() not in CLOSED_STATUSES):
+                ident = issue.get("identifier") or issue.get("id")
+                if ident:
+                    found.add(str(ident))
+        return found
