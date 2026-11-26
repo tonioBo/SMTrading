@@ -194,3 +194,8 @@ Conseguenze (scelte di Claude, sostituiscono le parti PDT sopra e nel progetto d
 4. **Modo B solo su conti con margine**: su un collegamento in contanti (come il reale Alpaca di oggi)
    il portale non lo lascia accendere, per le regole di regolamento. Tolto il vincolo dei 25.000 $.
 5. Il nuovo conto di prova da 30.000 $ va benissimo; la prova del rifiuto si fa con `max_day_trades_5d`.
+6. **Leva** (Matteo, 26/11: «Fino a 2, solo in prova»): le entrate di giornata e automatiche
+   rispettano la leva del portafoglio (`portfolios.leverage`, campo esistente) e il `buying_power`
+   letto dal broker. Sui collegamenti di **prova** la leva può arrivare a 2 (il portafoglio di prova
+   si imposta a 2 nel manuale della prova); sui collegamenti **reali** le entrate di giornata e
+   automatiche sono limitate a leva 1 qualunque sia l'impostazione, finché Matteo non decide.
