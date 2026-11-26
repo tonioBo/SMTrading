@@ -323,3 +323,12 @@ async def test_bracket_valid_until_is_for_the_entry(env):
     assert datetime.fromisoformat(entry["valid_until"]) == at
     assert tp["valid_until"] is None and sl["valid_until"] is None
     assert tp["expires_at"] is None and sl["expires_at"] is None
+
+
+async def test_order_dto_has_no_day_trade(env):
+    from smtrading.mcp.dto import ORDER_FIELDS
+
+    is_error, o = await _buy(env)
+    assert not is_error, o
+    assert "day_trade" not in o and "auto_rule_id" not in o
+    assert set(o) == set(ORDER_FIELDS)

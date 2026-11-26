@@ -770,3 +770,17 @@ async def test_get_positions_plan_closing(mcp_server, mcp_call, book):
     )
     [eni] = positions
     assert eni["plan_closing"] is True and "plan_grace_until" not in eni
+
+
+async def test_list_portfolios_keys_frozen(mcp_server, mcp_call, book):
+    """The keys of a list_portfolios entry are fixed: no intraday/day-trade/auto-rule field
+    may leak to the agents (mode/live_state appear only when mcp_hide_mode is off)."""
+    is_error, listed = await mcp_call(mcp_server.url, mcp_server.token, "list_portfolios")
+    assert not is_error and listed
+    base = {"id", "name", "code", "base_currency", "status", "in_totals", "risk_profile",
+            "permission"}
+    mode_keys = {"mode", "live_state"}
+    for entry in listed:
+        keys = set(entry)
+        assert base <= keys <= base | mode_keys, keys
+        assert not [k for k in keys if k.startswith(("intraday", "day_", "auto_"))], keys
