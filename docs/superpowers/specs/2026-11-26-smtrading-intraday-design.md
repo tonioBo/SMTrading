@@ -1,6 +1,6 @@
 # SMTrading — Lavoro in giornata (intraday)
 
-Data: 2026-11-26 · Stato: BOZZA da approvare · Ramo: `feat/intraday` (worktree), in linea solo **spento**.
+Data: 2026-11-26 · Stato: APPROVATO dall'utente il 2026-11-26 · Ramo: `feat/intraday` (worktree), in linea solo **spento**.
 
 ## Perché
 Matteo (26/11/2026) vuole che, dopo la campagna di dicembre e il sì/no del 23/12, gli agenti possano
