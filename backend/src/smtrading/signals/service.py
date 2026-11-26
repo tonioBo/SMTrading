@@ -62,6 +62,7 @@ threshold (`distance` <= 0): the backtester would not enter either.
 
 import asyncio
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -159,6 +160,10 @@ class _Approved:
     timeframe: str | None
     symbols: list[str]
     portfolios: list[Portfolio]
+
+
+Approved = _Approved  # public alias (the intraday selector's type)
+_select = select  # `strategy_signals` has a `select` parameter
 
 
 def _text(v: Any) -> str | None:
@@ -429,14 +434,22 @@ async def _symbol(router: Any, kind: str, p: dict, tf: Timeframe, sym: str,
 
 
 async def strategy_signals(
-    session: AsyncSession, router: Any, now: datetime | None = None
+    session: AsyncSession, router: Any, now: datetime | None = None, *,
+    select: Callable[[Approved], Approved | None] | None = None,
 ) -> list[StrategySignal]:
-    """One entry per (approved strategy, portfolio), ordered by portfolio name then ref."""
+    """One entry per (approved strategy, portfolio), ordered by portfolio name then ref.
+
+    With `select` every approved strategy goes through it before any data is read (None:
+    left out; it may narrow the portfolios and symbols). Without it the output is the
+    plain one. On the short timeframes there is no forming bar (`forming.FORMING_TIMEFRAMES`):
+    entry and exit are already on the closed bars."""
     now = now or datetime.now(UTC)
     approved = await _approved(session)
+    if select is not None:
+        approved = [kept for a in approved if (kept := select(a)) is not None]
     syms = {s for a in approved for s in a.symbols}
     instruments = {i.symbol: i for i in await session.scalars(
-        select(Instrument).where(Instrument.symbol.in_(syms)))} if syms else {}
+        _select(Instrument).where(Instrument.symbol.in_(syms)))} if syms else {}
     stale: dict[str, int] = {}
     for i in instruments.values():
         if str(i.asset_class) not in stale:
