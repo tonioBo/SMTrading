@@ -36,7 +36,7 @@ function AccountBox({ a }: { a: IntradayAccount }) {
         {blocked && <StatusBadge tone="danger">bloccato dal broker</StatusBadge>}
       </div>
       <p className="num">{accountLine(a)}</p>
-      <p className="text-muted">{a.margin ? `leva disponibile ${Number(a.multiplier)}×` : "conto in contanti"}</p>
+      <p className="text-muted">{a.margin ? `leva disponibile ${Number(a.multiplier)}×` : "senza leva"}</p>
       <ul className="space-y-1">
         {rows.map((p) => (
           <li key={p.portfolio_id} className="flex flex-wrap gap-x-3">

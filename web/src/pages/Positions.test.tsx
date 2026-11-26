@@ -221,13 +221,14 @@ describe("Positions", () => {
       expect(screen.queryByText(/di giornata/)).not.toBeInTheDocument();
     });
 
-    it("flags a blocked account and a stale read, and a cash account", async () => {
+    it("flags a blocked account and a stale read, and an account without leverage", async () => {
       accounts = [account({ trading_blocked: true, fresh: false, margin: false, multiplier: "1" })];
       renderApp("/posizioni");
       const box = await screen.findByRole("region", { name: "Conto e operazioni di giornata Alpaca prova" });
       expect(box).toHaveTextContent("bloccato dal broker");
       expect(box).toHaveTextContent("non letto di recente");
-      expect(box).toHaveTextContent("conto in contanti");
+      expect(box).toHaveTextContent("senza leva");
+      expect(box).not.toHaveTextContent("conto in contanti");
       expect(box).not.toHaveTextContent("leva disponibile");
     });
 
