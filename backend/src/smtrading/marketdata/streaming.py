@@ -50,7 +50,7 @@ from smtrading.marketdata.router import MarketDataRouter
 
 log = logging.getLogger(__name__)
 
-SOURCES = frozenset({"orders", "positions", "alerts", "watchlists", "admin"})
+SOURCES = frozenset({"orders", "positions", "alerts", "watchlists", "admin", "auto_rules"})
 TRACKED_KEY = "md:tracked"
 STATUS_KEY = "md:stream_status"
 STATUS_TTL_S = 30  # a stale status (worker down) disappears instead of lying

@@ -54,9 +54,10 @@ ExcludeProvider = Callable[[AsyncSession], Awaitable[frozenset[tuple[uuid.UUID, 
 
 async def auto_rule_owned_pairs(session: AsyncSession) -> frozenset[tuple[uuid.UUID, str]]:
     """The (portfolio, symbol) pairs owned by an active automatic rule (mode B), which
-    mode A must not evaluate. HOOK: empty until the automatic rules exist (Tasks 16/17
-    fill it from `auto_rules`)."""
-    return frozenset()
+    mode A must not evaluate."""
+    from smtrading.autorules.rules import auto_rule_owned_pairs as owned
+
+    return await owned(session)
 
 
 class IntradayJob:

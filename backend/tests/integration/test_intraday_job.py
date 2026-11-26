@@ -252,7 +252,6 @@ async def test_exclude_provider_feeds_the_evaluation(env, monkeypatch):
     job, _ = _job(sm, BAR + timedelta(seconds=65), exclude_provider=provider)
     await job.tick()
     assert [e[3] for e in calls.evaluations] == [owned]
-    assert await job_mod.auto_rule_owned_pairs(object()) == frozenset()
 
 
 async def test_account_reads_every_interval_while_open_and_once_after_close(env, monkeypatch):

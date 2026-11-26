@@ -104,6 +104,10 @@ class Portfolio(Base):
     max_day_trades_5d: Mapped[int | None] = mapped_column(Integer)
     intraday_max_wakes_per_hour: Mapped[int] = mapped_column(
         Integer, default=6, server_default=text("6"))
+    # mode B: the portfolio's brakes over all its rules (autorules.models.validate_brakes,
+    # level "portfolio"; {}: the defaults)
+    auto_brakes: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb"))
 
 
 def live_portfolio_ids() -> Select:

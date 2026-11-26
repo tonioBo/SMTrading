@@ -50,6 +50,7 @@ from smtrading.admin.schemas import (
     ReverseIn,
 )
 from smtrading.agents.service import write_audit
+from smtrading.autorules.rules import SWITCH_OFF_REASON, pause_all
 from smtrading.brokers.live.deposit import check_live_deposit, read_live_cash
 from smtrading.brokers.models import BrokerLink
 from smtrading.common.errors import ErrorCode, SMTError
@@ -397,6 +398,8 @@ async def patch_portfolio(
             if day:
                 if "intraday_wake_agent_id" in day:
                     await check_wake_agent(session, p.id, day["intraday_wake_agent_id"])
+                if day.get("auto_rules_enabled") is False and p.auto_rules_enabled:
+                    await pause_all(session, p.id, by=by, reason=SWITCH_OFF_REASON)
                 for f, v in day.items():
                     setattr(p, f, v)
                 await audit_day_changes(session, p.id, day, by)
