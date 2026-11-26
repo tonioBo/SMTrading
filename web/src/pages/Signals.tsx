@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
+import { useIntradayTriggers } from "@/api/hooks/intraday";
 import { useSignals } from "@/api/hooks/signals";
-import type { SignalSymbol, StrategySignal } from "@/api/types";
+import type { IntradayOutcome, IntradayTrigger, SignalSymbol, StrategySignal } from "@/api/types";
 import { PageHeader } from "@/components/PageHeader";
 import { ExitBadge, SignalBadge } from "@/components/SignalBadges";
 import { StatusBadge, type StatusTone } from "@/components/StatusBadge";
@@ -46,7 +48,19 @@ function filterTexts(s: SignalSymbol): { text: string; passed: boolean }[] {
   });
 }
 
-function SymbolRow({ s, type }: { s: SignalSymbol; type: string | null }) {
+/** The outcome of a trigger in plain words. */
+const OUTCOME_LABELS: Record<IntradayOutcome, { text: string; tone: StatusTone }> = {
+  pending: { text: "in corso", tone: "neutral" },
+  woken: { text: "compito aperto", tone: "ok" },
+  issue_open: { text: "già un compito aperto", tone: "neutral" },
+  capped: { text: "saltato per tetto", tone: "warn" },
+  no_agent: { text: "nessun agente", tone: "neutral" },
+  telegram: { text: "solo Telegram", tone: "info" },
+  late: { text: "dopo l'orario", tone: "warn" },
+  failed: { text: "non riuscito", tone: "danger" },
+};
+
+function SymbolRow({ s, type, intraday }: { s: SignalSymbol; type: string | null; intraday: boolean }) {
   const exit = exitText(type, s);
   const filters = filterTexts(s);
   return (
@@ -75,6 +89,7 @@ function SymbolRow({ s, type }: { s: SignalSymbol; type: string | null }) {
         </div>
       </TableCell>
       <TableCell className="whitespace-nowrap text-muted">{s.as_of ? formatDateTime(s.as_of) : "—"}</TableCell>
+      <TableCell>{intraday ? "sì" : "no"}</TableCell>
     </TableRow>
   );
 }
@@ -105,11 +120,12 @@ function StrategyBlock({ strategy }: { strategy: StrategySignal }) {
               <TableHead className="text-right">Distanza</TableHead>
               <TableHead>Stato</TableHead>
               <TableHead>Aggiornato</TableHead>
+              <TableHead>In giornata</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {strategy.symbols.map((s) => (
-              <SymbolRow key={s.symbol} s={s} type={strategy.type} />
+              <SymbolRow key={s.symbol} s={s} type={strategy.type} intraday={strategy.intraday === true} />
             ))}
           </TableBody>
         </Table>
@@ -118,21 +134,77 @@ function StrategyBlock({ strategy }: { strategy: StrategySignal }) {
   );
 }
 
+const numberText = (v: string | null) => (v == null || v === "" ? "—" : value(v));
+
+/** «Ultimi scatti»: the signals that fired on an intraday timeframe and what became of them. */
+function TriggersTable({ triggers }: { triggers: IntradayTrigger[] }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Ultimi scatti</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Table aria-label="Ultimi scatti">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Ora barra</TableHead>
+              <TableHead>Portafoglio</TableHead>
+              <TableHead>Strategia</TableHead>
+              <TableHead>Simbolo</TableHead>
+              <TableHead>Regola</TableHead>
+              <TableHead className="text-right">Valore / soglia</TableHead>
+              <TableHead>Esito</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {triggers.map((t) => {
+              const outcome = OUTCOME_LABELS[t.outcome] ?? { text: t.outcome, tone: "neutral" as const };
+              return (
+                <TableRow key={t.id}>
+                  <TableCell className="whitespace-nowrap text-muted">{formatDateTime(t.bar_close)}</TableCell>
+                  <TableCell>{t.portfolio_name}</TableCell>
+                  <TableCell>{`${t.strategy_ref} ${t.strategy_name}`}</TableCell>
+                  <TableCell className="font-medium">{t.symbol}</TableCell>
+                  <TableCell>{t.rule === "entry" ? "entrata" : "uscita"}</TableCell>
+                  <TableCell className="num text-right">{`${numberText(t.value)} / ${numberText(t.threshold)}`}</TableCell>
+                  <TableCell>
+                    <StatusBadge tone={outcome.tone} title={t.error ?? undefined}>
+                      {outcome.text}
+                    </StatusBadge>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function Signals() {
   const { data, isError, isLoading } = useSignals();
-  const portfolios = data?.portfolios ?? [];
+  const triggers = useIntradayTriggers();
+  const [onlyDay, setOnlyDay] = useState(false);
+  const portfolios = (data?.portfolios ?? [])
+    .map((p) => (onlyDay ? { ...p, strategies: p.strategies.filter((s) => s.intraday === true) } : p))
+    .filter((p) => !onlyDay || p.strategies.length > 0);
   return (
     <div>
       <PageHeader title="Segnali">
         {data?.as_of && <span className="text-xs text-muted">{`ultimo aggiornamento ${formatDateTime(data.as_of)}`}</span>}
       </PageHeader>
+      <label className="mb-3 flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={onlyDay} onChange={(e) => setOnlyDay(e.target.checked)} className="h-4 w-4 accent-[rgb(var(--accent))]" />
+        Solo in giornata
+      </label>
       {isError && <p className="text-loss">Impossibile caricare i segnali</p>}
       {isLoading ? (
         <p className="text-sm text-muted">Caricamento…</p>
       ) : (
         data &&
         (portfolios.length === 0 ? (
-          <p className="text-sm text-muted">Nessuna strategia approvata</p>
+          <p className="text-sm text-muted">{onlyDay ? "Nessuna strategia in giornata" : "Nessuna strategia approvata"}</p>
         ) : (
           <div className="space-y-6">
             {portfolios.map((p) => (
@@ -157,6 +229,11 @@ export default function Signals() {
             ))}
           </div>
         ))
+      )}
+      {(triggers.data?.length ?? 0) > 0 && (
+        <div className="mt-6">
+          <TriggersTable triggers={triggers.data ?? []} />
+        </div>
       )}
     </div>
   );

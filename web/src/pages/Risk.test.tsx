@@ -82,6 +82,30 @@ describe("Risk", () => {
     expect(profilePosts[0]).toMatchObject({ name: "Calmo", description: "Mercati calmi" });
   });
 
+  it("edits the safety-close margin of a profile", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("*/api/risk-profiles", () =>
+        HttpResponse.json([{ id: "r1", name: "Prudente", max_order_notional_eur: null, max_position_pct: null, max_daily_loss_pct: null, max_daily_loss_eur: null, allowed_symbols: [], allowed_asset_classes: [], allowed_markets: [], short_allowed: true, description: null, day_close_limit_margin_pct: "0.5" }]),
+      ),
+      http.patch("*/api/risk-profiles/r1", async ({ request }) => {
+        const b = await request.json();
+        profilePosts.push(b);
+        return HttpResponse.json({ id: "r1", ...(b as object) });
+      }),
+    );
+    renderApp("/rischio");
+    await user.click(await screen.findByRole("button", { name: "Modifica Prudente" }));
+    const dialog = await screen.findByRole("dialog");
+    const field = within(dialog).getByLabelText("Margine del limite nella chiusura di sicurezza (%)");
+    expect(field).toHaveValue("0,5");
+    await user.clear(field);
+    await user.type(field, "1,2");
+    await user.click(within(dialog).getByRole("button", { name: "Salva" }));
+    await waitFor(() => expect(profilePosts).toHaveLength(1));
+    expect(profilePosts[0]).toMatchObject({ day_close_limit_margin_pct: "1.2" });
+  });
+
   it("saves the whole interest-rate table and requires the loan fallback", async () => {
     const user = userEvent.setup();
     renderApp("/rischio");

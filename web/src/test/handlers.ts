@@ -81,6 +81,8 @@ export const commonHandlers = [
   ),
   // Dashboard «Posizioni aperte» / «Segnali più vicini»: empty unless a test overrides them
   http.get("*/api/positions/open", () => HttpResponse.json({ as_of: "2026-11-16T12:00:00Z", positions: [], portfolios: [] })),
+  http.get("*/api/intraday/triggers", () => HttpResponse.json([])),
+  http.get("*/api/intraday/accounts", () => HttpResponse.json([])),
   http.get("*/api/signals", () => HttpResponse.json({ as_of: "2026-11-16T12:00:00Z", portfolios: [] })),
   // «Impostazioni → Utenti» (admins): an empty list unless a test overrides it
   http.get("*/api/users", () => HttpResponse.json([])),

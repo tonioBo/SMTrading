@@ -391,4 +391,34 @@ describe("OrderForm", () => {
     expect(select).toHaveValue("none");
     expect(within(select).queryByRole("option", { name: "Chiusura di oggi" })).not.toBeInTheDocument();
   });
+
+  it("sends day_trade for a buy ticked «Di giornata» and hides it on a sale", async () => {
+    const { user, dialog } = setup();
+    await pickAapl(user, dialog);
+    await user.type(within(dialog).getByLabelText("Quantità"), "2");
+    const box = within(dialog).getByRole("checkbox", { name: "Di giornata" });
+    expect(box).not.toBeChecked();
+    await user.click(box);
+    await user.click(within(dialog).getByRole("button", { name: "Anteprima" }));
+    await within(dialog).findByLabelText("Anteprima dell'ordine");
+    expect(previews).toEqual([{ symbol: "AAPL", side: "buy", type: "market", tif: "gtc", qty: "2", day_trade: true }]);
+    await user.click(within(dialog).getByRole("button", { name: "Invia" }));
+    await waitFor(() => expect(places).toHaveLength(1));
+    expect((places[0].body as { day_trade?: boolean }).day_trade).toBe(true);
+    // a sale: the box goes away and the flag is not sent
+    await user.selectOptions(within(dialog).getByLabelText("Lato"), "sell");
+    expect(within(dialog).queryByRole("checkbox", { name: "Di giornata" })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Anteprima" }));
+    await waitFor(() => expect(previews).toHaveLength(2));
+    expect(previews[1]).toEqual({ symbol: "AAPL", side: "sell", type: "market", tif: "gtc", qty: "2" });
+  });
+
+  it("does not send day_trade when the box is not ticked", async () => {
+    const { user, dialog } = setup();
+    await pickAapl(user, dialog);
+    await user.type(within(dialog).getByLabelText("Quantità"), "2");
+    await user.click(within(dialog).getByRole("button", { name: "Anteprima" }));
+    await within(dialog).findByLabelText("Anteprima dell'ordine");
+    expect(previews[0]).not.toHaveProperty("day_trade");
+  });
 });

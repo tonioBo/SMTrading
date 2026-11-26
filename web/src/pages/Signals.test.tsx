@@ -1,8 +1,9 @@
 import { act, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { SignalsResponse } from "@/api/types";
+import type { IntradayTrigger, SignalsResponse } from "@/api/types";
 import { SIGNALS_REFRESH_MS } from "@/api/hooks/signals";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
@@ -40,10 +41,12 @@ const signals: SignalsResponse = {
 };
 
 let current: SignalsResponse = signals;
+let triggers: IntradayTrigger[] = [];
 let fetches = 0;
 const server = setupServer(
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "v@example.com", role: "viewer", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
+  http.get("*/api/intraday/triggers", () => HttpResponse.json(triggers)),
   http.get("*/api/signals", () => {
     fetches += 1;
     return HttpResponse.json(current);
@@ -54,6 +57,7 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
   server.resetHandlers();
   current = signals;
+  triggers = [];
   fetches = 0;
   vi.useRealTimers();
 });
@@ -290,5 +294,56 @@ describe("Signals", () => {
     const nav = await screen.findByRole("navigation", { name: "Navigazione principale" });
     const labels = within(nav).getAllByRole("link").map((a) => a.textContent);
     expect(labels.indexOf("Segnali")).toBe(labels.indexOf("Portafogli") + 1);
+  });
+
+  describe("lavoro in giornata", () => {
+    const trig = (over: Partial<IntradayTrigger>): IntradayTrigger => ({
+      id: 1, created_at: "2026-11-27T15:16:00Z", portfolio_id: "p1", portfolio_name: "Crescita", strategy_ref: "STR-003",
+      strategy_name: "RSI veloce", symbol: "AAPL", rule: "entry", timeframe: "15m", bar_close: "2026-11-27T15:15:00Z",
+      value: "28.4", threshold: "30", price: "190.1", rule_text: "RSI 14 sotto 30", outcome: "woken", issue_ident: null, error: null, ...over,
+    });
+    const withIntraday: SignalsResponse = {
+      ...signals,
+      portfolios: [{
+        ...signals.portfolios[0],
+        strategies: [
+          { ...signals.portfolios[0].strategies[0], intraday: false },
+          { ...signals.portfolios[0].strategies[0], ref: "STR-003", name: "RSI veloce", timeframe: "15m", intraday: true },
+        ],
+      }],
+    };
+
+    it("filters the strategies to the intraday ones and marks them", async () => {
+      current = withIntraday;
+      const user = userEvent.setup();
+      renderApp("/segnali");
+      expect(await screen.findByRole("table", { name: "Segnali STR-001" })).toBeInTheDocument();
+      const day = screen.getByRole("table", { name: "Segnali STR-003" });
+      expect(within(day).getByRole("columnheader", { name: "In giornata" })).toBeInTheDocument();
+      expect(within(day).getAllByText("sì").length).toBeGreaterThan(0);
+      await user.click(screen.getByRole("checkbox", { name: "Solo in giornata" }));
+      expect(screen.queryByRole("table", { name: "Segnali STR-001" })).not.toBeInTheDocument();
+      expect(screen.getByRole("table", { name: "Segnali STR-003" })).toBeInTheDocument();
+    });
+
+    it("lists the latest triggers with the outcome in plain words", async () => {
+      triggers = [
+        trig({ id: 3, outcome: "capped", symbol: "MSFT" }),
+        trig({ id: 2, outcome: "telegram", symbol: "NVDA", rule: "exit", rule_text: "RSI 14 sopra 70" }),
+        trig({ id: 1, outcome: "woken" }),
+      ];
+      renderApp("/segnali");
+      const table = await screen.findByRole("table", { name: "Ultimi scatti" });
+      const rows = within(table).getAllByRole("row");
+      expect(within(rows[1]).getByText("MSFT")).toBeInTheDocument();
+      expect(within(rows[1]).getByText("saltato per tetto")).toBeInTheDocument();
+      expect(within(rows[2]).getByText("solo Telegram")).toBeInTheDocument();
+      expect(within(rows[2]).getByText("uscita")).toBeInTheDocument();
+      expect(within(rows[3]).getByText("compito aperto")).toBeInTheDocument();
+      expect(within(rows[3]).getByText("entrata")).toBeInTheDocument();
+      expect(within(rows[3]).getByText("Crescita")).toBeInTheDocument();
+      expect(within(rows[3]).getByText(/RSI veloce/)).toBeInTheDocument();
+      expect(within(rows[3]).getByText("28,40 / 30,00")).toBeInTheDocument();
+    });
   });
 });

@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { useOpenPositions } from "@/api/hooks/positions";
 import type { OpenPosition, OpenPositionsPortfolio, ProtectiveLeg } from "@/api/types";
 import { DataTable, type Column } from "@/components/DataTable";
+import { DayAccountBoxes } from "@/components/DayAccountBoxes";
 import { ExtendedPositionLine, GapRiskBadge } from "@/components/ExtendedHours";
 import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
@@ -57,6 +58,11 @@ const positionColumns: Column<OpenPosition>[] = [
       <div>
         <div className="font-medium">{p.symbol}</div>
         {p.name && <div className="text-xs font-normal text-muted">{p.name}</div>}
+        {p.day_qty != null && Number(p.day_qty) > 0 && (
+          <StatusBadge tone="info" title="quantità comprata oggi come operazione di giornata e ancora aperta">
+            {`di giornata ${formatQty(p.day_qty)}`}
+          </StatusBadge>
+        )}
         <Link
           to={journalLink({ portfolio_id: p.portfolio_id, symbol: p.symbol, outcome: "open" })}
           className="block text-xs text-accent hover:underline"
@@ -163,6 +169,9 @@ export default function Positions() {
           </div>
         ))
       )}
+      <div className="mt-6">
+        <DayAccountBoxes />
+      </div>
     </div>
   );
 }

@@ -267,6 +267,7 @@ const server = setupServer(
     canceled.push(String(params.id));
     return HttpResponse.json({ ...openOrder, status: "canceled" });
   }),
+  http.get("*/api/agents", () => HttpResponse.json([])),
   http.get("*/api/risk-profiles", () =>
     HttpResponse.json([
       {

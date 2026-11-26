@@ -188,6 +188,18 @@ export interface Portfolio {
   in_totals?: boolean;
   /** only in a save response: set when the name has a word the agents should not see */
   name_warning?: string | null;
+  /** intraday mode A (agent wake on a signal); off by default */
+  intraday_enabled?: boolean;
+  /** intraday mode B (automatic rules, trials); off by default, never with mode A */
+  auto_rules_enabled?: boolean;
+  /** "5m" | "15m" | "1h" */
+  intraday_timeframes?: string[];
+  /** the agent woken by a trigger, null: nobody (logged and notified only) */
+  intraday_wake_agent_id?: string | null;
+  day_close_minutes?: number;
+  /** day-trade cap over 5 sessions, null: no cap */
+  max_day_trades_5d?: number | null;
+  intraday_max_wakes_per_hour?: number;
 }
 
 export interface PortfolioCreate {
@@ -213,6 +225,13 @@ export interface PortfolioPatch {
   in_totals?: boolean;
   /** empty / null clears it */
   code?: string | null;
+  intraday_enabled?: boolean;
+  auto_rules_enabled?: boolean;
+  intraday_timeframes?: string[];
+  intraday_wake_agent_id?: string | null;
+  day_close_minutes?: number;
+  max_day_trades_5d?: number | null;
+  intraday_max_wakes_per_hour?: number;
 }
 
 export interface PositionValuation {
@@ -303,6 +322,8 @@ export interface Order {
   /** to_send, sending, unknown, cancel_requested, replace_requested or the broker's state */
   broker_status?: string | null;
   broker_order_id?: string | null;
+  /** opened as a day trade (intraday) */
+  day_trade?: boolean;
 }
 
 export type OrderType = "market" | "limit" | "stop" | "stop_limit" | "trailing_stop";
@@ -325,6 +346,8 @@ export interface OrderInput {
   valid_until?: string;
   /** only for placing on a real-money portfolio */
   totp?: string;
+  /** a buy meant to be closed the same session (counted against the day-trade cap) */
+  day_trade?: boolean;
 }
 
 /** POST /api/portfolios/{id}/orders/preview: a refused check is ok=false with its code. */
@@ -439,6 +462,8 @@ export interface RiskProfile {
   description: string | null;
   /** fuse (Ruling R8.1): real orders sent per hour at most, 1-1000, default 30 */
   max_live_orders_per_hour?: number;
+  /** safety close at the end of the session: limit margin in percent, 0 < x <= 5 (default 0.5) */
+  day_close_limit_margin_pct?: string;
   /** live portfolios using it (list only; Default also counts those without a profile) */
   portfolios_count?: number;
   /** only in a save response: set when the name has a word the agents should not see */
@@ -633,6 +658,7 @@ export interface RiskProfileInput {
   short_allowed: boolean;
   description: string | null;
   max_live_orders_per_hour?: number;
+  day_close_limit_margin_pct?: string;
 }
 
 export type InterestKind = "loan" | "borrow";
@@ -1488,6 +1514,8 @@ export interface StrategySignal {
   timeframe: string | null;
   status: StrategySignalStatus;
   symbols: SignalSymbol[];
+  /** intraday timeframe on a portfolio with mode A on (older servers: absent) */
+  intraday?: boolean;
 }
 
 export interface SignalsResponse {
@@ -1575,6 +1603,8 @@ export interface OpenPosition {
   extended_beyond_stop?: boolean;
   /** being closed at the end of a «piano» (older servers: absent) */
   plan_state?: "pending" | "closing" | null;
+  /** quantity bought today by day-trade orders and still open (null/absent: not in day mode) */
+  day_qty?: string | null;
 }
 
 export interface OpenPositionsPortfolio {
@@ -2421,4 +2451,65 @@ export interface ResearchResult {
 
 export interface ResearchRunsResponse {
   runs: ResearchRun[];
+}
+
+// --- Intraday (GET /api/intraday/triggers, /api/intraday/accounts) ----------------------
+
+export type IntradayOutcome = "pending" | "woken" | "telegram" | "capped" | "issue_open" | "no_agent" | "late" | "failed";
+
+/** One signal that fired on an intraday timeframe (mode A), newest first. */
+export interface IntradayTrigger {
+  id: number;
+  created_at: string;
+  portfolio_id: string;
+  portfolio_name: string;
+  strategy_ref: string;
+  strategy_name: string;
+  symbol: string;
+  rule: "entry" | "exit";
+  timeframe: string;
+  bar_close: string;
+  value: string | null;
+  threshold: string | null;
+  price: string | null;
+  rule_text: string;
+  outcome: IntradayOutcome;
+  issue_ident: string | null;
+  error: string | null;
+}
+
+/** A portfolio of a broker link, with its day-trade switches and cap usage. */
+export interface IntradayAccountPortfolio {
+  portfolio_id: string;
+  portfolio_name: string;
+  intraday_enabled: boolean;
+  auto_rules_enabled: boolean;
+  leverage: string;
+  /** the leverage a day-trade entry may use */
+  day_leverage: string;
+  max_day_trades_5d: number | null;
+  /** the cap usage: null when the portfolio is not in day mode */
+  used: number | null;
+  pending: number | null;
+  remaining: number | null;
+  /** yyyy-mm-dd of the next session when a slot frees up */
+  frees_on: string | null;
+}
+
+/** The broker account state last read for a link (nothing here identifies the account). */
+export interface IntradayAccount {
+  link_id: string;
+  link_name: string;
+  kind: string;
+  buying_power: string | null;
+  multiplier: string | null;
+  equity: string | null;
+  trading_blocked: boolean | null;
+  account_blocked: boolean | null;
+  read_at: string | null;
+  /** read recently enough to be trusted */
+  fresh: boolean;
+  /** multiplier above 1: leverage is available (every Alpaca account is a margin account) */
+  margin: boolean;
+  portfolios: IntradayAccountPortfolio[];
 }

@@ -2,7 +2,9 @@ import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { usePatchPortfolio, useRiskProfiles } from "@/api/hooks/portfolios";
 import type { Portfolio } from "@/api/types";
+import { AdminOnly } from "@/components/AdminOnly";
 import { FormField, selectClass } from "@/components/FormField";
+import { IntradaySettings } from "@/components/IntradaySettings";
 import { NameWarning } from "@/components/NameWarning";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -176,6 +178,9 @@ export function PortfolioSettings({ portfolio }: { portfolio: Portfolio }) {
           onSaved={(saved) => setNameWarning(saved.name_warning ?? null)}
         />
         <InTotalsToggle portfolio={portfolio} />
+        <AdminOnly>
+          <IntradaySettings portfolio={portfolio} />
+        </AdminOnly>
       </CardContent>
     </Card>
   );

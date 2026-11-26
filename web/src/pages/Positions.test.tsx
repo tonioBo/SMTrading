@@ -3,7 +3,7 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { POSITIONS_REFRESH_MS } from "@/api/hooks/positions";
-import type { OpenPosition, OpenPositionsResponse } from "@/api/types";
+import type { IntradayAccount, OpenPosition, OpenPositionsResponse } from "@/api/types";
 import { renderApp } from "@/test/render";
 import { commonHandlers } from "@/test/handlers";
 import { resetViewport, setViewportWidth } from "@/test/viewport";
@@ -46,10 +46,12 @@ const body: OpenPositionsResponse = {
 };
 
 let current: OpenPositionsResponse = body;
+let accounts: IntradayAccount[] = [];
 let fetches = 0;
 const server = setupServer(
   http.get("*/api/auth/me", () => HttpResponse.json({ email: "v@example.com", role: "viewer", totp_enabled: false })),
   http.get("*/api/kill-switch", () => HttpResponse.json({ on: false })),
+  http.get("*/api/intraday/accounts", () => HttpResponse.json(accounts)),
   http.get("*/api/positions/open", () => {
     fetches += 1;
     return HttpResponse.json(current);
@@ -60,6 +62,7 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
   server.resetHandlers();
   current = body;
+  accounts = [];
   fetches = 0;
   vi.useRealTimers();
 });
@@ -176,5 +179,63 @@ describe("Positions", () => {
     const nav = await screen.findByRole("navigation", { name: "Navigazione principale" });
     const labels = within(nav).getAllByRole("link").map((a) => a.textContent);
     expect(labels.indexOf("Posizioni")).toBe(labels.indexOf("Segnali") + 1);
+  });
+
+  describe("lavoro in giornata", () => {
+    const portfolioRow = {
+      portfolio_id: "p1", portfolio_name: "Portafoglio Aggressivo", intraday_enabled: true, auto_rules_enabled: false,
+      leverage: "2", day_leverage: "2", max_day_trades_5d: 3, used: 2, pending: 0, remaining: 1, frees_on: "2026-12-01",
+    };
+    const account = (over: Partial<IntradayAccount> = {}): IntradayAccount => ({
+      link_id: "l1", link_name: "Alpaca prova", kind: "alpaca_paper", buying_power: "25000", multiplier: "2", equity: "12000",
+      trading_blocked: false, account_blocked: false, read_at: "2026-11-27T09:30:00Z", fresh: true, margin: true,
+      portfolios: [
+        portfolioRow,
+        { ...portfolioRow, portfolio_id: "p2", portfolio_name: "Prudente", intraday_enabled: false, auto_rules_enabled: true, max_day_trades_5d: null, used: 1, remaining: null, frees_on: null },
+      ],
+      ...over,
+    });
+
+    it("marks the day quantity and shows the account box with the cap usage", async () => {
+      current = { ...body, positions: [pos({ day_qty: "40" }), ...body.positions.slice(1)] };
+      accounts = [account()];
+      renderApp("/posizioni");
+      const agg = await screen.findByRole("table", { name: "Posizioni Portafoglio Aggressivo" });
+      expect(within(agg).getByText("di giornata 40")).toBeInTheDocument();
+      const box = await screen.findByRole("region", { name: "Conto e operazioni di giornata Alpaca prova" });
+      expect(box).toHaveTextContent("potere d'acquisto 25.000,00 $ · margine ×2 · letto alle 10:30");
+      expect(box).toHaveTextContent("leva disponibile 2×");
+      expect(box).not.toHaveTextContent("conto in contanti");
+      expect(box).not.toHaveTextContent("bloccato dal broker");
+      expect(box).toHaveTextContent("Portafoglio Aggressivo");
+      expect(box).toHaveTextContent("leva in giornata 2");
+      expect(box).toHaveTextContent("usate 2 su 3 · restano 1 · la prossima si libera il 01/12");
+      expect(box).toHaveTextContent("usate 1 (nessun tetto)");
+      expect(box).not.toHaveTextContent(/25\.000 \$ di patrimonio|regola USA|PDT/i);
+    });
+
+    it("does not mark a position without day quantity", async () => {
+      current = { ...body, positions: [pos({ day_qty: "0" }), ...body.positions.slice(1)] };
+      renderApp("/posizioni");
+      await screen.findByRole("table", { name: "Posizioni Portafoglio Aggressivo" });
+      expect(screen.queryByText(/di giornata/)).not.toBeInTheDocument();
+    });
+
+    it("flags a blocked account and a stale read, and a cash account", async () => {
+      accounts = [account({ trading_blocked: true, fresh: false, margin: false, multiplier: "1" })];
+      renderApp("/posizioni");
+      const box = await screen.findByRole("region", { name: "Conto e operazioni di giornata Alpaca prova" });
+      expect(box).toHaveTextContent("bloccato dal broker");
+      expect(box).toHaveTextContent("non letto di recente");
+      expect(box).toHaveTextContent("conto in contanti");
+      expect(box).not.toHaveTextContent("leva disponibile");
+    });
+
+    it("shows no box for a link without portfolios in day mode", async () => {
+      accounts = [account({ portfolios: [{ ...portfolioRow, intraday_enabled: false }] })];
+      renderApp("/posizioni");
+      await screen.findByRole("table", { name: "Posizioni Portafoglio Aggressivo" });
+      expect(screen.queryByRole("region", { name: /Conto e operazioni di giornata/ })).not.toBeInTheDocument();
+    });
   });
 });

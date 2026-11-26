@@ -45,6 +45,8 @@ interface Draft {
   validUntil: ValidUntil;
   /** `datetime-local` value (the browser's time zone) for validUntil "at" */
   validUntilAt: string;
+  /** «Di giornata»: a buy meant to be closed the same session (buys only) */
+  dayTrade: boolean;
 }
 
 const EMPTY: Draft = {
@@ -60,6 +62,7 @@ const EMPTY: Draft = {
   tif: "gtc",
   validUntil: "none",
   validUntilAt: "",
+  dayTrade: false,
 };
 
 /** «Chiusura di oggi» is offered for the instrument (not for crypto and FX). */
@@ -86,6 +89,7 @@ function buildOrder(d: Draft): { body: OrderInput; errors: null } | { body: null
   if (NEEDS_LIMIT.has(d.type)) set("limit_price", d.limitPrice);
   if (NEEDS_STOP.has(d.type)) set("stop_price", d.stopPrice);
   if (d.type === "trailing_stop") set(d.trailBy === "pct" ? "trail_pct" : "trail_amount", d.trail);
+  if (d.side === "buy" && d.dayTrade) body.day_trade = true;
   if (d.validUntil === "close") body.valid_until = "close";
   if (d.validUntil === "at") {
     const at = d.validUntilAt ? new Date(d.validUntilAt) : null;
@@ -378,6 +382,17 @@ export function OrderForm({ portfolio, onClose }: { portfolio: Portfolio; onClos
                 <Input inputMode="decimal" value={draft.trail} onChange={(e) => edit({ trail: e.target.value })} />
               </FormField>
             </div>
+          )}
+          {draft.side === "buy" && (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={draft.dayTrade}
+                onChange={(e) => edit({ dayTrade: e.target.checked })}
+                className="h-4 w-4 accent-[rgb(var(--accent))]"
+              />
+              Di giornata
+            </label>
           )}
           <FormField label="Durata">
             <select className={selectClass} value={draft.tif} onChange={(e) => edit({ tif: e.target.value as TimeInForce })}>

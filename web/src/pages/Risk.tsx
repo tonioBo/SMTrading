@@ -39,12 +39,17 @@ const PROFILE_FIELDS = [
   "allowed_asset_classes",
   "allowed_markets",
   "max_live_orders_per_hour",
+  "day_close_limit_margin_pct",
   ...LIMITS.map((l) => l.field),
 ];
 /** Ruling R8.1: real orders per hour per portfolio (beyond: reduce-only and a red alert). */
 const FUSE_MIN = 1;
 const FUSE_MAX = 1000;
 const FUSE_DEFAULT = 30;
+/** Safety close at the end of the session: limit margin in percent, 0 < x <= 5 (default 0.5). */
+const DAY_MARGIN_MAX = 5;
+const DAY_MARGIN_DEFAULT = "0.5";
+const DAY_MARGIN_ERROR = `Inserisci un valore maggiore di 0 e al massimo ${DAY_MARGIN_MAX}`;
 const FUSE_ERROR = `Inserisci un numero intero tra ${FUSE_MIN} e ${FUSE_MAX}`;
 
 function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onClose: () => void }) {
@@ -61,6 +66,7 @@ function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onCl
   const [short, setShort] = useState(profile?.short_allowed ?? true);
   const [description, setDescription] = useState(profile?.description ?? "");
   const [fuse, setFuse] = useState(String(profile?.max_live_orders_per_hour ?? FUSE_DEFAULT));
+  const [dayMargin, setDayMargin] = useState(toInputDecimal(profile?.day_close_limit_margin_pct ?? DAY_MARGIN_DEFAULT));
   const [errors, setErrors] = useState<Record<string, string>>({});
   // saved with a name warning: the dialog stays open on it until it is closed
   const [nameWarning, setNameWarning] = useState<string | null>(null);
@@ -83,6 +89,8 @@ function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onCl
     }
     const fuseValue = /^\d+$/.test(fuse.trim()) ? Number(fuse.trim()) : NaN;
     if (!(fuseValue >= FUSE_MIN && fuseValue <= FUSE_MAX)) errs.max_live_orders_per_hour = FUSE_ERROR;
+    const margin = normalizeAmount(dayMargin);
+    if (margin === null || !(Number(margin) > 0 && Number(margin) <= DAY_MARGIN_MAX)) errs.day_close_limit_margin_pct = DAY_MARGIN_ERROR;
     setErrors(errs);
     if (Object.keys(errs).length) return;
     const input: RiskProfileInput = {
@@ -94,6 +102,7 @@ function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onCl
       short_allowed: short,
       description: description.trim() || null,
       max_live_orders_per_hour: fuseValue,
+      day_close_limit_margin_pct: margin ?? DAY_MARGIN_DEFAULT,
     };
     save.mutate(
       { id: profile?.id ?? null, profile: input },
@@ -152,6 +161,13 @@ function ProfileDialog({ profile, onClose }: { profile: RiskProfile | null; onCl
             hint={`Solo portafogli con denaro reale: oltre il limite il portafoglio va in reduce-only (${FUSE_MIN}-${FUSE_MAX}, predefinito ${FUSE_DEFAULT})`}
           >
             <Input value={fuse} inputMode="numeric" onChange={(e) => setFuse(e.target.value)} />
+          </FormField>
+          <FormField
+            label="Margine del limite nella chiusura di sicurezza (%)"
+            error={fieldError("day_close_limit_margin_pct")}
+            hint={`Per il lavoro in giornata: prezzo del limite sotto l'ultimo scambio (da 0 a ${DAY_MARGIN_MAX}, predefinito 0,5)`}
+          >
+            <Input value={dayMargin} inputMode="decimal" onChange={(e) => setDayMargin(e.target.value)} />
           </FormField>
           <div className="flex items-center gap-2 sm:col-span-2">
             <input id="risk-short" type="checkbox" checked={short} onChange={(e) => setShort(e.target.checked)} className="h-4 w-4 accent-[rgb(var(--accent))]" />
