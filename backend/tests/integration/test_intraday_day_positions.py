@@ -14,7 +14,7 @@ from smtrading.engine.models import (
     OrderType,
 )
 from smtrading.intraday.day_positions import day_quantities
-from smtrading.intraday.pdt import entry_budget, link_budget
+from smtrading.intraday.day_trades import own_cap_usage
 from smtrading.ledger.models import Journal, JournalType
 from smtrading.portfolios.service import create_portfolio
 from smtrading.positions.models import Position
@@ -40,8 +40,8 @@ async def _pf(db_session, link=None, **kw):
     return p
 
 
-async def _link(db_session, kind="alpaca_paper", state=None):
-    link = BrokerLink(name=f"L-{uuid.uuid4().hex[:8]}", kind=kind, pdt_state=state)
+async def _link(db_session, kind="alpaca_paper"):
+    link = BrokerLink(name=f"L-{uuid.uuid4().hex[:8]}", kind=kind)
     db_session.add(link)
     await db_session.flush()
     return link
@@ -108,75 +108,61 @@ async def test_day_quantities_capped_by_position(db_session, seeded):
     assert await day_quantities(db_session, p.id, WED) == {"AAPL": D(25)}
 
 
-async def test_link_budget_counts_all_portfolios_of_the_link(db_session, seeded):
+async def test_own_usage_window_with_holiday(db_session, seeded):
     link = await _link(db_session)
-    a = await _pf(db_session, link, intraday_enabled=True)
-    b = await _pf(db_session, link, auto_rules_enabled=True)
-    await _round_trip(db_session, a, WED)
-    await _round_trip(db_session, b, WED)
-    bud = await link_budget(db_session, link.id, WED)
-    assert (bud.applies, bud.limit, bud.used, bud.remaining) == (True, 3, 2, 1)
-
-
-async def test_link_budget_window_with_holiday(db_session, seeded):
-    link = await _link(db_session)
-    p = await _pf(db_session, link, intraday_enabled=True)
+    p = await _pf(db_session, link, intraday_enabled=True, max_day_trades_5d=3)
     mon23 = datetime(2026, 11, 23, 16, 0, tzinfo=UTC)
     mon30 = datetime(2026, 11, 30, 16, 0, tzinfo=UTC)
     await _round_trip(db_session, p, mon23)
     await _round_trip(db_session, p, mon30)
-    b = await link_budget(db_session, link.id, mon30)
-    assert b.used == 2 and b.frees_on == date(2026, 12, 1)
-    b = await link_budget(db_session, link.id, datetime(2026, 12, 1, 16, 0, tzinfo=UTC))
-    assert b.used == 1
+    u = await own_cap_usage(db_session, p, mon30)
+    assert u.used == 2 and u.frees_on == date(2026, 12, 1)
+    u = await own_cap_usage(db_session, p, datetime(2026, 12, 1, 16, 0, tzinfo=UTC))
+    assert u.used == 1
 
 
-async def test_pending_counts_open_day_positions_and_resting_entries(db_session, seeded):
+async def test_own_usage_pending_counts_open_day_positions_and_resting_entries(
+        db_session, seeded):
     link = await _link(db_session)
-    p = await _pf(db_session, link, intraday_enabled=True)
+    p = await _pf(db_session, link, intraday_enabled=True, max_day_trades_5d=3)
     await _order(db_session, p, OrderSide.buy, 10, WED, day_trade=True)
     await _pos(db_session, p, 10)  # AAPL: open day position
     await _order(db_session, p, OrderSide.buy, 5, WED, symbol="MSFT", day_trade=True,
                  status=OrderStatus.queued, fill=False)  # resting entry
     await _order(db_session, p, OrderSide.buy, 5, WED, symbol="NVDA", day_trade=False,
                  status=OrderStatus.queued, fill=False)  # not a day trade: ignored
-    bud = await link_budget(db_session, link.id, WED)
-    assert (bud.used, bud.pending, bud.remaining) == (0, 2, 1)
+    u = await own_cap_usage(db_session, p, WED)
+    assert (u.used, u.pending, u.remaining) == (0, 2, 1)
 
 
-async def test_mismatch_with_broker_count(db_session, seeded):
-    link = await _link(db_session, state={"daytrade_count": 2})
-    p = await _pf(db_session, link, intraday_enabled=True)
-    await _round_trip(db_session, p, WED)
-    bud = await link_budget(db_session, link.id, WED)
-    assert bud.used == 1 and bud.broker_count == 2 and bud.mismatch is True
-
-
-async def test_entry_budget_own_cap(db_session, seeded):
+async def test_own_cap_usage_reaches_zero(db_session, seeded):
     p = await _pf(db_session, intraday_enabled=True, max_day_trades_5d=1)
     await _round_trip(db_session, p, WED)
-    bud = await entry_budget(db_session, p, "AAPL", WED)
-    assert bud.remaining == 0 and bud.limit == 1
+    u = await own_cap_usage(db_session, p, WED, "AAPL")
+    assert u.remaining == 0 and u.limit == 1
 
 
-async def test_entry_budget_without_any_limit(db_session, seeded):
+async def test_own_usage_without_cap(db_session, seeded):
     p = await _pf(db_session, intraday_enabled=True)
-    assert (await entry_budget(db_session, p, "AAPL", WED)).remaining is None
+    await _round_trip(db_session, p, WED)
+    u = await own_cap_usage(db_session, p, WED, "AAPL")
+    assert u.limit is None and u.remaining is None
+    assert u.used == 1  # the count is there without a cap too
 
 
 async def test_own_cap_ignores_other_portfolios_of_link(db_session, seeded):
-    link = await _link(db_session, state={"multiplier": "2", "equity": "30000",
-                                          "last_equity": "30000"})
+    link = await _link(db_session)
     mine = await _pf(db_session, link, intraday_enabled=True, max_day_trades_5d=1)
     other = await _pf(db_session, link, auto_rules_enabled=True)
     await _round_trip(db_session, other, WED)
-    bud = await entry_budget(db_session, mine, "AAPL", WED)
-    assert bud.remaining == 1  # the link has no PDT limit (equity >= 25000), own cap 1 unused
+    u = await own_cap_usage(db_session, mine, WED, "AAPL")
+    assert u.remaining == 1 and u.used == 0
 
 
-async def test_entry_budget_same_symbol_adds_nothing(db_session, seeded):
+async def test_own_usage_same_symbol_adds_nothing(db_session, seeded):
     p = await _pf(db_session, intraday_enabled=True, max_day_trades_5d=1)
     await _order(db_session, p, OrderSide.buy, 10, WED, day_trade=True)
     await _pos(db_session, p, 10)
-    assert (await entry_budget(db_session, p, "AAPL", WED)).remaining == 1
-    assert (await entry_budget(db_session, p, "MSFT", WED)).remaining == 0
+    assert (await own_cap_usage(db_session, p, WED, "AAPL")).remaining == 1
+    assert (await own_cap_usage(db_session, p, WED, "MSFT")).remaining == 0
+    assert (await own_cap_usage(db_session, p, WED)).remaining == 0  # portal: nothing released

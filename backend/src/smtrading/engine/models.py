@@ -126,7 +126,8 @@ class Order(Base):
     reduce_only: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false")
     )
-    # intraday: a buy that opens a position meant to be closed the same session (PDT count)
+    # intraday: a buy that opens a position meant to be closed the same session (the count
+    # of day trades)
     day_trade: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false")
     )

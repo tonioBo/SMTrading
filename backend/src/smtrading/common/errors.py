@@ -13,7 +13,7 @@ class ErrorCode(StrEnum):
     PORTFOLIO_ARCHIVED = "PORTFOLIO_ARCHIVED"
     STALE_QUOTE = "STALE_QUOTE"
     RISK_LIMIT_EXCEEDED = "RISK_LIMIT_EXCEEDED"
-    DAY_TRADE_LIMIT = "DAY_TRADE_LIMIT"  # PDT budget used up (intraday buys only)
+    DAY_TRADE_LIMIT = "DAY_TRADE_LIMIT"  # the portfolio's own day-trade cap reached (day-trade buys only)
     SHORT_NOT_ALLOWED = "SHORT_NOT_ALLOWED"
     INVALID_ORDER = "INVALID_ORDER"
     NOT_FOUND = "NOT_FOUND"

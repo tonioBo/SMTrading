@@ -100,7 +100,7 @@ class Portfolio(Base):
     # minutes before the close at which the safety net closes the day's quantity (both modes)
     day_close_minutes: Mapped[int] = mapped_column(
         Integer, default=10, server_default=text("10"))
-    # own day-trade budget in 5 rolling sessions (None: only the broker's)
+    # optional own day-trade cap in 5 rolling sessions (None: no cap)
     max_day_trades_5d: Mapped[int | None] = mapped_column(Integer)
     intraday_max_wakes_per_hour: Mapped[int] = mapped_column(
         Integer, default=6, server_default=text("6"))

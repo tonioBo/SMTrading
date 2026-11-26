@@ -29,10 +29,12 @@ uses unrounded values (valuation *_raw fields, Ruling R8).
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, localcontext
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from smtrading.brokers.models import BrokerLink
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import decimal_to_str, quantize_money
 from smtrading.engine.models import OrderSide, OrderType
@@ -41,10 +43,10 @@ from smtrading.engine.quotesource import QuoteSource
 from smtrading.fees.calculator import compute_trade_fee
 from smtrading.fees.resolver import FeeQuote, load_rules, resolve_rule
 from smtrading.goals.plans import adds_to, open_closure, plan_closing_error
-from smtrading.instruments.models import Instrument
+from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.instruments.service import validate_price, validate_quantity
+from smtrading.intraday.day_trades import day_trade_leverage, fresh_buying_power, own_cap_usage
 from smtrading.intraday.models import day_scope
-from smtrading.intraday.pdt import entry_budget
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.marketdata.quality import SUSPECT_REASON
 from smtrading.marketdata.types import Quote
@@ -54,7 +56,7 @@ from smtrading.risk.live_checks import fx_fee_eur, live_link_of, live_pre_trade,
 from smtrading.risk.models import RiskProfile, TradingHalt
 from smtrading.risk.profiles import effective_risk_profile
 from smtrading.risk.settings import get_default_spread_bps, get_stale_threshold, is_kill_switch_on
-from smtrading.valuation.service import mark_price, value_portfolio
+from smtrading.valuation.service import PortfolioValuation, mark_price, value_portfolio
 
 EUR = "EUR"
 _PREC = 60
@@ -177,20 +179,74 @@ async def _estimate_price(
     return price, quote
 
 
-async def _check_day_trade_budget(
+async def _check_own_day_trade_cap(
     session: AsyncSession, portfolio: Portfolio, instrument: Instrument, now: datetime
 ) -> None:
-    budget = await entry_budget(session, portfolio, instrument.symbol, now)
-    if budget.remaining is None or budget.remaining > 0:
+    """The portfolio's optional cap `max_day_trades_5d`; no query without a cap."""
+    if portfolio.max_day_trades_5d is None:
         return
-    when = (f"la prossima si libera il {budget.frees_on:%d/%m}" if budget.frees_on
+    usage = await own_cap_usage(session, portfolio, now, instrument.symbol)
+    if usage.remaining is None or usage.remaining > 0:
+        return
+    when = (f"la prossima si libera il {usage.frees_on:%d/%m}" if usage.frees_on
             else "quando una delle aperte si chiude senza operazione")
     raise _Reject(
         ErrorCode.DAY_TRADE_LIMIT,
-        f"Operazioni di giornata esaurite: {budget.used} usate su {budget.limit} nelle "
-        f"ultime 5 sedute (più {budget.pending} già aperte), ne restano 0; {when}",
-        {"used": budget.used, "limit": budget.limit, "remaining": 0,
-         "frees_on": budget.frees_on.isoformat() if budget.frees_on else None},
+        f"Tetto operazioni di giornata del portafoglio raggiunto: {usage.used} usate su "
+        f"{usage.limit} nelle ultime 5 sedute (più {usage.pending} già aperte); {when}",
+        {"used": usage.used, "limit": usage.limit, "remaining": 0,
+         "frees_on": usage.frees_on.isoformat() if usage.frees_on else None},
+    )
+
+
+def _check_day_trade_leverage(
+    portfolio: Portfolio, link: BrokerLink | None, valuation: PortfolioValuation,
+    notional_eur: Decimal, costs: Decimal, increases: bool,
+) -> None:
+    """Step 9's buying power (equity x leverage - exposure) with the day-trade leverage,
+    when it is below the portfolio's (otherwise step 9 already checked the same)."""
+    lev = day_trade_leverage(portfolio, link)
+    if not increases or lev >= portfolio.leverage:
+        return
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        left = valuation.equity_raw * lev - valuation.exposure_raw - costs - notional_eur
+    if left < 0:
+        raise _Reject(
+            ErrorCode.INSUFFICIENT_BUYING_POWER,
+            f"Esposizione oltre la leva ammessa per le operazioni di giornata ({lev}) su "
+            "questo portafoglio",
+            {"reason": "day_trade_leverage", "leverage": str(lev)},
+        )
+
+
+async def _check_broker_buying_power(
+    qs: QuoteSource, portfolio: Portfolio, link: BrokerLink | None, instrument: Instrument,
+    order_notional: Decimal, increases: bool, now: datetime,
+) -> None:
+    """The broker's buying power from a fresh account state (in USD), when exposure grows;
+    no fresh state: no refusal."""
+    if not increases:
+        return
+    bp = fresh_buying_power(link, now, crypto=instrument.asset_class == AssetClass.crypto)
+    if bp is None:
+        return
+    ccy = instrument.currency
+    rate = Decimal(1) if ccy == "USD" else await qs.get_fx_rate(ccy, "USD")
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        raw = order_notional * rate
+    if raw <= bp:
+        return
+    usd = quantize_money(raw, "USD")
+    read_at = link.pdt_state_at
+    at = read_at.astimezone(ZoneInfo(portfolio.timezone)).strftime("%H:%M")
+    raise _Reject(
+        ErrorCode.INSUFFICIENT_BUYING_POWER,
+        f"Importo di {decimal_to_str(usd)} $ oltre il potere d'acquisto del conto "
+        f"{link.name} ({decimal_to_str(bp)} $, letto alle {at})",
+        {"reason": "broker_buying_power", "notional": decimal_to_str(usd),
+         "buying_power": decimal_to_str(bp), "read_at": read_at.isoformat()},
     )
 
 
@@ -331,10 +387,16 @@ async def _run(
     if increases and bp_after < 0:
         raise _Reject(ErrorCode.INSUFFICIENT_BUYING_POWER, "insufficient buying power")
 
-    # 10: day-trade budget (PDT): only buys flagged `day_trade` of a portfolio with an
-    # intraday switch on; sells are never refused
+    # 10: day trades: the portfolio's own cap and the broker's buying power. Only buys
+    # flagged day_trade of a portfolio in day_scope; sells are never refused
     if side == OrderSide.buy and day_trade and day_scope(portfolio):
-        await _check_day_trade_budget(session, portfolio, instrument, now or datetime.now(UTC))
+        at = now or datetime.now(UTC)
+        await _check_own_day_trade_cap(session, portfolio, instrument, at)
+        link = (await session.get(BrokerLink, portfolio.broker_link_id)
+                if portfolio.broker_link_id else None)
+        _check_day_trade_leverage(portfolio, link, valuation, notional_eur, costs, increases)
+        await _check_broker_buying_power(qs, portfolio, link, instrument, order_notional,
+                                         increases, at)
 
     return CheckResult(
         ok=True, estimated_price=price, estimated_notional_eur=notional_eur,

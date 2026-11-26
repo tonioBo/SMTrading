@@ -40,7 +40,8 @@ DAY_SCOPE = or_(Portfolio.intraday_enabled, Portfolio.auto_rules_enabled)
 
 
 def day_scope(p: Portfolio) -> bool:
-    """True if the portfolio has mode A or mode B on (PDT, close safety net, jobs)."""
+    """True if the portfolio has mode A or mode B on (tetto di giornata, rete di fine seduta,
+    lettura del conto, job)."""
     return bool(p.intraday_enabled or p.auto_rules_enabled)
 
 

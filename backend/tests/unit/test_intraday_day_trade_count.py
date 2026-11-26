@@ -2,10 +2,15 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal as D
 
-import pytest
-
+from smtrading.brokers.models import BrokerLink
 from smtrading.engine.models import OrderSide
-from smtrading.intraday.pdt import FillRow, count_day_trades, pdt_applies
+from smtrading.intraday.day_trades import (
+    FillRow,
+    count_day_trades,
+    day_trade_leverage,
+    fresh_buying_power,
+)
+from smtrading.portfolios.models import Portfolio
 
 MON = date(2026, 11, 23)
 BUY, SELL = OrderSide.buy, OrderSide.sell
@@ -54,19 +59,33 @@ def test_symbols_are_separate():
     assert count_day_trades(fills) == {}
 
 
-@pytest.mark.parametrize("kind, state, expected", [
-    ("t212_demo", None, False),
-    ("alpaca_paper", None, True),
-    ("alpaca_paper", {"multiplier": "2", "equity": "24999.99"}, True),
-    ("alpaca_paper", {"multiplier": "1", "equity": "1000"}, False),
-    ("alpaca_paper", {"multiplier": "4", "equity": "30000", "last_equity": "24000"}, True),
-    ("alpaca_paper", {"multiplier": "4", "equity": "30000", "last_equity": "30000"}, False),
-    ("alpaca_live", {"multiplier": "2"}, True),
-])
-def test_pdt_applies(kind, state, expected):
-    assert pdt_applies(kind, state) is expected
-
-
 def test_equal_timestamps_buys_sort_first():
     fills = [_f(B, SELL, 10, 0), _f(A, BUY, 10, 0)]  # sell listed first, same ts
     assert count_day_trades(fills) == {MON: 1}
+
+
+def _acct(state, minutes_ago=9, kind="alpaca_paper"):
+    at = None if minutes_ago is None else T0 - timedelta(minutes=minutes_ago)
+    return BrokerLink(name="L", kind=kind, pdt_state=state, pdt_state_at=at)
+
+
+def test_fresh_buying_power():
+    bp = {"buying_power": "1000", "non_marginable_buying_power": "400"}
+    assert fresh_buying_power(_acct(bp), T0) == D(1000)
+    assert fresh_buying_power(_acct(bp), T0, crypto=True) == D(400)  # Alpaca's crypto rule
+    assert fresh_buying_power(_acct(bp, minutes_ago=11), T0) is None
+    assert fresh_buying_power(_acct(None), T0) is None
+    assert fresh_buying_power(_acct(bp, minutes_ago=None), T0) is None
+    assert fresh_buying_power(_acct({"daytrade_count": 1}), T0) is None  # an old PDT state
+    assert fresh_buying_power(_acct({"buying_power": "abc"}), T0) is None
+    assert fresh_buying_power(_acct({"buying_power": None}), T0) is None
+    assert fresh_buying_power(_acct(bp, kind="t212_demo"), T0) is None
+    assert fresh_buying_power(None, T0) is None
+
+
+def test_day_trade_leverage():
+    paper, live = _acct(None), _acct(None, kind="alpaca_live")
+    assert day_trade_leverage(Portfolio(leverage=D(3)), paper) == D(2)
+    assert day_trade_leverage(Portfolio(leverage=D("1.5")), paper) == D("1.5")
+    assert day_trade_leverage(Portfolio(leverage=D(2)), None) == D(2)
+    assert day_trade_leverage(Portfolio(leverage=D(2)), live) == D(1)  # real money: 1

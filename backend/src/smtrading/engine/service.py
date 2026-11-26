@@ -135,7 +135,6 @@ from smtrading.instruments.market_hours import (
 )
 from smtrading.instruments.models import Instrument
 from smtrading.instruments.service import get_instrument, validate_price, validate_quantity
-from smtrading.intraday.pdt import warn_day_trade_sell
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.locks import lock_live_portfolio, lock_portfolio
@@ -742,8 +741,6 @@ async def _place(
         return adm.existing, False
     order = await _persist(session, adm)
     await _activate(session, adm.qs, order, adm)
-    if order.side == OrderSide.sell and order.status != OrderStatus.rejected:
-        await warn_day_trade_sell(session, order, adm.now)
     _track_open(session, [order])
     # with the final outcome of the placement (a failed fill rejects it after _persist)
     queue_event(session, "order.rejected" if order.status == OrderStatus.rejected

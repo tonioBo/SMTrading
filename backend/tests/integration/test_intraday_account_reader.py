@@ -1,4 +1,3 @@
-import hashlib
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -15,9 +14,11 @@ from smtrading.brokers.models import BrokerLink
 from smtrading.brokers.service import create_link
 from smtrading.common.db import make_engine
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.engine.models import Fill, Order, OrderSide, OrderStatus, OrderType
-from smtrading.intraday.pdt_reader import PDT_READ_INTERVAL_S, read_pdt_state, refresh_pdt_states
-from smtrading.ledger.models import Journal, JournalType
+from smtrading.intraday.account_reader import (
+    ACCOUNT_READ_INTERVAL_S,
+    read_account_state,
+    refresh_account_states,
+)
 from smtrading.portfolios.service import create_portfolio
 from smtrading.seed import run_seed
 from smtrading.telegram.models import TelegramOutbox
@@ -25,13 +26,14 @@ from smtrading.telegram.models import TelegramOutbox
 WED = datetime(2026, 11, 25, 17, 0, tzinfo=UTC)
 KEY = "KID-CANARY-7731"
 ACCT_ID = "acct-id-canary-5520"
-KEYS = {"equity", "last_equity", "multiplier", "daytrade_count", "pattern_day_trader"}
+KEYS = {"buying_power", "non_marginable_buying_power", "multiplier", "equity",
+        "trading_blocked", "account_blocked", "read_at"}
 
 
 def _account(**kw):
     base = {"id": ACCT_ID, "cash": "10000", "buying_power": "20000", "currency": "USD",
-            "equity": "10000", "last_equity": "9900", "multiplier": "2",
-            "daytrade_count": 0, "pattern_day_trader": False}
+            "non_marginable_buying_power": "10000", "equity": "10000", "multiplier": "2",
+            "trading_blocked": False, "account_blocked": False}
     base.update(kw)
     return base
 
@@ -85,26 +87,6 @@ async def _pf(sm, link_id, **kw):
         return p.id
 
 
-async def _fills(sm, pid, link_id, n=1):
-    """n same-session buy+sell pairs on AAPL = n day trades."""
-    async with sm() as s:
-        for _ in range(n):
-            for side, hour in ((OrderSide.buy, 15), (OrderSide.sell, 16)):
-                o = Order(portfolio_id=pid, symbol="AAPL", side=side, type=OrderType.market,
-                          qty=D(1), status=OrderStatus.filled, broker_link_id=link_id)
-                s.add(o)
-                await s.flush()
-                h = hashlib.sha256(uuid.uuid4().bytes).hexdigest()
-                j = Journal(type=JournalType.TRADE, author_type="system", prev_hash=h,
-                            hash=hashlib.sha256(h.encode()).hexdigest())
-                s.add(j)
-                await s.flush()
-                s.add(Fill(order_id=o.id, portfolio_id=pid, symbol="AAPL", side=side,
-                           qty=D(1), price=D(100), fee_currency="USD", journal_id=j.id,
-                           created_at=WED.replace(hour=hour)))
-        await s.commit()
-
-
 async def _state(sm, link_id):
     async with sm() as s:
         link = await s.get(BrokerLink, link_id)
@@ -117,7 +99,7 @@ async def _outbox(sm):
 
 
 def test_interval():
-    assert PDT_READ_INTERVAL_S == 300
+    assert ACCOUNT_READ_INTERVAL_S == 300
 
 
 async def test_reads_only_links_with_day_scope_portfolios(env, router):
@@ -128,42 +110,58 @@ async def test_reads_only_links_with_day_scope_portfolios(env, router):
     await _pf(sm, c)  # campaign portfolio, both switches off
     route = _mock_account(router)
     async with httpx.AsyncClient() as http:
-        assert await refresh_pdt_states(sm, http, WED) == 2
+        assert await refresh_account_states(sm, http, WED) == 2
     assert route.call_count == 2
     for link_id in (a, b):
         state, at = await _state(sm, link_id)
         assert set(state) == KEYS and at is not None
-        assert state["multiplier"] == "2" and state["daytrade_count"] == 0
-        assert state["pattern_day_trader"] is False
+        assert state["read_at"] == at.isoformat()
+        assert (state["buying_power"], state["non_marginable_buying_power"]) == ("20000", "10000")
+        assert state["multiplier"] == "2" and state["equity"] == "10000"
+        assert state["trading_blocked"] is False and state["account_blocked"] is False
     assert await _state(sm, c) == (None, None)
+    assert await _outbox(sm) == []
 
 
-async def test_mismatch_alert_once(env, router):
+async def test_blocked_account_alert_once_per_session(env, router):
     sm = env
     link = await _link(sm, "Conto prova")
-    pid = await _pf(sm, link, intraday_enabled=True)
-    await _fills(sm, pid, link, 1)
-    _mock_account(router, daytrade_count=2)
+    await _pf(sm, link, intraday_enabled=True)
+    _mock_account(router, trading_blocked=True)
+    thu = datetime(2026, 11, 27, 15, 0, tzinfo=UTC)
     async with httpx.AsyncClient() as http:
-        await refresh_pdt_states(sm, http, WED)
+        await refresh_account_states(sm, http, WED)
         rows = await _outbox(sm)
-        assert len(rows) == 1
-        assert rows[0] == ("Conteggio operazioni di giornata diverso dal broker su "
-                           "Conto prova: SMTrading 1, Alpaca 2")
-        await refresh_pdt_states(sm, http, WED)
-    assert len(await _outbox(sm)) == 1
+        assert rows == [("Conto Conto prova bloccato dal broker (operatività): nessun nuovo "
+                         "ordine passerà finché il broker non lo sblocca")]
+        await refresh_account_states(sm, http, WED.replace(hour=19))  # same session
+        assert len(await _outbox(sm)) == 1
+        await refresh_account_states(sm, http, thu)  # next session
+    assert len(await _outbox(sm)) == 2
+    async with sm() as s:
+        row = await s.scalar(select(TelegramOutbox).limit(1))
+    assert (row.source, row.category, row.level) == ("system", "system", "warning")
 
 
-async def test_day_trader_flag_alert_once_per_session(env, router):
+async def test_account_blocked_alert(env, router):
     sm = env
     link = await _link(sm, "L")
     await _pf(sm, link, auto_rules_enabled=True)
-    _mock_account(router, pattern_day_trader=True)
+    _mock_account(router, account_blocked=True)
     async with httpx.AsyncClient() as http:
-        await refresh_pdt_states(sm, http, WED)
-        await refresh_pdt_states(sm, http, WED)
+        await refresh_account_states(sm, http, WED)
     rows = await _outbox(sm)
-    assert len(rows) == 1 and "day trader" in rows[0]
+    assert len(rows) == 1 and "bloccato dal broker (conto)" in rows[0]
+
+
+async def test_unblocked_no_alert(env, router):
+    sm = env
+    link = await _link(sm, "L")
+    await _pf(sm, link, intraday_enabled=True)
+    _mock_account(router)
+    async with httpx.AsyncClient() as http:
+        assert await refresh_account_states(sm, http, WED) == 1
+    assert await _outbox(sm) == []
 
 
 async def test_read_failure_keeps_old_state(env, router):
@@ -172,13 +170,13 @@ async def test_read_failure_keeps_old_state(env, router):
     await _pf(sm, link, intraday_enabled=True)
     _mock_account(router)
     async with httpx.AsyncClient() as http:
-        await refresh_pdt_states(sm, http, WED)
+        await refresh_account_states(sm, http, WED)
         before = await _state(sm, link)
         router.get(f"{PAPER_URL}/v2/account").mock(return_value=httpx.Response(500))
-        assert await refresh_pdt_states(sm, http, WED) == 0
+        assert await refresh_account_states(sm, http, WED) == 0
         assert await _state(sm, link) == before
         with pytest.raises(SMTError) as e:
-            await read_pdt_state(sm, http, link)
+            await read_account_state(sm, http, link)
     assert e.value.code == ErrorCode.PROVIDER_UNAVAILABLE
 
 
@@ -186,32 +184,34 @@ async def test_no_secret_in_state_or_logs(env, router, caplog):
     sm = env
     link = await _link(sm, "L")
     await _pf(sm, link, intraday_enabled=True)
-    pid = await _pf(sm, link, intraday_enabled=True)
-    await _fills(sm, pid, link, 1)
-    _mock_account(router, daytrade_count=3)  # mismatch: logs a warning
+    _mock_account(router, trading_blocked=True)  # an alert on the outbox
     caplog.set_level(logging.DEBUG)
     async with httpx.AsyncClient() as http:
-        await refresh_pdt_states(sm, http, WED)
+        await refresh_account_states(sm, http, WED)
         router.get(f"{PAPER_URL}/v2/account").mock(
             side_effect=httpx.ConnectError(f"boom {KEY} {ACCT_ID}"))
-        await refresh_pdt_states(sm, http, WED)
+        await refresh_account_states(sm, http, WED)
     state, _ = await _state(sm, link)
     blob = repr(state) + caplog.text + repr(await _outbox(sm))
     assert KEY not in blob and ACCT_ID not in blob and "SEC-CANARY" not in blob
-    assert "differ" in caplog.text or "diverso" in caplog.text
+    assert "not read" in caplog.text and len(await _outbox(sm)) == 1
 
 
-REAL_ACCOUNT = {  # shape of Alpaca's GET /v2/account (paper)
-    "id": ACCT_ID, "account_number": "PA0000000000", "status": "ACTIVE", "crypto_status": "ACTIVE",
-    "currency": "USD", "buying_power": "40000.5", "regt_buying_power": "40000.5",
-    "daytrading_buying_power": "0", "non_marginable_buying_power": "10000", "cash": "10000",
-    "accrued_fees": "0", "pending_transfer_in": "0", "portfolio_value": "10000.25",
-    "pattern_day_trader": True, "trading_blocked": False, "transfers_blocked": False,
-    "account_blocked": False, "created_at": "2025-01-02T10:00:00.123456Z",
-    "trade_suspended_by_user": False, "multiplier": "4", "shorting_enabled": True,
-    "equity": "10000.25", "last_equity": "9950.75", "long_market_value": "0",
-    "short_market_value": "0", "initial_margin": "0", "maintenance_margin": "0",
-    "last_maintenance_margin": "0", "sma": "0", "daytrade_count": 2,
+REAL_ACCOUNT = {  # shape of Alpaca's GET /v2/account (paper) after the end of the PDT rule
+    "id": ACCT_ID, "admin_configurations": {}, "user_configurations": None,
+    "account_number": "PA0000000000", "status": "ACTIVE", "crypto_status": "ACTIVE",
+    "options_approved_level": 3, "options_trading_level": 3, "currency": "USD",
+    "buying_power": "40000.5", "regt_buying_power": "20000.5",
+    "effective_buying_power": "40000.5", "non_marginable_buying_power": "9800.25",
+    "options_buying_power": "10000.25", "bod_dtbp": "0", "cash": "10000",
+    "accrued_fees": "0", "portfolio_value": "10000.25", "trading_blocked": False,
+    "transfers_blocked": False, "account_blocked": False,
+    "created_at": "2025-01-02T10:00:00.123456Z", "trade_suspended_by_user": False,
+    "multiplier": "4", "shorting_enabled": True, "equity": "10000.25",
+    "last_equity": "9950.75", "long_market_value": "0", "short_market_value": "0",
+    "position_market_value": "0", "initial_margin": "0", "maintenance_margin": "0",
+    "last_maintenance_margin": "0", "sma": "0", "crypto_tier": 1,
+    "intraday_adjustments": "0", "pending_reg_taf_fees": "0",
 }
 
 
@@ -224,7 +224,12 @@ async def test_realistic_account_payload(env, router):
     router.get(f"{PAPER_URL}/v2/account").mock(
         return_value=httpx.Response(200, json=REAL_ACCOUNT))
     async with httpx.AsyncClient() as http:
-        state = await read_pdt_state(sm, http, link)
-    assert state == {"equity": "10000.25", "last_equity": "9950.75", "multiplier": "4",
-                     "daytrade_count": 2, "pattern_day_trader": True}
-    assert (await _state(sm, link))[0] == state
+        state = await read_account_state(sm, http, link)
+    saved, at = await _state(sm, link)
+    assert state == saved == {
+        "buying_power": "40000.5", "non_marginable_buying_power": "9800.25",
+        "multiplier": "4", "equity": "10000.25", "trading_blocked": False,
+        "account_blocked": False, "read_at": at.isoformat()}
+    for gone in ("daytrade_count", "pattern_day_trader", "intraday_adjustments",
+                 "account_number", "id"):
+        assert gone not in state
