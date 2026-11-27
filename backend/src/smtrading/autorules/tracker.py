@@ -10,14 +10,17 @@ wrote (it never talks to a broker).
 - An entry that ended unfilled → `canceled` (`rejected` when the broker refused it), the
   runner back to flat (`canceled`): the rule is never left busy. A limit entry not filled
   within the rule's `entry_timeout_s` is canceled (`Executor.cancel_stale_entry`).
-- An exit filled → `closed`, with its reason: a bracket child (`target`/`stop`, expected
-  at its price), the rule's own exit (`smt-autox-{trade}`, its reason already written),
+- Exits filled → `closed` once they sold the whole trade (or no position is left), with
+  the reason of the first: a bracket child (`target`/`stop`, expected at its price), the
+  rule's own exit (`smt-autox-{trade}` and its replacements, reason already written),
   the worker's end-of-session safety close (`smt-dayclose-…` → `day_close`) or any other
-  reduce-only sell (`manual`). Exit time (broker's when reported), price and slippage
-  (same sign convention as the entry's: `(exit - expected) / expected × 10000`), the
-  broker's real fees (the sum of the `Fill.fee_amount` of entry and exit) and the net
-  result `(exit - fill) × qty - fees` in the portfolio's currency, at the exchange rate
-  the portfolio uses (`qs.get_fx_rate`). The runner is told (`exited`).
+  reduce-only sell (`manual`). Exit time (broker's when reported), average price on the
+  filled quantities and slippage (same sign convention as the entry's: `(exit -
+  expected) / expected × 10000`), the broker's real fees (the sum of the
+  `Fill.fee_amount` of entry and exits) and the net result `Σ (exit - fill) × filled -
+  fees` in the portfolio's currency, at the exchange rate the portfolio uses
+  (`qs.get_fx_rate`). The runner is told (`exited`). A partial exit keeps the trade
+  open; the rule's own exit that ended short is replaced (`Executor.exit_failed`).
 - A restarted scalper has new runners: an `open` trade puts its runner back in `long`
   with the saved fill (time and end-of-session exits go on at the right time), a `sent`
   one puts it in `pending`.
@@ -36,6 +39,7 @@ from decimal import Decimal
 from sqlalchemy import and_, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from smtrading.autorules.broker_times import auto_exit_client_id
 from smtrading.autorules.executor import Executor, _ms
 from smtrading.autorules.models import validate_params
 from smtrading.autorules.tables import (
@@ -61,6 +65,7 @@ from smtrading.engine.models import (
 )
 from smtrading.instruments.models import Instrument
 from smtrading.portfolios.models import Portfolio
+from smtrading.positions.models import Position
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +95,7 @@ class _Snapshot:
     items: list[_Item]
     orders: dict[uuid.UUID, Order]
     fills: dict[uuid.UUID, _Fills]
+    positions: dict[tuple[uuid.UUID, str], Decimal]
 
 
 @dataclass
@@ -123,10 +129,11 @@ class Tracker:
         self._redis = redis
         self.qs = qs
         self._clock = clock
-        self._executor = executor or Executor(sessionmaker, redis, qs, clock=clock)
+        # None (the scalper without an executor): nothing is canceled or sent from here
+        self._executor = executor
         self._open: dict[uuid.UUID, AutoTrade] = {}  # rule -> its open trade, last step
         self.active = False  # a trade was `sent` or `open` at the last step
-        self._dead_exits: set[int] = set()  # exit orders ended unfilled, logged once
+        self._short_exits: set[uuid.UUID] = set()  # exit orders ended short, logged once
 
     def open_trade(self, rule_id: uuid.UUID) -> AutoTrade | None:
         """The rule's open trade at the last step (the exits' target)."""
@@ -196,7 +203,10 @@ class Tracker:
                     if f.first_at is None or first < f.first_at:
                         f.first_at = first
                     f.fees[ccy] = f.fees.get(ccy, Decimal(0)) + (amount or Decimal(0))
-        return _Snapshot(items, orders, fills)
+            positions = {(p, sym): qty for p, sym, qty in await s.execute(
+                select(Position.portfolio_id, Position.symbol, Position.qty).where(
+                    tuple_(Position.portfolio_id, Position.symbol).in_(pairs)))}
+        return _Snapshot(items, orders, fills, positions)
 
     # --- one trade -------------------------------------------------------------------
 
@@ -208,17 +218,15 @@ class Tracker:
                 return trade
         if runner is not None and runner.state != "long":
             runner.entered(trade.filled_at, trade.fill_price)  # a restart: rebuilt
-        found = self._exit_of(trade, snap)
-        if found is None:
-            own = snap.orders.get(trade.exit_order_id)
-            if own is not None and _final(own) and own.filled_qty == 0:
-                if trade.id not in self._dead_exits:
-                    log.warning("automatic trade %s: exit order %s ended unfilled (%s); a "
-                                "new one goes at the next exit", trade.id, own.id, own.status)
-                    self._dead_exits.add(trade.id)
-                self._executor.exit_failed(trade.id)
-            return trade
-        return await self._close(item, snap, found, runner)
+        exits = self._exits_of(trade, snap)
+        sold = sum((e.order.filled_qty for e in exits), Decimal(0))
+        held = snap.positions.get((trade.portfolio_id, trade.symbol), Decimal(0))
+        # closed when the exits sold the whole trade or nothing is left (a fee kept in
+        # the asset makes the position smaller than the fill)
+        if exits and (sold >= trade.qty or held <= 0):
+            return await self._close(item, snap, exits, runner)
+        self._exit_short(trade, snap)
+        return trade
 
     async def _sent(self, item: _Item, snap: _Snapshot, runner, now: datetime) -> AutoTrade:
         trade = item.trade
@@ -233,7 +241,8 @@ class Tracker:
             return await self._unfilled(trade, entry, status, runner)
         if runner is not None and runner.state == "flat":
             runner.sent(trade.sent_at or trade.trigger_at)  # a restart: rebuilt
-        if (entry.type == OrderType.limit and entry.status in FILLABLE_STATUSES
+        if (self._executor is not None and entry.type == OrderType.limit
+                and entry.status in FILLABLE_STATUSES
                 and entry.broker_status != BrokerState.CANCEL_REQUESTED
                 and trade.sent_at is not None
                 and now - trade.sent_at >= timedelta(seconds=item.entry_timeout_s)):
@@ -289,70 +298,90 @@ class Tracker:
     # --- the exit --------------------------------------------------------------------
 
     @staticmethod
-    def _exit_of(trade: AutoTrade, snap: _Snapshot) -> _Exit | None:
-        """The order that closed the trade (filled and final), the first to fill."""
+    def _exits_of(trade: AutoTrade, snap: _Snapshot) -> list[_Exit]:
+        """Every exit order of the trade that filled and is final, first to fill first: the
+        bracket children, the rule's own exits (`smt-autox-{trade}` and its replacements),
+        any other reduce-only sell of the symbol placed after the entry."""
         entry = snap.orders.get(trade.entry_order_id)
+        own_id = auto_exit_client_id(trade.id)
         found: list[tuple[datetime, _Exit]] = []
-
-        def add(o: Order, reason: str, expected: Decimal | None) -> None:
-            if o.filled_qty > 0 and _final(o) and o.avg_fill_price is not None:
-                first = snap.fills.get(o.id, _Fills()).first_at or o.updated_at
-                found.append((first, _Exit(o, reason, expected)))
-
-        mine = {trade.exit_order_id}
         for o in snap.orders.values():
-            if entry is not None and o.parent_id == entry.id and o.role in CHILD_REASONS:
-                mine.add(o.id)
-                add(o, CHILD_REASONS[o.role],
-                    o.limit_price if o.type == OrderType.limit else o.stop_price)
-        own = snap.orders.get(trade.exit_order_id)
-        if own is not None:
-            add(own, trade.exit_reason or "manual", trade.exit_expected)
-        for o in snap.orders.values():
-            if (o.id in mine or o.portfolio_id != trade.portfolio_id
-                    or o.symbol != trade.symbol or not o.reduce_only
-                    or o.side != OrderSide.sell
-                    or (entry is not None and o.created_at < entry.created_at)):
+            if not (o.filled_qty > 0 and _final(o) and o.avg_fill_price is not None):
                 continue
-            day_close = (o.client_order_id or "").startswith(DAY_CLOSE_PREFIX)
-            add(o, "day_close" if day_close else "manual", o.limit_price)
-        if not found:
-            return None
-        return min(found, key=lambda f: f[0])[1]
+            coid = o.client_order_id or ""
+            if entry is not None and o.parent_id == entry.id and o.role in CHILD_REASONS:
+                ex = _Exit(o, CHILD_REASONS[o.role],
+                           o.limit_price if o.type == OrderType.limit else o.stop_price)
+            elif o.id == trade.exit_order_id or coid == own_id or coid.startswith(
+                    f"{own_id}-"):
+                ex = _Exit(o, trade.exit_reason or "manual", trade.exit_expected)
+            elif (o.portfolio_id == trade.portfolio_id and o.symbol == trade.symbol
+                    and o.reduce_only and o.side == OrderSide.sell
+                    and (entry is None or o.created_at >= entry.created_at)):
+                ex = _Exit(o, "day_close" if coid.startswith(DAY_CLOSE_PREFIX) else "manual",
+                           o.limit_price)
+            else:
+                continue
+            found.append((snap.fills.get(o.id, _Fills()).first_at or o.updated_at, ex))
+        return [ex for _, ex in sorted(found, key=lambda f: f[0])]
 
-    async def _close(self, item: _Item, snap: _Snapshot, ex: _Exit, runner) -> AutoTrade:
+    def _exit_short(self, trade: AutoTrade, snap: _Snapshot) -> None:
+        """The rule's exit order ended with less than it asked (refused, canceled, partly
+        filled) and the position is still open: the next Exit sends a new one for what
+        is left."""
+        own = snap.orders.get(trade.exit_order_id)
+        if own is None or not _final(own) or own.filled_qty >= (own.qty or Decimal(0)):
+            return
+        if own.id not in self._short_exits:
+            log.warning("automatic trade %s: exit order %s ended with %s of %s (%s); a new "
+                        "one goes at the next exit", trade.id, own.id, own.filled_qty,
+                        own.qty, own.status)
+            self._short_exits.add(own.id)
+        if self._executor is not None:
+            self._executor.exit_failed(trade.id)
+
+    async def _close(self, item: _Item, snap: _Snapshot, exits: list[_Exit],
+                     runner) -> AutoTrade:
+        """Closed by `exits` (one, or several partial ones): price and result on the
+        quantities they filled, the reason of the first."""
         trade = item.trade
         base = item.base_currency
+        first, last = exits[0], exits[-1]
         fees: dict[str, Decimal] = {}
-        for order_id in (trade.entry_order_id, ex.order.id):
+        for order_id in (trade.entry_order_id, *(e.order.id for e in exits)):
             for ccy, amount in snap.fills.get(order_id, _Fills()).fees.items():
                 fees[ccy] = fees.get(ccy, Decimal(0)) + amount
         # the exchange rates with no session open
         rate = await self.qs.get_fx_rate(item.currency, base)
         fee_rates = {ccy: await self.qs.get_fx_rate(ccy, base) for ccy in fees}
-        exit_price = ex.order.avg_fill_price
-        gross = (exit_price - trade.fill_price) * trade.qty
+        sold = sum((e.order.filled_qty for e in exits), Decimal(0))
+        proceeds = sum((e.order.avg_fill_price * e.order.filled_qty for e in exits),
+                       Decimal(0))
+        exit_price = proceeds / sold
+        gross = proceeds - trade.fill_price * sold
         fees_base = sum((a * fee_rates[c] for c, a in fees.items()), Decimal(0))
         if len(fees) == 1:
             [(fees_ccy, fees_total)] = fees.items()
         else:  # none, or several currencies: in the portfolio's
             fees_ccy, fees_total = (base if fees else None), fees_base
-        # the broker's time, written with the fill, belongs to this exit
-        stamped = ex.order.id == trade.exit_order_id or (
-            trade.entry_order_id is not None and ex.order.parent_id == trade.entry_order_id)
+        # the broker's time (written with the fill) belongs to a single exit of the rule
+        stamped = len(exits) == 1 and (
+            first.order.id == trade.exit_order_id
+            or (trade.entry_order_id is not None
+                and first.order.parent_id == trade.entry_order_id))
         async with self._sm() as s:
             row = await self._locked(s, trade, OPEN)
             if row is None:
                 await s.rollback()
                 return trade
             if not stamped or row.exit_filled_at is None:
-                row.exit_filled_at = (snap.fills.get(ex.order.id, _Fills()).first_at
-                                      or ex.order.updated_at)
-            row.exit_order_id = ex.order.id
-            row.exit_reason = ex.reason
-            row.exit_expected = ex.expected
+                row.exit_filled_at = (snap.fills.get(last.order.id, _Fills()).first_at
+                                      or last.order.updated_at)
+            row.exit_order_id = first.order.id
+            row.exit_reason = first.reason
+            row.exit_expected = first.expected
             row.exit_price = exit_price
-            row.exit_slippage_bps = _bps(exit_price, ex.expected)
+            row.exit_slippage_bps = _bps(exit_price, first.expected)
             row.fees, row.fees_currency = fees_total, fees_ccy
             row.net_result = gross * rate - fees_base
             row.net_currency = base

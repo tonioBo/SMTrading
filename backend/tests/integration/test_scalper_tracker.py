@@ -38,6 +38,7 @@ from smtrading.engine.processor import OrderProcessor
 from smtrading.engine.quotesource import FakeQuoteSource
 from smtrading.engine.service import close_position
 from smtrading.events import dispatch_post_commit
+from smtrading.instruments.models import Instrument
 from smtrading.intraday.day_close import DayCloser
 from smtrading.marketdata.cache import write_quote
 from smtrading.marketdata.streaming import CONNECTED, STATUS_KEY
@@ -119,7 +120,16 @@ class Broker:
         self.fake = FakeLiveBroker(price=D(price))
         self.fake.alpaca.cash = D(100000)
         self.fill_time: datetime | None = None
+        self.partial_sell: D | None = None  # a sell fills only this much, the rest canceled
         self._stamps: dict[str, str] = {}
+
+    def _partial(self, order_id: str) -> None:
+        """The sell just filled in full by the fake: only `partial_sell` of it."""
+        o = self.fake.alpaca.orders[order_id]
+        rest = D(o["qty"]) - self.partial_sell
+        self.fake.alpaca.positions[o["symbol"]] = (
+            self.fake.alpaca.positions.get(o["symbol"], D(0)) + rest)
+        o.update(filled_qty=str(self.partial_sell), status="canceled")
 
     def _stamp(self) -> None:
         for o in self.fake.alpaca.orders.values():
@@ -132,6 +142,12 @@ class Broker:
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         resp = self.fake._handle(request)
+        if (self.partial_sell is not None and request.method == "POST"
+                and request.url.path == "/v2/orders" and resp.status_code == 200):
+            placed = json.loads(resp.content)
+            if placed["side"] == "sell" and placed["status"] == "filled":
+                self._partial(placed["id"])
+                resp = httpx.Response(200, json=self.fake.alpaca.orders[placed["id"]])
         self._stamp()
         if not resp.content or not resp.headers.get("content-type", "").startswith(
                 "application/json"):
@@ -504,7 +520,8 @@ async def test_stale_limit_entry_canceled(maker, redis, qs, broker):
     await _sync(maker, redis, qs, broker, NOW).tick()
     entry = next(o for o in await _orders(maker, rule) if o.role == "entry")
     assert entry.type == OrderType.limit and entry.broker_order_id is not None
-    tracker = Tracker(maker, redis, qs, clock=Clock(NOW + timedelta(seconds=4)))
+    tracker = Tracker(maker, redis, qs, clock=Clock(NOW + timedelta(seconds=4)),
+                      executor=Executor(maker, redis, qs, clock=Clock(NOW)))
     await tracker.step({rule.rule_id: runner})
     assert (await _trade(maker, trade.id)).status == "sent"
     tracker._clock = Clock(NOW + timedelta(seconds=5))
@@ -597,3 +614,173 @@ async def test_evening_summary_once(maker, redis, qs, broker):
     assert "solo IEX" in row.text
     assert await send_due_summaries(maker, redis, due, checked=set()) == 0
     assert len(await outbox()) == 1
+
+
+# --- fix round 1: no second sell, partial fills ---------------------------------------------
+
+async def _fractional(maker) -> None:
+    async with maker() as s:
+        (await s.get(Instrument, "AAPL")).lot_size = D("0.1")
+        await s.commit()
+
+
+async def test_time_exit_waits_for_handed_stop(maker, redis, qs, broker, router):
+    """A stop triggered and handed to BrokerSync, the time exit due: no second sell; the
+    trade closes as `stop`."""
+    rule = await _rule(maker, params={"max_hold_s": 60})
+    row, runner = await _open(maker, redis, qs, broker, rule)
+    sl = next(o for o in await _orders(maker, rule) if o.role == "stop_loss")
+    at = row.filled_at + timedelta(seconds=60)
+    FROZEN["now"] = at
+    low = sl.stop_price - D("0.05")
+    q = await _quote(redis, at, bid=str(low), ask=str(low + D("0.1")))
+    await OrderProcessor(maker, redis, qs, clock=Clock(at)).on_tick("AAPL", q)
+    handed = next(o for o in await _orders(maker, rule) if o.role == "stop_loss")
+    assert handed.broker_status == BrokerState.TO_SEND  # on its way, not sent yet
+    clock = Clock(at)
+    sc = _scalper(maker, redis, router, clock, rule, runner)
+    await sc.track()
+    assert await _autox(maker, rule) == []
+    broker.fake.price = low
+    broker.fill_time = at + timedelta(milliseconds=300)
+    await _settle(maker, redis, qs, broker, at)
+    clock.now = at + timedelta(seconds=6)  # past the retry wait
+    await sc.track()
+    await sc.track()
+    closed = await _trade(maker, row.id)
+    assert closed.status == CLOSED and closed.exit_reason == "stop"
+    assert await _autox(maker, rule) == []
+
+
+async def test_time_exit_waits_for_pending_day_close(maker, redis, qs, broker, router):
+    rule = await _rule(maker, params={"max_hold_s": 60})
+    row, runner = await _open(maker, redis, qs, broker, rule)
+    at = row.filled_at + timedelta(seconds=30)
+    await _quote(redis, at)
+    async with maker() as s:  # the worker's safety close, still waiting for BrokerSync
+        await close_position(s, qs, rule.portfolio_id, "AAPL", row.qty, source="system",
+                             agent_id=None, now=at, redis=redis,
+                             client_order_id="smt-dayclose-20261125-AAPL")
+        await s.commit()
+        await dispatch_post_commit(s, redis)
+    clock = Clock(row.filled_at + timedelta(seconds=60))
+    await _quote(redis, clock.now)
+    sc = _scalper(maker, redis, router, clock, rule, runner)
+    await sc.track()
+    assert await _autox(maker, rule) == []  # no second sell
+    broker.fill_time = clock.now + timedelta(milliseconds=200)
+    await _settle(maker, redis, qs, broker, clock.now)
+    clock.now += timedelta(seconds=1)
+    await sc.track()
+    closed = await _trade(maker, row.id)
+    assert closed.status == CLOSED and closed.exit_reason == "day_close"
+    assert await _autox(maker, rule) == []
+
+
+async def test_day_close_skips_pending_rule_exit(maker, redis, qs, broker, router,
+                                                monkeypatch):
+    """The rule's session exit still `to_send` (BrokerSync down) at 20:50Z: the worker's
+    safety net does not sell the same quantity again."""
+    from smtrading.intraday import day_close
+
+    start = datetime(2026, 11, 25, 20, 40, tzinfo=UTC)
+    FROZEN["now"] = start
+    rule = await _rule(maker, params={"max_hold_s": 3600})
+    row, runner = await _open(maker, redis, qs, broker, rule, now=start)
+    clock = Clock(datetime(2026, 11, 25, 20, 48, tzinfo=UTC))
+    await _quote(redis, clock.now)
+    await _scalper(maker, redis, router, clock, rule, runner).track()
+    [pending] = await _autox(maker, rule)
+    assert pending.broker_status == BrokerState.TO_SEND
+
+    async def day_qty(session, portfolio_id, now):  # the day quantity bought today
+        return {"AAPL": row.qty} if portfolio_id == rule.portfolio_id else {}
+
+    monkeypatch.setattr(day_close, "day_quantities", day_qty)
+    net = datetime(2026, 11, 25, 20, 50, tzinfo=UTC)
+    FROZEN["now"] = net
+    await _quote(redis, net)
+    await DayCloser(maker, qs, redis).tick(net)
+    assert not [o for o in await _orders(maker, rule)
+                if (o.client_order_id or "").startswith("smt-dayclose-")]
+
+
+async def test_partial_exit_replaced_for_the_rest(maker, redis, qs, broker, router):
+    """The time exit fills 0.6 of 1, the rest canceled: the trade stays open, a new exit
+    sells the 0.4 left, then the trade closes on both fills."""
+    await _fractional(maker)
+    rule = await _rule(maker, params={"max_hold_s": 60})
+    row, runner = await _open(maker, redis, qs, broker, rule)
+    clock = Clock(row.filled_at + timedelta(seconds=60))
+    await _quote(redis, clock.now)
+    sc = _scalper(maker, redis, router, clock, rule, runner)
+    await sc.track()
+    broker.fake.price, broker.partial_sell = D("200.40"), D("0.6")
+    broker.fill_time = clock.now + timedelta(milliseconds=200)
+    await _settle(maker, redis, qs, broker, clock.now)
+    [first] = await _autox(maker, rule)
+    assert first.filled_qty == D("0.6") and first.status == OrderStatus.canceled
+    clock.now += timedelta(seconds=1)
+    await sc.track()  # partly out: still open, the rest goes again
+    assert (await _trade(maker, row.id)).status == OPEN
+    assert runner.state == "long"
+    orders = await _autox(maker, rule)
+    assert [o.client_order_id for o in orders] == [f"smt-autox-{row.id}",
+                                                   f"smt-autox-{row.id}-1"]
+    assert orders[1].qty == D("0.4")
+    broker.fake.price, broker.partial_sell = D("200.20"), None
+    await _settle(maker, redis, qs, broker, clock.now)
+    clock.now += timedelta(seconds=1)
+    await sc.track()
+    closed = await _trade(maker, row.id)
+    assert closed.status == CLOSED and closed.exit_reason == "time"
+    assert closed.exit_price == D("200.32")  # (0.6 × 200.40 + 0.4 × 200.20) / 1
+    fees, [fee_ccy] = await _fees(maker, row.entry_order_id, *(o.id for o in orders))
+    assert closed.fees == fees
+    fee_rate = {"USD": D("0.9"), "EUR": D(1)}[fee_ccy]
+    gross = D("0.6") * (D("200.40") - row.fill_price) + D("0.4") * (D("200.20")
+                                                                    - row.fill_price)
+    assert closed.net_result == gross * D("0.9") - fees * fee_rate
+    assert runner.state == "flat"
+
+
+async def test_partial_entry_fill(maker, redis, qs, broker):
+    """A limit entry filled 0.4 of 1, the rest canceled: the trade opens on 0.4, its stop
+    and target sized to it."""
+    await _fractional(maker)
+    rule = await _rule(maker, params={"entry": "limit", "limit_offset_pct": "0.05"})
+    runner = _runner(rule)
+    broker.fake.price = D("201.00")  # the limit rests
+    trade = await _send(maker, redis, qs, broker, rule, runner)
+    await _sync(maker, redis, qs, broker, NOW).tick()
+    entry = next(o for o in await _orders(maker, rule) if o.role == "entry")
+    o = broker.fake.alpaca.orders[entry.broker_order_id]
+    o.update(filled_qty="0.4", filled_avg_price="200.05", status="canceled")
+    broker.fake.alpaca.positions["AAPL"] = D("0.4")
+    await _settle(maker, redis, qs, broker, NOW + timedelta(seconds=2))
+    await Tracker(maker, redis, qs, clock=Clock(NOW + timedelta(seconds=3))).step(
+        {rule.rule_id: runner})
+    row = await _trade(maker, trade.id)
+    assert row.status == OPEN and row.qty == D("0.4") and row.fill_price == D("200.05")
+    # Alpaca reports no filled_at on an order canceled after a partial fill: local time
+    assert row.fill_ts_source == "local" and row.filled_at is not None
+    assert runner.state == "long"
+    children = [x for x in await _orders(maker, rule) if x.role in ("take_profit",
+                                                                    "stop_loss")]
+    assert children and all(x.qty == D("0.4") for x in children)
+
+
+async def test_tracker_without_executor_cancels_nothing(maker, redis, qs, broker):
+    """A scalper with no executor (`executor_factory=None`): the Tracker records, it never
+    cancels nor sends."""
+    rule = await _rule(maker, params={"entry": "limit", "limit_offset_pct": "0.05"})
+    runner = _runner(rule)
+    broker.fake.price = D("201.00")
+    await _send(maker, redis, qs, broker, rule, runner)
+    await _sync(maker, redis, qs, broker, NOW).tick()
+    tracker = Tracker(maker, redis, qs, clock=Clock(NOW + timedelta(seconds=30)))
+    await tracker.step({rule.rule_id: runner})
+    entry = next(o for o in await _orders(maker, rule) if o.role == "entry")
+    assert entry.broker_status != BrokerState.CANCEL_REQUESTED
+    assert Scalper(maker, redis, FakeQuoteSource(), executor_factory=None)._tracker._executor \
+        is None

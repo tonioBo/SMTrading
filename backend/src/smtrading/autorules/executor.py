@@ -24,9 +24,11 @@ bracket's stop and target, Ruling R16), never refused by the day-trade checks (r
 the guards of the entries do not apply (a lost stream or a silent BrokerSync leaves it
 `to_send` until BrokerSync resumes). The runner repeats its Exit until the fill: the
 trade's `exit_order_id` (and a set in memory) makes the exit once per trade; a failure
-is logged and tried again after EXIT_RETRY_S, an exit order that ended unfilled (refused
-or canceled at the broker) is replaced by a new one (`smt-autox-{trade}-{n}`). A stop or target already handed to the
-broker is left to finish (no second sell). `cancel_stale_entry` cancels a limit entry
+is logged and tried again after EXIT_RETRY_S; an exit order that ended short (refused,
+canceled or partly filled at the broker) is replaced for what is left
+(`smt-autox-{trade}-{n}`). A stop or target already handed to the broker, the worker's
+safety close or any other reduce-only sell still open is left to finish (no second
+sell). `cancel_stale_entry` cancels a limit entry
 not filled in time (the Tracker's call).
 
 No transaction is open across a network call: the guards read Redis and one short
@@ -39,7 +41,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import exists, func, or_, select, true
 from sqlalchemy.exc import IntegrityError
 
 from smtrading.autorules import guards
@@ -120,8 +122,10 @@ def _error_text(e: SMTError) -> str:
 
 
 def _dead(order: Order | None) -> bool:
-    """An exit order that ended with nothing filled (refused or canceled)."""
-    return order is not None and order.status not in OPEN_STATUSES and order.filled_qty == 0
+    """An exit order that ended short of its quantity (refused, canceled, partly filled):
+    a new one goes for what is left of the position."""
+    return (order is not None and order.status not in OPEN_STATUSES
+            and order.filled_qty < (order.qty or Decimal(0)))
 
 
 def _parse_ts(raw) -> datetime | None:
@@ -367,11 +371,11 @@ class Executor:
                     Order.portfolio_id == row.portfolio_id,
                     or_(Order.client_order_id == base,
                         Order.client_order_id.startswith(f"{base}-")))) or 0
-            if await self._exit_at_broker(session, row):
+            if await self._selling(session, row):
                 await session.rollback()
                 self._exit_retry[trade.id] = now + timedelta(seconds=EXIT_RETRY_S)
-                log.info("automatic rule %s: stop or target of trade %s already at the "
-                         "broker; time exit waits", rule.rule_id, trade.id)
+                log.info("automatic rule %s: another sell of %s on its way; the exit of "
+                         "trade %s waits", rule.rule_id, row.symbol, trade.id)
                 return None
             held = await session.scalar(select(Position.qty).where(
                 Position.portfolio_id == row.portfolio_id, Position.symbol == row.symbol))
@@ -404,14 +408,20 @@ class Executor:
         return order.id
 
     @staticmethod
-    async def _exit_at_broker(session, trade: AutoTrade) -> bool:
-        """A stop or target of the trade's entry triggered and handed to the broker (or
-        on its way): it sells the position itself."""
-        if trade.entry_order_id is None:
-            return False
+    async def _selling(session, trade: AutoTrade) -> bool:
+        """Another reduce-only sell of the symbol is open (a stop or target triggered and
+        handed to the broker, the worker's safety close, a manual close): it sells the
+        position itself, a second sell is not sent. The entry's stop and target still
+        resting here do not count (the exit cancels them)."""
+        handed = Order.synthetic.is_(True) & Order.broker_status.is_not(None)
+        # no NULL in the test (a sell without a parent is never a resting child)
+        resting_child = Order.parent_id.is_not(None) & (
+            Order.parent_id == trade.entry_order_id) & ~handed
         return bool(await session.scalar(select(exists().where(
-            Order.parent_id == trade.entry_order_id, Order.role.in_(_CHILD_ROLES),
-            Order.status.in_(OPEN_STATUSES), Order.broker_status.is_not(None)))))
+            Order.portfolio_id == trade.portfolio_id, Order.symbol == trade.symbol,
+            Order.side == OrderSide.sell, Order.reduce_only.is_(True),
+            Order.status.in_(OPEN_STATUSES),
+            ~resting_child if trade.entry_order_id is not None else true()))))
 
     def exit_failed(self, trade_id: int) -> None:
         """The trade's exit order ended unfilled (refused or canceled) with the position

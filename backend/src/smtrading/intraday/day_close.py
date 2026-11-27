@@ -1,6 +1,8 @@
 """The end-of-session safety close (worker job): `day_close_minutes` before the session end
 of the symbol's market (half days included), the day quantity (`day_quantities`) of every
-portfolio with mode A or mode B on is sold by the system with a reduce-only order
+portfolio with mode A or mode B on, less what open reduce-only sells are already selling
+(`selling_qty`: e.g. an automatic rule's exit still waiting for BrokerSync), is sold by
+the system with a reduce-only order
 (`engine.close_position`, which also cancels the symbol's stop and target): at market on a
 tight quote, with a DAY limit at the last trade minus the profile's margin on a quote wider
 than MAX_SPREAD (it expires at the session end, never rests overnight), nothing without a
@@ -29,7 +31,7 @@ from smtrading.events import discard_post_commit, dispatch_post_commit
 from smtrading.instruments.market_hours import local_date, market_status
 from smtrading.instruments.models import Instrument
 from smtrading.intraday.calendar import day_close_at, session_window
-from smtrading.intraday.day_positions import day_quantities
+from smtrading.intraday.day_positions import day_quantities, selling_qty
 from smtrading.intraday.models import DAY_SCOPE
 from smtrading.jobs.runs import job_done, run_job_once
 from smtrading.marketdata.quality import is_wide
@@ -175,7 +177,9 @@ class DayCloser:
                     return  # another worker did it
                 await lock_live_portfolio(s, due.portfolio_id)
                 qty = (await day_quantities(s, due.portfolio_id, now)).get(due.symbol)
-                if qty:
+                if qty:  # less what is already being sold (no second sell)
+                    qty -= await selling_qty(s, due.portfolio_id, due.symbol)
+                if qty and qty > 0:
                     await self._send(s, due, qty, wide, limit, now)
                 await s.commit()
             except BaseException:

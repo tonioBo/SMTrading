@@ -6,10 +6,10 @@ from collections import defaultdict
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from smtrading.engine.models import Fill, Order, OrderSide
+from smtrading.engine.models import OPEN_STATUSES, Fill, Order, OrderSide, OrderType
 from smtrading.instruments.models import Instrument
 from smtrading.intraday.calendar import session_window
 from smtrading.positions.models import Position
@@ -51,3 +51,18 @@ async def day_quantities(
             if q > 0:
                 out[symbol] = q
     return out
+
+
+async def selling_qty(session: AsyncSession, portfolio_id: uuid.UUID, symbol: str) -> Decimal:
+    """What open reduce-only sells of the symbol are already selling (their quantity left):
+    market orders (a close waiting for the broker, e.g. an automatic rule's exit with
+    BrokerSync down) and stops or targets kept here that triggered and were handed to
+    the broker. Resting exits do not count (the close cancels them)."""
+    left = await session.scalar(
+        select(func.coalesce(func.sum(Order.qty - Order.filled_qty), 0)).where(
+            Order.portfolio_id == portfolio_id, Order.symbol == symbol,
+            Order.side == OrderSide.sell, Order.reduce_only.is_(True),
+            Order.status.in_(OPEN_STATUSES), Order.qty.is_not(None),
+            (Order.type == OrderType.market)
+            | (Order.synthetic.is_(True) & Order.broker_status.is_not(None))))
+    return Decimal(left or 0)
