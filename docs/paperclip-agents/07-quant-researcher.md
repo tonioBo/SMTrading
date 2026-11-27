@@ -46,7 +46,9 @@ giorni di borsa; obiettivo **in ritardo** (strategie o parametri migliori entro 
 mai più rischio); risultati reali lontani dal backtest. Passi della ricerca sopra, max 2 idee
 aperte per portafoglio; candidata valida → «APPROVA STRATEGIA …» al CEO, altrimenti
 `log_decision` `other` con cosa hai scartato. L'obiettivo è vincolante: un obiettivo in
-ritardo rende la ricerca prioritaria, mai la ferma.
+ritardo rende la ricerca prioritaria, mai la ferma: ogni revisione **lancia backtest nuovi**
+(strategia, parametri o strumento ammesso) e manda **almeno una candidata** al CEO; confermare
+le esistenti non basta. «Nessuna candidata» solo con i `backtest_id` provati e il perché.
 
 1. Leggi portafoglio/i, stile, universo, vincoli.
 2. `get_risk_limits` del portafoglio: mercati consentiti, short (i backtest sono solo long).
