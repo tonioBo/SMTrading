@@ -71,8 +71,27 @@ CONNECTED = "connected"
 BACKOFF = "backoff"
 CLOSED_POLL_EVERY_S = 300
 CONFIRM_EVERY_S = 30
+DEFAULT_AUTO_RULES_RESERVE = 10
+
+
+def auto_rules_reserve(raw: str | None) -> int:
+    """SMT_AUTO_RULES_STREAM_RESERVE as a whole number >= 0; anything else falls back to
+    DEFAULT_AUTO_RULES_RESERVE with a warning (never an import error)."""
+    if raw is None:
+        return DEFAULT_AUTO_RULES_RESERVE
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        value = -1
+    if value < 0:
+        log.warning("SMT_AUTO_RULES_STREAM_RESERVE=%r is not a whole number >= 0; using %d",
+                    raw, DEFAULT_AUTO_RULES_RESERVE)
+        return DEFAULT_AUTO_RULES_RESERVE
+    return value
+
+
 # stream slots kept for automatic-rule symbols, taken only from watchlist-only symbols
-AUTO_RULES_RESERVE = int(os.environ.get("SMT_AUTO_RULES_STREAM_RESERVE", "10"))
+AUTO_RULES_RESERVE = auto_rules_reserve(os.environ.get("SMT_AUTO_RULES_STREAM_RESERVE"))
 BARS_REFUSED_NOTE = ("Barre al minuto rifiutate dal fornitore: regole automatiche senza "
                      "volume e VWAP")
 

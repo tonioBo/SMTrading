@@ -1,10 +1,11 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { MemoryRouter } from "react-router-dom";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { toast } from "sonner";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Agent, Portfolio } from "@/api/types";
 import { PortfolioSettings } from "@/pages/PortfolioDetailSettings";
 import { createQueryClient } from "@/queryClient";
@@ -61,6 +62,25 @@ describe("PortfolioSettings: lavoro in giornata", () => {
     await user.click(await screen.findByRole("checkbox", { name: "Sveglia dell'agente (modo A)" }));
     await waitFor(() => expect(patches).toEqual([{ intraday_enabled: true }]));
     expect(screen.getByText(/In giornata la leva è al massimo 2 sui conti di prova e 1 sui conti reali/)).toBeInTheDocument();
+  });
+
+  it("confirms the switch turned on and off with the right toast", async () => {
+    const success = vi.spyOn(toast, "success");
+    try {
+      const { user } = setup();
+      await user.click(await screen.findByRole("checkbox", { name: "Sveglia dell'agente (modo A)" }));
+      await waitFor(() => expect(success).toHaveBeenCalledWith("Sveglia dell'agente (modo A): acceso"));
+      cleanup();
+      success.mockClear();
+      const on = { ...portfolio, intraday_enabled: true } as Portfolio;
+      patchResponse = () => HttpResponse.json({ ...on, intraday_enabled: false });
+      const second = setup(on);
+      await second.user.click(await screen.findByRole("checkbox", { name: "Sveglia dell'agente (modo A)" }));
+      await waitFor(() => expect(success).toHaveBeenCalledWith("Sveglia dell'agente (modo A): spento"));
+      expect(patches).toEqual([{ intraday_enabled: true }, { intraday_enabled: false }]);
+    } finally {
+      success.mockRestore();
+    }
   });
 
   it("is not shown to a viewer", async () => {

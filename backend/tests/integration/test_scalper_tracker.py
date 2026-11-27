@@ -323,6 +323,35 @@ async def test_fill_measured(maker, redis, qs, broker):
     assert runner.fill_price == D("100.02")
 
 
+async def test_fill_applied_when_the_broker_time_fails(maker, redis, qs, broker,
+                                                       monkeypatch, caplog):
+    """Writing the broker's fill time fails (a database error inside it): the fill is
+    applied all the same, the trade opens on the local time."""
+    from sqlalchemy import text
+
+    from smtrading.brokers import sync as sync_mod
+
+    async def broken(session, order, raw):
+        await session.execute(text("SELECT 1/0"))
+
+    monkeypatch.setattr(sync_mod, "record_broker_fill_time", broken)
+    rule = await _rule(maker)
+    runner = _runner(rule)
+    trade = await _send(maker, redis, qs, broker, rule, runner)
+    broker.fill_time = NOW + timedelta(milliseconds=600)
+    await _sync(maker, redis, qs, broker, NOW + timedelta(milliseconds=250)).tick()
+    async with maker() as s:
+        entry = await s.get(Order, trade.entry_order_id)
+        assert entry.status == OrderStatus.filled and entry.filled_qty == D(1)
+        assert await s.scalar(select(func.count()).select_from(Fill)
+                              .where(Fill.order_id == entry.id)) == 1
+    assert "broker fill time not recorded" in caplog.text
+    await Tracker(maker, redis, qs, clock=Clock(NOW + timedelta(seconds=1))).step(
+        {rule.rule_id: runner})
+    row = await _trade(maker, trade.id)
+    assert row.status == OPEN and row.fill_ts_source == "local"
+
+
 async def test_target_exit_closes_trade(maker, redis, qs, broker):
     rule = await _rule(maker)
     assert rule.base_currency == "EUR"

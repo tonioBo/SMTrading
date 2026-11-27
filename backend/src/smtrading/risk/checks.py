@@ -409,7 +409,11 @@ async def _run(
                                          increases, at)
 
     # 11: symbol owned by an automatic rule. Only with the portfolio's switch on (no query
-    # otherwise); orders that close are never refused; the rule's own orders pass
+    # otherwise); orders that close are never refused; the rule's own orders pass.
+    # Known gap, kept on purpose: with the switch turned off (its rules paused) a trade
+    # still open keeps no owner here, since knowing it would cost a query on every order
+    # of every portfolio (the live campaign's included); nothing loaded with the order
+    # tells a portfolio that once had automatic trades from one that never had
     if portfolio.auto_rules_enabled and not (reduce_only or reduces):
         owner = await owner_rule(session, portfolio.id, instrument.symbol)
         if owner is not None and owner != auto_rule_id:

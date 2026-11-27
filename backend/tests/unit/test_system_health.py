@@ -172,3 +172,65 @@ def test_version_info(monkeypatch):
     monkeypatch.delenv("SMT_BUILD_ID")
     monkeypatch.setenv("SMTRADING_VERSION", "v1.2")
     assert sh.version_info(None)["build"] == "v1.2"
+
+
+def test_intraday_job_late_shows_late():
+    now = 100_000.0
+    jobs = {"intraday": {"state": "running", "started_at": now - 5000,
+                         "last_tick_at": now - 300}}
+    [row] = sh.job_rows(jobs, now - 5000, now)
+    assert row["interval_s"] == 15
+    assert row["status"] == sh.WARN and row["note"] == "ultimo giro 5 min fa"
+    ok = {"intraday": {"state": "running", "started_at": now - 5000,
+                       "last_tick_at": now - 10}}
+    assert sh.job_rows(ok, now - 5000, now)[0]["status"] == sh.OK
+    # gated: waiting for the startup gate is not late
+    waiting = {"intraday": {"state": "running", "started_at": now - 600, "last_tick_at": None}}
+    assert sh.job_rows(waiting, now - 600, now)[0]["status"] == sh.OK
+
+
+def test_scalper_stopped_with_active_rules_is_a_warning():
+    now = 100_000.0
+    jobs = {"scalper": {"state": "stopped", "started_at": now - 5000,
+                        "last_tick_at": now - 4000}}
+    [row] = sh.job_rows(jobs, now - 5000, now, active_auto_rules=2)
+    assert row["status"] == sh.WARN
+    assert row["note"] == "fermato con 2 regole automatiche attive"
+    [row] = sh.job_rows(jobs, now - 5000, now)  # no active rule: stopped on purpose
+    assert (row["status"], row["note"]) == (sh.OK, "fermato")
+
+
+async def test_services_reads_the_active_rules_only_when_the_scalper_is_stopped():
+    now = time.time()
+    asked: list[int] = []
+
+    async def active_rules():
+        asked.append(1)
+        return 1
+
+    running = {WORKER_FIELD: {"started_at": now - 3600},
+               "scalper": {"state": "running", "started_at": now - 3600,
+                           "last_tick_at": now - 5}}
+    s = await sh.services_section(FakeRedis(now - 5, running), now, active_rules)
+    assert s["status"] == sh.OK and asked == []
+    stopped = {**running, "scalper": {"state": "stopped", "started_at": now - 3600,
+                                      "last_tick_at": now - 600}}
+    s = await sh.services_section(FakeRedis(now - 5, stopped), now, active_rules)
+    assert s["status"] == sh.WARN and asked == [1]
+    assert "scalper: fermato con 1 regola automatica attiva" in s["reasons"]
+
+    async def none_active():
+        return 0
+
+    s = await sh.services_section(FakeRedis(now - 5, stopped), now, none_active)
+    assert s["status"] == sh.OK
+
+
+async def test_services_without_intraday_rows_no_alarm():
+    """Everything off: no intraday or scalper row yet, nothing flagged."""
+    now = time.time()
+    s = await sh.services_section(FakeRedis(now - 5, {
+        WORKER_FIELD: {"started_at": now - 3600},
+        "health checks": {"state": "running", "started_at": now - 3600,
+                          "last_tick_at": now - 10}}), now)
+    assert s["status"] == sh.OK and s["reasons"] == []

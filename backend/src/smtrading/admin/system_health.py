@@ -3,7 +3,8 @@ overall status (`ok` | `attenzione` | `problema`) and its reasons.
 
 Every section is built from data the system already keeps, nothing is called outside:
 - services: the api (answering this request: build, start), the worker heartbeat
-  (Redis) and every supervised worker job (`worker.jobstate`: start, crashes, last pass);
+  (Redis) and every supervised worker job (`worker.jobstate`: start, crashes, last pass;
+  the scalper stopped while automatic rules are active is «attenzione»);
 - market data providers: the connectors' last health check (`connectors`, written every
   5 minutes by the worker's health checks);
 - quote freshness: the cached quote (Redis) of every open position's and watchlist's
@@ -34,7 +35,7 @@ import logging
 import os
 import time
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -44,6 +45,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.agents.models import McpAuditLog
+from smtrading.autorules.tables import ACTIVE as AUTO_RULE_ACTIVE
+from smtrading.autorules.tables import AutoRule
 from smtrading.backup import service as backup_service
 from smtrading.common.config import get_settings
 from smtrading.common.heartbeat import heartbeat_age_s
@@ -90,11 +93,15 @@ JOB_INTERVALS: dict[str, float] = {
     # warmed up; 30 s leaves a refresh warming many rules (REST under the shared rate
     # limit) 90 s before «attenzione», still catching a frozen loop in 1.5 min
     "scalper": 30,
+    # the intraday job (modes A and B: bar closes, safety close): a pass every
+    # intraday.job.TICK_S, also with both switches off everywhere (one query, then idle)
+    "intraday": 15,
 }
+SCALPER = "scalper"
 LATE_FACTOR = 3  # a pass later than 3 intervals is late
 GATED_JOBS = ("protection alarm", "goal alerts", "plan closer", "pre-open check",
               "hand-off watchdog", "weekly report", "system sentinel",
-              "broker tradability", "scalper")
+              "broker tradability", "scalper", "intraday")
 GATE_GRACE_S = 15 * 60  # the gated jobs may wait for the startup gate this long
 CONNECTOR_CHECK_LATE_S = 15 * 60
 PAPERCLIP_LATE_S = 15 * 60
@@ -139,8 +146,18 @@ def _ago(seconds: float) -> str:
 
 # -- services ---------------------------------------------------------------------------
 
-def job_rows(jobs: dict[str, dict[str, Any]], worker_started: float | None, now: float
-             ) -> list[dict[str, Any]]:
+def _stopped_note(name: str, active_auto_rules: int) -> tuple[str, str]:
+    """A job stopped on purpose is fine, except the scalper with active automatic rules
+    (their entries and time exits wait for it)."""
+    if name != SCALPER or active_auto_rules <= 0:
+        return OK, "fermato"
+    what = ("1 regola automatica attiva" if active_auto_rules == 1
+            else f"{active_auto_rules} regole automatiche attive")
+    return WARN, f"fermato con {what}"
+
+
+def job_rows(jobs: dict[str, dict[str, Any]], worker_started: float | None, now: float,
+             *, active_auto_rules: int = 0) -> list[dict[str, Any]]:
     rows = []
     for name in sorted(jobs):
         j = jobs[name]
@@ -149,7 +166,7 @@ def job_rows(jobs: dict[str, dict[str, Any]], worker_started: float | None, now:
         tick_at = j.get("last_tick_at")
         interval = JOB_INTERVALS.get(name)
         if j.get("state") == "stopped":
-            note = "fermato"
+            status, note = _stopped_note(name, active_auto_rules)
         elif j.get("state") == "restarting":
             status, note = BAD, "si sta riavviando dopo un errore"
         elif crash_at and now - crash_at < RECENT_CRASH_S:
@@ -170,7 +187,11 @@ def job_rows(jobs: dict[str, dict[str, Any]], worker_started: float | None, now:
     return rows
 
 
-async def services_section(redis, now: float) -> dict[str, Any]:
+async def services_section(redis, now: float,
+                           active_auto_rules: Callable[[], Awaitable[int]] | None = None
+                           ) -> dict[str, Any]:
+    """`active_auto_rules` is asked only when the scalper's row says it was stopped (no
+    query otherwise: the everyday case, and every case with mode B never used)."""
     reasons: list[str] = []
     try:
         age = await heartbeat_age_s(redis)
@@ -190,7 +211,13 @@ async def services_section(redis, now: float) -> dict[str, Any]:
     except Exception as e:
         log.warning("system health: worker jobs unreadable", exc_info=e)
         worker_started, jobs = None, {}
-    rows = job_rows(jobs, worker_started, now)
+    active = 0
+    if active_auto_rules is not None and (jobs.get(SCALPER) or {}).get("state") == "stopped":
+        try:
+            active = await active_auto_rules()
+        except Exception as e:
+            log.warning("system health: active automatic rules unreadable", exc_info=e)
+    rows = job_rows(jobs, worker_started, now, active_auto_rules=active)
     for r in rows:
         if r["status"] != OK:
             reasons.append(f"{r['name']}: {r['note']}")
@@ -665,6 +692,20 @@ async def _sentinel(session: AsyncSession, now: datetime) -> dict[str, Any]:
     return sentinel_settings.sentinel_view(on, state, now)
 
 
+async def _active_auto_rules(session: AsyncSession) -> int:
+    """The active automatic rules on portfolios with mode B on (they need the scalper)."""
+    try:
+        return await session.scalar(
+            select(func.count()).select_from(AutoRule)
+            .join(Portfolio, Portfolio.id == AutoRule.portfolio_id)
+            .where(AutoRule.status == AUTO_RULE_ACTIVE,
+                   Portfolio.auto_rules_enabled.is_(True),
+                   Portfolio.status != PortfolioStatus.archived)) or 0
+    except Exception:
+        await session.rollback()  # the next sections read on a clean session
+        raise
+
+
 async def system_health(session: AsyncSession, redis, *, now: datetime | None = None
                         ) -> dict[str, Any]:
     now = now or datetime.now(UTC)
@@ -673,8 +714,8 @@ async def system_health(session: AsyncSession, redis, *, now: datetime | None = 
     today = now.astimezone(zone).date()
     start = datetime.combine(today, datetime.min.time(), tzinfo=zone)
     sections: dict[str, dict[str, Any]] = {}
-    sections["services"] = await _guard(session, "services",
-                                        lambda: services_section(redis, now.timestamp()))
+    sections["services"] = await _guard(session, "services", lambda: services_section(
+        redis, now.timestamp(), lambda: _active_auto_rules(session)))
     sections["providers"] = await _guard(session, "providers", lambda: providers_section(session, now))
     sections["quotes"] = await _guard(session, "quotes", lambda: quotes_section(session, redis, now))
     sections["price_quality"] = await _guard(session, "price_quality",

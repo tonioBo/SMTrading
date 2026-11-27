@@ -95,13 +95,15 @@ function ModeSwitch({
           checked={checked}
           disabled={patch.isPending || (blockedBy && !checked)}
           onChange={(e) => {
+            // read now: the controlled checkbox is reset before the PATCH answers
+            const next = e.target.checked;
             patch.reset();
             patch.mutate(
-              { [field]: e.target.checked },
+              { [field]: next },
               {
                 onSuccess: () => {
                   void qc.invalidateQueries({ queryKey: ["intraday"] });
-                  toast.success(e.target.checked ? `${label}: acceso` : `${label}: spento`);
+                  toast.success(next ? `${label}: acceso` : `${label}: spento`);
                 },
               },
             );

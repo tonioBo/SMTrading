@@ -412,6 +412,7 @@ class BrokerSync:
         self._unknown_reads: set[UUID] = set()  # orders marked unknown by a read (_get_order)
         self._wake_sub = None  # the WAKE_CHANNEL subscription, while holding the lock
         self._wake_down = False  # its failure was logged
+        self._heartbeat_down = False  # a heartbeat failure was logged (once until back)
         self._hot: dict[UUID, float] = {}  # automatic order sent by a wake -> hot until
         self._hot_next = 0.0  # loop time of the next hot read
 
@@ -492,13 +493,19 @@ class BrokerSync:
 
     async def _heartbeat(self) -> None:
         """HEARTBEAT_KEY = now (ISO UTC): the lock holder completed a pass (its time is
-        part of the interval)."""
+        part of the interval). With Redis down, one warning until it is written again."""
         try:
             await asyncio.wait_for(self._redis.set(
                 HEARTBEAT_KEY, datetime.now(UTC).isoformat(), ex=HEARTBEAT_TTL_S,
             ), timeout=self._interval_s)
         except Exception:
-            log.warning("broker sync: heartbeat not written", exc_info=True)
+            if not self._heartbeat_down:
+                log.warning("broker sync: heartbeat not written", exc_info=True)
+                self._heartbeat_down = True
+            return
+        if self._heartbeat_down:
+            log.info("broker sync: heartbeat written again")
+            self._heartbeat_down = False
 
     # -- wake-up between passes (lock held) ------------------------------------------
 
@@ -1720,6 +1727,17 @@ class BrokerSync:
             log.error("order %s: broker fill price missing for %s; waiting",
                       order.id, bo.filled_qty - order.filled_qty)
 
+    @staticmethod
+    async def _fill_time(session: AsyncSession, order: Order, bo: BrokerOrder) -> None:
+        """The broker's fill time on the automatic trade, in a savepoint: a measure only,
+        its failure never stops the fill from being applied (the Tracker falls back to
+        the local time)."""
+        try:
+            async with session.begin_nested():
+                await record_broker_fill_time(session, order, bo.raw)
+        except Exception:
+            log.warning("order %s: broker fill time not recorded", order.id, exc_info=True)
+
     async def _apply(self, session: AsyncSession, order: Order, bo: BrokerOrder) -> None:
         """Apply the broker's view of the order (caller holds the locks)."""
         delta = bo.filled_qty - (order.filled_qty or Decimal(0))
@@ -1744,7 +1762,7 @@ class BrokerSync:
                 fee_override=fee, fee_override_ccy=fee_ccy,
             )
             if is_automatic(order):  # mode B: the broker's fill time, for the measures
-                await record_broker_fill_time(session, order, bo.raw)
+                await self._fill_time(session, order, bo)
             self._loss_checks.add(order.portfolio_id)
         order.broker_last_sync_at = self._clock()
         if order.status not in _SYNCED:  # filled by execute_fill

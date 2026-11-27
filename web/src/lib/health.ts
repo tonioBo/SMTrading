@@ -40,6 +40,7 @@ export const JOB_LABELS: Record<string, string> = {
   "system sentinel": "Sentinella di sistema",
   "broker tradability": "Strumenti presso il broker",
   scalper: "Regole automatiche",
+  intraday: "Lavoro in giornata",
 };
 
 export const ASSET_CLASS_LABELS: Record<string, string> = {

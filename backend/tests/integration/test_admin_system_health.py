@@ -203,3 +203,42 @@ async def test_health_shows_the_sentinel_open_problems_out_of_the_overall(admin)
     routes_system_health.clear_cache()
     sentinel = (await admin.client.get("/api/system-health")).json()["sentinel"]
     assert (sentinel["status"], sentinel["on"]) == ("spento", False)
+
+
+async def test_scalper_stopped_with_an_active_rule_is_a_warning(admin):
+    from decimal import Decimal as D
+
+    from smtrading.autorules import rules
+    from smtrading.events import discard_post_commit
+    from smtrading.portfolios.service import create_portfolio
+
+    redis = await _redis(admin)
+    now = time.time()
+    try:
+        await redis.set(HEARTBEAT_KEY, str(now))
+        await redis.delete(JOBS_KEY)
+        await redis.hset(JOBS_KEY, WORKER_FIELD, json.dumps({"started_at": now - 600}))
+        await redis.hset(JOBS_KEY, "scalper", json.dumps({
+            "state": "stopped", "started_at": now - 600, "last_tick_at": now - 300}))
+        services = (await admin.client.get("/api/system-health")).json()["sections"][
+            "services"]
+        assert services["status"] == "ok"  # stopped, no active rule: on purpose
+        async with admin.sm() as s:
+            p = await create_portfolio(s, name="Prova salute", initial_cash=D(10000))
+            p.auto_rules_enabled = True
+            await s.flush()
+            r = await rules.create_rule(s, portfolio_id=p.id, symbol="AAPL",
+                                        model="breakout", params={"lookback_min": 20},
+                                        qty=D(1), by="admin@example.com")
+            await rules.activate(s, r.id, by="admin@example.com",
+                                 now=datetime(2026, 11, 25, 16, 0, tzinfo=UTC))
+            discard_post_commit(s)
+            await s.commit()
+        routes_system_health.clear_cache()
+        services = (await admin.client.get("/api/system-health")).json()["sections"][
+            "services"]
+        assert services["status"] == "attenzione"
+        assert "scalper: fermato con 1 regola automatica attiva" in services["reasons"]
+    finally:
+        await redis.delete(JOBS_KEY, HEARTBEAT_KEY)
+        await redis.aclose()
