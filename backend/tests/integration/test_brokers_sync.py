@@ -90,6 +90,8 @@ class Broker:
         self.down_kinds: set[str] = set()  # adapters whose broker does not answer
         self.attempts = 0  # place_order calls (answered or not)
         self.find_raises: Exception | None = None
+        self.read_timeouts: set[str] = set()  # client refs whose lookup times out reading
+        self.reconcile_raises: Exception | None = None
 
     def set(self, broker_id: str, status: str, filled, avg) -> None:
         self.orders[broker_id] = BrokerOrder(
@@ -116,7 +118,7 @@ class FakeBrokerAdapter(BrokerAdapter):
 
     def _down(self) -> None:
         if self.kind in BROKER.down_kinds:
-            raise BrokerUnreachable(f"{self.kind}: ConnectTimeout")
+            raise BrokerUnreachable(f"{self.kind}: ConnectTimeout", connect=True)
 
     async def place_order(self, order, instrument) -> BrokerOrder:
         BROKER.attempts += 1
@@ -154,6 +156,8 @@ class FakeBrokerAdapter(BrokerAdapter):
 
     async def get_positions(self) -> dict[str, Decimal]:
         self._down()
+        if BROKER.reconcile_raises is not None:
+            raise BROKER.reconcile_raises
         return dict(BROKER.positions)
 
     async def find_order(self, order, instrument, since, exclude=frozenset()):
@@ -161,6 +165,8 @@ class FakeBrokerAdapter(BrokerAdapter):
         self._down()
         if BROKER.find_raises is not None:
             raise BROKER.find_raises
+        if self.client_ref(order) in BROKER.read_timeouts:
+            raise BrokerUnreachable(f"{self.kind}: ReadTimeout")
         bid = BROKER.by_ref.get(self.client_ref(order))
         return None if bid is None or bid in exclude else BROKER.orders[bid]
 
@@ -735,61 +741,108 @@ async def _link(maker, link_id) -> BrokerLink:
 
 
 async def test_unreachable_paper_link_alerts_once_and_once_back(maker, redis, qs):
-    """A paper/demo link that stops answering: one Telegram (system) at the third failed
-    pass in a row, nothing more while it lasts, one when it answers again."""
+    """A paper/demo link that stops answering: at most one failure counted a minute
+    (however many passes), one Telegram (system) at the third, nothing more while it
+    lasts, one when it answers again."""
     pid, link_id = await _linked_portfolio(maker)
-    oid = await _place(maker, redis, qs, pid)
+    oid = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"))
     name = (await _link(maker, link_id)).name
     BROKER.down_kinds = {"fake_test"}
-    sync = _sync(maker, redis, qs)
-    for _ in range(2):
+    clock = Clock(OPEN)
+    sync = BrokerSync(maker, redis, qs, None, clock=clock)
+    for _ in range(5):  # passes seconds apart: one failure
         await sync.tick()
-    assert await _system_texts(maker) == []
+        clock.now += timedelta(seconds=2)
     link = await _link(maker, link_id)
-    assert (link.status, link.health_failures) == ("error", 2)
-    assert "ConnectTimeout" in link.last_error
-    for _ in range(3):
-        await sync.tick()
+    assert (link.status, link.health_failures) == ("error", 1)
+    assert "ConnectTimeout" in link.last_error and link.outage_since == OPEN
+    clock.now = OPEN + timedelta(seconds=60)
+    await sync.tick()
+    await sync.tick()
+    assert (await _link(maker, link_id)).health_failures == 2
+    assert await _system_texts(maker) == []
+    clock.now = OPEN + timedelta(seconds=120)
+    await sync.tick()
     texts = await _system_texts(maker)
     assert len(texts) == 1 and name in texts[0] and "non raggiungibile" in texts[0]
     assert "ConnectTimeout" in texts[0]
-    assert await reconcile_all(maker, None) == 0  # also a failure: no second message
+    clock.now = OPEN + timedelta(seconds=200)
+    assert await reconcile_all(maker, None, now=clock.now) == 0  # no second message
     assert len(await _system_texts(maker)) == 1
 
     BROKER.down_kinds = set()
+    clock.now = OPEN + timedelta(seconds=210)
     await sync.tick()  # looked up: answered
     await sync.tick()
-    await reconcile_all(maker, None)
+    await reconcile_all(maker, None, now=clock.now)
     texts = await _system_texts(maker)
     assert len(texts) == 2 and name in texts[1] and "di nuovo raggiungibile" in texts[1]
     link = await _link(maker, link_id)
     assert (link.status, link.health_failures, link.last_error) == ("ok", 0, None)
+    assert (link.outage_since, link.outage_until) == (OPEN, clock.now)
     assert (await _order(maker, oid)).broker_order_id is not None
 
 
 async def test_reconcile_all_failures_alert_a_link_without_orders(maker):
     _, link_id = await _linked_portfolio(maker)
     BROKER.down_kinds = {"fake_test"}
-    for _ in range(4):
-        await reconcile_all(maker, None)
+    for i in range(4):
+        await reconcile_all(maker, None, now=OPEN + timedelta(minutes=5 * i))
     texts = await _system_texts(maker)
     assert len(texts) == 1 and "non raggiungibile" in texts[0]
     assert (await _link(maker, link_id)).health_failures == 4
     BROKER.down_kinds = set()
-    await reconcile_all(maker, None)
-    await reconcile_all(maker, None)
+    await reconcile_all(maker, None, now=OPEN + timedelta(minutes=20))
+    await reconcile_all(maker, None, now=OPEN + timedelta(minutes=25))
     texts = await _system_texts(maker)
     assert len(texts) == 2 and "di nuovo raggiungibile" in texts[1]
+
+
+@pytest.mark.parametrize(("error", "counts"), [
+    (RuntimeError("fake_test: HTTP 401: unauthorized"), False),
+    (RuntimeError("fake_test: HTTP 500: bug"), False),
+    (RuntimeError("fake_test: HTTP 503: unavailable"), True),
+    (RuntimeError("fake_test: HTTP 504: gateway timeout"), True),
+])
+async def test_only_unanswered_reconcile_failures_count(maker, error, counts):
+    """A broker that answers with a failure is not «non raggiungibile» (status error
+    only); a gateway 502/503/504 is."""
+    _, link_id = await _linked_portfolio(maker)
+    BROKER.reconcile_raises = error
+    for i in range(3):
+        await reconcile_all(maker, None, now=OPEN + timedelta(minutes=5 * i))
+    link = await _link(maker, link_id)
+    assert link.status == "error" and str(error) in link.last_error
+    assert link.health_failures == (3 if counts else 0)
+    assert len(await _system_texts(maker)) == (1 if counts else 0)
 
 
 async def test_a_blip_below_the_threshold_sends_nothing(maker):
     _, link_id = await _linked_portfolio(maker)
     BROKER.down_kinds = {"fake_test"}
-    await reconcile_all(maker, None)
+    await reconcile_all(maker, None, now=OPEN)
     BROKER.down_kinds = set()
-    await reconcile_all(maker, None)
+    await reconcile_all(maker, None, now=OPEN + timedelta(minutes=5))
     assert await _system_texts(maker) == []
     assert (await _link(maker, link_id)).status == "ok"
+
+
+async def test_a_read_timeout_does_not_skip_the_link(maker, redis, qs, caplog):
+    """A lookup that times out reading affects only its order: the next order of the
+    link is still served (no starvation)."""
+    pid, _ = await _linked_portfolio(maker)
+    a = await _place(maker, redis, qs, pid, type=OrderType.limit, limit_price=D("95"))
+    BROKER.fail_next = 1
+    sync = _sync(maker, redis, qs)
+    await sync.tick()  # a: attempted, looked up next pass
+    BROKER.read_timeouts = {str(a)}
+    b = await _place(maker, redis, qs, pid)
+    with caplog.at_level(logging.WARNING, logger="smtrading.brokers.sync"):
+        await sync.tick()
+        await sync.tick()
+    assert (await _order(maker, b)).broker_order_id is not None
+    assert (await _order(maker, a)).broker_order_id is None
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 async def test_market_order_caught_by_an_outage_is_not_sent_late(maker, redis, qs):
@@ -837,6 +890,63 @@ async def test_market_order_absent_within_the_window_is_sent_again(maker, redis,
     clock.now = OPEN + sync_module.MATCH_WINDOW
     BROKER.down_kinds = set()
     await sync.tick()
+    await sync.tick()
+    assert (await _order(maker, oid)).broker_order_id is not None
+
+
+async def _created_at(maker, ids, at) -> None:
+    async with maker() as s:
+        await s.execute(text("UPDATE orders SET created_at = :at WHERE id = ANY(:ids)"),
+                        {"at": at, "ids": list(ids)})
+        await s.commit()
+
+
+async def test_market_orders_queued_through_an_outage_are_refused(maker, redis, qs):
+    """Never-sent market orders that waited more than MATCH_WINDOW through their link's
+    outage are refused at recovery (none sent); one placed after it is sent."""
+    pid, link_id = await _linked_portfolio(maker)
+    ids = [await _place(maker, redis, qs, pid) for _ in range(3)]
+    await _created_at(maker, ids, OPEN)  # placed on the test clock
+    clock = Clock(OPEN)
+    sync = BrokerSync(maker, redis, qs, None, clock=clock)
+    BROKER.down_kinds = {"fake_test"}
+    for minute in range(7):
+        clock.now = OPEN + timedelta(minutes=minute)
+        await sync.tick()
+    BROKER.down_kinds = set()
+    await sync.tick()
+    await sync.tick()
+    for oid in ids:
+        o = await _order(maker, oid)
+        assert o.status == OrderStatus.rejected, oid
+        assert o.reject_code == ErrorCode.PROVIDER_UNAVAILABLE
+    assert len(await _notes(maker, pid, "order.rejected")) == 3
+    assert BROKER.placed == []
+    link = await _link(maker, link_id)
+    assert link.outage_until is not None
+
+    clock.now += timedelta(minutes=1)
+    after = await _place(maker, redis, qs, pid, now=clock.now)
+    await _created_at(maker, [after], clock.now)
+    await sync.tick()
+    assert (await _order(maker, after)).broker_order_id is not None
+
+
+async def test_market_order_queued_while_closed_is_sent_after_a_night_outage(
+        maker, redis, qs):
+    """An outage while the market is closed (or a healthy link) never refuses an order
+    queued for the open."""
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid, now=SATURDAY)
+    await _created_at(maker, [oid], SATURDAY)
+    clock = Clock(SATURDAY)
+    sync = BrokerSync(maker, redis, qs, None, clock=clock)
+    BROKER.down_kinds = {"fake_test"}
+    await reconcile_all(maker, None, now=SATURDAY)
+    await reconcile_all(maker, None, now=SATURDAY + timedelta(minutes=30))
+    BROKER.down_kinds = set()
+    await reconcile_all(maker, None, now=SATURDAY + timedelta(minutes=35))
+    clock.now = MONDAY_OPEN
     await sync.tick()
     assert (await _order(maker, oid)).broker_order_id is not None
 
