@@ -26,10 +26,12 @@ def fair_view(quote) -> QuoteView:
     ask 338.63, last 324.17) is no price: with a last trade only the last is kept (the
     sides are then synthesised from it at the default spread, `effective_bid_ask`), the
     rule of the processor's triggers and of `valuation.mark_price`; without one, the book
-    as it is. A tight or one-sided quote is unchanged."""
+    as it is. A tight or one-sided quote is unchanged. The kept last is clamped into
+    [bid, ask]: a stale last outside the book never gives a better-than-book fill nor
+    holds back (or fires) a stop the book does not."""
     if quote.last is not None and quote.bid is not None and quote.ask is not None \
             and is_wide(quote):
-        return QuoteView(None, None, quote.last, quote.ts)
+        return QuoteView(None, None, min(max(quote.last, quote.bid), quote.ask), quote.ts)
     return QuoteView(quote.bid, quote.ask, quote.last, quote.ts)
 
 

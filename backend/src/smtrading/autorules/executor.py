@@ -85,6 +85,7 @@ from smtrading.engine.models import (
     OrderType,
     TimeInForce,
 )
+from smtrading.engine.pricing import fair_view
 from smtrading.engine.service import (
     PlaceOrderRequest,
     cancel_held_children,
@@ -101,7 +102,6 @@ from smtrading.events import (
 from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.instruments.service import floor_to_lot, lot_of
-from smtrading.marketdata.quality import is_wide
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.locks import lock_live_portfolio, lock_portfolio
 from smtrading.portfolios.models import PortfolioStatus
@@ -402,7 +402,8 @@ class Executor:
             return None
         # a book wider than MAX_SPREAD (the IEX feed: 27/11 JPM bid 305.04, last 324.17)
         # is no price: the exit is expected at the last trade (engine.pricing.fair_view)
-        return quote.last if quote.last is not None and is_wide(quote) else quote.bid
+        view = fair_view(quote)
+        return view.last if view.bid is None and quote.bid is not None else quote.bid
 
     async def _exit(self, rule: ActiveRule, ex: Exit, trade: AutoTrade,
                     now: datetime) -> uuid.UUID | None:

@@ -216,3 +216,15 @@ def test_fair_view_keeps_a_wide_book_without_a_last_trade():
 def test_fair_view_keeps_a_one_sided_quote():
     v = fair_view(q(bid="99", last="100"))
     assert (v.bid, v.ask, v.last) == (D(99), None, D(100))
+
+
+def test_fair_view_clamps_a_last_above_the_book():
+    # a stale last over the ask must never price a sell better than the book
+    v = fair_view(q(bid="90", ask="110", last="120"))
+    assert (v.bid, v.ask, v.last) == (None, None, D(110))
+
+
+def test_fair_view_clamps_a_last_below_the_book():
+    # a stale last under the bid must never fire a protective stop the book does not reach
+    v = fair_view(q(bid="90", ask="110", last="80"))
+    assert (v.bid, v.ask, v.last) == (None, None, D(90))
