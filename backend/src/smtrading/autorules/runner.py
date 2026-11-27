@@ -17,6 +17,7 @@ from smtrading.marketdata.types import Bar
 
 State = Literal["flat", "pending", "long"]
 _SERIES_SLACK = 5  # extra bars kept beyond the model's warm-up
+SESSION_EXIT_MARGIN_MIN = 2  # the rule exits this long before the worker's day close
 
 
 @dataclass(frozen=True)

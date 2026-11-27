@@ -34,7 +34,7 @@ from smtrading.autorules.feed import (
 )
 from smtrading.autorules.quotes import CacheQuoteSource
 from smtrading.autorules.rules import STREAM_SOURCE, ActiveRule, active_rules
-from smtrading.autorules.runner import Entry, Exit, RuleRunner
+from smtrading.autorules.runner import SESSION_EXIT_MARGIN_MIN, Entry, Exit, RuleRunner
 from smtrading.autorules.summary import SUMMARY_CHECK_S, send_due_summaries
 from smtrading.autorules.tracker import TRACK_EVERY_S, Tracker
 from smtrading.marketdata.minute_bars import StreamBar
@@ -45,7 +45,6 @@ from smtrading.worker.jobstate import job_tick
 log = logging.getLogger(__name__)
 
 SCALPER_JOB = "scalper"
-SESSION_EXIT_MARGIN_MIN = 2  # the rule exits this long before the worker's day close
 
 
 def _runner_inputs(rule: ActiveRule) -> tuple:
