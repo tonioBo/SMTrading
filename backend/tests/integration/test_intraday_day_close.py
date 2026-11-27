@@ -79,9 +79,31 @@ async def _portfolio(sm, *, intraday=True, auto=False) -> uuid.UUID:
         return p.id
 
 
+CLOCK: dict[str, datetime | None] = {"now": None}
+
+
+@pytest.fixture(autouse=True)
+def _risk_clock(monkeypatch):
+    """The risk check reads the wall clock for a quote's age; the quotes here are stamped
+    at the test's clock (`QS.at`), so the check sees that clock too: the tests never
+    depend on the real date."""
+    import smtrading.risk.checks as risk_checks
+
+    class _Clocked(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            now = CLOCK["now"] or datetime.now(UTC)
+            return now if tz is None else now.astimezone(tz)
+
+    monkeypatch.setattr(risk_checks, "datetime", _Clocked)
+    CLOCK["now"] = None
+    yield
+    CLOCK["now"] = None
+
+
 async def _buy(sm, qs, pid, qty, at, *, day_trade=True):
     """A filled buy whose fill is dated `at` (fills are stamped by the database clock)."""
-    qs.at = at
+    qs.at = CLOCK["now"] = at
     async with sm() as s:
         o = await place_order(s, qs, PlaceOrderRequest(
             portfolio_id=pid, symbol="AAPL", side=OrderSide.buy, type=OrderType.market,
@@ -94,7 +116,7 @@ async def _buy(sm, qs, pid, qty, at, *, day_trade=True):
 
 
 async def _tick(sm, qs, now):
-    qs.at = now
+    qs.at = CLOCK["now"] = now
     try:
         await DayCloser(sm, qs, None).tick(now)
     finally:
@@ -354,7 +376,7 @@ async def test_off_portfolio_untouched(sm, qs):
 async def test_close_position_defaults_unchanged(sm, qs):
     pid = await _portfolio(sm, intraday=False)
     await _buy(sm, qs, pid, 10, BOUGHT, day_trade=False)
-    qs.at = BOUGHT
+    qs.at = CLOCK["now"] = BOUGHT
     async with sm() as s:
         o = await close_position(s, qs, pid, "AAPL", source="system", now=BOUGHT)
         discard_post_commit(s)

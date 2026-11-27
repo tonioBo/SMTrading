@@ -945,15 +945,10 @@ async def test_another_providers_wide_book_fills_on_its_bid_as_before(maker, red
 
 async def test_a_market_order_on_a_wide_book_fills_at_the_last_trade(maker, redis, qs):
     pid = await _portfolio(maker)
-    qs.set_quote("AAPL", D("90.00"), D("110.00"), D("100.00"), ts=datetime.now(UTC),
-                 provider="alpaca")
-    oid = await _place(maker, redis, qs, pid, now=datetime.now(UTC))
+    # fresh for the risk check (wall clock), placed in an open session (OPEN)
+    qs.set_quote("AAPL", D("90.00"), D("110.00"), D("100.00"), provider="alpaca")
+    oid = await _place(maker, redis, qs, pid, now=OPEN)
     order = await _order(maker, oid)
-    if order.status == OrderStatus.queued:  # the market is closed now: priced on the tick
-        clock = Clock(OPEN + timedelta(minutes=1))
-        await _proc(maker, redis, qs, clock).on_tick(
-            "AAPL", _wide(qs, "90.00", "110.00", "100.00", clock.now, "alpaca"))
-        order = await _order(maker, oid)
     assert order.status == OrderStatus.filled
     assert D("100.00") <= order.avg_fill_price < D("100.50")
 
