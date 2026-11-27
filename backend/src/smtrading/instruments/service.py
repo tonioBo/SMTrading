@@ -1,4 +1,4 @@
-from decimal import Decimal, localcontext
+from decimal import ROUND_FLOOR, Decimal, localcontext
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,6 +36,24 @@ def _validate_multiple(instr: Instrument, value: Decimal, step: Decimal, what: s
             ErrorCode.INVALID_ORDER, f"{what} is not a multiple of {decimal_to_str(step)}",
             {"symbol": instr.symbol, what: decimal_to_str(value), "step": decimal_to_str(step)},
         )
+
+
+def floor_to_lot(qty: Decimal, lot: Decimal | None) -> Decimal:
+    """`qty` rounded down to a multiple of `lot` (never up: an exit sized from what is
+    held never sells more than it). A quantity already a multiple comes back as it is;
+    below one lot: 0 (a remainder no order can carry). No lot (or not > 0): unchanged."""
+    if lot is None or not lot > 0 or qty <= 0:
+        return qty
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        if qty % lot == 0:
+            return qty
+        return (qty / lot).to_integral_value(ROUND_FLOOR) * lot
+
+
+async def lot_of(session: AsyncSession, symbol: str) -> Decimal | None:
+    """The instrument's lot size (what `validate_quantity` checks); None when unknown."""
+    return await session.scalar(select(Instrument.lot_size).where(Instrument.symbol == symbol))
 
 
 def validate_quantity(instr: Instrument, qty: Decimal) -> None:

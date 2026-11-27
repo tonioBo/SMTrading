@@ -226,6 +226,7 @@ from smtrading.events import (
 from smtrading.fees.resolver import load_rules
 from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
+from smtrading.instruments.service import floor_to_lot
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, JournalType
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.locks import lock_portfolio
@@ -1130,10 +1131,12 @@ class BrokerSync:
         held = await _held(session, order.portfolio_id, order.symbol)
         tolerance = adapter.fee_dust(order.symbol, max(remaining, held))
         min_qty = adapter.fee_dust(order.symbol, Decimal(0))
+        lot = await session.scalar(
+            select(Instrument.lot_size).where(Instrument.symbol == order.symbol))
         if remaining > free:
             if remaining - free > tolerance:
                 return False  # not a fee residue: sent as is, the broker answers
-            if free <= 0 or free < min_qty:
+            if free <= 0 or free < min_qty or floor_to_lot(free, lot) <= 0:
                 if not await write_off_dust(session, order):
                     return False
                 order.broker_status = "filled"
@@ -1141,11 +1144,13 @@ class BrokerSync:
                          order.id, remaining, order.symbol)
                 await self._closed(session, order)
                 return True
-            log.info("order %s: sized %s -> %s (what the account holds)",
-                     order.id, remaining, free)
-            order.qty = filled + free
+            size = floor_to_lot(free, lot)  # an order is a multiple of the lot
+            log.info("order %s: sized %s -> %s (what the account holds, in lots)",
+                     order.id, remaining, size)
+            order.qty = filled + size
             return False
-        if held > 0 and remaining == held:  # a full exit: the account's residue goes too
+        if held > 0 and remaining in (held, floor_to_lot(held, lot)):
+            # a full exit (the position, or all its lots): the account's residue goes too
             ours = await session.scalar(
                 select(func.coalesce(func.sum(AccountBalance.balance), 0))
                 .join(Account, AccountBalance.account_id == Account.id)
@@ -1154,9 +1159,10 @@ class BrokerSync:
                        Account.asset == order.symbol, Account.kind == AccountKind.position))
             extra = total - Decimal(ours)
             if 0 < extra <= tolerance and remaining + extra <= free:
+                size = floor_to_lot(remaining + extra, lot)  # in lots, never up
                 log.info("order %s: sized %s -> %s (the account's fee residue too)",
-                         order.id, remaining, remaining + extra)
-                order.qty = order.qty + extra
+                         order.id, remaining, size)
+                order.qty = filled + size
         return False
 
     async def _rate_fee(self, session: AsyncSession, order: Order, bo: BrokerOrder,
@@ -1872,12 +1878,15 @@ class BrokerSync:
             session, order, self._canceled(order) if final == OrderStatus.canceled else final)
         if order.filled_qty > 0:  # a partly filled entry: its exits cover what filled
             credited = await credited_qty(session, order)  # net of a fee in the asset
+            lot = await session.scalar(
+                select(Instrument.lot_size).where(Instrument.symbol == order.symbol))
+            size = floor_to_lot(min(order.filled_qty, credited) if credited > 0 else (
+                order.filled_qty), lot)  # an order is a multiple of the lot
             for child in await session.scalars(
                 select(Order).where(Order.parent_id == order.id,
                                     Order.status == OrderStatus.held)
             ):
-                child.qty = min(order.filled_qty, credited) if credited > 0 else (
-                    order.filled_qty)
+                child.qty = size
             await activate_linked(session, order)
         else:
             await cancel_held_children(session, order, by="system")

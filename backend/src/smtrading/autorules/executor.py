@@ -91,6 +91,7 @@ from smtrading.events import (
 )
 from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import AssetClass, Instrument
+from smtrading.instruments.service import floor_to_lot, lot_of
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.locks import lock_live_portfolio, lock_portfolio
 from smtrading.portfolios.models import PortfolioStatus
@@ -389,13 +390,21 @@ class Executor:
                         Order.client_order_id.startswith(f"{base}-")))) or 0
             held = await session.scalar(select(Position.qty).where(
                 Position.portfolio_id == row.portfolio_id, Position.symbol == row.symbol))
+            lot = await lot_of(session, row.symbol)
+            if held and held > 0 and floor_to_lot(held, lot) <= 0:
+                await session.rollback()  # below one lot (the coin fee's): flat, no retry
+                self._exited.add(trade.id)
+                log.info("automatic rule %s: trade %s holds only %s %s, below one lot: "
+                         "nothing to exit", rule.rule_id, trade.id, held, rule.symbol)
+                return None
             if not held or held <= 0:
                 await session.rollback()
                 self._exit_retry[trade.id] = now + timedelta(seconds=EXIT_RETRY_S)
                 log.warning("automatic rule %s: trade %s has no position left to exit",
                             rule.rule_id, trade.id)
                 return None
-            qty = min(row.qty, held - await self._selling(session, row))
+            # in lots, never up (Alpaca crypto: the coin fee leaves the position finer)
+            qty = floor_to_lot(min(row.qty, held - await self._selling(session, row)), lot)
             if qty <= 0:
                 await session.rollback()
                 self._exit_retry[trade.id] = now + timedelta(seconds=EXIT_RETRY_S)

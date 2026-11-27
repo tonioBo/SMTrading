@@ -188,7 +188,8 @@ class Clock:
         return self.now
 
 
-async def _rule(maker, symbol="AAPL", *, qty=D(1), params=None, **pf) -> ActiveRule:
+async def _rule(maker, symbol="AAPL", *, qty=D(1), notional=None, params=None,
+                **pf) -> ActiveRule:
     async with maker() as s:
         p = await create_portfolio(s, name=f"S-{uuid.uuid4().hex[:8]}",
                                    initial_cash=D(100000), leverage=D(1))
@@ -201,7 +202,7 @@ async def _rule(maker, symbol="AAPL", *, qty=D(1), params=None, **pf) -> ActiveR
         await s.flush()
         r = await rules.create_rule(s, portfolio_id=p.id, symbol=symbol, model="breakout",
                                     params={"lookback_min": 20, **(params or {})},
-                                    qty=qty, notional=None, by=BY)
+                                    qty=qty, notional=notional, by=BY)
         await rules.activate(s, r.id, by=BY, now=NOW)
         await s.commit()
         [rule] = [a for a in await active_rules(s) if a.rule_id == r.id]
@@ -469,6 +470,58 @@ async def test_refused_exit_replaced(maker, redis, qs, broker, router):
     closed = await _trade(maker, row.id)
     assert closed.status == CLOSED and closed.exit_reason == "time"
     assert closed.exit_order_id == orders[1].id
+
+
+async def test_crypto_time_exit_sells_the_lot_floored_position(maker, redis, qs, broker,
+                                                               router):
+    """Live paper drill (26/11): 200 $ of ETH bought on alpaca_paper, the coin fee leaves
+    9 decimals held (finer than the lot of 1e-8). The stop and target are sized in lots,
+    the time exit sells the lot-floored position, is accepted and fills; the remainder
+    below one lot goes with it and the trade closes (no retry on it)."""
+    sym, lot = "ETH-USD", D("0.00000001")
+    rule = await _rule(maker, sym, qty=None, notional=D(200), params={"max_hold_s": 60})
+    broker.fake.price = D(1735)
+    runner = _runner(rule)
+    await _ready(redis, NOW, sym)
+    q = await _quote(redis, NOW, bid="1734", ask="1735", symbol=sym)
+    runner.on_bar(_fresh_bar(NOW))
+    trade = await Executor(maker, redis, qs, clock=Clock(NOW)).enter(
+        rule, runner, Entry(q.ts, q.ask, {}), q)
+    assert trade is not None and trade.qty == D("0.11527377"), trade
+    broker.fill_time = NOW + timedelta(seconds=1)
+    await _settle(maker, redis, qs, broker, NOW)
+    await Tracker(maker, redis, qs, clock=Clock(broker.fill_time)).step(
+        {rule.rule_id: runner})
+    row = await _trade(maker, trade.id)
+    assert row.status == OPEN
+    async with maker() as s:
+        held = await s.scalar(select(Position.qty).where(
+            Position.portfolio_id == rule.portfolio_id, Position.symbol == sym))
+    assert held == D("0.114985585") and held % lot != 0  # the coin fee: 9 decimals
+    children = [o for o in await _orders(maker, rule)
+                if o.role in ("take_profit", "stop_loss")]
+    assert children and all(o.qty == D("0.11498558") for o in children)
+
+    clock = Clock(row.filled_at + timedelta(seconds=60))
+    await _ready(redis, clock.now, sym)
+    await _quote(redis, clock.now, bid="1736", ask="1737", symbol=sym)
+    sc = _scalper(maker, redis, router, clock, rule, runner)
+    await sc.track()
+    [exit_order] = await _autox(maker, rule)
+    assert exit_order.qty == D("0.11498558")
+    assert exit_order.status != OrderStatus.rejected, exit_order.reject_message
+    broker.fake.price = D(1736)
+    broker.fill_time = clock.now + timedelta(milliseconds=400)
+    await _settle(maker, redis, qs, broker, clock.now)
+    clock.now += timedelta(seconds=1)
+    await sc.track()
+    closed = await _trade(maker, row.id)
+    assert closed.status == CLOSED and closed.exit_reason == "time"
+    assert runner.state == "flat"
+    async with maker() as s:
+        assert not await s.scalar(select(Position.qty).where(
+            Position.portfolio_id == rule.portfolio_id, Position.symbol == sym))
+    assert len(await _autox(maker, rule)) == 1
 
 
 async def test_session_exit_before_worker_net(maker, redis, qs, broker, router):

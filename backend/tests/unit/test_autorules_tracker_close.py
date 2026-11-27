@@ -68,3 +68,33 @@ async def test_gross_on_the_whole_sold_when_within_the_trade():
                                _Exit(_order("1", "120"), "time", None)])
     assert row.exit_price == D(115)
     assert row.net_result == D(30)
+
+
+async def _track_dust(lot, held):
+    """An open ETH trade of 0.11527377 whose time exit sold the lot-floored position
+    (0.11498558): `held` is what the position keeps (the coin fee's remainder)."""
+    from smtrading.autorules.tables import OPEN
+    tracker = Tracker(lambda: _Session(), None, _QS(), clock=lambda: AT)
+    trade = SimpleNamespace(**vars(_trade(qty="0.11527377", fill="1735")), status=OPEN)
+    exits = [_Exit(_order("0.11498558", "1736"), "time", None)]
+    tracker._exits_of = lambda t, snap: exits
+    closed = []
+
+    async def close(item, snap, ex, runner):
+        closed.append(ex)
+        return "closed"
+
+    tracker._close = close
+    snap = _Snapshot(items=[], orders={}, fills={},
+                     positions={(trade.portfolio_id, trade.symbol): D(held)})
+    item = _Item(trade=trade, entry_timeout_s=5, currency="USD", base_currency="USD",
+                 lot=None if lot is None else D(lot))
+    await tracker._track(item, snap, None, AT)
+    return closed
+
+
+async def test_a_remainder_below_one_lot_closes_the_trade():
+    assert await _track_dust("0.00000001", "0.000000005")  # dust: nothing left to sell
+    assert await _track_dust("0.00000001", "0")
+    assert not await _track_dust("0.00000001", "0.00000002")  # one lot or more: open
+    assert not await _track_dust(None, "0.000000005")  # no lot known: as before
