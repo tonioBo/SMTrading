@@ -50,6 +50,13 @@ ADMIN_ONLY_READS = {
     ("GET", "/api/activity-log.csv"),
     ("GET", "/api/activity-log/catalog"),
     ("GET", "/api/markets/price-alerts"),  # the owner's personal price alerts
+    # the intraday and auto-rules routers are admin-only, reads included
+    ("GET", "/api/intraday/triggers"),
+    ("GET", "/api/intraday/accounts"),
+    ("GET", "/api/auto-rules"),
+    ("GET", "/api/auto-rules/models"),
+    ("GET", "/api/auto-rules/results"),
+    ("GET", "/api/auto-rules/{rule_id}/trades"),
 }
 SKIPPED_PATHS = {"/health", "/mcp", "/mcp/"}
 
