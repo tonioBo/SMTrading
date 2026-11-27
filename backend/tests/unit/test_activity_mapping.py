@@ -112,3 +112,13 @@ def test_order_waiting_on_a_suspect_quote_is_a_quiet_warning():
                          " si esegue con la prossima quotazione affidabile")
     other = activity_for_event("order.quote_suspect", {"symbol": "NVDA", "reason": "x"})
     assert "(non confermato)" in other.summary
+
+
+def test_filled_after_partial_fills_reports_cumulative_qty_and_avg_price():
+    """Alpaca filled buy 3.583587 INTC in 3 fills (1, 1, 1.583587): the one
+    «Ordine eseguito» shows the order's total, not the last fill."""
+    d = activity_for_event("order.filled", {
+        "symbol": "INTC", "side": "buy", "qty": Decimal("1.583587"),
+        "price": Decimal("55.81"), "filled_qty": Decimal("3.583587"),
+        "avg_price": Decimal("55.7"), "currency": "USD"})
+    assert d.summary == "Ordine eseguito: buy 3.583587 INTC a 55.7 USD"

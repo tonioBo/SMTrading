@@ -44,10 +44,15 @@ def _with_message(text: str, payload: dict) -> str:
     return f"{text}: {message}" if message else text
 
 
-def _fill(prefix: str) -> Callable[[dict], str]:
+def _fill(prefix: str, *, total: bool = False) -> Callable[[dict], str]:
+    """`total`: the order's last fill, reported as the order's cumulative filled quantity
+    and average price (a fill split in pieces is one «Ordine eseguito»)."""
     def summary(p: dict) -> str:
-        return (f"{prefix}: {_v(p, 'side')} {_v(p, 'qty')} {_v(p, 'symbol')}"
-                f" a {_v(p, 'price')} {_v(p, 'currency', '')}").rstrip()
+        qty_key, price_key = "qty", "price"
+        if total and p.get("filled_qty") and p.get("avg_price"):
+            qty_key, price_key = "filled_qty", "avg_price"
+        return (f"{prefix}: {_v(p, 'side')} {_v(p, qty_key)} {_v(p, 'symbol')}"
+                f" a {_v(p, price_key)} {_v(p, 'currency', '')}").rstrip()
     return summary
 
 
@@ -86,7 +91,7 @@ QUOTE_SUSPECT_REASONS = {"jump": "salto improvviso", "disagree": "fonti in disac
 _EVENTS: dict[str, tuple[ActivityLevel, bool, Callable[[dict], str]]] = {
     "order.accepted": (ActivityLevel.info, False,
                        lambda p: f"Ordine accettato: {_v(p, 'symbol')}"),
-    "order.filled": (ActivityLevel.executed, True, _fill("Ordine eseguito")),
+    "order.filled": (ActivityLevel.executed, True, _fill("Ordine eseguito", total=True)),
     "order.partially_filled": (ActivityLevel.info, False,
                                _fill("Ordine eseguito in parte")),
     "order.rejected": (ActivityLevel.warning, True,
