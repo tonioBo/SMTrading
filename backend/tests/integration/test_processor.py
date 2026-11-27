@@ -885,8 +885,9 @@ async def test_genuine_gap_on_a_lone_stream_fires_the_stop_in_bounded_time(
     assert any("MSFT" in t and "Prezzo non affidabile" in t for t in texts)
 
 
-def _wide(qs, bid, ask, last, ts):
-    qs.set_quote("AAPL", D(bid), D(ask), None if last is None else D(last), ts=ts)
+def _wide(qs, bid, ask, last, ts, provider="fake"):
+    qs.set_quote("AAPL", D(bid), D(ask), None if last is None else D(last), ts=ts,
+                 provider=provider)
     return qs._quotes["AAPL"]
 
 
@@ -920,21 +921,38 @@ async def test_a_stop_triggered_on_a_wide_book_fills_at_the_last_trade(maker, re
     )
     clock = Clock(OPEN + timedelta(minutes=1))
     proc = _proc(maker, redis, qs, clock)
-    assert await proc.on_tick("AAPL", _wide(qs, "90.00", "110.00", "94.00", clock.now)) == 1
+    assert await proc.on_tick(
+        "AAPL", _wide(qs, "90.00", "110.00", "94.00", clock.now, "alpaca")) == 1
     order = await _order(maker, oid)
     assert order.status == OrderStatus.filled
     assert D("93.50") < order.avg_fill_price <= D("94.00")
 
 
+async def test_another_providers_wide_book_fills_on_its_bid_as_before(maker, redis, qs):
+    """Only Alpaca's IEX book is a ghost: elsewhere the last trade triggers, the bid fills."""
+    pid = await _portfolio(maker)
+    await _place(maker, redis, qs, pid)  # long 10
+    oid = await _place(
+        maker, redis, qs, pid, side=OrderSide.sell, type=OrderType.stop, stop_price=D("95.00")
+    )
+    clock = Clock(OPEN + timedelta(minutes=1))
+    proc = _proc(maker, redis, qs, clock)
+    assert await proc.on_tick(
+        "AAPL", _wide(qs, "90.00", "110.00", "94.00", clock.now, "kraken")) == 1
+    order = await _order(maker, oid)
+    assert order.status == OrderStatus.filled and order.avg_fill_price == D("90.00")
+
+
 async def test_a_market_order_on_a_wide_book_fills_at_the_last_trade(maker, redis, qs):
     pid = await _portfolio(maker)
-    qs.set_quote("AAPL", D("90.00"), D("110.00"), D("100.00"), ts=datetime.now(UTC))
+    qs.set_quote("AAPL", D("90.00"), D("110.00"), D("100.00"), ts=datetime.now(UTC),
+                 provider="alpaca")
     oid = await _place(maker, redis, qs, pid, now=datetime.now(UTC))
     order = await _order(maker, oid)
     if order.status == OrderStatus.queued:  # the market is closed now: priced on the tick
         clock = Clock(OPEN + timedelta(minutes=1))
         await _proc(maker, redis, qs, clock).on_tick(
-            "AAPL", _wide(qs, "90.00", "110.00", "100.00", clock.now))
+            "AAPL", _wide(qs, "90.00", "110.00", "100.00", clock.now, "alpaca"))
         order = await _order(maker, oid)
     assert order.status == OrderStatus.filled
     assert D("100.00") <= order.avg_fill_price < D("100.50")
@@ -944,7 +962,7 @@ async def test_a_bracket_on_a_wide_book_is_referenced_on_the_last_trade(maker, r
     """27/11 JPM: the placement read ask 338.63 (last ~323) and refused a bracket whose
     levels straddled the real price («take_profit > reference > stop_loss»)."""
     pid = await _portfolio(maker)
-    qs.set_quote("AAPL", D("90.00"), D("110.00"), D("100.00"))
+    qs.set_quote("AAPL", D("90.00"), D("110.00"), D("100.00"), provider="alpaca")
     async with maker() as s:
         entry, tp, sl = await place_bracket_order(
             s, qs, PlaceOrderRequest(

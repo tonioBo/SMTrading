@@ -221,9 +221,10 @@ async def _ready(redis, now, symbol="AAPL") -> None:
     await redis.set(HEARTBEAT_KEY, (now - timedelta(seconds=1)).isoformat())
 
 
-async def _quote(redis, ts, bid="199.90", ask="200.00", symbol="AAPL", last=None) -> Quote:
+async def _quote(redis, ts, bid="199.90", ask="200.00", symbol="AAPL", last=None,
+                 provider="fake") -> Quote:
     q = Quote(symbol=symbol, bid=D(bid), ask=D(ask), last=D(last or ask), ts=ts,
-              provider="fake")
+              provider=provider)
     await write_quote(redis, q, fetched_at=ts)
     return q
 
@@ -958,7 +959,8 @@ async def test_time_exit_expected_is_the_last_trade_on_a_wide_book(maker, redis,
     row, runner = await _open(maker, redis, qs, broker, rule)
     clock = Clock(row.filled_at + timedelta(seconds=60))
     sc = _scalper(maker, redis, router, clock, rule, runner)
-    await _quote(redis, clock.now, bid="190.00", ask="211.00", last="200.50")
+    await _quote(redis, clock.now, bid="190.00", ask="211.00", last="200.50",
+                 provider="alpaca")
     await sc.track()
     [exit_order] = await _autox(maker, rule)
     sent = await _trade(maker, row.id)

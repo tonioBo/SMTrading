@@ -79,7 +79,7 @@ from smtrading.engine.models import (
     OrderStatus,
     OrderType,
 )
-from smtrading.engine.pricing import effective_bid_ask, fair_view
+from smtrading.engine.pricing import QuoteView, effective_bid_ask, fair_view
 from smtrading.engine.quotesource import QuoteSource
 from smtrading.engine.service import cancel_held_children, cancel_orders
 from smtrading.engine.triggers import OrderView, TriggerAction, TriggerResult, evaluate
@@ -534,11 +534,14 @@ class OrderProcessor:
             self._note_suspect(session, order, quote, now)
             return False  # wait for a confirmed quote
         # a book wider than MAX_SPREAD (an opening or thin quote) is no price: the last
-        # trade decides (fair_view; the fill is priced the same way), and without one the
-        # order waits (24/11: a stop fired on such a bid)
+        # trade decides, and without one the order waits (24/11: a stop fired on such a
+        # bid); an Alpaca (IEX) book through fair_view, as its fill is priced
         if quote.last is None and is_wide(quote):
             return False
-        bid, ask = effective_bid_ask(fair_view(quote), spread)
+        view = fair_view(quote)
+        if view.bid is not None and view.ask is not None and is_wide(quote):
+            view = QuoteView(None, None, quote.last, quote.ts)  # the other providers
+        bid, ask = effective_bid_ask(view, spread)
         if _decide(order, bid, ask).action == TriggerAction.none:
             return False
 

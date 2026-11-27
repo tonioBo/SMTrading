@@ -14,6 +14,7 @@ from smtrading.engine.pricing import (
     notional_to_qty,
     round_to_tick,
 )
+from smtrading.marketdata.types import Quote
 
 TS = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -196,35 +197,50 @@ def test_notional_to_qty_zero_invalid():
     assert e.value.code == ErrorCode.INVALID_ORDER
 
 
+def aq(bid=None, ask=None, last=None, provider="alpaca"):
+    """A provider's quote (fair_view reads the provider)."""
+    return Quote(symbol="X", bid=None if bid is None else D(bid),
+                 ask=None if ask is None else D(ask), last=None if last is None else D(last),
+                 ts=TS, provider=provider)
+
+
 def test_fair_view_keeps_a_tight_book():
-    v = fair_view(q(bid="99.90", ask="100.00", last="99.95"))
+    v = fair_view(aq(bid="99.90", ask="100.00", last="99.95"))
     assert (v.bid, v.ask, v.last) == (D("99.90"), D("100.00"), D("99.95"))
 
 
 def test_fair_view_drops_a_wide_book_for_the_last_trade():
     # 27/11 JPM on IEX: bid 305.04 / ask 338.63, last 324.17
-    v = fair_view(q(bid="305.04", ask="338.63", last="324.17"))
+    v = fair_view(aq(bid="305.04", ask="338.63", last="324.17"))
     assert (v.bid, v.ask, v.last) == (None, None, D("324.17"))
     assert effective_bid_ask(v, 2) == (D("324.17") - D("0.032417"), D("324.17") + D("0.032417"))
 
 
 def test_fair_view_keeps_a_wide_book_without_a_last_trade():
-    v = fair_view(q(bid="90", ask="110"))
+    v = fair_view(aq(bid="90", ask="110"))
     assert (v.bid, v.ask) == (D(90), D(110))
 
 
 def test_fair_view_keeps_a_one_sided_quote():
-    v = fair_view(q(bid="99", last="100"))
+    v = fair_view(aq(bid="99", last="100"))
     assert (v.bid, v.ask, v.last) == (D(99), None, D(100))
 
 
 def test_fair_view_clamps_a_last_above_the_book():
     # a stale last over the ask must never price a sell better than the book
-    v = fair_view(q(bid="90", ask="110", last="120"))
+    v = fair_view(aq(bid="90", ask="110", last="120"))
     assert (v.bid, v.ask, v.last) == (None, None, D(110))
 
 
 def test_fair_view_clamps_a_last_below_the_book():
     # a stale last under the bid must never fire a protective stop the book does not reach
-    v = fair_view(q(bid="90", ask="110", last="80"))
+    v = fair_view(aq(bid="90", ask="110", last="80"))
     assert (v.bid, v.ask, v.last) == (None, None, D(90))
+
+
+@pytest.mark.parametrize("provider", ["kraken", "etoro", "revolutx", "binance", "yahoo", "fake"])
+def test_fair_view_leaves_other_providers_wide_books_alone(provider):
+    """Only Alpaca's free IEX feed has the ghost book; every other provider's wide book
+    is priced as before (its sides)."""
+    v = fair_view(aq(bid="90", ask="110", last="100", provider=provider))
+    assert (v.bid, v.ask, v.last) == (D(90), D(110), D(100))

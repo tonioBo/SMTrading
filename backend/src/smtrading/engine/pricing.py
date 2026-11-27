@@ -20,8 +20,14 @@ class QuoteView:
     ts: datetime
 
 
+# the providers whose wide book is a ghost (Alpaca's free IEX feed: a thin venue's top of
+# book, not the market's); every other provider's book is priced on its sides
+GHOST_BOOK_PROVIDERS = frozenset({"alpaca"})
+
+
 def fair_view(quote) -> QuoteView:
-    """The quote (a `Quote` or `QuoteView`) as the engine prices it. A book wider than
+    """The quote (a `Quote`) as the engine prices it. From a GHOST_BOOK_PROVIDERS source,
+    a book wider than
     MAX_SPREAD of its mid (an opening or thin quote, the IEX feed: 27/11 JPM bid 305.04 /
     ask 338.63, last 324.17) is no price: with a last trade only the last is kept (the
     sides are then synthesised from it at the default spread, `effective_bid_ask`), the
@@ -29,8 +35,8 @@ def fair_view(quote) -> QuoteView:
     as it is. A tight or one-sided quote is unchanged. The kept last is clamped into
     [bid, ask]: a stale last outside the book never gives a better-than-book fill nor
     holds back (or fires) a stop the book does not."""
-    if quote.last is not None and quote.bid is not None and quote.ask is not None \
-            and is_wide(quote):
+    if getattr(quote, "provider", None) in GHOST_BOOK_PROVIDERS and quote.last is not None \
+            and quote.bid is not None and quote.ask is not None and is_wide(quote):
         return QuoteView(None, None, min(max(quote.last, quote.bid), quote.ask), quote.ts)
     return QuoteView(quote.bid, quote.ask, quote.last, quote.ts)
 
