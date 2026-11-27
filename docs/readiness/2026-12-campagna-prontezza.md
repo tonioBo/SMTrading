@@ -59,6 +59,7 @@ In orari tranquilli, una a settimana; esito annotato qui e nella pagella.
 | mer 9/12 sera | Prezzi sospetti (prezzo anomalo iniettato sul simulato) | la guardia scarta il prezzo, nessun ordine scattato a torto |
 | sab 12/12 | Prova reale eToro con stop/obiettivo (nuova protezione) | l'altra uscita si annulla solo dopo l'esecuzione |
 | dopo il 22/12 | Chiusura di fine piano | tutte le posizioni chiuse dagli agenti, residui chiusi da SMTrading alla prima seduta valida |
+| quando arrivano le chiavi del nuovo conto di prova Alpaca da 30.000 $ (seduta piena) | Prova reale del lavoro in giornata nei due modi (due portafogli di prova nascosti sullo stesso collegamento nuovo: sveglia su strategia 15m; regole automatiche su 1-2 titoli e 1-2 cripto) | scatti e messaggi alle chiusure di barra; tempi scatto→esecuzione, scarti, commissioni e risultati delle regole; uscite a tempo e di fine seduta; freni; rifiuto del manuale sul simbolo di una regola; tetto di giornata, leva 2 e potere d'acquisto del broker; rete di fine seduta; nessun disturbo alla campagna; pulizia con conto vuoto (manuale: `2026-12-intraday-prova-alpaca.md`) |
 
 ## 4. Lista finale sì/no (a fine campagna)
 
