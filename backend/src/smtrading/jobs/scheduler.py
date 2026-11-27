@@ -6,7 +6,9 @@
 - every 60s: margin sweep (margin and daily loss checks);
 - every 5 minutes: periodic equity snapshots and, with an http client, the broker
   reconciliation of every enabled paper/demo broker link (real-money links, with a
-  `live_state`, are reconciled every 60 s by brokers.live.monitor.LiveMonitor).
+  `live_state`, are reconciled every 60 s by brokers.live.monitor.LiveMonitor);
+- every 15 minutes, with an http client: the broker fees charged apart from the orders
+  (Alpaca's regulatory fees, brokers.fee_activities), booked once each.
 
 Archived portfolios (Task 13) are frozen: every job leaves them out.
 
@@ -27,6 +29,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from smtrading.brokers.fee_activities import FEE_SYNC_INTERVAL_S, book_broker_fees
 from smtrading.brokers.sync import reconcile_all
 from smtrading.corporate.actions import run_corporate_actions
 from smtrading.corporate.interest import run_interest
@@ -104,6 +107,10 @@ class JobScheduler:
             await self._every(
                 "broker reconciliation", RECONCILE_INTERVAL_S, now,
                 lambda: reconcile_all(self._sm, self._http),
+            )
+            await self._every(
+                "broker fees", FEE_SYNC_INTERVAL_S, now,
+                lambda: book_broker_fees(self._sm, self._http, now=now),
             )
 
     async def _every(

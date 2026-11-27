@@ -39,13 +39,22 @@ time reaches Alpaca, the other is suspended meanwhile (`oco_in_flight`) and canc
 here once it fills. A stop (or limit) placed alone still rests at Alpaca. A synthetic
 sell waits while another sell of the portfolio holds the position at Alpaca
 (`market_only_sell`), so it is never sent into the refusal above.
+
+Fees apart from the orders (read on the paper API on 25/11, after an MSFT sale): Alpaca
+charges the regulatory fees of a trading day as account activities FEE posted the night
+after (`activity_sub_type` REG: «REG fee for proceed of $2133.54 on 2026-11-24 by
+<account>», CAT: «CAT fee for proceed of 2 trades on 2026-11-24 by <account>», TAF), with
+no symbol and no order id; the order entity carries none (`commission` 0).
+`fee_activities` lists them (GET /v2/account/activities/FEE, paged) with the trading day
+of the description (else the activity's date); brokers.fee_activities books them. The
+crypto fee activities (CFEE) are not listed: the crypto fee is booked by rate above.
 """
 
 import json
 import logging
 import re
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import ClassVar
 
@@ -55,6 +64,7 @@ from smtrading.brokers.base import (
     SYNTHETIC_TYPES,
     AccountSnapshot,
     BrokerAdapter,
+    BrokerFee,
     BrokerOpenOrder,
     BrokerOrder,
     BrokerStatus,
@@ -89,6 +99,8 @@ FEE_DUST_REL = Decimal("0.003")
 # the resting types Alpaca takes on crypto when they buy (a resting sell is kept here)
 _CRYPTO_RESTING_BUYS = frozenset({OrderType.limit, OrderType.stop_limit})
 _FRACTION = re.compile(r"(\.\d{6})\d+")
+_FEE_DAY = re.compile(r"\bon (\d{4}-\d{2}-\d{2})\b")  # the trading day of a FEE activity
+_ACTIVITIES_PAGE = 100  # the API maximum
 
 _STATUS: dict[str, BrokerStatus] = {
     "new": "accepted",
@@ -180,6 +192,24 @@ def _taker(data: dict) -> bool:
 
 def _crypto_order(data: dict) -> bool:
     return data.get("asset_class") == "crypto" or "/" in str(data.get("symbol") or "")
+
+
+def _broker_fee(a: dict) -> BrokerFee | None:
+    """The BrokerFee of a FEE activity; None for anything but a charge."""
+    if str(a.get("activity_type", "FEE")).upper() != "FEE" or not a.get("id"):
+        return None
+    net = _dec(a.get("net_amount"))
+    if net is None or net >= 0:
+        return None
+    text = str(a.get("description") or "")
+    m = _FEE_DAY.search(text)
+    try:
+        day = date.fromisoformat(m.group(1) if m else str(a.get("date"))[:10])
+    except ValueError:
+        return None
+    return BrokerFee(id=str(a["id"]), trade_date=day, amount=-net,
+                     currency=str(a.get("currency") or "USD").upper(),
+                     kind=a.get("activity_sub_type"), description=text)
 
 
 def _error_message(resp: httpx.Response) -> str:
@@ -578,6 +608,27 @@ class _AlpacaProtocol(BrokerAdapter):
             order_types=None,
             raw=json.loads(json.dumps(acct, default=str)),
         )
+
+    async def fee_activities(self, since: date) -> list[BrokerFee]:
+        """The account's FEE activities dated `since` or later, oldest first (GET only,
+        paged by the last id). A charge only (a negative `net_amount`)."""
+        out: list[BrokerFee] = []
+        params: dict = {"after": (since - timedelta(days=1)).isoformat(),
+                        "direction": "asc", "page_size": _ACTIVITIES_PAGE}
+        while True:
+            resp = await self._request("GET", "/v2/account/activities/FEE", params=params)
+            if resp.status_code >= 300:
+                raise self._fail(resp)
+            page = self._parse(resp)
+            if not isinstance(page, list):  # not the activities list: retried next time
+                raise self._fail(resp)
+            for a in page:
+                fee = _broker_fee(a)
+                if fee is not None and fee.trade_date >= since:
+                    out.append(fee)
+            if len(page) < _ACTIVITIES_PAGE or not page[-1].get("id"):
+                return out
+            params = {**params, "page_token": str(page[-1]["id"])}
 
     async def health_check(self) -> None:
         resp = await self._request("GET", "/v2/account")

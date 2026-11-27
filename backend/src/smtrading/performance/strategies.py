@@ -9,7 +9,8 @@ attributed to a strategy, round trips by FIFO lots, P/L and costs in EUR.
 - A trade is one opening order (all its fills); it is closed when all its quantity is.
   A fill bigger than the opposite lots closes them and opens a new trade (flip).
 - Costs: the fill's trade fee plus the FX fee of the conversion it caused (the
-  `system_fees` lines of its FX journal); an exit fill's costs are split over the lots it
+  `system_fees` lines of its FX journal) and the broker fees booked apart on it (FEE
+  journals with its fill id: brokers.fee_activities, Alpaca's regulatory fees); an exit fill's costs are split over the lots it
   closes (and the flip remainder) by quantity.
 - EUR: realised P/L (instrument currency) and costs are converted at the current FX rate
   (like the valuation); unrealised P/L = Σ (mark − lot price) × lot qty over
@@ -279,7 +280,8 @@ async def _fills(session: AsyncSession, portfolio_ids: Iterable[uuid.UUID] | Non
         select(Journal.fill_id, Account.asset, JournalLine.quantity)
         .join(JournalLine, JournalLine.journal_id == Journal.id)
         .join(Account, Account.id == JournalLine.account_id)
-        .where(Journal.type == JournalType.FX, Account.kind == AccountKind.system_fees,
+        .where(Journal.type.in_((JournalType.FX, JournalType.FEE)),
+               Account.kind == AccountKind.system_fees,
                Journal.fill_id.in_([f.id for f, *_ in rows]))
     )).all():
         fx_fees[fill_id][asset] = fx_fees[fill_id].get(asset, Decimal(0)) + amount

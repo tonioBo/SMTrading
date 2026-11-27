@@ -1,7 +1,7 @@
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import ClassVar, Literal
 
@@ -127,6 +127,20 @@ class AccountSnapshot:
     crypto_enabled: bool | None
     order_types: frozenset[OrderType] | None
     raw: dict
+
+
+@dataclass(frozen=True)
+class BrokerFee:
+    """A fee the broker charged apart from any order or fill (Alpaca: the account
+    activity FEE, the regulatory fees on sells and the CAT fee, posted the night after the
+    trades, with no symbol and no order). Booked by brokers.fee_activities."""
+
+    id: str  # the broker's activity id (unique per account)
+    trade_date: date  # the trading day of the trades it is for
+    amount: Decimal  # > 0, in `currency`
+    currency: str
+    kind: str | None  # the broker's sub type (REG, CAT, TAF...)
+    description: str
 
 
 class BrokerAdapter:
@@ -269,6 +283,11 @@ class BrokerAdapter:
         """The orders open at the broker, read with GET requests only; None: this broker
         does not list them (the reconciliation then does not compare the orders)."""
         return None
+
+    async def fee_activities(self, since: date) -> list[BrokerFee]:
+        """The fees the broker charged apart from the orders from `since` on (GET only);
+        none by default (a broker whose fees come with its orders, or none)."""
+        return []
 
     async def health_check(self) -> None:
         raise NotImplementedError
