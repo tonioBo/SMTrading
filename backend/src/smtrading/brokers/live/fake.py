@@ -25,6 +25,10 @@ second resting sell of the whole position: a stop, then a take profit) is refuse
 `order_class` (bracket, oco, oto) with a fractional quantity is refused (422 «fractional
 orders must be simple orders»); SMTrading never sends one, a whole one is refused too
 (not modeled).
+
+Alpaca fees apart from the orders (as the paper API answered on 25/11): `alpaca_charge_fee`
+takes a regulatory fee out of the cash and lists it as a FEE activity (GET
+/v2/account/activities/FEE: `after`, `direction`, `page_size`, `page_token`).
 """
 
 import itertools
@@ -145,6 +149,7 @@ class FakeLiveBroker:
         self.alpaca = _Account("USD")
         self.alpaca_crypto_tier = 1
         self.alpaca_assets: dict[str, dict | None] = {}  # symbol -> asset fields override
+        self.alpaca_fees: list[dict] = []  # the FEE activities, oldest first
         self.t212 = _Account("EUR")
         self.etoro = {"demo": _EtoroEnv(), "real": _EtoroEnv()}
         self.etoro_partial_close = True  # allowPartialClosePosition of every instrument
@@ -222,6 +227,30 @@ class FakeLiveBroker:
             o.update(status="filled", filled_qty=o["qty"], filled_avg_price=_num(fill),
                      filled_at=_now(), updated_at=_now())
 
+    def alpaca_charge_fee(self, day: str, amount: Decimal, sub_type: str = "REG",
+                          posted: str | None = None) -> str:
+        """A regulatory fee of the trading day `day` (YYYY-MM-DD) taken out of the cash and
+        listed as a FEE activity (the shape of the paper API's); its id."""
+        with self._lock:
+            fid = f"{day.replace('-', '')}000000000::fee-{next(self._ids)}"
+            what = ("proceed of $1000.00" if sub_type == "REG" else "proceed of 1 trades")
+            self.alpaca_fees.append({
+                "id": fid, "activity_type": "FEE", "activity_sub_type": sub_type,
+                "date": posted or day, "created_at": _now(),
+                "net_amount": _num(-amount), "status": "executed", "currency": "USD",
+                "description": f"{sub_type} fee for {what} on {day} by PAFAKE"})
+            self.alpaca.cash -= amount
+            return fid
+
+    def _alpaca_activities(self, params) -> httpx.Response:
+        after = params.get("after")
+        rows = [a for a in self.alpaca_fees if after is None or a["date"] > after]
+        token = params.get("page_token")
+        if token:
+            ids = [a["id"] for a in rows]
+            rows = rows[ids.index(token) + 1:] if token in ids else []
+        return httpx.Response(200, json=rows[:int(params.get("page_size") or 100)])
+
     def _alpaca_crypto(self, symbol: str, side: str, qty: Decimal, price: Decimal, *,
                        taker: bool) -> None:
         acct = self.alpaca
@@ -247,6 +276,8 @@ class FakeLiveBroker:
                 "id": "fake-alpaca-account", "status": "ACTIVE", "currency": acct.currency,
                 "cash": cash, "buying_power": cash, "multiplier": "1",
                 "crypto_status": "INACTIVE", "crypto_tier": self.alpaca_crypto_tier})
+        if (method, path) == ("GET", "/v2/account/activities/FEE"):
+            return self._alpaca_activities(params)
         if (method, path) == ("GET", "/v2/positions"):
             return httpx.Response(200, json=[
                 self._alpaca_position(s, q) for s, q in acct.positions.items()])

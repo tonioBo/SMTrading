@@ -11,10 +11,14 @@ cutoff passes while Telegram is not ready, one WARNING per summary and day is lo
 nothing is claimed.
 
 One rule for archived portfolios: they are left out of the digest and of the summaries
-(their digest rows are marked `skipped`).
+(their digest rows are marked `skipped`). The daily and weekly summaries count only the
+portfolios counted in the total (`total_portfolio_ids`: live and `in_totals`), like
+their total value: a hidden test portfolio's orders, events, decisions, positions and
+ranking row are left out of every count and list (found on 27/11: 73 executed orders,
+Prova B's positions).
 
 The ranking uses `get_performance` (same return and drawdown as the API) over the
-portfolios that are not archived, plus the fills of the period.
+portfolios counted in the total, plus the fills of the period.
 """
 
 import asyncio
@@ -38,7 +42,11 @@ from smtrading.engine.models import Fill
 from smtrading.goals.progress import period_end_lines, summary_lines
 from smtrading.jobs.runs import run_job_once
 from smtrading.performance.service import get_performance
-from smtrading.portfolios.models import Portfolio, PortfolioStatus, live_portfolio_ids
+from smtrading.portfolios.models import (
+    Portfolio,
+    PortfolioStatus,
+    total_portfolio_ids,
+)
 from smtrading.telegram.config import is_ready, load_config
 from smtrading.telegram.details import open_positions_lines
 from smtrading.telegram.outbox import enqueue
@@ -108,15 +116,16 @@ class RankRow:
 
 async def ranking(session: AsyncSession, *, period: Literal["1d", "1w"], since: datetime,
                   now: datetime) -> list[RankRow]:
-    """Every portfolio that is not archived: return and max drawdown of `period` (from
-    `get_performance`), fills since `since`. Best return first, None last, then by name."""
+    """Every portfolio counted in the total (`total_portfolio_ids`): return and max
+    drawdown of `period` (from `get_performance`), fills since `since`. Best return
+    first, None last, then by name."""
     portfolios = (await session.execute(
-        select(Portfolio.id, Portfolio.name).where(Portfolio.id.in_(live_portfolio_ids()))
+        select(Portfolio.id, Portfolio.name).where(Portfolio.id.in_(total_portfolio_ids()))
     )).all()
     trades = dict((await session.execute(
         select(Fill.portfolio_id, func.count())
         .where(Fill.created_at >= since, Fill.created_at <= now,
-               Fill.portfolio_id.in_(live_portfolio_ids()))
+               Fill.portfolio_id.in_(total_portfolio_ids()))
         .group_by(Fill.portfolio_id)
     )).all())
     rows = []
@@ -213,7 +222,7 @@ REMOVED_AGENT = "Agente rimosso"
 async def _decision_section(session: AsyncSession, kind: Kind, since: datetime,
                             now: datetime, zone: ZoneInfo) -> list[str]:
     """«🧭 Decisioni di oggi (N)» (or «della settimana»), grouped by kind, decisions of
-    archived portfolios left out; at most 15 lines, then «… e altre N». A decision whose
+    portfolios not counted in the total (archived, `in_totals` false) left out; at most 15 lines, then «… e altre N». A decision whose
     agent row is gone is still listed, by «Agente rimosso»."""
     rows = (await session.execute(
         select(Decision, func.coalesce(Agent.name, REMOVED_AGENT), Portfolio.name)
@@ -221,7 +230,7 @@ async def _decision_section(session: AsyncSession, kind: Kind, since: datetime,
         .outerjoin(Portfolio, Portfolio.id == Decision.portfolio_id)
         .where(Decision.created_at >= since, Decision.created_at <= now,
                or_(Decision.portfolio_id.is_(None),
-                   Decision.portfolio_id.in_(live_portfolio_ids())))
+                   Decision.portfolio_id.in_(total_portfolio_ids())))
         .order_by(Decision.created_at, Decision.id)
     )).all()
     label = "di oggi" if kind == "daily" else "della settimana"
@@ -300,11 +309,12 @@ async def build_summary(session: AsyncSession, kind: Kind, now: datetime, *,
     transaction), «📌 Posizioni aperte» (with a quote source `qs`: one line per open
     position, see `details.open_positions_lines`; nothing when none), the decisions of the period grouped by
     kind (one plain line each, see `decision_line`) and the portfolio
-    ranking as a `pre` block, split into messages of at most 4096 characters. Archived
-    portfolios are left out."""
+    ranking as a `pre` block, split into messages of at most 4096 characters. Only the
+    portfolios counted in the total (`total_portfolio_ids`) are counted and listed."""
     zone = ZoneInfo(tz or get_settings().tz)
     since = _window(kind, now, zone)
-    live = or_(Activity.portfolio_id.is_(None), Activity.portfolio_id.in_(live_portfolio_ids()))
+    live = or_(Activity.portfolio_id.is_(None),
+               Activity.portfolio_id.in_(total_portfolio_ids()))
     rows = list(await session.scalars(
         select(Activity)
         .where(Activity.ts >= since, Activity.ts <= now, live,
@@ -341,7 +351,8 @@ async def build_summary(session: AsyncSession, kind: Kind, now: datetime, *,
         lines += await period_end_lines(session, now, zone)
     if qs is not None:
         lines += _section("📌 Posizioni aperte",
-                          await open_positions_lines(session, qs, redis=redis))
+                          await open_positions_lines(session, qs, redis=redis,
+                                                     ids=total_portfolio_ids()))
     lines += _section(f"{PREFIX['executed']}Ordini eseguiti", filled)
     lines += _section(f"{PREFIX['warning']}Ordini rifiutati", rejected)
     lines += _section(f"{PREFIX['critical']}Eventi critici", critical)
