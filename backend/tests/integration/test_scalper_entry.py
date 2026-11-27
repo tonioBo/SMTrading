@@ -224,7 +224,7 @@ async def _open_trade(sm, rule: ActiveRule) -> None:
         await s.commit()
 
 
-@pytest.mark.parametrize("case", ["stale", "spread", "closed", "suspect", "busy"])
+@pytest.mark.parametrize("case", ["stale", "spread", "closed", "suspect", "busy", "future"])
 async def test_guards_block_entry(sm, redis, qs, case):
     rule = await _rule(sm)
     now = THANKSGIVING if case == "closed" else NOW
@@ -235,6 +235,8 @@ async def test_guards_block_entry(sm, redis, qs, case):
         q = await _quote(redis, bid="99.945", ask="100.055")  # 0.11 %
     elif case == "suspect":
         q = await _quote(redis, suspect="jump")
+    elif case == "future":  # stamped 1.1 s ahead of our clock: skew, not trusted
+        q = await _quote(redis, ts=now + timedelta(seconds=1, milliseconds=100))
     else:
         q = await _quote(redis, ts=now)
     if case == "busy":
@@ -247,7 +249,7 @@ async def test_guards_block_entry(sm, redis, qs, case):
     assert await _orders(sm, rule) == []
     assert len(await _trades(sm, rule)) == trades_before
     assert runner.state == "flat"
-    reason = "stale" if case == "suspect" else case
+    reason = "stale" if case in ("suspect", "future") else case
     assert await _blocked(redis, rule, now) == {reason: 1}
     ttl = await redis.ttl(blocked_key(rule.rule_id, now))
     assert 3 * 24 * 3600 - 10 < ttl <= 3 * 24 * 3600
@@ -260,6 +262,14 @@ async def test_quote_just_young_enough_passes(sm, redis, qs):
     trade = await Executor(sm, redis, qs, clock=Clock(NOW)).enter(
         rule, _runner(rule), _entry(q), q)
     assert trade is not None and trade.status == SENT
+
+
+async def test_quote_slightly_ahead_passes(sm, redis, qs):
+    rule = await _rule(sm)
+    await _ready(redis, "AAPL")
+    q = await _quote(redis, ts=NOW + timedelta(seconds=1))  # within the 1 s skew bound
+    assert await Executor(sm, redis, qs, clock=Clock(NOW)).enter(
+        rule, _runner(rule), _entry(q), q) is not None
 
 
 async def test_no_entry_when_symbol_polled(sm, redis, qs):
@@ -590,3 +600,73 @@ async def test_trigger_to_send_under_one_second(maker, redis, qs):
         row = await s.scalar(select(AutoTrade).where(AutoTrade.rule_id == rule.rule_id))
         assert row.ms_trigger_to_send is not None and row.ms_trigger_to_send < 1000
     assert len(posted) == 1  # sent once, by the wake (the next full pass is 30 s away)
+
+
+# --- fix round 1 ---------------------------------------------------------------------------
+
+async def test_rejection_cools_down(sm, redis, qs):
+    """A risk refusal is stored once: the next quotes meeting the same condition add no
+    rows (counted as `rejected`) until the cooldown ends."""
+    from smtrading.autorules import executor as executor_module
+
+    rule = await _rule(sm)
+    await _ready(redis, "AAPL")
+    async with sm() as s:
+        await set_kill_switch(s, True)
+        await s.commit()
+    await _rejected(sm, redis, qs, rule)
+    runner = _runner(rule)
+    for i in (1, 2):
+        later = await _quote(redis, ts=NOW + timedelta(seconds=i))
+        assert await Executor(sm, redis, qs, clock=Clock(NOW + timedelta(seconds=i))).enter(
+            rule, runner, _entry(later), later) is None
+    assert len(await _trades(sm, rule)) == 1
+    assert len([o for o in await _orders(sm, rule) if o.role == "entry"]) == 1
+    assert await _blocked(redis, rule) == {"rejected": 2}
+    ttl = await redis.ttl(executor_module.REJECT_KEY.format(rule_id=rule.rule_id))
+    assert 0 < ttl <= executor_module.REJECT_COOLDOWN_S
+
+
+@pytest.mark.parametrize("change", ["switch_off", "paused", "new_version"])
+async def test_no_entry_when_rule_changed_after_snapshot(sm, redis, qs, change):
+    rule = await _rule(sm)  # the scalper's snapshot
+    async with sm() as s:
+        if change == "switch_off":
+            p = await s.get(Portfolio, rule.portfolio_id)
+            p.auto_rules_enabled = False
+        else:
+            await rules.pause(s, rule.rule_id, by=BY)
+            if change == "new_version":
+                await rules.update_rule(s, rule.rule_id, params={"lookback_min": 10}, by=BY)
+                await rules.resume(s, rule.rule_id, by=BY, now=NOW)
+        await s.commit()
+    await _ready(redis, "AAPL")
+    q = await _quote(redis)
+    runner = _runner(rule)
+    assert await Executor(sm, redis, qs, clock=Clock(NOW)).enter(
+        rule, runner, _entry(q), q) is None
+    assert await _orders(sm, rule) == [] and await _trades(sm, rule) == []
+    assert await _blocked(redis, rule) == {"inactive": 1}
+    assert runner.state == "flat"
+
+
+async def test_automatic_order_refused_with_switch_off(sm, redis, qs):
+    """Risk step 11 on its own: an order carrying an auto_rule_id on a portfolio whose
+    switch is off is refused (`auto_rule_inactive`); a reduce-only one is not judged."""
+    from smtrading.common.errors import ErrorCode, SMTError
+    from smtrading.engine.models import OrderSide
+    from smtrading.engine.service import PlaceOrderRequest, place_order
+
+    rule = await _rule(sm)
+    async with sm() as s:
+        (await s.get(Portfolio, rule.portfolio_id)).auto_rules_enabled = False
+        await s.commit()
+    await _quote(redis)
+    async with sm() as s:
+        with pytest.raises(SMTError) as e:
+            await place_order(s, qs, PlaceOrderRequest(
+                portfolio_id=rule.portfolio_id, symbol="AAPL", side=OrderSide.buy,
+                type=OrderType.market, tif=TimeInForce.day, qty=D(1), source="system",
+                auto_rule_id=rule.rule_id), now=NOW)
+    assert e.value.code == ErrorCode.RISK_LIMIT_EXCEEDED
+    assert e.value.details["reason"] == "auto_rule_inactive"

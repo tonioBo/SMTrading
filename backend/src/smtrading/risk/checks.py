@@ -416,6 +416,11 @@ async def _run(
             raise _Reject(ErrorCode.RISK_LIMIT_EXCEEDED, INACTIVE_MESSAGE.format(
                 symbol=instrument.symbol), {"reason": "auto_rule_inactive",
                                             "rule_id": str(auto_rule_id)})
+    elif auto_rule_id is not None and not (reduce_only or reduces):
+        # an automatic entry on a portfolio whose switch was turned off: never sent
+        raise _Reject(ErrorCode.RISK_LIMIT_EXCEEDED, INACTIVE_MESSAGE.format(
+            symbol=instrument.symbol), {"reason": "auto_rule_inactive",
+                                        "rule_id": str(auto_rule_id)})
 
     return CheckResult(
         ok=True, estimated_price=price, estimated_notional_eur=notional_eur,

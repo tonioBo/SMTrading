@@ -18,8 +18,11 @@ NO_STREAM = "no_stream"
 BROKER_DOWN = "broker_down"
 BRAKED = "braked"
 SIZE = "size"  # the rule's amount buys less than one lot: no order
+REJECTED = "rejected"  # a risk refusal of the rule is cooling down: no new attempt
+INACTIVE = "inactive"  # switch off, rule no longer active or a newer version at send time
 
 BROKER_SILENT_AFTER = timedelta(seconds=10)  # BrokerSync writes its heartbeat every pass
+MAX_FUTURE_S = Decimal(1)  # a quote stamped further ahead (clock skew) is not trusted
 BLOCKED_KEY = "autorules:blocked:{rule_id}:{day}"
 BLOCKED_TTL_S = 3 * 24 * 3600
 
@@ -38,7 +41,8 @@ def check_entry(*, quote: Quote, now: datetime, params: dict, market_open: bool,
         return NO_STREAM
     if broker_last_pass is None or now - broker_last_pass > BROKER_SILENT_AFTER:
         return BROKER_DOWN
-    if _seconds(now - quote.ts) > Decimal(params["max_age_s"]):
+    age = _seconds(now - quote.ts)
+    if age > Decimal(params["max_age_s"]) or age < -MAX_FUTURE_S:
         return STALE
     bid, ask = quote.bid, quote.ask
     if bid is None or ask is None or bid <= 0 or ask < bid:

@@ -165,9 +165,14 @@ def _coerce(label: str, k: str, b: Bound, v: object) -> Decimal | int | str | No
     return val
 
 
+LIMIT_OFFSET_MESSAGE = ("parametro limit_offset_pct: con l'entrata limit deve essere minore "
+                        "di target_pct")
+
+
 def validate_params(model: str, params: dict) -> dict:
     """The rule's parameters with the defaults filled in; unknown keys, wrong types and
-    out-of-bounds values → INVALID_ORDER."""
+    out-of-bounds values → INVALID_ORDER. A `limit` entry's offset must stay below the
+    target (else the limit would sit at or above the take-profit)."""
     spec = MODELS.get(model)
     if spec is None:
         raise SMTError(ErrorCode.INVALID_ORDER, f"modello sconosciuto: {model}", {"model": model})
@@ -178,6 +183,8 @@ def validate_params(model: str, params: dict) -> dict:
     out: dict = {}
     for k, b in bounds.items():
         out[k] = _coerce("parametro", k, b, params[k]) if k in params else b.default
+    if out["entry"] == "limit" and out["limit_offset_pct"] >= out["target_pct"]:
+        raise _invalid(LIMIT_OFFSET_MESSAGE, "limit_offset_pct")
     return out
 
 

@@ -11,6 +11,12 @@ bracket's children: `held` until the fill, then kept and watched by the existing
 engine (Alpaca: an OCO pair kept in SMTrading), even with the `scalper` stopped. The
 scalper never modifies its entries (`modify_order` would drop the `auto_rule_id`).
 
+At send time, under the portfolio lock, the switch, the rule's status and its version are
+read again (the scalper's snapshot is up to `reload_s` old): a changed one sends
+nothing (`inactive` counted). A risk refusal is stored once (the rejected trade and
+entry) and the rule makes no new attempt for REJECT_COOLDOWN_S: the repeats are only
+counted (`rejected`), never new rows.
+
 No transaction is open across a network call: the guards read Redis and one short
 query, the order path reads the quote cache; the wake is published after the commit.
 `enter` never raises: a failure is logged and the rule stays flat."""
@@ -24,12 +30,13 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from sqlalchemy import exists, or_, select
 from sqlalchemy.exc import IntegrityError
 
+from smtrading.autorules import guards
 from smtrading.autorules.feed import read_stream_status, stream_state
-from smtrading.autorules.guards import SIZE, check_entry, count_blocked
+from smtrading.autorules.guards import INACTIVE, SIZE, check_entry, count_blocked
 from smtrading.autorules.quotes import CacheQuoteSource
 from smtrading.autorules.rules import ActiveRule
 from smtrading.autorules.runner import Entry, RuleRunner
-from smtrading.autorules.tables import OPEN, REJECTED, SENT, AutoTrade
+from smtrading.autorules.tables import ACTIVE, OPEN, REJECTED, SENT, AutoRule, AutoTrade
 from smtrading.brokers.sync import HEARTBEAT_KEY, wake_broker_sync
 from smtrading.common.errors import SMTError
 from smtrading.engine.models import OPEN_STATUSES, Order, OrderSide, OrderType, TimeInForce
@@ -39,10 +46,17 @@ from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.locks import lock_portfolio
+from smtrading.portfolios.models import PortfolioStatus
 
 log = logging.getLogger(__name__)
 
 US_EQUITY = str(AssetClass.us_equity)
+TRIGGER_CONSTRAINT = "uq_auto_trades_rule_trigger"
+# after a risk refusal the rule makes no new attempt for this long (the refusal's cause,
+# a kill switch or a used-up budget, rarely ends within seconds): one rejected row per
+# cooldown, the repeats only counted (Redis)
+REJECT_COOLDOWN_S = 300
+REJECT_KEY = "autorules:rejected:{rule_id}"
 
 
 def trigger_key(rule: ActiveRule, entry: Entry) -> str:
@@ -101,6 +115,8 @@ class Executor:
             ))))
 
     async def _blocked(self, rule: ActiveRule, quote: Quote, now: datetime) -> str | None:
+        if await self._redis.exists(REJECT_KEY.format(rule_id=rule.rule_id)):
+            return guards.REJECTED
         status = await read_stream_status(self._redis)
         last_pass = _parse_ts(await self._redis.get(HEARTBEAT_KEY))
         args = {"quote": quote, "now": now, "params": rule.params,
@@ -171,13 +187,20 @@ class Executor:
                 trigger_ask=quote.ask, trigger_values=json_safe(entry.values),
                 expected_price=expected, status=SENT, qty=qty)
             # R11: the portfolio row first (the order path takes it again), then the rows
-            await lock_portfolio(session, rule.portfolio_id)
+            portfolio = await lock_portfolio(session, rule.portfolio_id)
+            if not await self._still_active(session, rule, portfolio):
+                await session.rollback()
+                await self._count(rule, now, INACTIVE)
+                log.info("automatic rule %s: no longer active at send time", rule.rule_id)
+                return None
             session.add(trade)
             try:
                 async with session.begin_nested():
                     await session.flush()
-            except IntegrityError:  # this trigger was already worked
+            except IntegrityError as e:
                 await session.rollback()
+                if TRIGGER_CONSTRAINT not in str(e.orig):
+                    raise  # logged by enter as an error
                 log.info("automatic rule %s: trigger %s already worked", rule.rule_id, key)
                 return None
             error = await self._place(session, req, target, stop, now, trade)
@@ -189,8 +212,14 @@ class Executor:
             await session.commit()
             await dispatch_post_commit(session, self._redis)
         if error is not None:
-            log.info("automatic rule %s: entry on %s refused (%s)", rule.rule_id,
-                     rule.symbol, trade.error)
+            log.info("automatic rule %s: entry on %s refused (%s); no new attempt for %s s",
+                     rule.rule_id, rule.symbol, trade.error, REJECT_COOLDOWN_S)
+            try:
+                await self._redis.set(REJECT_KEY.format(rule_id=rule.rule_id),
+                                      str(error.code), ex=REJECT_COOLDOWN_S)
+            except Exception:
+                log.warning("automatic rule %s: refusal cooldown not set", rule.rule_id,
+                            exc_info=True)
             return trade
         try:
             await wake_broker_sync(self._redis, trade.entry_order_id)
@@ -199,6 +228,17 @@ class Executor:
                         exc_info=True)
         runner.sent(now)
         return trade
+
+    async def _still_active(self, session, rule: ActiveRule, portfolio) -> bool:
+        """Under the portfolio lock: the switch still on, the portfolio not archived, the
+        rule still active at the version of the snapshot (the scalper's is up to
+        `reload_s` old)."""
+        if not portfolio.auto_rules_enabled or portfolio.status == PortfolioStatus.archived:
+            return False
+        row = (await session.execute(
+            select(AutoRule.status, AutoRule.version).where(AutoRule.id == rule.rule_id)
+        )).one_or_none()
+        return row is not None and row.status == ACTIVE and row.version == rule.version
 
     async def _place(self, session, req: PlaceOrderRequest, target: Decimal, stop: Decimal,
                      now: datetime, trade: AutoTrade) -> SMTError | None:

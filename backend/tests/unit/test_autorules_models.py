@@ -216,3 +216,18 @@ def test_model_catalog_lists_three_models():
                   "choices": [], "common": False}
     entry = next(p for p in br["params"] if p["name"] == "entry")
     assert entry["choices"] == ["market", "limit"] and entry["common"] is True
+
+
+def test_limit_offset_below_target():
+    ok = validate_params("breakout", {"entry": "limit", "limit_offset_pct": "0.1",
+                                      "target_pct": "0.2"})
+    assert ok["limit_offset_pct"] == Decimal("0.1")
+    for offset in ("0.2", "0.3"):
+        with pytest.raises(SMTError) as e:
+            validate_params("breakout", {"entry": "limit", "limit_offset_pct": offset,
+                                         "target_pct": "0.2"})
+        assert e.value.code == ErrorCode.INVALID_ORDER
+        assert e.value.details == {"param": "limit_offset_pct"}
+        assert "minore di target_pct" in e.value.message
+    # a market entry ignores the offset
+    assert validate_params("breakout", {"limit_offset_pct": "0.3", "target_pct": "0.2"})
