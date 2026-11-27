@@ -8,6 +8,7 @@ from smtrading.engine.models import OrderSide, OrderType
 from smtrading.engine.pricing import (
     QuoteView,
     effective_bid_ask,
+    fair_view,
     fill_price,
     market_price,
     notional_to_qty,
@@ -193,3 +194,25 @@ def test_notional_to_qty_zero_invalid():
     with pytest.raises(SMTError) as e:
         notional_to_qty(D(1000), D(1900), D(1))
     assert e.value.code == ErrorCode.INVALID_ORDER
+
+
+def test_fair_view_keeps_a_tight_book():
+    v = fair_view(q(bid="99.90", ask="100.00", last="99.95"))
+    assert (v.bid, v.ask, v.last) == (D("99.90"), D("100.00"), D("99.95"))
+
+
+def test_fair_view_drops_a_wide_book_for_the_last_trade():
+    # 27/11 JPM on IEX: bid 305.04 / ask 338.63, last 324.17
+    v = fair_view(q(bid="305.04", ask="338.63", last="324.17"))
+    assert (v.bid, v.ask, v.last) == (None, None, D("324.17"))
+    assert effective_bid_ask(v, 2) == (D("324.17") - D("0.032417"), D("324.17") + D("0.032417"))
+
+
+def test_fair_view_keeps_a_wide_book_without_a_last_trade():
+    v = fair_view(q(bid="90", ask="110"))
+    assert (v.bid, v.ask) == (D(90), D(110))
+
+
+def test_fair_view_keeps_a_one_sided_quote():
+    v = fair_view(q(bid="99", last="100"))
+    assert (v.bid, v.ask, v.last) == (D(99), None, D(100))

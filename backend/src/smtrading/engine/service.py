@@ -123,7 +123,7 @@ from smtrading.engine.models import (
     TimeInForce,
 )
 from smtrading.engine.prefetch import prefetch_portfolio
-from smtrading.engine.pricing import QuoteView, effective_bid_ask
+from smtrading.engine.pricing import effective_bid_ask, fair_view
 from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.engine.triggers import OrderView, TriggerAction, evaluate
 from smtrading.events import POST_COMMIT_KEY, notify, queue_event, queue_track, queue_untrack
@@ -332,7 +332,7 @@ async def _bid_ask(
     session: AsyncSession, instrument: Instrument, quote: Quote
 ) -> tuple[Decimal, Decimal]:
     spread = await get_default_spread_bps(session, instrument.asset_class)
-    return effective_bid_ask(QuoteView(quote.bid, quote.ask, quote.last, quote.ts), spread)
+    return effective_bid_ask(fair_view(quote), spread)
 
 
 def _day_expiry(

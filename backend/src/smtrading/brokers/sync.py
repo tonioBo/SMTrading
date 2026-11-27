@@ -209,7 +209,7 @@ from smtrading.engine.models import (
     OrderType,
 )
 from smtrading.engine.prefetch import prefetch_portfolio
-from smtrading.engine.pricing import QuoteView, effective_bid_ask
+from smtrading.engine.pricing import effective_bid_ask, fair_view
 from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.engine.service import (
     cancel_held_children,
@@ -1222,7 +1222,7 @@ class BrokerSync:
             return False
         try:
             bid, ask = effective_bid_ask(
-                QuoteView(quote.bid, quote.ask, quote.last, quote.ts),
+                fair_view(quote),
                 await get_default_spread_bps(session, instrument.asset_class))
         except SMTError:
             return False

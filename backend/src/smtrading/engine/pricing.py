@@ -6,6 +6,7 @@ from decimal import ROUND_DOWN, ROUND_UP, Decimal, localcontext
 
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.models import OrderSide, OrderType
+from smtrading.marketdata.quality import is_wide
 
 _PREC = 60
 _BPS = Decimal(10000)
@@ -17,6 +18,19 @@ class QuoteView:
     ask: Decimal | None
     last: Decimal | None
     ts: datetime
+
+
+def fair_view(quote) -> QuoteView:
+    """The quote (a `Quote` or `QuoteView`) as the engine prices it. A book wider than
+    MAX_SPREAD of its mid (an opening or thin quote, the IEX feed: 27/11 JPM bid 305.04 /
+    ask 338.63, last 324.17) is no price: with a last trade only the last is kept (the
+    sides are then synthesised from it at the default spread, `effective_bid_ask`), the
+    rule of the processor's triggers and of `valuation.mark_price`; without one, the book
+    as it is. A tight or one-sided quote is unchanged."""
+    if quote.last is not None and quote.bid is not None and quote.ask is not None \
+            and is_wide(quote):
+        return QuoteView(None, None, quote.last, quote.ts)
+    return QuoteView(quote.bid, quote.ask, quote.last, quote.ts)
 
 
 def effective_bid_ask(q: QuoteView, default_spread_bps: int) -> tuple[Decimal, Decimal]:

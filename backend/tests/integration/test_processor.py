@@ -908,3 +908,50 @@ async def test_a_wide_spread_bid_does_not_trigger_a_stop(maker, redis, qs):
     clock.advance(1)
     # the real price crosses the stop: the last trade under it
     assert await proc.on_tick("AAPL", _wide(qs, "90.00", "110.00", "94.00", clock.now)) == 1
+
+
+async def test_a_stop_triggered_on_a_wide_book_fills_at_the_last_trade(maker, redis, qs):
+    """The last trade triggers the stop on a book wider than MAX_SPREAD: the fill is priced
+    on that last trade too, never on the wide bid (27/11 JPM: bid 305.04 / last 324.17)."""
+    pid = await _portfolio(maker)
+    await _place(maker, redis, qs, pid)  # long 10
+    oid = await _place(
+        maker, redis, qs, pid, side=OrderSide.sell, type=OrderType.stop, stop_price=D("95.00")
+    )
+    clock = Clock(OPEN + timedelta(minutes=1))
+    proc = _proc(maker, redis, qs, clock)
+    assert await proc.on_tick("AAPL", _wide(qs, "90.00", "110.00", "94.00", clock.now)) == 1
+    order = await _order(maker, oid)
+    assert order.status == OrderStatus.filled
+    assert D("93.50") < order.avg_fill_price <= D("94.00")
+
+
+async def test_a_market_order_on_a_wide_book_fills_at_the_last_trade(maker, redis, qs):
+    pid = await _portfolio(maker)
+    qs.set_quote("AAPL", D("90.00"), D("110.00"), D("100.00"), ts=datetime.now(UTC))
+    oid = await _place(maker, redis, qs, pid, now=datetime.now(UTC))
+    order = await _order(maker, oid)
+    if order.status == OrderStatus.queued:  # the market is closed now: priced on the tick
+        clock = Clock(OPEN + timedelta(minutes=1))
+        await _proc(maker, redis, qs, clock).on_tick(
+            "AAPL", _wide(qs, "90.00", "110.00", "100.00", clock.now))
+        order = await _order(maker, oid)
+    assert order.status == OrderStatus.filled
+    assert D("100.00") <= order.avg_fill_price < D("100.50")
+
+
+async def test_a_bracket_on_a_wide_book_is_referenced_on_the_last_trade(maker, redis, qs):
+    """27/11 JPM: the placement read ask 338.63 (last ~323) and refused a bracket whose
+    levels straddled the real price («take_profit > reference > stop_loss»)."""
+    pid = await _portfolio(maker)
+    qs.set_quote("AAPL", D("90.00"), D("110.00"), D("100.00"))
+    async with maker() as s:
+        entry, tp, sl = await place_bracket_order(
+            s, qs, PlaceOrderRequest(
+                portfolio_id=pid, symbol="AAPL", side=OrderSide.buy, type=OrderType.market,
+                qty=TEN,
+            ), take_profit=D("105.00"), stop_loss=D("95.00"), now=OPEN,
+        )
+        await s.commit()
+    assert entry.status != OrderStatus.rejected
+    assert (tp.status, sl.status) != (OrderStatus.canceled, OrderStatus.canceled)

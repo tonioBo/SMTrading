@@ -221,8 +221,9 @@ async def _ready(redis, now, symbol="AAPL") -> None:
     await redis.set(HEARTBEAT_KEY, (now - timedelta(seconds=1)).isoformat())
 
 
-async def _quote(redis, ts, bid="199.90", ask="200.00", symbol="AAPL") -> Quote:
-    q = Quote(symbol=symbol, bid=D(bid), ask=D(ask), last=D(ask), ts=ts, provider="fake")
+async def _quote(redis, ts, bid="199.90", ask="200.00", symbol="AAPL", last=None) -> Quote:
+    q = Quote(symbol=symbol, bid=D(bid), ask=D(ask), last=D(last or ask), ts=ts,
+              provider="fake")
     await write_quote(redis, q, fetched_at=ts)
     return q
 
@@ -946,3 +947,19 @@ async def test_tracker_without_executor_cancels_nothing(maker, redis, qs, broker
     assert entry.broker_status != BrokerState.CANCEL_REQUESTED
     assert Scalper(maker, redis, FakeQuoteSource(), executor_factory=None)._tracker._executor \
         is None
+
+
+async def test_time_exit_expected_is_the_last_trade_on_a_wide_book(maker, redis, qs, broker,
+                                                                   router):
+    """27/11 JPM (IEX feed): bid 305.04 / ask 338.63, last 324.17. The exit's expected
+    price was that bid (564-625 bps of false slippage): a book wider than MAX_SPREAD is no
+    price, the last trade is."""
+    rule = await _rule(maker, params={"max_hold_s": 60})
+    row, runner = await _open(maker, redis, qs, broker, rule)
+    clock = Clock(row.filled_at + timedelta(seconds=60))
+    sc = _scalper(maker, redis, router, clock, rule, runner)
+    await _quote(redis, clock.now, bid="190.00", ask="211.00", last="200.50")
+    await sc.track()
+    [exit_order] = await _autox(maker, rule)
+    sent = await _trade(maker, row.id)
+    assert sent.exit_order_id == exit_order.id and sent.exit_expected == D("200.50")

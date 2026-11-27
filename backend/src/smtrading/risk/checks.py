@@ -39,7 +39,7 @@ from smtrading.brokers.models import BrokerLink
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.money import decimal_to_str, quantize_money
 from smtrading.engine.models import OrderSide, OrderType
-from smtrading.engine.pricing import QuoteView, fill_price, notional_to_qty
+from smtrading.engine.pricing import fair_view, fill_price, notional_to_qty
 from smtrading.engine.quotesource import QuoteSource
 from smtrading.fees.calculator import compute_trade_fee
 from smtrading.fees.resolver import FeeQuote, load_rules, resolve_rule
@@ -177,7 +177,7 @@ async def _estimate_price(
         raise _Reject(ErrorCode.PROVIDER_UNAVAILABLE, "quote unavailable")
     spread = await get_default_spread_bps(session, instrument.asset_class)
     price = fill_price(
-        OrderType.market, side, QuoteView(quote.bid, quote.ask, quote.last, quote.ts),
+        OrderType.market, side, fair_view(quote),
         limit_price=None, slippage_bps=portfolio.slippage_bps,
         default_spread_bps=spread, tick=instrument.tick_size,
     )

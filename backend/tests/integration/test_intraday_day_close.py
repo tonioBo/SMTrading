@@ -151,7 +151,24 @@ async def test_safety_limit_is_day_order(sm, qs):
     assert o.type == OrderType.limit and o.limit_price == D("99.50")
     assert o.tif == TimeInForce.day
     assert o.expires_at == CLOSE
-    assert o.status == OrderStatus.pending
+    # the wide book is no price (engine.pricing.fair_view): the limit is marketable at the
+    # last trade, filled here at once, never under the limit
+    assert o.status == OrderStatus.filled and o.avg_fill_price >= D("99.50")
+
+
+async def test_safety_limit_rests_until_the_session_end(sm, qs, monkeypatch):
+    from smtrading.engine import service as engine_service
+
+    async def wide_default(session, asset_class):  # the sides synthesised 2% apart
+        return 200
+
+    monkeypatch.setattr(engine_service, "get_default_spread_bps", wide_default)
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, 10, BOUGHT)
+    qs.set_quote("AAPL", D(95), D(105), D(100))
+    await _tick(sm, qs, CUTOFF)  # bid 99 from the last trade: the 99.50 limit rests
+    [o] = await _system_orders(sm)
+    assert (o.tif, o.expires_at, o.status) == (TimeInForce.day, CLOSE, OrderStatus.pending)
     after = CLOSE + timedelta(seconds=30)
     await OrderProcessor(sm, None, qs, clock=lambda: after)._expire(after)
     async with sm() as s:
@@ -237,7 +254,13 @@ async def test_mixed_position_sells_only_day_qty(sm, qs):
             "annullati).") in row.text
 
 
-async def test_unfilled_alert_at_one_minute(sm, qs):
+async def test_unfilled_alert_at_one_minute(sm, qs, monkeypatch):
+    from smtrading.engine import service as engine_service
+
+    async def wide_default(session, asset_class):  # the 99.50 limit rests (bid 99)
+        return 200
+
+    monkeypatch.setattr(engine_service, "get_default_spread_bps", wide_default)
     pid = await _portfolio(sm)
     await _buy(sm, qs, pid, 10, BOUGHT)
     qs.set_quote("AAPL", D(95), D(105), D(100))

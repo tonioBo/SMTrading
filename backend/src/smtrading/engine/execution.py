@@ -69,7 +69,7 @@ from smtrading.engine.models import (
     OrderType,
 )
 from smtrading.engine.prefetch import prefetch_portfolio
-from smtrading.engine.pricing import QuoteView, notional_to_qty
+from smtrading.engine.pricing import fair_view, notional_to_qty
 from smtrading.engine.pricing import fill_price as fill_price_of
 from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.events import queue_event, queue_track, queue_untrack
@@ -705,7 +705,7 @@ async def execute_fill(
     else:
         spread = await get_default_spread_bps(session, instrument.asset_class)
         price = fill_price_of(
-            order.type, side, QuoteView(quote.bid, quote.ask, quote.last, quote.ts),
+            order.type, side, fair_view(quote),
             limit_price=order.limit_price, slippage_bps=portfolio.slippage_bps,
             default_spread_bps=spread, tick=instrument.tick_size,
         )

@@ -79,7 +79,7 @@ from smtrading.engine.models import (
     OrderStatus,
     OrderType,
 )
-from smtrading.engine.pricing import QuoteView, effective_bid_ask
+from smtrading.engine.pricing import effective_bid_ask, fair_view
 from smtrading.engine.quotesource import QuoteSource
 from smtrading.engine.service import cancel_held_children, cancel_orders
 from smtrading.engine.triggers import OrderView, TriggerAction, TriggerResult, evaluate
@@ -93,7 +93,7 @@ from smtrading.events import (
 from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
 from smtrading.instruments.service import floor_to_lot, lot_of
-from smtrading.marketdata.quality import MAX_SPREAD
+from smtrading.marketdata.quality import is_wide
 from smtrading.marketdata.serialization import loads_quote
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.locks import lock_portfolio
@@ -533,16 +533,12 @@ class OrderProcessor:
         if quote.suspect is not None:
             self._note_suspect(session, order, quote, now)
             return False  # wait for a confirmed quote
-        view = QuoteView(quote.bid, quote.ask, quote.last, quote.ts)
-        if quote.bid is not None and quote.ask is not None:
-            mid = (quote.bid + quote.ask) / 2
-            if mid <= 0 or quote.ask - quote.bid > mid * MAX_SPREAD:
-                # a book this wide (an opening or thin quote) is no price: the last trade
-                # decides, and without one the order waits (24/11: a stop fired on such a bid)
-                if quote.last is None:
-                    return False
-                view = QuoteView(None, None, quote.last, quote.ts)
-        bid, ask = effective_bid_ask(view, spread)
+        # a book wider than MAX_SPREAD (an opening or thin quote) is no price: the last
+        # trade decides (fair_view; the fill is priced the same way), and without one the
+        # order waits (24/11: a stop fired on such a bid)
+        if quote.last is None and is_wide(quote):
+            return False
+        bid, ask = effective_bid_ask(fair_view(quote), spread)
         if _decide(order, bid, ask).action == TriggerAction.none:
             return False
 
