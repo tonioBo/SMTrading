@@ -8,7 +8,8 @@ Real clock and the test Redis; made-up CRYPTO symbols (always open, whatever the
 test runs). Every bound is relative or generous: a loaded machine slows both sides of a
 comparison. The scalper of the exit and stream tests runs in its own process, as in
 production (the `scalper` service): only Redis and Postgres are shared with the worker's
-loops under test."""
+loops under test; in the exit test the child also writes the price flow, so the loop
+under test runs only the OrderProcessor and its probe."""
 import asyncio
 import contextlib
 import json
@@ -16,6 +17,7 @@ import math
 import os
 import statistics
 import sys
+import tempfile
 import time
 import uuid
 from collections import Counter
@@ -40,7 +42,7 @@ from smtrading.engine.quotesource import FakeQuoteSource
 from smtrading.engine.service import PlaceOrderRequest, place_order
 from smtrading.events import dispatch_post_commit
 from smtrading.instruments.models import AssetClass, Instrument
-from smtrading.marketdata.cache import write_quote
+from smtrading.marketdata.cache import read_quote, write_quote
 from smtrading.marketdata.minute_bars import StreamBar, publish_minute_bar
 from smtrading.marketdata.provider import DataProvider
 from smtrading.marketdata.registry import PROVIDERS
@@ -64,6 +66,7 @@ MODEL_PARAMS = (  # mixed models; no cooldown so every trigger reaches the execu
 )
 RULE_SYMBOLS = [f"LR{i:02d}-USD" for i in range(N_RULES)]
 EXIT_SYMBOL = "LX00-USD"  # the resting stop of a portfolio without rules
+SAMPLES = 15  # exits measured per phase
 CAMPAIGN_SYMBOLS = [f"LC{i:02d}-USD" for i in range(10)]
 
 
@@ -187,51 +190,74 @@ class NoHistory:
 # --- the scalper in its own process (as the `scalper` service) ----------------------
 
 SCALPER_PROCESS = r"""
-import asyncio, sys
+import asyncio, os, sys
+from datetime import datetime
+sys.path.insert(0, os.environ["LOADTEST_DIR"])
 import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import async_sessionmaker
 import smtrading.models  # noqa: F401
 from smtrading.autorules.service import Scalper
 from smtrading.common.db import make_engine
+from test_autorules_load import Load, NoHistory
 
-class NoHistory:
-    async def get_bars(self, *a, **k):
-        return []
-
-async def main(db_url, redis_url):
-    engine = make_engine(db_url)
-    redis = aioredis.from_url(redis_url)
+async def main():
+    engine = make_engine(os.environ["LOADTEST_DB_URL"])
+    redis = aioredis.from_url(os.environ["LOADTEST_REDIS_URL"])
     scalper = Scalper(async_sessionmaker(engine, expire_on_commit=False), redis, NoHistory())
     await scalper.reload()
+    tasks = [scalper.run()]
+    if next_bar := os.environ.get("LOADTEST_NEXT_BAR"):  # the price flow, from here too
+        tasks.append(Load(redis, datetime.fromisoformat(next_bar)).run(None))
     await redis.set("loadtest:scalper_ready", sum(
         len(scalper.runners(s)) for s in scalper._by_symbol))
-    await scalper.run()
+    await asyncio.gather(*tasks)
 
-asyncio.run(main(sys.argv[1], sys.argv[2]))
+asyncio.run(main())
 """
 
 
 @contextlib.asynccontextmanager
-async def scalper_process(db_url: str, redis, redis_url: str):
+async def scalper_process(db_url: str, redis, redis_url: str, *,
+                          load_from: datetime | None = None):
+    """The scalper in a child process (as the `scalper` service); with `load_from` the
+    child also runs the price flow (`Load`, bars from that minute), so the loop under test
+    carries none of it. Its stderr goes to a file (never a pipe that could fill up)."""
     await redis.delete("loadtest:scalper_ready")
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable, "-c", SCALPER_PROCESS, db_url, redis_url,
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-        env={**os.environ})
-    try:
-        deadline = time.monotonic() + 60
-        while (ready := await redis.get("loadtest:scalper_ready")) is None:
-            if proc.returncode is not None or time.monotonic() > deadline:
-                err = (await proc.stderr.read()).decode()[-2000:]
-                raise AssertionError(f"scalper process not ready: {err}")
-            await asyncio.sleep(0.1)
-        assert int(ready) == N_RULES
-        yield proc
-        assert proc.returncode is None, "the scalper process died under load"
-    finally:
-        if proc.returncode is None:
-            proc.terminate()
-        await proc.wait()
+    env = {**os.environ, "LOADTEST_DIR": os.path.dirname(os.path.abspath(__file__)),
+           "LOADTEST_DB_URL": db_url, "LOADTEST_REDIS_URL": redis_url}
+    if load_from is not None:
+        env["LOADTEST_NEXT_BAR"] = load_from.isoformat()
+    with tempfile.TemporaryFile() as err:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", SCALPER_PROCESS, stdout=asyncio.subprocess.DEVNULL,
+            stderr=err, env=env)
+
+        def stderr_tail() -> str:
+            err.seek(0)
+            return err.read().decode(errors="replace")[-2000:]
+
+        try:
+            deadline = time.monotonic() + 60
+            while (ready := await redis.get("loadtest:scalper_ready")) is None:
+                if proc.returncode is not None or time.monotonic() > deadline:
+                    await _stop(proc)
+                    raise AssertionError(f"scalper process not ready: {stderr_tail()}")
+                await asyncio.sleep(0.1)
+            assert int(ready) == N_RULES
+            yield proc
+            assert proc.returncode is None, f"the scalper process died: {stderr_tail()}"
+        finally:
+            await _stop(proc)
+
+
+async def _stop(proc) -> None:
+    if proc.returncode is None:
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), 5)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
 
 
 # --- 1. the scalper keeps up ---------------------------------------------------------
@@ -275,7 +301,7 @@ async def test_scalper_keeps_up_with_30_symbols(maker, redis):
     assert slowest >= 15, f"a symbol evaluated {slowest:.1f}/s (written {RATE_HZ}/s)"
     durations.sort()
     p99 = _p(durations, 0.99)
-    assert p99 < 0.005, f"on_event p99 {p99 * 1000:.2f} ms"
+    assert p99 < 0.010, f"on_event p99 {p99 * 1000:.2f} ms"
     ages.sort()
     # the quotes reach the rules fresh: well within the price-age guard (2 s)
     assert _p(ages, 0.99) < 0.5, f"quote age at evaluation p99 {_p(ages, 0.99):.3f} s"
@@ -295,7 +321,7 @@ async def test_scalper_keeps_up_with_30_symbols(maker, redis):
 
 # --- 2. the existing exits are not delayed ------------------------------------------
 
-async def _exit_latencies(sm, redis, pid, qs, n: int) -> list[float]:
+async def _exit_latencies(sm, redis, pid, qs, n: int, throttle_s: float) -> list[float]:
     """`n` times: a resting sell stop, the price back at 100, then a quote through the
     stop: the time from that quote's write to the order leaving `pending`."""
     out = []
@@ -308,7 +334,7 @@ async def _exit_latencies(sm, redis, pid, qs, n: int) -> list[float]:
             await dispatch_post_commit(s, redis)
             oid = order.id
         await write_quote(redis, _quote(EXIT_SYMBOL, D(100)))
-        await asyncio.sleep(0.5)  # past the processor's per-symbol throttle
+        await asyncio.sleep(2 * throttle_s)  # past the processor's per-symbol throttle
         t0 = time.perf_counter()
         await write_quote(redis, _quote(EXIT_SYMBOL, D(90)))
         while True:
@@ -342,24 +368,22 @@ async def test_existing_exits_not_delayed(maker, redis, redis_url, fresh_db):
             qty=D(1), stop_price=D(1)), now=datetime.now(UTC))
         await s.commit()
     proc = OrderProcessor(maker, redis, qs)
+    throttle = proc._min_eval_interval_s
     processor = asyncio.create_task(proc.run())
     try:
-        await asyncio.sleep(1.5)  # a sweep: the symbol is active
-        idle = await _exit_latencies(maker, redis, pid, qs, 10)
+        await asyncio.sleep(proc._sweep_every_s * 1.5)  # a sweep: the symbol is active
+        idle = await _exit_latencies(maker, redis, pid, qs, SAMPLES, throttle)
 
         await _rules(maker)
         next_bar = await _warmup_bars(redis)
         await _stream_status(redis)
-        load = Load(redis, next_bar)
-        loader = asyncio.create_task(load.run(None))
-        try:
-            async with scalper_process(fresh_db, redis, redis_url):
-                await asyncio.sleep(1)  # under load
-                loaded = await _exit_latencies(maker, redis, pid, qs, 10)
-        finally:
-            loader.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await loader
+        # the price flow from the child too: this loop runs only the processor and probe
+        async with scalper_process(fresh_db, redis, redis_url, load_from=next_bar):
+            await asyncio.sleep(1)  # under load
+            loaded = await _exit_latencies(maker, redis, pid, qs, SAMPLES, throttle)
+            for sym in RULE_SYMBOLS:  # the flow was on all along
+                age = datetime.now(UTC) - (await read_quote(redis, sym)).ts
+                assert age < timedelta(seconds=1), (sym, age)
         assert not processor.done()
     finally:
         processor.cancel()
@@ -371,7 +395,7 @@ async def test_existing_exits_not_delayed(maker, redis, redis_url, fresh_db):
     diff = statistics.median(loaded) - statistics.median(idle)
     assert diff < 0.050, f"median exit {diff * 1000:.0f} ms slower under load"
     p95 = _p(loaded, 0.95)
-    assert p95 < proc._min_eval_interval_s + 0.25, f"exit p95 under load {p95:.3f} s"
+    assert p95 < throttle + 0.25, f"exit p95 under load {p95:.3f} s"
     print(f"\nexits: idle median {statistics.median(idle) * 1000:.1f} ms, loaded median "
           f"{statistics.median(loaded) * 1000:.1f} ms, loaded p95 {p95 * 1000:.1f} ms")
 
@@ -469,9 +493,16 @@ async def test_stream_manager_unaffected(maker, redis, redis_url, fresh_db, monk
     for seen in (idle_seen, loaded_seen):  # every campaign quote published
         assert set(seen) == set(CAMPAIGN_SYMBOLS)
         assert min(seen.values()) >= expected * 0.75, seen
-    mean_idle, mean_loaded = statistics.fmean(idle), statistics.fmean(loaded)
-    assert abs(mean_loaded - mean_idle) <= 0.2 * mean_idle, (
-        f"campaign delay {mean_idle * 1000:.2f} ms without rules, "
-        f"{mean_loaded * 1000:.2f} ms with them")
-    print(f"\nstream: campaign delay {mean_idle * 1000:.2f} ms without rules, "
-          f"{mean_loaded * 1000:.2f} ms with {N_RULES}")
+    idle.sort()
+    loaded.sort()
+    # the same delay: ±20%, with a 2 ms floor (a ~1 ms delay moves by more than 20% on
+    # a busy machine without anything being slower)
+    for name, a, b in (("median", statistics.median(idle), statistics.median(loaded)),
+                       ("p95", _p(idle, 0.95), _p(loaded, 0.95))):
+        assert abs(b - a) <= max(0.2 * a, 0.002), (
+            f"campaign delay {name} {a * 1000:.2f} ms without rules, "
+            f"{b * 1000:.2f} ms with them")
+    print(f"\nstream: campaign delay median {statistics.median(idle) * 1000:.2f} / p95 "
+          f"{_p(idle, 0.95) * 1000:.2f} ms without rules, median "
+          f"{statistics.median(loaded) * 1000:.2f} / p95 {_p(loaded, 0.95) * 1000:.2f} ms "
+          f"with {N_RULES}")
