@@ -18,7 +18,7 @@ ranking row are left out of every count and list (found on 27/11: 73 executed or
 Prova B's positions).
 
 The ranking uses `get_performance` (same return and drawdown as the API) over the
-portfolios that are not archived, plus the fills of the period.
+portfolios counted in the total, plus the fills of the period.
 """
 
 import asyncio
