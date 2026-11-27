@@ -792,6 +792,55 @@ async def test_a_blip_below_the_threshold_sends_nothing(maker):
     assert (await _link(maker, link_id)).status == "ok"
 
 
+async def test_market_order_caught_by_an_outage_is_not_sent_late(maker, redis, qs):
+    """Idempotent broker back after more than MATCH_WINDOW, the order confirmed absent:
+    a market order is refused (PROVIDER_UNAVAILABLE, notified), never sent late; while the
+    lookup is not answered nothing is decided; a limit order is sent as before."""
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid)
+    clock = Clock(OPEN)
+    sync = BrokerSync(maker, redis, qs, None, clock=clock)
+    BROKER.down_kinds = {"fake_test"}
+    await sync.tick()  # sent, not answered
+    clock.now = OPEN + sync_module.MATCH_WINDOW + timedelta(seconds=1)
+    await sync.tick()  # the lookup times out: ambiguous, kept
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.pending and o.broker_sent_at is not None
+    BROKER.down_kinds = set()
+    await sync.tick()  # confirmed absent at the broker
+    o = await _order(maker, oid)
+    assert o.status == OrderStatus.rejected and o.reject_code == ErrorCode.PROVIDER_UNAVAILABLE
+    assert "non inviato" in o.reject_message
+    assert len(await _notes(maker, pid, "order.rejected")) == 1
+    await sync.tick()
+    assert BROKER.attempts == 1 and BROKER.placed == []
+
+    start = clock.now
+    lid = await _place(maker, redis, qs, pid, now=start, type=OrderType.limit,
+                       limit_price=D("95"))
+    BROKER.down_kinds = {"fake_test"}
+    await sync.tick()
+    clock.now = start + sync_module.MATCH_WINDOW + timedelta(seconds=1)
+    BROKER.down_kinds = set()
+    await sync.tick()  # absent: back to to_send
+    await sync.tick()
+    assert (await _order(maker, lid)).broker_order_id is not None
+
+
+async def test_market_order_absent_within_the_window_is_sent_again(maker, redis, qs):
+    pid, _ = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid)
+    clock = Clock(OPEN)
+    sync = BrokerSync(maker, redis, qs, None, clock=clock)
+    BROKER.down_kinds = {"fake_test"}
+    await sync.tick()
+    clock.now = OPEN + sync_module.MATCH_WINDOW
+    BROKER.down_kinds = set()
+    await sync.tick()
+    await sync.tick()
+    assert (await _order(maker, oid)).broker_order_id is not None
+
+
 async def test_bracket_exits_follow_the_entry_to_the_broker(maker, redis, qs):
     pid, _ = await _linked_portfolio(maker)
     async with maker() as s:

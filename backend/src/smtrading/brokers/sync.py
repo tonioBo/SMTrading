@@ -46,7 +46,9 @@ worker without the lock neither listens nor writes it.
   on the link excluded, C1) gave an answer: found -> adopted (then canceled at the
   broker if it must not proceed: expired, link disabled/unlinked, kill switch, locked
   portfolio); not found -> for an idempotent adapter (Alpaca, by client_order_id) the
-  answer is definitive and the order goes back to `to_send`; for Trading 212
+  answer is definitive and the order goes back to `to_send` (a market order whose send is
+  older than MATCH_WINDOW, an outage, is rejected PROVIDER_UNAVAILABLE instead: never
+  sent late; a liquidation, a limit or a stop goes back); for Trading 212
   (Ruling R7) it is never resent and, after MATCH_WINDOW, rejected (or canceled when
   a cancel was requested) and left to reconciliation.
 - live orders: `get_order`; a growth of filled_qty becomes a broker fill of the delta
@@ -268,6 +270,8 @@ HOT_FOR_S = 10
 HOT_MAX = 4
 _WAKE_BATCH = 100  # wake messages read at once (the rest at the next wait)
 MATCH_WINDOW = timedelta(minutes=5)
+LATE_MARKET_MESSAGE = (f"broker non raggiungibile per oltre {MATCH_WINDOW.seconds // 60}"
+                       " minuti: ordine a mercato non inviato")
 FILL_PRICE_WAIT = timedelta(minutes=10)
 # a liquidation still waiting on the symbol's other broker orders after this: notify once
 LIQUIDATION_WAIT_NOTIFY = timedelta(minutes=10)
@@ -1649,7 +1653,8 @@ class BrokerSync:
             await self._update(order_id, lambda s, o: self._matched(s, o, bo), bo)
             return
         if adapter.idempotent_place:  # definitive: not at the broker
-            await self._update(order_id, self._not_found)
+            late = self._clock() - since > MATCH_WINDOW
+            await self._update(order_id, self._not_found_late if late else self._not_found)
         elif self._clock() - since > MATCH_WINDOW:
             await self._update(order_id, self._give_up)
 
@@ -1679,6 +1684,17 @@ class BrokerSync:
             await self._cancel_unsent(session, order)
         else:
             order.broker_status = BrokerState.TO_SEND  # the next pass decides afresh
+
+    async def _not_found_late(self, session: AsyncSession, order: Order) -> None:
+        """Confirmed absent at the broker more than MATCH_WINDOW after its send (an
+        outage): a market order is refused, never sent late at whatever price; the others
+        (limit, stop, a liquidation) are sent again as `_not_found`."""
+        if (order.broker_order_id is not None or order.type != OrderType.market
+                or order.role == LIQUIDATION_ROLE
+                or order.broker_status == BrokerState.CANCEL_REQUESTED):
+            await self._not_found(session, order)
+            return
+        await self._reject(session, order, ErrorCode.PROVIDER_UNAVAILABLE, LATE_MARKET_MESSAGE)
 
     async def _give_up(self, session: AsyncSession, order: Order) -> None:
         if order.broker_order_id is not None:
