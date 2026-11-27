@@ -102,6 +102,11 @@ def queue_redis_delete(session: AsyncSession, key: str) -> None:
     _queue(session).append(("delete", key))
 
 
+def queue_redis_delete_match(session: AsyncSession, pattern: str) -> None:
+    """After commit, delete every Redis key matching `pattern` (SCAN, never KEYS)."""
+    _queue(session).append(("delete_match", pattern))
+
+
 def queue_live_trip(session: AsyncSession, link_id, exclude, cause: str,
                     details: dict) -> None:
     """After commit, put the other portfolios of a real-money link in reduce-only (a fuse
@@ -146,6 +151,10 @@ async def dispatch_post_commit(session: AsyncSession, redis) -> int:
                 await untrack(redis, [args[0]], source=args[1])
             elif kind == "delete":
                 await redis.delete(args[0])
+            elif kind == "delete_match":
+                keys = [k async for k in redis.scan_iter(match=args[0], count=500)]
+                if keys:
+                    await redis.delete(*keys)
             else:
                 raise ValueError(f"unknown post-commit effect {kind!r}")
             done += 1

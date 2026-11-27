@@ -15,7 +15,9 @@ the parts of the executor and the broker:
   (`bid >= target`) at the target; the runner's own
   exits (time, end of session) sell at the bid of the first price at or after
   `exit + delay_s` (the bracket's stop and target canceled, as `close_position` does);
-- fees `compute_trade_fee(fee_rule, notional)` on the entry and on the exit.
+- fees `compute_trade_fee(fee_rule, notional)` on the entry and
+  `compute_trade_fee(exit_fee_rule or fee_rule, notional)` on the exit (the caller
+  resolves the broker's rule per side).
 
 Declared limits (in every result's notes): inside a minute only four prices are known,
 so a bar that reaches both the target and the stop is taken as a stop (prudent), even
@@ -113,7 +115,8 @@ def _size(qty, notional, lot_size, expected: Decimal) -> Decimal:
     return raw if lot_size is None else (raw / lot_size).to_integral_value(ROUND_FLOOR) * lot_size
 
 
-def _max_drawdown(nets: list[Decimal]) -> Decimal:
+def max_drawdown(nets: list[Decimal]) -> Decimal:
+    """The largest peak-to-trough drop of the cumulative results, from 0."""
     peak = cum = worst = Decimal(0)
     for n in nets:
         cum += n
@@ -125,7 +128,8 @@ def _max_drawdown(nets: list[Decimal]) -> Decimal:
 def replay(bars: list[Bar], *, model: str, params: dict, market: str, tick_size: Decimal,
            qty: Decimal | None, notional: Decimal | None, fee_rule: FeeRuleData,
            spread_pct: Decimal, delay_s: int, day_close_minutes: int,
-           lot_size: Decimal | None = None) -> ReplayResult:
+           lot_size: Decimal | None = None,
+           exit_fee_rule: FeeRuleData | None = None) -> ReplayResult:
     _check(qty, notional, spread_pct, delay_s, day_close_minutes, lot_size)
     runner = RuleRunner(model, params, market=market, tick_size=tick_size,
                         session_exit_before=timedelta(
@@ -141,7 +145,7 @@ def replay(bars: list[Bar], *, model: str, params: dict, market: str, tick_size:
         nonlocal trade
         assert trade is not None and trade.entry_price is not None
         fees = (compute_trade_fee(fee_rule, trade.qty * trade.entry_price)
-                + compute_trade_fee(fee_rule, trade.qty * price))
+                + compute_trade_fee(exit_fee_rule or fee_rule, trade.qty * price))
         net = (price - trade.entry_price) * trade.qty - fees
         trades.append(ReplayTrade(trade.entry_ts, trade.entry_price, ts, price, reason,
                                   trade.qty, fees, net))
@@ -202,4 +206,4 @@ def replay(bars: list[Bar], *, model: str, params: dict, market: str, tick_size:
         trades=trades, net=sum(nets, Decimal(0)),
         fees=sum((t.fees for t in trades), Decimal(0)),
         wins=sum(1 for n in nets if n > 0), losses=sum(1 for n in nets if n < 0),
-        max_drawdown=_max_drawdown(nets), notes=notes)
+        max_drawdown=max_drawdown(nets), notes=notes)

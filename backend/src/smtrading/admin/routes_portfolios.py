@@ -34,6 +34,7 @@ from smtrading.admin.portfolio_ops import (
     reset_portfolio,
     unarchive_portfolio,
 )
+from smtrading.admin.routes_auto_rules import portfolio_brakes_json
 from smtrading.admin.routes_intraday import (
     DAY_FIELDS,
     audit_day_changes,
@@ -219,7 +220,7 @@ PORTFOLIO_FIELDS = (
     "id", "name", "code", "base_currency", "leverage", "maintenance_margin_pct",
     "warning_margin_pct", "slippage_bps", "status", "timezone", "risk_profile_id",
     "reduce_only_reason", "reduce_only_until", "created_at", "broker_link_id",
-    "archived_at", "archived_by", "in_totals", *DAY_FIELDS,
+    "archived_at", "archived_by", "in_totals", *DAY_FIELDS, "auto_brakes",
 )
 
 
@@ -328,12 +329,15 @@ async def patch_portfolio(
     session: DbSession, redis: RedisClient, qs: Quotes,
 ) -> dict:
     """Only the fields sent change. status: "active" (also clears a reduce_only and its
-    reason/until) or "locked". The intraday fields (routes_intraday.DAY_FIELDS) are
-    checked there and audited as `admin:portfolio.intraday`; turning the automatic rules on
+    reason/until) or "locked". The intraday fields (routes_intraday.DAY_FIELDS) and the
+    automatic rules' brakes (`auto_brakes`) are checked there and audited as
+    `admin:portfolio.intraday`; turning the automatic rules on
     reads the broker account first, before the write transaction opens."""
     fields = body.model_fields_set
     by = admin.email  # read now: the session may be rolled back before the broker read
     day = day_values(body, fields)
+    if "auto_brakes" in fields:  # validated, the defaults filled in; audited with the rest
+        day["auto_brakes"] = portfolio_brakes_json(body.auto_brakes)
     checked_link: UUID | None = None
     if day.get("auto_rules_enabled") is True:
         current = await _portfolio(session, portfolio_id)

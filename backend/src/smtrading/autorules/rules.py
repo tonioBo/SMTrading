@@ -18,11 +18,13 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import exists, select
+from sqlalchemy import delete, exists, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from smtrading.autorules.guards import REJECT_KEY
+from smtrading.agents.models import AgentPortfolio
+from smtrading.agents.service import write_audit
+from smtrading.autorules.guards import BLOCKED_KEY, REJECT_KEY
 from smtrading.autorules.models import Brakes, validate_brakes, validate_params
 from smtrading.autorules.tables import (
     ACTIVE,
@@ -37,10 +39,17 @@ from smtrading.autorules.tables import (
 )
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.models import OPEN_STATUSES, Order
-from smtrading.events import json_safe, queue_redis_delete, queue_track, queue_untrack
+from smtrading.events import (
+    json_safe,
+    queue_redis_delete,
+    queue_redis_delete_match,
+    queue_track,
+    queue_untrack,
+)
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.instruments.service import canonical_symbol
 from smtrading.intraday.models import INTRADAY_TIMEFRAMES
+from smtrading.marketdata.minute_bars import BARS_KEY
 from smtrading.portfolios.locks import lock_portfolio
 from smtrading.portfolios.models import Portfolio, PortfolioStatus, ensure_not_archived
 from smtrading.positions.models import Position
@@ -161,6 +170,8 @@ async def update_rule(
                                 qty=new_qty, notional=new_notional, brakes=new_brakes,
                                 created_by=by[:64]))
     await session.flush()
+    # a refusal's cooldown was about the old version
+    queue_redis_delete(session, REJECT_KEY.format(rule_id=rule.id))
     return rule
 
 
@@ -284,6 +295,55 @@ async def pause_all(session: AsyncSession, portfolio_id: uuid.UUID, *, by: str,
     for rule in rules:
         await _leave(session, rule, PAUSED, reason)
     return rules
+
+
+# --- the cleanup of a test portfolio ---------------------------------------------------
+
+PURGE_AGENTS = ("il portafoglio è assegnato ad agenti: la pulizia delle regole automatiche "
+                "vale solo per i portafogli di prova senza agenti")
+PURGE_ACTIVE = "c'è una regola attiva sul portafoglio: mettila in pausa prima della pulizia"
+PURGE_OPEN = ("ci sono operazioni automatiche ancora aperte o in invio sul portafoglio: "
+              "aspetta che si chiudano prima della pulizia")
+
+
+async def purge_portfolio(session: AsyncSession, portfolio_id: uuid.UUID, *,
+                          by: str) -> dict:
+    """End of a drill: deletes every rule of the portfolio, its versions (cascade) and its
+    trades (`orders.auto_rule_id` goes to null by itself), audited as
+    `admin:auto_rules.purge`. Only on a portfolio without `agent_portfolios` rows, no
+    active rule and no trade `sent`/`open`. After the commit: the symbols no active rule
+    uses any more leave the stream (`untrack`) and lose their `bars1m:{symbol}` stream;
+    the rules' blocked-entry counters and refusal cooldowns are deleted. {rules, trades}."""
+    await lock_portfolio(session, portfolio_id)
+    if await session.scalar(select(exists().where(
+            AgentPortfolio.portfolio_id == portfolio_id))):
+        raise _invalid(PURGE_AGENTS, portfolio_id=str(portfolio_id))
+    rules = list(await session.scalars(
+        select(AutoRule).where(AutoRule.portfolio_id == portfolio_id)
+        .order_by(AutoRule.id).with_for_update().execution_options(populate_existing=True)))
+    if any(r.status == ACTIVE for r in rules):
+        raise _invalid(PURGE_ACTIVE, portfolio_id=str(portfolio_id))
+    if await session.scalar(select(exists().where(
+            AutoTrade.portfolio_id == portfolio_id, AutoTrade.status.in_((SENT, OPEN))))):
+        raise _invalid(PURGE_OPEN, portfolio_id=str(portfolio_id))
+    trades = (await session.execute(
+        delete(AutoTrade).where(AutoTrade.portfolio_id == portfolio_id))).rowcount or 0
+    await session.execute(delete(AutoRule).where(AutoRule.portfolio_id == portfolio_id))
+    symbols = sorted({r.symbol for r in rules})
+    used = set(await session.scalars(select(AutoRule.symbol).where(
+        AutoRule.symbol.in_(symbols), AutoRule.status == ACTIVE))) if symbols else set()
+    for sym in symbols:
+        if sym not in used:
+            queue_untrack(session, sym, STREAM_SOURCE)
+            queue_redis_delete(session, BARS_KEY.format(symbol=sym))
+    for r in rules:
+        queue_redis_delete(session, REJECT_KEY.format(rule_id=r.id))
+        queue_redis_delete_match(session, BLOCKED_KEY.format(rule_id=r.id, day="*"))
+    out = {"rules": len(rules), "trades": trades}
+    await write_audit(session, agent_id=None, method="admin:auto_rules.purge",
+                      params={"portfolio_id": portfolio_id, **out, "symbols": symbols,
+                              "by": by}, outcome="ok", latency_ms=0)
+    return out
 
 
 # --- the active rules (scalper) -----------------------------------------------------

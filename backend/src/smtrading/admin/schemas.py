@@ -1,5 +1,5 @@
 import uuid
-from typing import Annotated
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 
@@ -89,6 +89,9 @@ class PortfolioPatchIn(BaseModel):
     day_close_minutes: StrictInt | None = None
     max_day_trades_5d: StrictInt | None = None  # null: no cap
     intraday_max_wakes_per_hour: StrictInt | None = None
+    # mode B: the portfolio's brakes (autorules.models.validate_brakes, level "portfolio");
+    # decimals as strings, null or {}: the defaults
+    auto_brakes: dict[str, Any] | None = None
 
 
 class CashMoveIn(BaseModel):
@@ -273,3 +276,48 @@ class AppSettingsIn(BaseModel):
 class KillSwitchIn(BaseModel):
     on: bool
     cancel_open: bool = False
+
+
+# --- automatic rules (mode B) ----------------------------------------------------------
+# decimal parameters and brakes travel as strings (ints accepted); a JSON float is refused
+# (routes_auto_rules), never read through float
+
+
+class AutoRuleCreateIn(BaseModel):
+    portfolio_id: uuid.UUID
+    symbol: ShortStr
+    model: ShortStr
+    params: dict[str, Any] = Field(default_factory=dict)
+    qty: Num | None = None
+    notional: Num | None = None
+    brakes: dict[str, Any] | None = None  # null: the rule level's defaults
+
+
+class AutoRulePatchIn(BaseModel):
+    """What is sent replaces the current version's value (`params`, `brakes` whole)."""
+
+    params: dict[str, Any] | None = None
+    qty: Num | None = None
+    notional: Num | None = None
+    brakes: dict[str, Any] | None = None
+
+
+class AutoRulePauseIn(BaseModel):
+    reason: Annotated[str, Field(max_length=200)] | None = None
+
+
+class AutoBacktestIn(BaseModel):
+    symbol: ShortStr | None = None
+    symbols: list[ShortStr] | None = None  # instead of `symbol`, at most 5
+    model: ShortStr
+    params: dict[str, Any] = Field(default_factory=dict)
+    qty: Num | None = None
+    notional: Num | None = None
+    from_: ShortStr = Field(alias="from")  # YYYY-MM-DD (from midnight UTC) or ISO 8601
+    to: ShortStr  # YYYY-MM-DD (the whole day, UTC) or ISO 8601
+    spread_pct: Num = "0.05"
+    delay_s: StrictInt = 1
+    fee_rule: Literal["broker", "zero"] = "broker"
+    # the broker's fees: the fee rules of this portfolio, or the preset of this link
+    portfolio_id: uuid.UUID | None = None
+    broker_link_id: uuid.UUID | None = None

@@ -43,6 +43,11 @@
     intraday drill-revoke --portfolio ID|NAME --agent NAME --ref REF [--purge]
                              (adds the «revocata» decision; with --purge deletes instead
                              every decision of that test portfolio)
+    autorules purge --portfolio ID|NAME
+                             (end of a drill: deletes the automatic rules, their versions
+                             and trades of a test portfolio without agents, no active rule
+                             and no open trade; the same as DELETE
+                             /api/portfolios/{id}/auto-rules, audited)
 
 A temporary password is printed only by `users create` / `users reset-password`, once.
 A token is printed only by `agent create` / `agent rotate`, once: it is never stored in
@@ -216,6 +221,11 @@ def build_parser() -> argparse.ArgumentParser:
     drill.add_argument("--timeframe", required=True)
     drill.add_argument("--symbols", required=True)
     revoke.add_argument("--purge", action="store_true")
+    autorules = sub.add_parser("autorules", help="automatic rules (mode B)")
+    autorules_sub = autorules.add_subparsers(dest="autorules_command", required=True)
+    autorules_sub.add_parser(
+        "purge", help="delete the rules and trades of a test portfolio without agents"
+    ).add_argument("--portfolio", required=True)
     return parser
 
 
@@ -566,6 +576,17 @@ async def execute_intraday(args: argparse.Namespace, session: AsyncSession) -> o
     return out
 
 
+async def execute_autorules(args: argparse.Namespace, session: AsyncSession) -> object:
+    """`autorules purge`: autorules.rules.purge_portfolio, audited by `cli`."""
+    from smtrading.autorules.rules import purge_portfolio
+
+    try:
+        pid = UUID(args.portfolio)
+    except ValueError:
+        pid = await _portfolio_id(session, args.portfolio)
+    return await purge_portfolio(session, pid, by=SOURCE_CLI)
+
+
 def _read_token_stdin() -> str:
     return sys.stdin.read()
 
@@ -598,6 +619,8 @@ async def execute(
             return await execute_users(args, session)
         case "intraday":
             return await execute_intraday(args, session)
+        case "autorules":
+            return await execute_autorules(args, session)
         case "telegram":
             return await execute_telegram(args, session)
         case "names":
