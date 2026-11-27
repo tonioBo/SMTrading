@@ -20,7 +20,8 @@ wrote (it never talks to a broker).
   `Fill.fee_amount` of entry and exits) and the net result `Σ (exit - fill) × filled -
   fees` in the portfolio's currency, at the exchange rate the portfolio uses
   (`qs.get_fx_rate`). The runner is told (`exited`). A partial exit keeps the trade
-  open; the rule's own exit that ended short is replaced (`Executor.exit_failed`).
+  open; the rule's own exit that ended short is replaced (`Executor.exit_failed`). The
+  trades closed at a step are in `closed` (the scalper judges the brakes on them).
 - A restarted scalper has new runners: an `open` trade puts its runner back in `long`
   with the saved fill (time and end-of-session exits go on at the right time), a `sent`
   one puts it in `pending`.
@@ -133,6 +134,7 @@ class Tracker:
         self._executor = executor
         self._open: dict[uuid.UUID, AutoTrade] = {}  # rule -> its open trade, last step
         self.active = False  # a trade was `sent` or `open` at the last step
+        self.closed: list[AutoTrade] = []  # the trades closed at the last step
         self._short_exits: set[uuid.UUID] = set()  # exit orders ended short, logged once
 
     def open_trade(self, rule_id: uuid.UUID) -> AutoTrade | None:
@@ -140,6 +142,7 @@ class Tracker:
         return self._open.get(rule_id)
 
     async def step(self, runners: dict) -> None:
+        self.closed = []
         try:
             snap = await self._read()
         except Exception:
@@ -159,6 +162,8 @@ class Tracker:
                 log.exception("automatic trade %s: tracking failed; next step", trade.id)
             if trade.status == OPEN:
                 still_open[trade.rule_id] = trade
+            elif trade.status == CLOSED:
+                self.closed.append(trade)
             active = active or trade.status in (SENT, OPEN)
         self._open, self.active = still_open, active
 

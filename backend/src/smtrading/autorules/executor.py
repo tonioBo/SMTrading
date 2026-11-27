@@ -31,8 +31,12 @@ safety close or any other reduce-only sell still open is left to finish (no seco
 sell). `cancel_stale_entry` cancels a limit entry
 not filled in time (the Tracker's call).
 
-No transaction is open across a network call: the guards read Redis and one short
-query, the order path reads the quote cache; the wake is published after the commit.
+The brakes (`autorules.brakes`) come right after the guards (the rule busy included): a cap
+of the rule or the portfolio reached, a braked rule or a failed check blocks the entry
+(`braked`); the exits never pass through them.
+
+No transaction is open across a network call: the guards read Redis and two short
+queries, the order path reads the quote cache; the wake is published after the commit.
 `enter`, `exit` and `cancel_stale_entry` never raise: a failure is logged."""
 import hashlib
 import logging
@@ -45,6 +49,7 @@ from sqlalchemy import exists, func, or_, select, true
 from sqlalchemy.exc import IntegrityError
 
 from smtrading.autorules import guards
+from smtrading.autorules.brakes import BrakeChecker
 from smtrading.autorules.broker_times import auto_exit_client_id
 from smtrading.autorules.feed import read_stream_status, stream_state
 from smtrading.autorules.guards import INACTIVE, SIZE, check_entry, count_blocked
@@ -145,6 +150,7 @@ class Executor:
         self._redis = redis
         self.qs = qs
         self._clock = clock
+        self.brakes = BrakeChecker(sessionmaker, qs, clock=clock, redis=redis)
         self._exited: set[int] = set()  # trades whose exit order exists
         self._exit_retry: dict[int, datetime] = {}  # trade -> no new attempt before
 
@@ -172,6 +178,8 @@ class Executor:
         reason = check_entry(busy=False, **args)
         if reason is None:  # the database is asked only when nothing else blocks
             reason = check_entry(busy=await self._busy(rule), **args)
+        if reason is None:
+            reason = await self.brakes.blocked(rule, now)
         return reason
 
     # --- the entry ---------------------------------------------------------------

@@ -5,15 +5,19 @@ Every `reload_s` one `active_rules` query: with no active rule nothing else happ
 subscription, no provider call, no Redis call but the job heartbeat); otherwise the rule
 symbols are tracked again for the price stream (idempotent: a pause/activate race cannot
 leave a rule unfollowed), the feed follows exactly them, a new rule or a changed version
-gets a new runner warmed up from the minute history, a rule gone is dropped (its open
-trades stay with the Tracker). A bar goes to the runners of its symbol; a quote too, and
-an entry intent goes to the executor. The guards before a send live in the executor.
+gets a new runner warmed up from the minute history, a rule gone (paused, braked, switch
+off) is dropped, unless its runner is still `pending` or `long`: then it is kept for the
+exits only (never an entry, no quotes) until its trade is over, so a brake or a pause
+leaves the time and end-of-session exits in place. A bar goes to the runners of its
+symbol; a quote too, and an entry intent goes to the executor. The guards and the brakes
+before a send live in the executor.
 
 Every TRACK_EVERY_S (every `reload_s` while no trade is `sent` or `open` and no rule is
 active) the Tracker follows the trades (fills, exits, measures) and the runners in `long`
 are asked for their exit at the clock's time, so a time or end-of-session exit leaves
 even without quotes (a lost stream); an exit intent goes to `Executor.exit` (once per
-trade). Every SUMMARY_CHECK_S the evening summaries due are queued (`autorules.summary`)."""
+trade). The trades the Tracker closed have their brakes judged (`BrakeChecker.after_close`).
+Every SUMMARY_CHECK_S the evening summaries due are queued (`autorules.summary`)."""
 import asyncio
 import logging
 import uuid
@@ -75,6 +79,8 @@ class Scalper:
         self._summaries_checked: set[str] = set()
         self._rules: dict[uuid.UUID, tuple[ActiveRule, RuleRunner]] = {}
         self._by_symbol: dict[str, list[tuple[ActiveRule, RuleRunner]]] = {}
+        # rules no longer active whose runner still has a trade: its exits only
+        self._draining: dict[uuid.UUID, tuple[ActiveRule, RuleRunner]] = {}
         self.stream_status: dict | None = None  # md:stream_status at the last refresh
         self._feed_notes: dict[str, tuple[str, bool]] = {}
 
@@ -92,6 +98,7 @@ class Scalper:
     async def reload(self) -> None:
         async with self._sm() as session:
             active = await active_rules(session)
+        self._retire({r.rule_id for r in active})
         if not active:
             if self._rules or self._feed.symbols:
                 log.info("no active automatic rule: scalper idle")
@@ -121,14 +128,26 @@ class Scalper:
             await job_tick({"active_rules": len(self._rules)})  # a long refresh shows progress
             log.info("automatic rule %s v%s on %s: runner ready (%s bars)", rule.rule_id,
                      rule.version, rule.symbol, runner.series.count())
-        gone = self._rules.keys() - {r.rule_id for r in active}
-        for rule_id in gone:
-            log.info("automatic rule %s no longer active: runner dropped", rule_id)
-            del self._rules[rule_id]
         self._index()
         self.stream_status = await read_stream_status(self._redis)
         self._note_feed(symbols)
         await job_tick({"active_rules": len(self._rules)})
+
+    def _retire(self, active_ids: set[uuid.UUID]) -> None:
+        """The rules no longer active leave the runners; one with a trade still pending or
+        open is kept for its exits. A rule active again gets a new runner (the Tracker
+        puts it back in `long` for an open trade)."""
+        for rule_id in self._rules.keys() - active_ids:
+            rule, runner = self._rules.pop(rule_id)
+            if runner.state == "flat":
+                log.info("automatic rule %s no longer active: runner dropped", rule_id)
+            else:
+                log.info("automatic rule %s no longer active: runner kept for the exits "
+                         "of its trade", rule_id)
+                self._draining[rule_id] = (rule, runner)
+        for rule_id in active_ids & self._draining.keys():
+            del self._draining[rule_id]
+        self._index()
 
     def _note_feed(self, symbols: set[str]) -> None:
         """Log, once per change, a rule symbol not on a connected stream or without bars."""
@@ -168,15 +187,24 @@ class Scalper:
             await self._executor.exit(rule, runner, ex, trade)
 
     async def track(self) -> None:
-        """One Tracker step, then the exits due at the clock's time."""
-        await self._tracker.step({rid: runner for rid, (_, runner) in self._rules.items()})
+        """One Tracker step, the brakes of the trades it closed, then the exits due at
+        the clock's time (the draining runners' too)."""
+        runners = {rid: runner for rid, (_, runner) in self._draining.items()}
+        runners.update({rid: runner for rid, (_, runner) in self._rules.items()})
+        await self._tracker.step(runners)
         now = self._clock()
-        for rule, runner in list(self._rules.values()):
+        if self._executor is not None:
+            for trade in self._tracker.closed:
+                await self._executor.brakes.after_close(trade, now)
+        for rule, runner in [*self._rules.values(), *self._draining.values()]:
             if runner.state != "long":
                 continue
             intent = runner.on_price(now, runner.fill_price, None, None)  # long: exits only
             if isinstance(intent, Exit):
                 await self._exit(rule, runner, intent)
+        for rule_id, (_, runner) in list(self._draining.items()):
+            if runner.state == "flat":  # its trade is over
+                del self._draining[rule_id]
 
     async def summaries(self) -> int:
         return await send_due_summaries(self._sm, self._redis, self._clock(),
