@@ -388,10 +388,11 @@ class Executor:
                 return None
             attempt = 0
             if row.exit_order_id is not None:
-                prior = await session.get(Order, row.exit_order_id)
+                prior_id = row.exit_order_id  # read before the rollback expires the row
+                prior = await session.get(Order, prior_id)
                 if not _dead(prior):
                     await session.rollback()
-                    return row.exit_order_id
+                    return prior_id
                 base = auto_exit_client_id(row.id)
                 attempt = await session.scalar(select(func.count()).where(
                     Order.portfolio_id == row.portfolio_id,

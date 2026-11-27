@@ -444,6 +444,24 @@ async def test_time_exit_on_stale_bars(maker, redis, qs, broker, router):
     assert (await _trade(maker, row.id)).exit_reason == "time"
 
 
+async def test_exit_with_live_prior_order_returns_its_id(maker, redis, qs, broker, router):
+    """The exit order already sent and not dead: `_exit` returns its id (read before the
+    rollback expires the row) with no error and no second order."""
+    from smtrading.autorules.runner import Exit
+    rule = await _rule(maker, params={"max_hold_s": 60})
+    row, runner = await _open(maker, redis, qs, broker, rule)
+    clock = Clock(row.filled_at + timedelta(seconds=60))
+    await _quote(redis, clock.now, bid="200.50", ask="200.60")
+    sc = _scalper(maker, redis, router, clock, rule, runner)
+    await sc.track()
+    [exit_order] = await _autox(maker, rule)
+    executor = Executor(maker, redis, sc.qs, clock=clock)
+    again = await executor._exit(rule, Exit(clock.now, "time"), await _trade(maker, row.id),
+                                 clock.now)
+    assert again == exit_order.id
+    assert len(await _autox(maker, rule)) == 1
+
+
 async def test_refused_exit_replaced(maker, redis, qs, broker, router):
     """A time exit the broker refuses leaves the position open: the next Exit sends a
     new order (`smt-autox-{trade}-1`), never two at once."""
