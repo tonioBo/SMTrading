@@ -692,3 +692,20 @@ async def test_automatic_order_refused_with_switch_off(sm, redis, qs):
                 auto_rule_id=rule.rule_id), now=NOW)
     assert e.value.code == ErrorCode.RISK_LIMIT_EXCEEDED
     assert e.value.details["reason"] == "auto_rule_inactive"
+
+
+async def test_stale_bars_block_logged_once_and_clear_logged(sm, redis, qs, caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="smtrading.autorules.executor")
+    rule = await _rule(sm)
+    await _ready(redis, "AAPL")
+    q = await _quote(redis)
+    ex = Executor(sm, redis, qs, clock=Clock(NOW))
+    stale = _runner(rule, NOW - timedelta(minutes=10))
+    for _ in range(3):  # many quotes: one line
+        assert await ex.enter(rule, stale, _entry(q), q) is None
+    warns = [r for r in caplog.records if r.levelno == logging.WARNING and "stale" in r.getMessage()]
+    assert len(warns) == 1
+    assert await ex.enter(rule, _runner(rule, NOW - timedelta(minutes=4)), _entry(q), q)
+    infos = [r for r in caplog.records if r.levelno == logging.INFO and "fresh again" in r.getMessage()]
+    assert len(infos) == 1

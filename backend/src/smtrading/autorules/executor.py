@@ -160,6 +160,7 @@ class Executor:
         self.brakes = BrakeChecker(sessionmaker, qs, clock=clock, redis=redis)
         self._exited: set[int] = set()  # trades whose exit order exists
         self._exit_retry: dict[int, datetime] = {}  # trade -> no new attempt before
+        self._bars_stale: set = set()  # rules whose entries the bars_stale guard blocks
 
     # --- the guards --------------------------------------------------------------
 
@@ -228,6 +229,14 @@ class Executor:
                      quote: Quote) -> AutoTrade | None:
         now = self._clock()
         reason = await self._blocked(rule, quote, now, runner.last_bar_ts)
+        if reason == guards.BARS_STALE and rule.rule_id not in self._bars_stale:
+            self._bars_stale.add(rule.rule_id)
+            log.warning("automatic rule %s on %s: entries blocked, minute bars stale "
+                        "(newest bar %s)", rule.rule_id, rule.symbol, runner.last_bar_ts)
+        elif reason != guards.BARS_STALE and rule.rule_id in self._bars_stale:
+            self._bars_stale.discard(rule.rule_id)
+            log.info("automatic rule %s on %s: minute bars fresh again, entries unblocked",
+                     rule.rule_id, rule.symbol)
         if reason is not None:
             await self._count(rule, now, reason)
             return None

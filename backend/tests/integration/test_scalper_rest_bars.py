@@ -200,3 +200,32 @@ async def test_rest_failure_logged_once_never_raises(redis, caplog):
                                seconds=7)
     await sc.poll_bars()
     assert logged() == 2
+
+
+async def test_rest_bars_start_line_once_then_quarter_hour_summary(redis, caplog):
+    clock = Clock(T0 + timedelta(minutes=1, seconds=6))
+    rule = _rule("BTC-USD", "CRYPTO", "crypto")
+    router = Router(clock)
+    sc = _scalper(redis, router, clock, (rule, _runner(rule, T0)),
+                  status=_status(["BTC-USD"], None))
+    caplog.set_level(logging.INFO, logger=service_module.__name__)
+
+    def lines() -> list[str]:
+        return [r.getMessage() for r in caplog.records
+                if r.getMessage().startswith("BTC-USD: barre al minuto")]
+
+    for i in range(1, 11):  # ten minutes: the start line only
+        clock.now = T0 + timedelta(minutes=i, seconds=6)
+        await sc.poll_bars()
+    assert lines() == ["BTC-USD: barre al minuto dal fornitore (il flusso non le dà)"]
+    clock.now = T0 + timedelta(minutes=1 + service_module.REST_BARS_SUMMARY_S // 60,
+                               seconds=6)
+    await sc.poll_bars()
+    assert len(lines()) == 2 and "ultima barra" in lines()[1]
+    router.fail = True  # a failure, then recovery: the start line again
+    clock.now += timedelta(minutes=1)
+    await sc.poll_bars()
+    router.fail = False
+    clock.now += timedelta(minutes=1)
+    await sc.poll_bars()
+    assert lines()[-1].endswith("(il flusso non le dà)") and len(lines()) == 3

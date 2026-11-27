@@ -60,6 +60,7 @@ REST_BARS_DELAY_S = 5  # the REST minute bars are asked this long after the minu
 REST_BARS_LOOKBACK = timedelta(minutes=5)  # the span asked: a missed minute is filled
 STREAM_BARS_SILENT_S = 120  # a bars stream silent this long (market open): REST instead
 REST_BARS_LOG_EVERY_S = 300  # a failing REST bars call is logged at most this often
+REST_BARS_SUMMARY_S = 900  # a working REST bars symbol is summarised at most this often
 REST_BARS_CHECK_S = 1.0  # the poll loop looks at the clock this often
 
 
@@ -102,6 +103,7 @@ class Scalper:
         self._polled_minute: datetime | None = None  # the last minute close polled
         self._stream_bar_at: dict[str, datetime] = {}  # symbol -> last stream bar (clock)
         self._rest_logged: dict[str, datetime] = {}  # symbol -> last REST failure logged
+        self._rest_ok: dict[str, datetime] = {}  # symbol -> last REST info line (working)
 
     def runners(self, symbol: str) -> list[tuple[ActiveRule, RuleRunner]]:
         return list(self._by_symbol.get(symbol, ()))
@@ -175,7 +177,10 @@ class Scalper:
                     stream_bars(self.stream_status, symbol))
             if self._feed_notes.get(symbol) != seen:
                 self._feed_notes[symbol] = seen
-                if seen != ("stream", True):
+                if seen == ("stream", False):  # expected: REST polling covers the bars
+                    log.info("automatic rule symbol %s: prices stream, minute bars no "
+                             "(REST polling covers them)", symbol)
+                elif seen != ("stream", True):
                     log.warning("automatic rule symbol %s: prices %s, minute bars %s",
                                 symbol, seen[0], "yes" if seen[1] else "no")
         for symbol in set(self._feed_notes) - symbols:
@@ -228,6 +233,8 @@ class Scalper:
             return 0
         self._polled_minute = minute
         symbols = self._rest_bar_symbols(now)
+        for symbol in self._rest_ok.keys() - set(symbols):
+            del self._rest_ok[symbol]  # not polled any more: a new start is logged again
         for symbol in symbols:
             try:
                 bars = await self._router.get_bars(symbol, Timeframe.m1,
@@ -238,10 +245,22 @@ class Scalper:
                     self._rest_logged[symbol] = now
                     log.warning("automatic rule symbol %s: REST minute bars unavailable "
                                 "(%s); entries wait for fresh bars", symbol, e)
+                self._rest_ok.pop(symbol, None)  # after recovering: the start line again
                 continue
             for bar in sorted(bars, key=lambda b: b.ts):
                 for _, runner in self.runners(symbol):  # the runners of now
                     runner.on_bar(bar)
+            newest = max((b.ts for b in bars), default=None)
+            if newest is not None:
+                last = self._rest_ok.get(symbol)
+                if last is None:
+                    self._rest_ok[symbol] = now
+                    log.info("%s: barre al minuto dal fornitore (il flusso non le dà)",
+                             symbol)
+                elif (now - last).total_seconds() >= REST_BARS_SUMMARY_S:
+                    self._rest_ok[symbol] = now
+                    log.info("%s: barre al minuto dal fornitore, ultima barra %s", symbol,
+                             newest.isoformat())
         return len(symbols)
 
     async def _poll_bars_loop(self) -> None:
