@@ -83,6 +83,13 @@ class RuleRunner:
             self._vwap.reset(start)
 
     @property
+    def last_bar_ts(self) -> datetime | None:
+        """The start of the newest minute bar (None before any): the entry guard judges
+        from it whether the indicators are fresh."""
+        last = self.series.closed(1)
+        return last[0].ts if last else None
+
+    @property
     def vwap(self) -> Decimal | None:
         return self._vwap.value
 

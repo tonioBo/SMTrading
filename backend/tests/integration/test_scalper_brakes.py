@@ -38,7 +38,7 @@ from smtrading.engine.quotesource import FakeQuoteSource
 from smtrading.events import dispatch_post_commit
 from smtrading.marketdata.cache import write_quote
 from smtrading.marketdata.streaming import CONNECTED, STATUS_KEY
-from smtrading.marketdata.types import Quote
+from smtrading.marketdata.types import Bar, Quote
 from smtrading.portfolios.service import create_portfolio
 from smtrading.risk.models import EquitySnapshot, SnapshotKind
 from smtrading.seed import run_seed
@@ -216,8 +216,13 @@ async def _quote(redis, symbol="AAPL", ts=NOW, bid="199.90", ask="200.00") -> Qu
 
 
 def _runner(rule: ActiveRule) -> RuleRunner:
-    return RuleRunner(rule.model, rule.params, market=rule.market, tick_size=rule.tick_size,
-                      session_exit_before=timedelta(minutes=rule.day_close_minutes + 2))
+    """A runner with a fresh minute bar (the one of the minute before NOW)."""
+    runner = RuleRunner(rule.model, rule.params, market=rule.market,
+                        tick_size=rule.tick_size,
+                        session_exit_before=timedelta(minutes=rule.day_close_minutes + 2))
+    runner.on_bar(Bar(ts=NOW - timedelta(minutes=1), open=D(199), high=D(200), low=D(198),
+                      close=D(199), volume=D(100)))
+    return runner
 
 
 async def _orders(sm, rule) -> list[Order]:

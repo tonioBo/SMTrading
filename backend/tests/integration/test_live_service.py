@@ -1029,6 +1029,46 @@ async def test_flatten_records_refused_positions(sm, redis, fake, monkeypatch):
                                       "message": "quotazione non disponibile"}]
 
 
+async def test_flatten_floors_to_the_lot_and_lists_dust(sm, redis, fake, monkeypatch):
+    """Alpaca crypto keeps its buy fee in the coin: a position finer than the lot is
+    closed by its lots (never up), one below a lot is listed as `dust`, not as failed."""
+    from types import SimpleNamespace
+
+    from smtrading.engine import service as engine_service
+    from smtrading.positions.models import Position
+
+    link_id, pid, admin, totp = await _armed_with_portfolio(sm, redis, fake)
+    await _held_position(sm, pid, link_id)
+    qs = _qs()
+    qs.set_quote("ETH-USD", D(1734), D(1735), D(1735))
+    qs.set_quote("BTC-USD", D(60000), D(60010), D(60005))
+    async with sm() as s:  # two crypto positions, then the coin fee's decimals
+        await s.execute(update(Portfolio).where(Portfolio.id == pid)
+                        .values(broker_link_id=None))
+        for sym in ("ETH-USD", "BTC-USD"):
+            await place_order(s, qs, PlaceOrderRequest(
+                portfolio_id=pid, symbol=sym, side=OrderSide.buy, type=OrderType.market,
+                qty=D("0.001")), now=OPEN)
+        await s.execute(update(Portfolio).where(Portfolio.id == pid)
+                        .values(broker_link_id=link_id))
+        for sym, qty in (("ETH-USD", "0.114985585"), ("BTC-USD", "0.000000005")):
+            await s.execute(update(Position).where(
+                Position.portfolio_id == pid, Position.symbol == sym).values(qty=D(qty)))
+        await s.commit()
+    sent: dict[str, D] = {}
+
+    async def capture(session, qs, req, **kw):
+        sent[req.symbol] = req.qty
+        return SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr(engine_service, "place_order", capture)
+    assert len(await _flatten(sm, redis, pid, admin, totp.code())) == 2
+    assert sent == {"AAPL": D(2), "ETH-USD": D("0.11498558")}
+    row = (await _audit(sm, link_id))[-1]
+    assert row.details["failed"] == []
+    assert row.details["dust"] == [{"symbol": "BTC-USD", "qty": "0.000000005"}]
+
+
 async def test_lock_order_link_before_portfolio(sm, redis, fake):
     """R8.9: link_live_portfolio and disarm lock the link (FOR NO KEY UPDATE) before the
     portfolio (FOR UPDATE)."""

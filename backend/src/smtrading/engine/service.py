@@ -134,7 +134,12 @@ from smtrading.instruments.market_hours import (
     session_on,
 )
 from smtrading.instruments.models import Instrument
-from smtrading.instruments.service import get_instrument, validate_price, validate_quantity
+from smtrading.instruments.service import (
+    floor_to_lot,
+    get_instrument,
+    validate_price,
+    validate_quantity,
+)
 from smtrading.ledger.models import Account, AccountBalance, AccountKind
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.locks import lock_live_portfolio, lock_portfolio
@@ -436,7 +441,8 @@ async def _fee_sized(session: AsyncSession, portfolio: Portfolio, instrument: In
                      req: PlaceOrderRequest) -> PlaceOrderRequest:
     """A sell beyond the long position by no more than the linked broker's fee residue in
     the asset (Alpaca crypto keeps its buy fee in the coin: a sell of the quantity
-    ordered on the entry) is the position: sized to it, never a short."""
+    ordered on the entry), or of exactly the position when the coin fee left it finer
+    than the lot, is the position floored to the lot: never a short, never up."""
     if (req.side != OrderSide.sell or req.qty is None or portfolio.broker_link_id is None):
         return req
     held = await session.scalar(
@@ -445,14 +451,18 @@ async def _fee_sized(session: AsyncSession, portfolio: Portfolio, instrument: In
         .where(Account.portfolio_id == portfolio.id, Account.asset == instrument.symbol,
                Account.kind == AccountKind.position)
     ) or Decimal(0)
-    if held <= 0 or req.qty <= held:
+    if held <= 0 or req.qty < held or (req.qty == held and floor_to_lot(
+            held, instrument.lot_size) == held):
         return req
     link = await session.get(BrokerLink, portfolio.broker_link_id)
     if link is None or not link.enabled:
         return req
     async with open_adapter(session, link.id, None) as adapter:  # config only
         dust = adapter.fee_dust(instrument.symbol, held)
-    return dataclasses.replace(req, qty=held) if req.qty - held <= dust else req
+    if req.qty - held > dust:
+        return req
+    size = floor_to_lot(held, instrument.lot_size)
+    return dataclasses.replace(req, qty=size) if size > 0 else req
 
 
 async def _check_admission(session: AsyncSession, adm: _Admission) -> None:
@@ -1184,7 +1194,7 @@ async def modify_order(
     if qty is not None and order.role == "entry":
         for child in await _children(session, order.id):
             if child.status in OPEN_STATUSES:
-                child.qty = qty
+                child.qty = floor_to_lot(qty, instrument.lot_size)
                 child.updated_at = order.updated_at
     await session.flush()
     return order
@@ -1365,8 +1375,9 @@ async def _close(
     it is rejected, the symbol's open bracket exits are canceled (Ruling R16), and its
     resting orders on the closing side that are not reduce-only (`cancel_closing_side`)."""
     size = abs(held)
-    if qty is None:
-        qty = size
+    if qty is None:  # all of it, in lots (Alpaca crypto: the coin fee leaves it finer)
+        qty = floor_to_lot(size, await session.scalar(
+            select(Instrument.lot_size).where(Instrument.symbol == symbol)))
     else:
         _positive("qty", qty)
         if qty > size:
@@ -1394,15 +1405,17 @@ async def close_position(
     now: datetime | None = None, redis=None, limit_price: Decimal | None = None,
     client_order_id: str | None = None,
 ) -> Order:
-    """Reduce-only market order on the opposite side for |position| (or `qty` <=
-    |position|); with `limit_price` a reduce-only DAY limit at that price instead;
+    """Reduce-only market order on the opposite side for |position| floored to the lot
+    (or `qty` <= |position|); a position below one lot is flat. With `limit_price` a
+    reduce-only DAY limit at that price instead;
     `client_order_id` makes it idempotent. The symbol's open bracket exits are canceled
     (Ruling R16), and its standalone exits that the close leaves oversized
     (`cancel_closing_side`)."""
     await lock_live_portfolio(session, portfolio_id)
-    symbol = (await get_instrument(session, symbol)).symbol
+    instrument = await get_instrument(session, symbol)
+    symbol = instrument.symbol
     held = (await _position_balances(session, portfolio_id, symbol)).get(symbol)
-    if held is None:
+    if held is None or floor_to_lot(abs(held), instrument.lot_size) <= 0:
         raise _invalid("no open position", symbol=symbol)
     order, _ = await _close(
         session, qs, portfolio_id, symbol, held, qty, source=source, agent_id=agent_id,
@@ -1417,11 +1430,17 @@ async def close_all_positions(
     source: str = "agent", agent_id: str | None = None, now: datetime | None = None,
     redis=None,
 ) -> list[Order]:
-    """One closing order per open position; rejections are returned, not raised.
+    """One closing order per open position (one below its lot is flat: skipped);
+    rejections are returned, not raised.
 
     One memo, prefetched for every held symbol before the first close (I2)."""
     await lock_live_portfolio(session, portfolio_id)
     positions = await _position_balances(session, portfolio_id)
+    lots = dict((await session.execute(
+        select(Instrument.symbol, Instrument.lot_size)
+        .where(Instrument.symbol.in_(list(positions))))).all()) if positions else {}
+    positions = {sym: held for sym, held in positions.items()
+                 if floor_to_lot(abs(held), lots.get(sym)) > 0}
     qs = await _memo(session, qs, portfolio_id, list(positions))
     orders = []
     for symbol, held in positions.items():

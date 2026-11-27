@@ -65,6 +65,7 @@ from smtrading.engine.models import (
     OrderType,
 )
 from smtrading.instruments.models import Instrument
+from smtrading.instruments.service import floor_to_lot
 from smtrading.portfolios.models import Portfolio
 from smtrading.positions.models import Position
 
@@ -89,6 +90,7 @@ class _Item:
     entry_timeout_s: int
     currency: str  # the instrument's
     base_currency: str  # the portfolio's
+    lot: Decimal | None = None  # the instrument's lot size
 
 
 @dataclass
@@ -173,7 +175,7 @@ class Tracker:
         async with self._sm() as s:
             rows = (await s.execute(
                 select(AutoTrade, AutoRule.model, AutoRuleVersion.params, Instrument.currency,
-                       Portfolio.base_currency)
+                       Portfolio.base_currency, Instrument.lot_size)
                 .join(AutoRule, AutoRule.id == AutoTrade.rule_id)
                 .join(AutoRuleVersion, (AutoRuleVersion.rule_id == AutoTrade.rule_id)
                       & (AutoRuleVersion.version == AutoTrade.rule_version))
@@ -183,8 +185,8 @@ class Tracker:
                 .order_by(AutoTrade.id))).all()
             if not rows:
                 return None
-            items = [_Item(t, _timeout(model, params), ccy, base)
-                     for t, model, params, ccy, base in rows]
+            items = [_Item(t, _timeout(model, params), ccy, base, lot)
+                     for t, model, params, ccy, base, lot in rows]
             trades = [i.trade for i in items]
             entries = [t.entry_order_id for t in trades if t.entry_order_id is not None]
             exits = [t.exit_order_id for t in trades if t.exit_order_id is not None]
@@ -227,8 +229,10 @@ class Tracker:
         sold = sum((e.order.filled_qty for e in exits), Decimal(0))
         held = snap.positions.get((trade.portfolio_id, trade.symbol), Decimal(0))
         # closed when the exits sold the whole trade or nothing is left (a fee kept in
-        # the asset makes the position smaller than the fill)
-        if exits and (sold >= trade.qty or held <= 0):
+        # the asset makes the position smaller than the fill); a remainder below one lot
+        # (unsold or held: the coin fee's) is nothing left, no order can sell it
+        if exits and (floor_to_lot(trade.qty - sold, item.lot) <= 0
+                      or floor_to_lot(held, item.lot) <= 0):
             return await self._close(item, snap, exits, runner)
         self._exit_short(trade, snap)
         return trade

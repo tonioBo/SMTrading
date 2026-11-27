@@ -92,6 +92,7 @@ from smtrading.events import (
 )
 from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
+from smtrading.instruments.service import floor_to_lot, lot_of
 from smtrading.marketdata.quality import MAX_SPREAD
 from smtrading.marketdata.serialization import loads_quote
 from smtrading.marketdata.types import Quote
@@ -654,12 +655,13 @@ class OrderProcessor:
                 "order_id": order.id, "portfolio_id": order.portfolio_id,
                 "agent_id": order.agent_id, "symbol": order.symbol,
             })
-            if order.filled_qty > 0:  # the exits cover what filled
+            if order.filled_qty > 0:  # the exits cover what filled (in lots)
+                size = floor_to_lot(order.filled_qty, await lot_of(session, order.symbol))
                 for child in await session.scalars(
                     select(Order).where(Order.parent_id == order.id,
                                         Order.status == OrderStatus.held)
                 ):
-                    child.qty = order.filled_qty
+                    child.qty = size
                 await activate_linked(session, order)
             else:
                 await cancel_held_children(session, order, by="system")

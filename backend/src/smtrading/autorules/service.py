@@ -17,7 +17,17 @@ active) the Tracker follows the trades (fills, exits, measures) and the runners 
 are asked for their exit at the clock's time, so a time or end-of-session exit leaves
 even without quotes (a lost stream); an exit intent goes to `Executor.exit` (once per
 trade). The trades the Tracker closed have their brakes judged (`BrakeChecker.after_close`).
-Every SUMMARY_CHECK_S the evening summaries due are queued (`autorules.summary`)."""
+Every SUMMARY_CHECK_S the evening summaries due are queued (`autorules.summary`).
+
+The minute bars of a rule symbol whose stream carries none (crypto on Kraken, which has
+no bars channel; a bars stream the provider refused; a bars stream silent for more than
+STREAM_BARS_SILENT_S while the market is open) come from the router's REST instead:
+REST_BARS_DELAY_S after each minute close, one `get_bars` 1m per such symbol (the same
+provider resolution, cache and rate limit as everywhere), the bars to every runner of the
+symbol (a minute already held is replaced, an older one ignored). No transaction is open
+during the call; a failure is logged at most once per REST_BARS_LOG_EVERY_S per symbol
+and never stops the scalper. If both fail, the entry guard `bars_stale` blocks the
+rule's entries (never its exits)."""
 import asyncio
 import logging
 import uuid
@@ -37,14 +47,20 @@ from smtrading.autorules.rules import STREAM_SOURCE, ActiveRule, active_rules
 from smtrading.autorules.runner import SESSION_EXIT_MARGIN_MIN, Entry, Exit, RuleRunner
 from smtrading.autorules.summary import SUMMARY_CHECK_S, send_due_summaries
 from smtrading.autorules.tracker import TRACK_EVERY_S, Tracker
+from smtrading.instruments.market_hours import market_status
 from smtrading.marketdata.minute_bars import StreamBar
 from smtrading.marketdata.streaming import track
-from smtrading.marketdata.types import Quote
+from smtrading.marketdata.types import Quote, Timeframe
 from smtrading.worker.jobstate import job_tick
 
 log = logging.getLogger(__name__)
 
 SCALPER_JOB = "scalper"
+REST_BARS_DELAY_S = 5  # the REST minute bars are asked this long after the minute close
+REST_BARS_LOOKBACK = timedelta(minutes=5)  # the span asked: a missed minute is filled
+STREAM_BARS_SILENT_S = 120  # a bars stream silent this long (market open): REST instead
+REST_BARS_LOG_EVERY_S = 300  # a failing REST bars call is logged at most this often
+REST_BARS_CHECK_S = 1.0  # the poll loop looks at the clock this often
 
 
 def _runner_inputs(rule: ActiveRule) -> tuple:
@@ -82,6 +98,10 @@ class Scalper:
         self._draining: dict[uuid.UUID, tuple[ActiveRule, RuleRunner]] = {}
         self.stream_status: dict | None = None  # md:stream_status at the last refresh
         self._feed_notes: dict[str, tuple[str, bool]] = {}
+        self._router = router
+        self._polled_minute: datetime | None = None  # the last minute close polled
+        self._stream_bar_at: dict[str, datetime] = {}  # symbol -> last stream bar (clock)
+        self._rest_logged: dict[str, datetime] = {}  # symbol -> last REST failure logged
 
     def runners(self, symbol: str) -> list[tuple[ActiveRule, RuleRunner]]:
         return list(self._by_symbol.get(symbol, ()))
@@ -165,6 +185,7 @@ class Scalper:
 
     async def on_event(self, ev: Quote | StreamBar) -> None:
         if isinstance(ev, StreamBar):
+            self._stream_bar_at[ev.symbol] = self._clock()
             for _, runner in self.runners(ev.symbol):
                 runner.on_bar(ev.bar)
             return
@@ -177,6 +198,59 @@ class Scalper:
                 await self._executor.enter(rule, runner, intent, ev)
             elif isinstance(intent, Exit):
                 await self._exit(rule, runner, intent)
+
+    # --- the REST minute bars -----------------------------------------------------
+
+    def _rest_bar_symbols(self, now: datetime) -> list[str]:
+        """The rule symbols, market open (crypto: always), whose minute bars do not come
+        from the stream: none asked on a connected stream, or the stream's silent for
+        STREAM_BARS_SILENT_S (counted from the first look for a new symbol)."""
+        out = []
+        for symbol, pairs in sorted(self._by_symbol.items()):
+            seen = self._stream_bar_at.setdefault(symbol, now)
+            if not market_status(pairs[0][0].market, now).is_open:
+                continue
+            if (not stream_bars(self.stream_status, symbol)
+                    or (now - seen).total_seconds() > STREAM_BARS_SILENT_S):
+                out.append(symbol)
+        for symbol in self._stream_bar_at.keys() - self._by_symbol.keys():
+            del self._stream_bar_at[symbol]
+        return out
+
+    async def poll_bars(self) -> int:
+        """Once per minute close, from REST_BARS_DELAY_S after it: the REST minute bars
+        of the symbols without stream bars to their runners. The number of symbols
+        asked; never raises for a provider failure."""
+        now = self._clock()
+        minute = now.replace(second=0, microsecond=0)
+        if (self._polled_minute == minute or not self._by_symbol
+                or (now - minute).total_seconds() < REST_BARS_DELAY_S):
+            return 0
+        self._polled_minute = minute
+        symbols = self._rest_bar_symbols(now)
+        for symbol in symbols:
+            try:
+                bars = await self._router.get_bars(symbol, Timeframe.m1,
+                                                   minute - REST_BARS_LOOKBACK, now)
+            except Exception as e:  # noqa: BLE001 - any provider failure: logged, entries wait
+                last = self._rest_logged.get(symbol)
+                if last is None or (now - last).total_seconds() >= REST_BARS_LOG_EVERY_S:
+                    self._rest_logged[symbol] = now
+                    log.warning("automatic rule symbol %s: REST minute bars unavailable "
+                                "(%s); entries wait for fresh bars", symbol, e)
+                continue
+            for bar in sorted(bars, key=lambda b: b.ts):
+                for _, runner in self.runners(symbol):  # the runners of now
+                    runner.on_bar(bar)
+        return len(symbols)
+
+    async def _poll_bars_loop(self) -> None:
+        while True:
+            try:
+                await self.poll_bars()
+            except Exception:
+                log.exception("scalper REST minute bars failed; retrying")
+            await asyncio.sleep(REST_BARS_CHECK_S)
 
     # --- the trades --------------------------------------------------------------
 
@@ -251,6 +325,7 @@ class Scalper:
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(self._loop())
                 tg.create_task(self._consume())
+                tg.create_task(self._poll_bars_loop())
         finally:
             await self.close()
 

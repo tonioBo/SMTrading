@@ -82,6 +82,7 @@ from smtrading.brokers.live.quotas import (
 from smtrading.brokers.models import BrokerLink, Reconciliation
 from smtrading.brokers.registry import adapter_class
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.common.money import decimal_to_str
 from smtrading.engine.execution import broker_live
 from smtrading.engine.models import (
     OPEN_STATUSES,
@@ -96,6 +97,7 @@ from smtrading.engine.quotesource import MemoQuoteSource, QuoteSource
 from smtrading.engine.service import reject_broker_order
 from smtrading.events import POST_COMMIT_KEY, dispatch_post_commit, queue_event
 from smtrading.instruments.models import AssetClass, Instrument
+from smtrading.instruments.service import floor_to_lot
 from smtrading.portfolios.locks import lock_broker_link, lock_live_portfolio, lock_portfolio
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.portfolios.service import (
@@ -912,7 +914,8 @@ async def flatten_live_portfolio(
     be sent and the admin closes from the broker's app): one reduce-only market order per
     open position, flagged `live_flatten` (they pass the kill switch, Ruling R8.2).
     Returns the ids of the orders placed; a position whose order is refused is recorded
-    in the audit details (`failed`). The agents' resting orders (openings included) are
+    in the audit details (`failed`). Each order sells the position floored to the lot; a
+    position below one lot (the coin fee's remainder) is listed as `dust`, not sent. The agents' resting orders (openings included) are
     NOT canceled: the kill switch, a halt or «Disattiva denaro reale» does that."""
     from smtrading.engine.service import PlaceOrderRequest, place_order
 
@@ -931,14 +934,20 @@ async def flatten_live_portfolio(
         .order_by(Position.symbol)))
     placed: list[uuid.UUID] = []
     failed: list[dict[str, str]] = []
+    dust: list[dict[str, str]] = []
     for pos in positions:
-        asset_class = await session.scalar(
-            select(Instrument.asset_class).where(Instrument.symbol == pos.symbol))
+        asset_class, lot = (await session.execute(
+            select(Instrument.asset_class, Instrument.lot_size)
+            .where(Instrument.symbol == pos.symbol))).one_or_none() or (None, None)
+        qty = floor_to_lot(abs(pos.qty), lot)  # in lots (Alpaca crypto: the coin fee)
+        if qty <= 0:  # below one lot: no order can carry it, nothing to close
+            dust.append({"symbol": pos.symbol, "qty": decimal_to_str(abs(pos.qty))})
+            continue
         req = PlaceOrderRequest(
             portfolio_id=pf.id, symbol=pos.symbol,
             side=OrderSide.sell if pos.qty > 0 else OrderSide.buy, type=OrderType.market,
             tif=TimeInForce.gtc if asset_class == AssetClass.crypto else TimeInForce.day,
-            qty=abs(pos.qty),
+            qty=qty,
             source="admin", reduce_only=True, live_flatten=True,
         )
         mark = len(session.info.setdefault(POST_COMMIT_KEY, []))
@@ -951,9 +960,9 @@ async def flatten_live_portfolio(
             failed.append({"symbol": pos.symbol, "code": str(e.code), "message": e.message})
     await record_live_audit(session, action="flatten", link_id=link.id, portfolio_id=pf.id,
                             **_who(actor),
-                            details={"orders": placed, "failed": failed})
+                            details={"orders": placed, "failed": failed, "dust": dust})
     await live_alert(session, kind="flatten",
                      summary=f"Chiusura di tutte le posizioni reali: {len(placed)} ordini",
                      portfolio_id=pf.id, link_id=link.id,
-                     data={"orders": placed, "failed": failed})
+                     data={"orders": placed, "failed": failed, "dust": dust})
     return placed

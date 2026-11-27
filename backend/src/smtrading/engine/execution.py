@@ -77,6 +77,7 @@ from smtrading.fees.calculator import FeeRuleData, compute_fx_fee, compute_trade
 from smtrading.fees.resolver import load_rules, resolve_rule
 from smtrading.goals.plans import adds_to, open_closure, plan_closing_error
 from smtrading.instruments.models import Instrument
+from smtrading.instruments.service import floor_to_lot, lot_of
 from smtrading.ledger.models import Account, AccountBalance, AccountKind, Journal, JournalType
 from smtrading.ledger.service import LineSpec, get_balance, get_or_create_account, post_journal
 from smtrading.marketdata.types import Quote
@@ -116,6 +117,14 @@ async def _held(session: AsyncSession, portfolio_id: UUID, symbol: str) -> Decim
         .where(Account.portfolio_id == portfolio_id, Account.asset == symbol,
                Account.kind == AccountKind.position)
     ) or Decimal(0)
+
+
+async def _lots(session: AsyncSession, symbol: str, qty: Decimal) -> Decimal:
+    """An exit quantity taken from what is held, floored to the instrument's lot (Alpaca
+    crypto keeps its buy fee in the coin: the position is finer than the lot). Below one
+    lot it is left as it is (the fee residue, closed by BrokerSync: `write_off_dust`)."""
+    floored = floor_to_lot(qty, await lot_of(session, symbol))
+    return floored if floored > 0 else qty
 
 
 async def _check_plan(session: AsyncSession, portfolio_id: UUID, symbol: str) -> None:
@@ -159,8 +168,9 @@ async def broker_send_check(
         if not closing:
             return False
         if clamp and remaining is not None and remaining > abs(held):
-            order.qty = (order.filled_qty or Decimal(0)) + abs(held)
-            remaining = abs(held)
+            size = await _lots(session, order.symbol, abs(held))
+            order.qty = (order.filled_qty or Decimal(0)) + size
+            remaining = size
     reducing = closing and (
         order.reduce_only if remaining is None else remaining <= abs(held)
     )
@@ -216,7 +226,7 @@ async def market_only_sell(session: AsyncSession, order: Order) -> str | None:
         return WAIT
     filled = order.filled_qty or Decimal(0)
     if order.qty is not None and order.qty - filled > room:
-        order.qty = filled + room
+        order.qty = filled + await _lots(session, order.symbol, room)
     return None
 
 
@@ -513,13 +523,15 @@ async def _follow_partial(session: AsyncSession, order: Order, held: Decimal, *,
                           final: bool, now: datetime) -> None:
     """Plan 29 (A): a synthetic leg filled in part (`held`: the position now). A sibling
     that closes the position stays, sized to what is left of it; any other sibling is
-    canceled once the leg is final (it did execute), kept suspended before."""
+    canceled once the leg is final (it did execute), kept suspended before. A position
+    left below one lot (the coin fee's remainder) is flat."""
+    size = floor_to_lot(abs(held), await lot_of(session, order.symbol))
     for sibling in await _open_siblings(session, order):
-        closing = held != 0 and (held > 0) != (sibling.side == OrderSide.buy)
+        closing = size > 0 and (held > 0) != (sibling.side == OrderSide.buy)
         if closing and not broker_live(sibling):
             done = sibling.filled_qty or Decimal(0)
-            if sibling.qty is not None and sibling.qty - done > abs(held):
-                sibling.qty = done + abs(held)
+            if sibling.qty is not None and sibling.qty - done > size:
+                sibling.qty = done + size
                 sibling.updated_at = now
         elif final:
             _cancel_sibling(session, sibling, now)
@@ -540,8 +552,11 @@ async def activate_linked(session: AsyncSession, order: Order, *,
     children (plan 29) stay here, watched by the processor, when the entry went to the
     broker. A synthetic leg final with a partial fill keeps the siblings that protect
     what is left (`_follow_partial`). `exit_qty`: the children are sized to it when they
-    exceed it (the position the entry built, net of a fee kept in the asset)."""
+    exceed it (the position the entry built, net of a fee kept in the asset), floored to
+    the instrument's lot."""
     now = datetime.now(UTC)
+    if exit_qty is not None:
+        exit_qty = floor_to_lot(exit_qty, await lot_of(session, order.symbol))
     if order.synthetic and order.status != OrderStatus.filled:
         held = await _held(session, order.portfolio_id, order.symbol)
         await _follow_partial(session, order, held, final=True, now=now)

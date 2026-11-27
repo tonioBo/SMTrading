@@ -38,6 +38,7 @@ export const BLOCKED_LABELS: Record<string, string> = {
   size: "importo troppo piccolo",
   rejected: "rifiutata dai controlli di rischio",
   inactive: "regola non più attiva",
+  bars_stale: "barre al minuto ferme",
 };
 
 export const PARAM_LABELS: Record<string, { label: string; help: string }> = {

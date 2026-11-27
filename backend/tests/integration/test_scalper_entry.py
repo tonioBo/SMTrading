@@ -34,7 +34,7 @@ from smtrading.engine.quotesource import FakeQuoteSource
 from smtrading.instruments.models import Instrument
 from smtrading.marketdata.cache import write_quote
 from smtrading.marketdata.streaming import CONNECTED, STATUS_KEY
-from smtrading.marketdata.types import Quote
+from smtrading.marketdata.types import Bar, Quote
 from smtrading.portfolios.models import Portfolio
 from smtrading.portfolios.service import create_portfolio
 from smtrading.risk.settings import set_kill_switch
@@ -151,9 +151,15 @@ async def _rule(sm, symbol="AAPL", *, qty=D(1), notional=None, params=None, cash
         return rule
 
 
-def _runner(rule: ActiveRule) -> RuleRunner:
-    return RuleRunner(rule.model, rule.params, market=rule.market, tick_size=rule.tick_size,
-                      session_exit_before=timedelta(minutes=12))
+def _runner(rule: ActiveRule, last_bar: datetime | None = NOW - timedelta(minutes=1)
+            ) -> RuleRunner:
+    """A runner whose newest minute bar starts at `last_bar` (None: no bar)."""
+    runner = RuleRunner(rule.model, rule.params, market=rule.market,
+                        tick_size=rule.tick_size, session_exit_before=timedelta(minutes=12))
+    if last_bar is not None:
+        runner.on_bar(Bar(ts=last_bar, open=D(199), high=D(200), low=D(198), close=D(199),
+                          volume=D(100)))
+    return runner
 
 
 async def _ready(redis, *symbols, last_pass=NOW - timedelta(seconds=1)) -> None:
@@ -295,6 +301,22 @@ async def test_no_entry_when_brokersync_silent(sm, redis, qs):
     assert await ex.enter(rule, _runner(rule), _entry(q), q) is None
     assert await _blocked(redis, rule) == {"broker_down": 2}
     assert await _orders(sm, rule) == [] and await _trades(sm, rule) == []
+
+
+@pytest.mark.parametrize("last_bar", [NOW - timedelta(minutes=4, seconds=1), None])
+async def test_no_entry_on_stale_bars(sm, redis, qs, last_bar):
+    """Newest bar closed more than 3 minutes ago (or none) with the market open: the
+    indicators are frozen, no entry (fail closed when both stream and REST bars fail)."""
+    rule = await _rule(sm)
+    await _ready(redis, "AAPL")
+    q = await _quote(redis)
+    ex = Executor(sm, redis, qs, clock=Clock(NOW))
+    assert await ex.enter(rule, _runner(rule, last_bar), _entry(q), q) is None
+    assert await _blocked(redis, rule) == {"bars_stale": 1}
+    assert await _orders(sm, rule) == [] and await _trades(sm, rule) == []
+    # closed exactly 3 minutes ago: still fresh
+    assert await ex.enter(rule, _runner(rule, NOW - timedelta(minutes=4)), _entry(q),
+                          q) is not None
 
 
 # --- the entry -------------------------------------------------------------------------

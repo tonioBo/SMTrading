@@ -49,7 +49,7 @@ from smtrading.instruments.models import Instrument
 from smtrading.intraday.day_close import DayCloser
 from smtrading.marketdata.cache import write_quote
 from smtrading.marketdata.streaming import CONNECTED, STATUS_KEY
-from smtrading.marketdata.types import Quote
+from smtrading.marketdata.types import Bar, Quote
 from smtrading.portfolios.models import Portfolio
 from smtrading.portfolios.service import create_portfolio
 from smtrading.positions.models import Position
@@ -188,7 +188,8 @@ class Clock:
         return self.now
 
 
-async def _rule(maker, symbol="AAPL", *, qty=D(1), params=None, **pf) -> ActiveRule:
+async def _rule(maker, symbol="AAPL", *, qty=D(1), notional=None, params=None,
+                **pf) -> ActiveRule:
     async with maker() as s:
         p = await create_portfolio(s, name=f"S-{uuid.uuid4().hex[:8]}",
                                    initial_cash=D(100000), leverage=D(1))
@@ -201,7 +202,7 @@ async def _rule(maker, symbol="AAPL", *, qty=D(1), params=None, **pf) -> ActiveR
         await s.flush()
         r = await rules.create_rule(s, portfolio_id=p.id, symbol=symbol, model="breakout",
                                     params={"lookback_min": 20, **(params or {})},
-                                    qty=qty, notional=None, by=BY)
+                                    qty=qty, notional=notional, by=BY)
         await rules.activate(s, r.id, by=BY, now=NOW)
         await s.commit()
         [rule] = [a for a in await active_rules(s) if a.rule_id == r.id]
@@ -230,11 +231,18 @@ def _sync(maker, redis, qs, broker, now) -> BrokerSync:
     return BrokerSync(maker, redis, qs, broker.http, clock=Clock(now), interval_s=30)
 
 
+def _fresh_bar(now: datetime) -> Bar:
+    """The minute bar closed at `now` (the runner's bars are fresh: entries allowed)."""
+    ts = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
+    return Bar(ts=ts, open=D(199), high=D(200), low=D(198), close=D(199), volume=D(100))
+
+
 async def _send(maker, redis, qs, broker, rule, runner, *, now=NOW, sent_at=None,
                 bid="199.90", ask="200.00") -> AutoTrade:
     """An entry triggered at `now`, written at `sent_at` (default `now`)."""
     await _ready(redis, sent_at or now)
     q = await _quote(redis, now, bid, ask)
+    runner.on_bar(_fresh_bar(now))
     trade = await Executor(maker, redis, qs, clock=Clock(sent_at or now)).enter(
         rule, runner, Entry(q.ts, q.ask, {}), q)
     assert trade is not None and trade.entry_order_id is not None, trade
@@ -421,6 +429,21 @@ async def test_time_exit_sent_by_scalper(maker, redis, qs, broker, router):
     assert runner.state == "flat"
 
 
+async def test_time_exit_on_stale_bars(maker, redis, qs, broker, router):
+    """Bars frozen for 10 minutes block entries, never the rule's exits."""
+    rule = await _rule(maker, params={"max_hold_s": 600})
+    row, runner = await _open(maker, redis, qs, broker, rule)
+    clock = Clock(row.filled_at + timedelta(seconds=600))
+    assert clock.now - runner.series.closed(1)[-1].ts > timedelta(minutes=10)
+    await _ready(redis, clock.now)
+    await _quote(redis, clock.now, bid="200.50", ask="200.60")
+    sc = _scalper(maker, redis, router, clock, rule, runner)
+    await sc.track()
+    [exit_order] = await _autox(maker, rule)
+    assert exit_order.reduce_only and exit_order.qty == row.qty
+    assert (await _trade(maker, row.id)).exit_reason == "time"
+
+
 async def test_refused_exit_replaced(maker, redis, qs, broker, router):
     """A time exit the broker refuses leaves the position open: the next Exit sends a
     new order (`smt-autox-{trade}-1`), never two at once."""
@@ -447,6 +470,58 @@ async def test_refused_exit_replaced(maker, redis, qs, broker, router):
     closed = await _trade(maker, row.id)
     assert closed.status == CLOSED and closed.exit_reason == "time"
     assert closed.exit_order_id == orders[1].id
+
+
+async def test_crypto_time_exit_sells_the_lot_floored_position(maker, redis, qs, broker,
+                                                               router):
+    """Live paper drill (26/11): 200 $ of ETH bought on alpaca_paper, the coin fee leaves
+    9 decimals held (finer than the lot of 1e-8). The stop and target are sized in lots,
+    the time exit sells the lot-floored position, is accepted and fills; the remainder
+    below one lot goes with it and the trade closes (no retry on it)."""
+    sym, lot = "ETH-USD", D("0.00000001")
+    rule = await _rule(maker, sym, qty=None, notional=D(200), params={"max_hold_s": 60})
+    broker.fake.price = D(1735)
+    runner = _runner(rule)
+    await _ready(redis, NOW, sym)
+    q = await _quote(redis, NOW, bid="1734", ask="1735", symbol=sym)
+    runner.on_bar(_fresh_bar(NOW))
+    trade = await Executor(maker, redis, qs, clock=Clock(NOW)).enter(
+        rule, runner, Entry(q.ts, q.ask, {}), q)
+    assert trade is not None and trade.qty == D("0.11527377"), trade
+    broker.fill_time = NOW + timedelta(seconds=1)
+    await _settle(maker, redis, qs, broker, NOW)
+    await Tracker(maker, redis, qs, clock=Clock(broker.fill_time)).step(
+        {rule.rule_id: runner})
+    row = await _trade(maker, trade.id)
+    assert row.status == OPEN
+    async with maker() as s:
+        held = await s.scalar(select(Position.qty).where(
+            Position.portfolio_id == rule.portfolio_id, Position.symbol == sym))
+    assert held == D("0.114985585") and held % lot != 0  # the coin fee: 9 decimals
+    children = [o for o in await _orders(maker, rule)
+                if o.role in ("take_profit", "stop_loss")]
+    assert children and all(o.qty == D("0.11498558") for o in children)
+
+    clock = Clock(row.filled_at + timedelta(seconds=60))
+    await _ready(redis, clock.now, sym)
+    await _quote(redis, clock.now, bid="1736", ask="1737", symbol=sym)
+    sc = _scalper(maker, redis, router, clock, rule, runner)
+    await sc.track()
+    [exit_order] = await _autox(maker, rule)
+    assert exit_order.qty == D("0.11498558")
+    assert exit_order.status != OrderStatus.rejected, exit_order.reject_message
+    broker.fake.price = D(1736)
+    broker.fill_time = clock.now + timedelta(milliseconds=400)
+    await _settle(maker, redis, qs, broker, clock.now)
+    clock.now += timedelta(seconds=1)
+    await sc.track()
+    closed = await _trade(maker, row.id)
+    assert closed.status == CLOSED and closed.exit_reason == "time"
+    assert runner.state == "flat"
+    async with maker() as s:
+        assert not await s.scalar(select(Position.qty).where(
+            Position.portfolio_id == rule.portfolio_id, Position.symbol == sym))
+    assert len(await _autox(maker, rule)) == 1
 
 
 async def test_session_exit_before_worker_net(maker, redis, qs, broker, router):

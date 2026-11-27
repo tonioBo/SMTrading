@@ -31,6 +31,7 @@ from smtrading.engine.service import close_position
 from smtrading.events import discard_post_commit, dispatch_post_commit
 from smtrading.instruments.market_hours import local_date, market_status
 from smtrading.instruments.models import Instrument
+from smtrading.instruments.service import floor_to_lot, lot_of
 from smtrading.intraday.calendar import day_close_at, session_window
 from smtrading.intraday.day_positions import day_quantities, selling_qty
 from smtrading.intraday.models import DAY_SCOPE
@@ -189,8 +190,10 @@ class DayCloser:
                     return  # another worker did it
                 await lock_live_portfolio(s, due.portfolio_id)
                 qty = (await day_quantities(s, due.portfolio_id, now)).get(due.symbol)
-                if qty:  # less what is already being sold (no second sell)
-                    qty -= await selling_qty(s, due.portfolio_id, due.symbol)
+                if qty:  # less what is already being sold (no second sell), in lots
+                    qty = floor_to_lot(
+                        qty - await selling_qty(s, due.portfolio_id, due.symbol),
+                        await lot_of(s, due.symbol))
                 if qty and qty > 0:
                     await self._send(s, due, qty, wide, limit, now)
                 await s.commit()
@@ -244,6 +247,8 @@ class DayCloser:
             if not await run_job_once(s, DAY_CLOSE_CHECK_JOB, due.key):
                 return
             qty = (await day_quantities(s, due.portfolio_id, now)).get(due.symbol)
+            if qty and floor_to_lot(qty, await lot_of(s, due.symbol)) <= 0:
+                qty = None  # below one lot: nothing an order could close
             if qty:
                 await self._notify(s, (
                     f"Chiusura di sicurezza non eseguita · {due.name} · {due.symbol}: "
