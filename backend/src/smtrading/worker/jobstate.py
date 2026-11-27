@@ -73,6 +73,11 @@ class JobRecorder:
         self._job(name)["state"] = "restarting"
         await self._write(name)
 
+    async def stopped(self, name: str) -> None:
+        """`name` was stopped on purpose (service shutdown): not late, not restarting."""
+        self._job(name)["state"] = "stopped"
+        await self._write(name)
+
     async def tick(self, name: str, info: dict[str, Any] | None = None) -> None:
         """A pass of `name`; `info` (small, JSON) replaces the job's facts shown with it."""
         now = self._clock()

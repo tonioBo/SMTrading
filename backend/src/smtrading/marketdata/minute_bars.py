@@ -61,6 +61,15 @@ async def read_minute_bars(
             for _key, entries in found or [] for entry_id, raw in entries]
 
 
+async def read_latest_minute_bars(
+    redis, symbol: str, *, count: int = 2 * BARS_MAXLEN
+) -> list[tuple[str, Bar]]:
+    """The newest `count` bars, oldest first (the stream is trimmed only approximately:
+    the default covers everything it can hold)."""
+    found = await redis.xrevrange(BARS_KEY.format(symbol=symbol), "+", "-", count=count)
+    return [(_s(entry_id), bar_from_fields(raw)) for entry_id, raw in reversed(found or [])]
+
+
 def bar_from_fields(raw: dict) -> Bar:
     """The Bar of one `bars1m:{symbol}` entry (str or bytes fields)."""
     f = {_s(k): _s(v) for k, v in raw.items()}

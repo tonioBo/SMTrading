@@ -3,9 +3,11 @@
 minute history that never fires, idle with no active rule. Names are made up."""
 import asyncio
 import json
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -14,13 +16,14 @@ import yaml
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from smtrading.admin.system_health import OK, job_rows
 from smtrading.autorules import main as scalper_main
 from smtrading.autorules import rules
 from smtrading.autorules import service as service_module
-from smtrading.autorules.feed import PriceFeed, stream_state
+from smtrading.autorules.feed import PriceFeed, stream_state, warmup_start
 from smtrading.autorules.quotes import CacheQuoteSource
 from smtrading.autorules.rules import ActiveRule
-from smtrading.autorules.runner import Entry
+from smtrading.autorules.runner import Entry, RuleRunner
 from smtrading.autorules.service import Scalper
 from smtrading.autorules.tables import AutoTrade
 from smtrading.common.db import make_engine
@@ -253,15 +256,94 @@ async def test_warmup_merges_history_and_stream(redis):
     assert got[-1] == t + timedelta(minutes=11)
     assert got[-2] == t + timedelta(minutes=10)
     assert [b.close for b in runner.bars if b.ts == t + timedelta(minutes=9)] == [D("99.5")]
-    # a long warm-up reaches before the session open
+    # a long warm-up starts from the previous session's open (session minutes only)
     router.asked.clear()
     await feed.warm_up(_active(), RecordingRunner(warmup=120), now)
-    assert router.asked[0][2] == now - timedelta(minutes=125)
+    assert router.asked[0][2] == datetime(2026, 11, 24, 14, 30, tzinfo=UTC)
     # crypto: from midnight UTC
     router.asked.clear()
     await feed.warm_up(_active("BTC-USD", market="CRYPTO"), RecordingRunner(warmup=20), now)
     assert router.asked[0][2] == datetime(2026, 11, 25, tzinfo=UTC)
     await feed.close()
+
+
+class FailingRouter:
+    async def get_bars(self, *a, **k):
+        raise RuntimeError("history unavailable")
+
+
+async def test_warmup_reads_the_newest_stream_bars(redis):
+    now = datetime(2026, 11, 25, 20, 0, tzinfo=UTC)
+    first = now - timedelta(minutes=1150)
+    for i in range(1150):  # beyond BARS_MAXLEN: the stream is trimmed to ~1000-1100
+        await publish_minute_bar(redis, StreamBar("BTC-USD", _bar(first + timedelta(minutes=i))))
+    assert await redis.xlen("bars1m:BTC-USD") >= 1000
+    feed = PriceFeed(redis, FailingRouter(), clock=lambda: now)
+    runner = RecordingRunner(warmup=20)
+    await feed.warm_up(_active("BTC-USD", market="CRYPTO"), runner, now)
+    got = [b.ts for b in runner.bars]
+    assert got[-1] == now - timedelta(minutes=1)  # the newest bar, not the 1000th oldest
+    assert got == sorted(set(got)) and len(got) >= 1000
+    assert all(b - a == timedelta(minutes=1) for a, b in pairwise(got))
+
+
+@pytest.mark.parametrize("now", [
+    datetime(2026, 11, 25, 13, 0, tzinfo=UTC),   # before the open (08:00 New York)
+    datetime(2026, 11, 25, 14, 35, tzinfo=UTC),  # 5 minutes after the open
+])
+async def test_warmup_from_the_previous_session(redis, now):
+    prev_close = datetime(2026, 11, 24, 21, 0, tzinfo=UTC)
+    assert warmup_start("NASDAQ", 20, now) == datetime(2026, 11, 24, 14, 30, tzinfo=UTC)
+    rest = [_bar(prev_close - timedelta(minutes=30 - i)) for i in range(30)]
+    feed = PriceFeed(redis, BarsRouter(rest), clock=lambda: now)
+    runner = RuleRunner("breakout", {"lookback_min": 20}, market="NASDAQ",
+                        tick_size=D("0.01"), session_exit_before=timedelta(minutes=12))
+    await feed.warm_up(_active(), runner, now)
+    assert runner.series.count() == 25 >= runner.warmup  # warmed: it can trade at once
+    assert runner.series.closed(1)[-1].ts == prev_close - timedelta(minutes=1)
+
+
+async def test_warmup_merges_previous_session_stream_bars(redis):
+    now = datetime(2026, 11, 25, 14, 35, tzinfo=UTC)
+    prev_close = datetime(2026, 11, 24, 21, 0, tzinfo=UTC)
+    for i in range(20):  # yesterday's last 20 minutes, only in bars1m
+        await publish_minute_bar(redis, StreamBar(
+            "AAPL", _bar(prev_close - timedelta(minutes=20 - i))))
+    today = datetime(2026, 11, 25, 14, 30, tzinfo=UTC)
+    rest = [_bar(today + timedelta(minutes=i)) for i in range(5)]  # REST: today only
+    feed = PriceFeed(redis, BarsRouter(rest), clock=lambda: now)
+    runner = RuleRunner("breakout", {"lookback_min": 20}, market="NASDAQ",
+                        tick_size=D("0.01"), session_exit_before=timedelta(minutes=12))
+    await feed.warm_up(_active(), runner, now)
+    ts = [b.ts for b in runner.series.closed(25)]
+    assert len(ts) == 25 and ts[0] == prev_close - timedelta(minutes=20)
+    assert ts[-1] == today + timedelta(minutes=4)
+
+
+def test_warmup_start_evening_and_crypto():
+    evening = datetime(2026, 11, 25, 22, 0, tzinfo=UTC)  # after the close: today is enough
+    assert warmup_start("NASDAQ", 20, evening) == datetime(2026, 11, 25, 14, 30, tzinfo=UTC)
+    assert warmup_start("CRYPTO", 20, datetime(2026, 11, 25, 0, 10, tzinfo=UTC)) \
+        == datetime(2026, 11, 24, 23, 45, tzinfo=UTC)
+
+
+async def test_shutdown_records_job_stopped(redis):
+    rec = jobstate.JobRecorder(redis)
+    stop = asyncio.Event()
+    started = asyncio.Event()
+
+    async def job():
+        started.set()
+        await asyncio.sleep(3600)
+
+    task = asyncio.create_task(scalper_main.serve(stop, rec, job))
+    await asyncio.wait_for(started.wait(), 2)
+    stop.set()
+    await asyncio.wait_for(task, 2)
+    _, jobs = await jobstate.read_jobs(redis)
+    assert jobs["scalper"]["state"] == "stopped"
+    [row] = job_rows(jobs, None, time.time() + 3600)  # an hour later: still not late
+    assert (row["status"], row["note"]) == (OK, "fermato")
 
 
 async def test_reload_picks_new_version(sm, redis):

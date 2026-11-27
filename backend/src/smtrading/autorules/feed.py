@@ -17,13 +17,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from smtrading.autorules.rules import ActiveRule
-from smtrading.instruments.market_hours import CALENDARS
-from smtrading.intraday.calendar import session_window
+from smtrading.instruments.market_hours import CALENDARS, session_on
+from smtrading.intraday.calendar import last_sessions
 from smtrading.marketdata.minute_bars import (
     BARS_KEY,
     StreamBar,
     bar_from_fields,
-    read_minute_bars,
+    read_latest_minute_bars,
 )
 from smtrading.marketdata.serialization import loads_quote
 from smtrading.marketdata.streaming import CONNECTED, STATUS_KEY
@@ -36,6 +36,7 @@ BARS_BLOCK_MS = 1000
 BARS_READ_COUNT = 100
 TICK_WAIT_S = 0.5  # the tick reader applies subscription changes at least this often
 WARMUP_SLACK_MIN = 5
+WARMUP_MAX_SESSIONS = 5  # sessions looked back for the warm-up (max warm-up: 245 min)
 
 _UNREADABLE = (ValueError, KeyError, TypeError, ArithmeticError)  # a malformed payload
 
@@ -86,15 +87,26 @@ def _id_key(entry_id: str) -> tuple[int, int]:
 
 
 def warmup_start(market: str, warmup: int, now: datetime) -> datetime:
-    """The session open (markets with a calendar) or midnight UTC (crypto), and at least
-    `warmup + 5` minutes before `now`."""
-    earliest = now - timedelta(minutes=warmup + WARMUP_SLACK_MIN)
-    if market in CALENDARS:
-        window = session_window(market, now)
-        base = earliest if window is None else window[0]
-    else:
-        base = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-    return min(base, earliest)
+    """Where the warm-up history starts. Markets with a calendar: the open of the oldest
+    session needed so that the regular-session minutes up to `now` (the runner keeps
+    only those) cover at least `warmup + 5` — today's open when it is enough, otherwise
+    earlier sessions (before the open, in the evening, early in the session). Crypto and
+    FX: midnight UTC, and at least `warmup + 5` clock minutes before `now`."""
+    needed = timedelta(minutes=warmup + WARMUP_SLACK_MIN)
+    if market not in CALENDARS:
+        midnight = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        return min(midnight, now - needed)
+    covered = timedelta(0)
+    start: datetime | None = None
+    for day in reversed(last_sessions(market, now, WARMUP_MAX_SESSIONS)):
+        session = session_on(market, day)
+        if session is None or session[0] >= now:  # today's session not open yet
+            continue
+        covered += min(now, session[1]) - session[0]
+        start = session[0]
+        if covered >= needed:
+            break
+    return start if start is not None else now - needed
 
 
 class PriceFeed:
@@ -196,25 +208,22 @@ class PriceFeed:
                     self._queue.put_nowait(StreamBar(symbol, bar))
 
     async def warm_up(self, rule: ActiveRule, runner, now: datetime) -> None:
-        """The REST minute history, then the `bars1m` entries newer than its last bar, all
-        to `runner.on_bar` oldest first. Never `on_price`: a warm-up never fires. A
-        history the provider cannot give leaves the runner warming up live."""
+        """The REST minute history from `warmup_start` merged with the newest `bars1m`
+        entries of the same span (the REST bar wins on a minute both have), all to
+        `runner.on_bar` oldest first. Never `on_price`: a warm-up never fires. A history
+        the provider cannot give leaves the stream's bars (or a live warm-up)."""
         start = warmup_start(rule.market, runner.warmup, now)
-        last_ts: datetime | None = None
         try:
             history = await self._router.get_bars(rule.symbol, Timeframe.m1, start, now)
         except Exception:
-            log.warning("minute history of %s unavailable: the rule warms up live",
+            log.warning("minute history of %s unavailable: warm-up from the stream bars",
                         rule.symbol, exc_info=True)
             history = []
-        for bar in sorted(history, key=lambda b: b.ts):
-            runner.on_bar(bar)
-            last_ts = bar.ts
-        entries = await read_minute_bars(self._redis, rule.symbol)
-        for entry_id, bar in entries:
-            if last_ts is None or bar.ts > last_ts:
-                runner.on_bar(bar)
-                last_ts = bar.ts
+        entries = await read_latest_minute_bars(self._redis, rule.symbol)
+        merged = {bar.ts: bar for _, bar in entries if start <= bar.ts < now}
+        merged.update((bar.ts, bar) for bar in history)
+        for ts in sorted(merged):
+            runner.on_bar(merged[ts])
         if entries and rule.symbol in self._symbols:
             self._advance(rule.symbol, entries[-1][0])
 

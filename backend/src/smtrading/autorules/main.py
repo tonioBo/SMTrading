@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import logging
 import signal
+from collections.abc import Awaitable, Callable
 
 import httpx
 from redis.asyncio import Redis
@@ -31,6 +32,19 @@ from smtrading.worker.main import (
 log = logging.getLogger("smtrading.scalper")
 
 
+async def serve(stop: asyncio.Event, recorder: JobRecorder,
+                factory: Callable[[], Awaitable[None]]) -> None:
+    """The supervised Scalper until `stop`; then the job is recorded as stopped, so a
+    deploy or a planned stop is not reported late in «Salute del sistema»."""
+    job = asyncio.create_task(supervise(SCALPER_JOB, factory, recorder))
+    await stop.wait()
+    log.info("shutdown requested")
+    job.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await job
+    await recorder.stopped(SCALPER_JOB)
+
+
 async def run() -> None:
     settings = get_settings()
     redis = Redis.from_url(settings.redis_url)
@@ -47,13 +61,8 @@ async def run() -> None:
         async with httpx.AsyncClient() as http:
             router = MarketDataRouter(sessionmaker, redis, http)
             gate = StartupGate(http, getattr(settings, "api_health_url", API_HEALTH_URL))
-            job = asyncio.create_task(supervise(SCALPER_JOB, lambda: gated(
-                gate, lambda: Scalper(sessionmaker, redis, router).run()), recorder))
-            await stop.wait()
-            log.info("shutdown requested")
-            job.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await job
+            await serve(stop, recorder, lambda: gated(
+                gate, lambda: Scalper(sessionmaker, redis, router).run()))
     finally:
         for sig in (signal.SIGTERM, signal.SIGINT):
             with contextlib.suppress(NotImplementedError, RuntimeError):

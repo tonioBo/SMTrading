@@ -86,7 +86,10 @@ JOB_INTERVALS: dict[str, float] = {
     "hand-off watchdog": 300, "protection alarm": 300, "goal alerts": 300,
     "telegram summaries": 30, "price quality alarm": 60, "system sentinel": 300,
     "broker tradability": 300,
-    "scalper": 5,  # the scalper service (intraday mode B): a pass per rule refresh
+    # the scalper service (intraday mode B): a pass per rule refresh (5 s) and per rule
+    # warmed up; 30 s leaves a refresh warming many rules (REST under the shared rate
+    # limit) 90 s before «attenzione», still catching a frozen loop in 1.5 min
+    "scalper": 30,
 }
 LATE_FACTOR = 3  # a pass later than 3 intervals is late
 GATED_JOBS = ("protection alarm", "goal alerts", "plan closer", "pre-open check",
@@ -145,7 +148,9 @@ def job_rows(jobs: dict[str, dict[str, Any]], worker_started: float | None, now:
         crash_at = j.get("last_crash_at")
         tick_at = j.get("last_tick_at")
         interval = JOB_INTERVALS.get(name)
-        if j.get("state") == "restarting":
+        if j.get("state") == "stopped":
+            note = "fermato"
+        elif j.get("state") == "restarting":
             status, note = BAD, "si sta riavviando dopo un errore"
         elif crash_at and now - crash_at < RECENT_CRASH_S:
             status, note = WARN, f"errore {_ago(now - crash_at)} fa, ripartito"

@@ -106,6 +106,7 @@ class Scalper:
             # published after the warm-up's read is missed
             self._rules[rule.rule_id] = (rule, runner)
             self._index()
+            await job_tick({"active_rules": len(self._rules)})  # a long refresh shows progress
             log.info("automatic rule %s v%s on %s: runner ready (%s bars)", rule.rule_id,
                      rule.version, rule.symbol, runner.series.count())
         gone = self._rules.keys() - {r.rule_id for r in active}
