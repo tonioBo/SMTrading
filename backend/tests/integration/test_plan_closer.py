@@ -219,6 +219,34 @@ async def test_end_closes_every_position_loss_included(sm, qs):
     assert len(orders) == 2
 
 
+async def test_a_position_below_one_lot_is_flat_for_the_plan(sm, qs):
+    """A coin fee's remainder below one lot (no order could close it) opens no closure,
+    and a pending row whose position fell below one lot is closed: never a loop of
+    «no open position»."""
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, "AAPL", 10)
+    await _buy(sm, qs, pid, "BTC-USD", "0.1")
+    async with sm() as s:
+        await s.execute(update(Position).where(
+            Position.portfolio_id == pid, Position.symbol == "BTC-USD")
+            .values(qty=D("0.000000005")))
+        await s.commit()
+    await _plan(sm)
+    clock = Clock(SUNDAY_NIGHT)
+    await _job(sm, qs, clock).tick()
+    rows = await _rows(sm)
+    assert set(rows) == {"AAPL"}
+    async with sm() as s:
+        await s.execute(update(Position).where(
+            Position.portfolio_id == pid, Position.symbol == "AAPL")
+            .values(qty=D("0.0000005")))  # below its lot (0.000001)
+        await s.commit()
+    clock.t = TUESDAY
+    await _job(sm, qs, clock).tick()
+    aapl = (await _rows(sm))["AAPL"]
+    assert aapl.state == "closed" and aapl.order_id is None
+
+
 async def test_a_position_in_profit_is_closed_at_the_first_session(sm, qs):
     pid = await _portfolio(sm)
     await _buy(sm, qs, pid, "AAPL", 10)

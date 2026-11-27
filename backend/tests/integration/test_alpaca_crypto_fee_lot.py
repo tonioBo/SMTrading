@@ -218,3 +218,25 @@ async def test_a_sell_of_the_ordered_quantity_is_sized_to_the_lot_floored_positi
         sell = await place_order(s, qs, _req(pid, side=OrderSide.sell), now=NOW)
         await s.commit()
     assert sell.qty == EXIT and sell.status != OrderStatus.rejected
+
+
+async def test_a_sell_of_exactly_the_held_quantity_is_floored_to_the_lot(
+        maker, redis, qs, alpaca):
+    """An agent selling the 9-decimal position as it reads it (MCP place_order): the
+    position floored to the lot, accepted; a lot multiple is left as it is."""
+    _, http = alpaca
+    pid = await _portfolio(maker)
+    async with maker() as s:
+        await place_order(s, qs, _req(pid), now=NOW)
+        await s.commit()
+        await dispatch_post_commit(s, redis)
+    await _settle(maker, redis, qs, http)
+    async with maker() as s:
+        sell = await place_order(s, qs, _req(pid, side=OrderSide.sell, qty=NET), now=NOW)
+        await s.commit()
+    assert sell.qty == EXIT and sell.status != OrderStatus.rejected
+    async with maker() as s:
+        part = await place_order(s, qs, _req(pid, side=OrderSide.sell, qty=D("0.00001"),
+                                             client_order_id="part"), now=NOW)
+        await s.commit()
+    assert part.qty == D("0.00001")

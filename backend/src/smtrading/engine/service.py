@@ -441,8 +441,8 @@ async def _fee_sized(session: AsyncSession, portfolio: Portfolio, instrument: In
                      req: PlaceOrderRequest) -> PlaceOrderRequest:
     """A sell beyond the long position by no more than the linked broker's fee residue in
     the asset (Alpaca crypto keeps its buy fee in the coin: a sell of the quantity
-    ordered on the entry) is the position: sized to it (floored to the lot: the coin fee
-    leaves it finer), never a short."""
+    ordered on the entry), or of exactly the position when the coin fee left it finer
+    than the lot, is the position floored to the lot: never a short, never up."""
     if (req.side != OrderSide.sell or req.qty is None or portfolio.broker_link_id is None):
         return req
     held = await session.scalar(
@@ -451,7 +451,8 @@ async def _fee_sized(session: AsyncSession, portfolio: Portfolio, instrument: In
         .where(Account.portfolio_id == portfolio.id, Account.asset == instrument.symbol,
                Account.kind == AccountKind.position)
     ) or Decimal(0)
-    if held <= 0 or req.qty <= held:
+    if held <= 0 or req.qty < held or (req.qty == held and floor_to_lot(
+            held, instrument.lot_size) == held):
         return req
     link = await session.get(BrokerLink, portfolio.broker_link_id)
     if link is None or not link.enabled:

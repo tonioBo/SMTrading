@@ -73,6 +73,7 @@ from smtrading.goals.models import Goal, PlanClosure
 from smtrading.goals.plans import ended_at, last_ended_period, open_closures, plan_rows
 from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import Instrument
+from smtrading.instruments.service import floor_to_lot, lot_of
 from smtrading.jobs.runs import run_job_once
 from smtrading.marketdata.types import Quote
 from smtrading.portfolios.locks import lock_live_portfolio
@@ -235,6 +236,8 @@ class PlanCloser:
             for p in positions:
                 if (p.opened_at is not None and p.opened_at >= end) or (pid, p.symbol) in busy:
                     continue
+                if floor_to_lot(abs(p.qty), await lot_of(session, p.symbol)) <= 0:
+                    continue  # below one lot (a coin fee's remainder): flat
                 session.add(PlanClosure(
                     goal_id=goal.id, period_start=period.start, period_end=period.end,
                     ended_at=end, portfolio_id=pid, symbol=p.symbol, qty=p.qty,
@@ -272,7 +275,8 @@ class PlanCloser:
             if loaded is None:
                 return
             row, goal, instrument, position = loaded
-            if position is None or position.qty == 0 or position.opened_at != row.opened_at:
+            if (position is None or floor_to_lot(abs(position.qty), instrument.lot_size) <= 0
+                    or position.opened_at != row.opened_at):  # below one lot: flat
                 await self._closed(session, row, goal, now)
                 return
             if row.state == "closing":
@@ -430,8 +434,9 @@ class PlanCloser:
                     await lock_live_portfolio(session, row.portfolio_id)
                     held = await session.get(Position, (row.portfolio_id, row.symbol),
                                              populate_existing=True)
-                    if held is None or held.qty == 0:
-                        return  # flat meanwhile: the next run marks it closed
+                    if held is None or floor_to_lot(
+                            abs(held.qty), await lot_of(session, row.symbol)) <= 0:
+                        return  # flat meanwhile (or below one lot): the next run closes it
                     if await self._close_in_flight(session, row, held.qty):
                         row.last_error = "another close order is in flight"
                         return
