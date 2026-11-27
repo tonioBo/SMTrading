@@ -10,7 +10,7 @@ import uuid
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.activity.models import Activity
@@ -157,13 +157,16 @@ async def _stops(session: AsyncSession, portfolio_id: uuid.UUID) -> dict[tuple[s
     return out
 
 
-async def open_positions_lines(session: AsyncSession, qs, *, redis=None) -> list[str]:
-    """One line per open position of the portfolios that are not archived:
+async def open_positions_lines(session: AsyncSession, qs, *, redis=None,
+                               ids: Select | None = None) -> list[str]:
+    """One line per open position of the portfolios that are not archived (of `ids`, a
+    select of portfolio ids, when given: the summaries pass `total_portfolio_ids`):
     `AMZN 0,51 · 131,40 € · -0,35 € (-0,27%) · stop 242,20 USD — Aggressivo`
     (`stop nessuno` when unprotected); a portfolio whose valuation fails gets one
     «valori non disponibili» line. [] when there is no position."""
     portfolios = (await session.execute(
-        select(Portfolio.id, Portfolio.name).where(Portfolio.id.in_(live_portfolio_ids()))
+        select(Portfolio.id, Portfolio.name)
+        .where(Portfolio.id.in_(ids if ids is not None else live_portfolio_ids()))
         .order_by(Portfolio.name)
     )).all()
     lines: list[str] = []

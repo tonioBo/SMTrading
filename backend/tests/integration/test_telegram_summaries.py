@@ -384,6 +384,39 @@ async def test_summary_leaves_out_archived_portfolios(maker):
     assert "Decisioni di oggi: nessuna" in text and "Strategia archiviata" not in text
 
 
+async def test_summary_counts_only_the_portfolios_in_the_totals(maker):
+    """A hidden test portfolio (`in_totals` false, the total value leaves it out): none of
+    its orders, events, decisions, positions or ranking rows are counted (found on 27/11:
+    73 executed orders and Prova B's positions in the daily summary)."""
+    team = await _portfolio(maker, "Squadra", cash=10000)
+    hidden = await _portfolio(maker, "Prova nascosta", cash=10000)
+    async with maker() as s:
+        await s.execute(update(Portfolio).where(Portfolio.id == hidden)
+                        .values(in_totals=False))
+        await s.commit()
+    await _activity(maker, summary="Ordine eseguito: squadra", ts=rome(FRI, 10),
+                    portfolio_id=team)
+    for i in range(3):
+        await _activity(maker, summary=f"Ordine eseguito: prova {i}", ts=rome(FRI, 10),
+                        portfolio_id=hidden)
+    await _activity(maker, type="risk.alert", level="critical", summary="Critico prova",
+                    ts=rome(FRI, 11), portfolio_id=hidden)
+    await _fill(maker, hidden, rome(FRI, 12))
+    await _decisions(maker, [{"kind": "strategy", "summary": "Strategia di prova",
+                              "portfolio_id": hidden}], at=rome(FRI, 11))
+    qs = FakeQuoteSource()
+    qs.set_fx("EUR", "USD", D("1.25"))
+    qs.set_quote("AAPL", D("199.90"), D("200.00"), D("199.95"))
+    for kind, at in (("daily", rome(FRI, 18)), ("weekly", rome(FRI, 18, 30))):
+        async with maker() as s:
+            parts = await build_summary(s, kind, at, tz=TZ, qs=qs)
+        text = "\n".join(t for t, _ in parts)
+        assert "Ordini eseguiti: 1 · rifiutati: 0 · eventi critici: 0" in text, kind
+        assert "prova" not in text and "Prova nascosta" not in text, kind
+        assert "Strategia di prova" not in text and "AAPL" not in text, kind
+        assert "Squadra" in text, kind
+
+
 async def test_long_summary_split_with_pre_entities(maker):
     now = rome(FRI, 18)
     pids = [await _portfolio(maker, f"Test 250 n.{i:02d}") for i in range(60)]
