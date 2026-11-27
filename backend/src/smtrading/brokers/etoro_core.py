@@ -38,6 +38,7 @@ from smtrading.brokers.base import (
     BrokerStatus,
     OutcomeUnknown,
     RateLimited,
+    transport_error,
 )
 from smtrading.brokers.t212_core import _body, _dec, _jsonable, _num
 from smtrading.brokers.tradable import Tradability, buyable, not_found, unknown
@@ -264,7 +265,7 @@ async def search_instrument(http, headers: dict, symbol: str) -> dict | None:
         resp = await http.request("GET", ETORO_URL + _search_path(symbol), headers=headers,
                                   follow_redirects=False)
     except httpx.HTTPError as e:
-        raise RuntimeError(f"etoro: {type(e).__name__}") from None
+        raise transport_error("etoro", e) from None
     _check(resp)
     return match_instrument(_parse(resp), symbol)
 
@@ -527,7 +528,7 @@ class _EtoroProtocol(BrokerAdapter):
                 follow_redirects=False, extensions=extensions or None,
             )
         except httpx.HTTPError as e:
-            raise RuntimeError(f"{self.kind}: {type(e).__name__}") from None
+            raise transport_error(self.kind, e) from None
         self._note_rate_limit(key, resp)
         if resp.status_code == 429:  # not a rejection: the request was not processed
             raise RateLimited(f"{self.kind}: limite di frequenza")

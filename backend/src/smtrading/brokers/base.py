@@ -1,9 +1,11 @@
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from typing import ClassVar, Literal
 
+import httpx
 from sqlalchemy import inspect
 
 from smtrading.brokers.tradable import Tradability, buyable, not_found
@@ -68,6 +70,42 @@ def market_view(order: Order) -> Order:
 class RateLimited(RuntimeError):  # retryable, like any RuntimeError
     """The broker refused the request for its rate limit (HTTP 429): not a rejection,
     and the request was not processed."""
+
+
+class BrokerUnreachable(RuntimeError):  # retryable, like any RuntimeError
+    """The broker did not answer at the network level (connect or read timeout, connection
+    refused, DNS): expected during an outage, logged as a warning without traceback.
+    Its text is the same as a plain RuntimeError's (`<kind>: <httpx error name>`).
+    `connect`: the connection itself failed (connect timeout, refused, DNS): the request
+    never reached the broker, and the link's other calls would fail the same way."""
+
+    def __init__(self, message: str, *, connect: bool = False) -> None:
+        super().__init__(message)
+        self.connect = connect
+
+
+# the gateway in front of the broker answered that the broker did not (an outage)
+_GATEWAY_TEXT = re.compile(r"\bHTTP (502|503|504)\b")
+
+
+def transport_error(kind: str, e: Exception) -> RuntimeError:
+    """The adapter error for an httpx failure (never its text: it may carry secrets):
+    BrokerUnreachable for a timeout or a network error (not a full local connection pool:
+    PoolTimeout), a plain RuntimeError otherwise (protocol errors and the like)."""
+    text = f"{kind}: {type(e).__name__}"
+    if isinstance(e, httpx.ConnectTimeout | httpx.ConnectError):
+        return BrokerUnreachable(text, connect=True)
+    if isinstance(e, httpx.TimeoutException | httpx.NetworkError) and not isinstance(
+            e, httpx.PoolTimeout):
+        return BrokerUnreachable(text)
+    return RuntimeError(text)
+
+
+def is_unreachable(e: BaseException) -> bool:
+    """The broker did not answer: a BrokerUnreachable, or an HTTP 502/503/504 of its
+    gateway (adapters' text `HTTP <code>`). An answer (401/403, 400, 500...) is not."""
+    return isinstance(e, BrokerUnreachable) or (
+        isinstance(e, RuntimeError) and _GATEWAY_TEXT.search(str(e)) is not None)
 
 
 class OutcomeUnknown(RuntimeError):

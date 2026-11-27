@@ -27,6 +27,7 @@ from smtrading.brokers.base import (
     BrokerOrder,
     BrokerStatus,
     RateLimited,
+    transport_error,
 )
 from smtrading.brokers.tradable import Tradability, buyable, not_found
 from smtrading.common.errors import ErrorCode, SMTError
@@ -349,7 +350,7 @@ class _T212Protocol(BrokerAdapter):
                 extensions={"smt_order_id": str(order.id)} if order is not None else None,
             )
         except httpx.HTTPError as e:
-            raise RuntimeError(f"{self.kind}: {type(e).__name__}") from None
+            raise transport_error(self.kind, e) from None
         self._note_rate_limit(key, resp)
         if resp.status_code == 429:  # not a rejection: the request was not processed
             raise RateLimited(f"{self.kind}: limite di frequenza Trading 212")

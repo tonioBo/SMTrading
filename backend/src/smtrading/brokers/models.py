@@ -50,6 +50,10 @@ class BrokerLink(Base):
     last_snapshot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_test_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     health_failures: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    # paper/demo links (brokers.health): the last outage, from its first unanswered call
+    # to the first answer after it (None while it lasts)
+    outage_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    outage_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # real-money links: {currency: units of the account currency per unit}, the last FX
     # rates at which the linked cash matched the broker's (risk.live_checks, reconcile)
     fx_ref_rates: Mapped[dict | None] = mapped_column(JSONB)

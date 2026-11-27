@@ -919,7 +919,8 @@ async def execute_fill(
             "agent_id": order.agent_id, "symbol": symbol, "side": side, "qty": qty,
             "price": price, "notional": notional, "currency": ccy, "fee": charge,
             "fee_currency": charge_ccy, "position_qty": position.qty,
-            "filled_qty": order.filled_qty, "source": source,
+            "filled_qty": order.filled_qty, "avg_price": order.avg_fill_price,
+            "source": source,
         },
     )
     if held == 0 and position.qty != 0:
@@ -984,7 +985,7 @@ async def write_off_dust(session: AsyncSession, order: Order) -> bool:
         "agent_id": order.agent_id, "symbol": order.symbol, "side": OrderSide.sell,
         "qty": qty, "price": price, "notional": value, "currency": ccy, "fee": value,
         "fee_currency": ccy, "position_qty": position.qty, "filled_qty": order.filled_qty,
-        "source": "broker",
+        "avg_price": order.avg_fill_price, "source": "broker",
     })
     if position.qty == 0:
         queue_untrack(session, order.symbol, "positions")

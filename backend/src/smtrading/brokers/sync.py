@@ -22,6 +22,12 @@ Redis unavailable (a plain sleep then), the passes are exactly those of before. 
 lock holder writes HEARTBEAT_KEY (ISO UTC, TTL HEARTBEAT_TTL_S) after every pass; a
 worker without the lock neither listens nor writes it.
 
+- an expected network failure (BrokerUnreachable: timeout, refused, DNS) is logged as one
+  warning line; when the connection itself failed (connect timeout, refused, DNS) the
+  link's other orders wait for the next pass (no timeout each), a read timeout affects
+  only its order. Any other failure of an order's step is logged with its traceback.
+  Every pass records its links' health (brokers.health: Telegram once a paper/demo link
+  stops answering, once it answers again).
 - `to_send` (never attempted): once the market is open, the local checks run again
   (locked/reduce-only portfolio, kill switch, piani; not for liquidation orders). The order is
   claimed (`sending`, `broker_sent_at`, committed) and only then sent. A broker
@@ -43,7 +49,11 @@ worker without the lock neither listens nor writes it.
   on the link excluded, C1) gave an answer: found -> adopted (then canceled at the
   broker if it must not proceed: expired, link disabled/unlinked, kill switch, locked
   portfolio); not found -> for an idempotent adapter (Alpaca, by client_order_id) the
-  answer is definitive and the order goes back to `to_send`; for Trading 212
+  answer is definitive and the order goes back to `to_send` (a market order whose send is
+  older than MATCH_WINDOW, an outage, is rejected PROVIDER_UNAVAILABLE instead: never
+  sent late; a liquidation, a limit or a stop goes back. A never-sent market order that
+  waited through more than MATCH_WINDOW of its link's outage is rejected the same way
+  at its send, `_outage_too_long`); for Trading 212
   (Ruling R7) it is never resent and, after MATCH_WINDOW, rejected (or canceled when
   a cancel was requested) and left to reconciliation.
 - live orders: `get_order`; a growth of filled_qty becomes a broker fill of the delta
@@ -165,10 +175,13 @@ from smtrading.brokers.base import (
     BROKER_REJECTED_MESSAGE,
     BrokerAdapter,
     BrokerOrder,
+    BrokerUnreachable,
     OutcomeUnknown,
     RateLimited,
+    is_unreachable,
     market_view,
 )
+from smtrading.brokers.health import outage_wait, record_link_health
 from smtrading.brokers.live import LIVE_KINDS
 from smtrading.brokers.live.account import account_fingerprint, snapshot_record
 from smtrading.brokers.live.audit import record_live_audit
@@ -263,6 +276,8 @@ HOT_FOR_S = 10
 HOT_MAX = 4
 _WAKE_BATCH = 100  # wake messages read at once (the rest at the next wait)
 MATCH_WINDOW = timedelta(minutes=5)
+LATE_MARKET_MESSAGE = (f"broker non raggiungibile per oltre {MATCH_WINDOW.seconds // 60}"
+                       " minuti: ordine a mercato non inviato")
 FILL_PRICE_WAIT = timedelta(minutes=10)
 # a liquidation still waiting on the symbol's other broker orders after this: notify once
 LIQUIDATION_WAIT_NOTIFY = timedelta(minutes=10)
@@ -416,6 +431,10 @@ class BrokerSync:
         self._heartbeat_down = False  # a heartbeat failure was logged (once until back)
         self._hot: dict[UUID, float] = {}  # automatic order sent by a wake -> hot until
         self._hot_next = 0.0  # loop time of the next hot read
+        # links that failed a connection in this pass (-> the error), links that answered
+        self._down: set[UUID] = set()  # skipped for the rest of the pass
+        self._failed: dict[UUID, str] = {}  # (and the error)
+        self._answered: set[UUID] = set()
 
     async def aclose(self) -> None:
         """Closes the per-link LiveClients and the wake subscription (run() does it when
@@ -604,33 +623,27 @@ class BrokerSync:
         async with self._sm() as session:
             rows = (await session.execute(
                 select(Order.id, Order.broker_status, Order.broker_order_id,
-                       Order.broker_sent_at, Order.auto_rule_id)
+                       Order.broker_sent_at, Order.auto_rule_id, Order.broker_link_id)
                 .where(Order.id.in_(ids), Order.broker_link_id.is_not(None),
                        Order.status.in_(_SYNCED))
                 .order_by(Order.created_at, Order.id)
             )).all()
         loop = asyncio.get_running_loop()
-        for order_id, status, broker_order_id, sent_at, auto_rule_id in rows:
+        self._down, self._failed, self._answered = set(), {}, set()
+        for order_id, status, broker_order_id, sent_at, auto_rule_id, link_id in rows:
             if until is not None and loop.time() >= until:
                 break  # the full pass is due: it takes the rest
             if sent_only and broker_order_id is None:
                 continue
-            try:
-                await self._step(order_id, status, broker_order_id, sent_at, False)
-            except Exception:
-                log.exception("broker sync of order %s failed", order_id)
-            while self._followups:
-                follow = self._followups.pop(0)
-                try:
-                    await self._cancel(follow)
-                except Exception:
-                    log.exception("broker cancel of order %s failed", follow)
+            await self._step_safely(order_id, link_id, status, broker_order_id, sent_at,
+                                    False)
             if (heat and auto_rule_id is not None and broker_order_id is None
                     and order_id not in self._hot and len(self._hot) < HOT_MAX
                     and await self._at_broker(order_id)):
                 if not self._hot:
                     self._hot_next = loop.time() + HOT_POLL_S
                 self._hot[order_id] = loop.time() + HOT_FOR_S
+        await self._record_health()
         return {row[0] for row in rows}
 
     async def _at_broker(self, order_id: UUID) -> bool:
@@ -654,23 +667,71 @@ class BrokerSync:
         async with self._sm() as session:
             rows = (await session.execute(
                 select(Order.id, Order.broker_status, Order.broker_order_id,
-                       Order.broker_sent_at)
+                       Order.broker_sent_at, Order.broker_link_id)
                 .where(Order.broker_link_id.is_not(None), Order.status.in_(_SYNCED))
                 .order_by(Order.created_at, Order.id)
             )).all()
         open_ids = {row[0] for row in rows}  # the waits of orders no longer open end
         self._waiting = {k: v for k, v in self._waiting.items() if k in open_ids}
-        for order_id, status, broker_order_id, sent_at in rows:
+        self._down, self._failed, self._answered = set(), {}, set()
+        for order_id, status, broker_order_id, sent_at, link_id in rows:
+            await self._step_safely(order_id, link_id, status, broker_order_id, sent_at,
+                                    recover)
+        await self._record_health()
+
+    async def _record_health(self) -> None:
+        """The pass's health of its paper/demo links (brokers.health): an unanswered call,
+        else a broker answer; a link already `ok` with no failures is not written."""
+        seen = {**dict.fromkeys(self._answered - self._failed.keys()), **self._failed}
+        for link_id, error in seen.items():
             try:
-                await self._step(order_id, status, broker_order_id, sent_at, recover)
+                async with self._sm() as session:
+                    row = (await session.execute(
+                        select(BrokerLink.status, BrokerLink.health_failures,
+                               BrokerLink.live_state).where(BrokerLink.id == link_id)
+                    )).one_or_none()
+                    if row is None or row.live_state is not None or (
+                            error is None and row.status == "ok" and not row.health_failures):
+                        continue
+                    await record_link_health(session, link_id, error, now=self._clock())
+                    await session.commit()
             except Exception:
-                log.exception("broker sync of order %s failed", order_id)
-            while self._followups:
-                follow = self._followups.pop(0)
-                try:
-                    await self._cancel(follow)
-                except Exception:
-                    log.exception("broker cancel of order %s failed", follow)
+                log.exception("broker sync: health of link %s not recorded", link_id)
+
+    async def _step_safely(self, order_id, link_id, status, broker_order_id, sent_at,
+                           recover) -> None:
+        """`_step`, then the cancels it asked for. An expected network failure
+        (BrokerUnreachable: timeout, refused, DNS) is one warning line; a failed connection
+        also makes the link's other orders wait for the next pass (`_down`: no timeout
+        each), a read timeout does not (only this order is retried next pass). Any other
+        failure is logged with its traceback (a gateway 502/503/504 still counts as
+        unanswered for the link's health)."""
+        if link_id in self._down:
+            return
+        try:
+            await self._step(order_id, status, broker_order_id, sent_at, recover)
+        except BrokerUnreachable as e:
+            self._unanswered(link_id, e)
+            log.warning("broker sync of order %s: broker unreachable: %s", order_id, e)
+        except Exception as e:
+            self._unanswered(link_id, e)
+            log.exception("broker sync of order %s failed", order_id)
+        while self._followups:
+            follow = self._followups.pop(0)
+            try:
+                await self._cancel(follow)
+            except BrokerUnreachable as e:
+                log.warning("broker cancel of order %s: broker unreachable: %s", follow, e)
+            except Exception:
+                log.exception("broker cancel of order %s failed", follow)
+
+    def _unanswered(self, link_id: UUID, e: BaseException) -> None:
+        """Notes a failure of a call to the link's broker for this pass: unanswered (health),
+        and a failed connection skips the link's other orders."""
+        if is_unreachable(e):
+            self._failed[link_id] = str(e) or type(e).__name__
+        if isinstance(e, BrokerUnreachable) and e.connect:
+            self._down.add(link_id)
 
     async def _step(self, order_id, status, broker_order_id, sent_at, recover) -> None:
         if status == BrokerState.SENDING:
@@ -934,6 +995,20 @@ class BrokerSync:
             return
         self._waiting.pop(order_id, None)
 
+    @staticmethod
+    def _outage_too_long(link: BrokerLink, order: Order, instrument: Instrument,
+                         now: datetime) -> bool:
+        """A never-sent market order (not a liquidation) that waited through more than
+        MATCH_WINDOW of its link's last outage (brokers.health), the market open at the
+        last MATCH_WINDOW of that wait: refused, never sent late. An order merely queued
+        while the market was closed, the link healthy, is never refused."""
+        if order.type != OrderType.market or order.role == LIQUIDATION_ROLE:
+            return False
+        wait = outage_wait(link.outage_since, link.outage_until, order.created_at, now)
+        if wait is None or wait[1] - wait[0] <= MATCH_WINDOW:
+            return False
+        return market_status(instrument.market, wait[1] - MATCH_WINDOW).is_open
+
     async def _send_once(self, order_id: UUID, *, retry: bool, refreshed: bool,
                          waiting: list[bool]) -> None:
         now = self._clock()
@@ -976,6 +1051,11 @@ class BrokerSync:
                 await self._commit(session)
                 return
             if not market_status(instrument.market, now).is_open:
+                return
+            if self._outage_too_long(link, order, instrument, now):
+                await self._reject(session, order, ErrorCode.PROVIDER_UNAVAILABLE,
+                                   LATE_MARKET_MESSAGE)
+                await self._commit(session)
                 return
             if order.role == LIQUIDATION_ROLE:
                 still_open, to_cancel = await self._cancel_others(session, order)
@@ -1042,6 +1122,7 @@ class BrokerSync:
             await adapter.prepare([instrument])
             supported = adapter.supports(sent, instrument)
         except RuntimeError as e:  # nothing was sent: try again next pass
+            self._unanswered(link.id, e)
             log.warning("order %s: broker not ready: %s", order_id, e)
             await self._update(order_id, self._unclaim_unsent)
             return
@@ -1079,12 +1160,14 @@ class BrokerSync:
                     await self._update(order_id, lambda s, o: self._not_sent(
                         s, o, ErrorCode.PROVIDER_UNAVAILABLE, NOT_SENT_MESSAGE))
                 return
+            self._unanswered(link.id, e)  # a failed connection: the link waits this pass
             log.warning("order %s: send failed: %s", order_id, reason)
             if adapter.idempotent_place:  # looked up by client reference next pass
                 await self._update(order_id, self._attempted)
             else:
                 await self._update(order_id, lambda s, o: self._mark_unknown(s, o, reason))
             return
+        self._answered.add(link.id)
         payload = _sent_payload(
             self._live_client(link.id)[1].reached.pop(str(order_id), None)) if live else None
         await self._update(order_id, lambda s, o: self._placed(s, o, bo, payload), bo)
@@ -1600,11 +1683,13 @@ class BrokerSync:
         since = order.broker_sent_at
         sent = market_view(order) if order.synthetic else order
         bo = await adapter.find_order(sent, instrument, since, exclude)
+        self._answered.add(order.broker_link_id)
         if bo is not None:  # _adopt checks again, under the lock, that it is unused
             await self._update(order_id, lambda s, o: self._matched(s, o, bo), bo)
             return
         if adapter.idempotent_place:  # definitive: not at the broker
-            await self._update(order_id, self._not_found)
+            late = self._clock() - since > MATCH_WINDOW
+            await self._update(order_id, self._not_found_late if late else self._not_found)
         elif self._clock() - since > MATCH_WINDOW:
             await self._update(order_id, self._give_up)
 
@@ -1634,6 +1719,17 @@ class BrokerSync:
             await self._cancel_unsent(session, order)
         else:
             order.broker_status = BrokerState.TO_SEND  # the next pass decides afresh
+
+    async def _not_found_late(self, session: AsyncSession, order: Order) -> None:
+        """Confirmed absent at the broker more than MATCH_WINDOW after its send (an
+        outage): a market order is refused, never sent late at whatever price; the others
+        (limit, stop, a liquidation) are sent again as `_not_found`."""
+        if (order.broker_order_id is not None or order.type != OrderType.market
+                or order.role == LIQUIDATION_ROLE
+                or order.broker_status == BrokerState.CANCEL_REQUESTED):
+            await self._not_found(session, order)
+            return
+        await self._reject(session, order, ErrorCode.PROVIDER_UNAVAILABLE, LATE_MARKET_MESSAGE)
 
     async def _give_up(self, session: AsyncSession, order: Order) -> None:
         if order.broker_order_id is not None:
@@ -1682,7 +1778,7 @@ class BrokerSync:
         """The broker's view of the order; None when it cannot be read safely
         (OutcomeUnknown: the outcome is marked unknown, reduce-only; read again next pass)."""
         try:
-            return await adapter.get_order(order.broker_order_id)
+            bo = await adapter.get_order(order.broker_order_id)
         except OutcomeUnknown as e:
             log.error("order %s: %s", order_id, e)
             if order_id not in self._unknown_reads:  # once per process, not every pass
@@ -1690,6 +1786,8 @@ class BrokerSync:
                 await self._update(order_id, lambda s, o: self._mark_unknown(s, o, reason))
                 self._unknown_reads.add(order_id)
             return None
+        self._answered.add(order.broker_link_id)
+        return bo
 
     async def _cancel(self, order_id: UUID) -> None:
         read = await self._read(order_id)
@@ -2021,9 +2119,10 @@ async def _previous_diffs(
     return {pid: diffs or [] for pid, diffs in rows}
 
 
-async def reconcile_all(sessionmaker: async_sessionmaker[AsyncSession], http) -> int:
-    """Reconcile every enabled paper/demo link (scheduler job); the link status records
-    the outcome. Real-money links (live_state not null) are left to the LiveMonitor,
+async def reconcile_all(sessionmaker: async_sessionmaker[AsyncSession], http, *,
+                        now: datetime | None = None) -> int:
+    """Reconcile every enabled paper/demo link (scheduler job); the outcome is the link's
+    health (brokers.health: status, and Telegram once it stops answering / answers again). Real-money links (live_state not null) are left to the LiveMonitor,
     which reconciles them through the live gate. Returns how many reconciliations found
     differences. A difference is recorded in the activity feed but never sent to Telegram
     (`notify=False`): the reconciliation job (`smtrading.reconciliation`) alerts the owner."""
@@ -2037,15 +2136,14 @@ async def reconcile_all(sessionmaker: async_sessionmaker[AsyncSession], http) ->
     for link_id in link_ids:
         try:
             rows = await reconcile(sessionmaker, link_id, http, notify=False)
-            status, error = "ok", None
+            error, unreachable = None, False
         except Exception as e:  # noqa: BLE001  (any failure goes to the link status)
             log.warning("reconciliation of broker link %s failed: %s", link_id, e)
-            rows, status, error = [], "error", str(e)[:500]
-        async with sessionmaker() as session:
-            link = await session.get(BrokerLink, link_id)
-            if link is not None:
-                link.status, link.last_error = status, error
-                await session.commit()
+            rows, error, unreachable = [], str(e)[:500] or type(e).__name__, is_unreachable(e)
+        async with sessionmaker() as session:  # status, Telegram (brokers.health)
+            await record_link_health(session, link_id, error, now=now or datetime.now(UTC),
+                                     unreachable=unreachable)
+            await session.commit()
         bad = [r for r in rows if not r.ok]
         if bad:
             mismatched += len(bad)

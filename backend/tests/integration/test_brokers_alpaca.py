@@ -7,6 +7,7 @@ import pytest
 import respx
 
 from smtrading.brokers.alpaca_paper import _STATUS, PAPER_URL, AlpacaPaperAdapter
+from smtrading.brokers.base import BrokerUnreachable, is_unreachable
 from smtrading.brokers.live.alpaca_live import AlpacaLiveAdapter
 from smtrading.brokers.service import (
     create_link,
@@ -161,6 +162,42 @@ async def test_network_error_does_not_leak(http):
     with pytest.raises(RuntimeError) as e:
         await AlpacaPaperAdapter(CFG, http).get_positions()
     assert "KID-SECRET" not in str(e.value)
+
+
+@respx.mock
+@pytest.mark.parametrize(("exc", "connect"), [
+    (httpx.ConnectTimeout("t"), True), (httpx.ConnectError("refused"), True),
+    (httpx.ReadTimeout("r"), False), (httpx.ReadError("r"), False),
+])
+async def test_network_failure_is_broker_unreachable(http, exc, connect):
+    """An expected outage (timeout, refused, DNS) is a BrokerUnreachable: still a
+    retryable RuntimeError, with the same text; `connect` when no connection was made."""
+    respx.get(f"{PAPER_URL}/v2/positions").mock(side_effect=exc)
+    with pytest.raises(BrokerUnreachable) as e:
+        await AlpacaPaperAdapter(CFG, http).get_positions()
+    assert isinstance(e.value, RuntimeError) and e.value.connect is connect
+    assert str(e.value) == f"alpaca_paper: {type(exc).__name__}"
+
+
+@respx.mock
+@pytest.mark.parametrize("exc", [httpx.RemoteProtocolError("bad"), httpx.PoolTimeout("p")])
+async def test_protocol_error_or_full_pool_is_not_broker_unreachable(http, exc):
+    respx.get(f"{PAPER_URL}/v2/positions").mock(side_effect=exc)
+    with pytest.raises(RuntimeError) as e:
+        await AlpacaPaperAdapter(CFG, http).get_positions()
+    assert not isinstance(e.value, BrokerUnreachable)
+
+
+@pytest.mark.parametrize(("error", "expected"), [
+    (BrokerUnreachable("x: ReadTimeout"), True),
+    (RuntimeError("alpaca_paper: HTTP 503: unavailable"), True),
+    (RuntimeError("etoro: HTTP 502"), True),
+    (RuntimeError("alpaca_paper: HTTP 401: unauthorized"), False),
+    (RuntimeError("alpaca_paper: HTTP 500: error"), False),
+    (ValueError("HTTP 503"), False),
+])
+def test_is_unreachable(error, expected):
+    assert is_unreachable(error) is expected
 
 
 @pytest.mark.parametrize("url", [AlpacaLiveAdapter.BASE_URL, "http://localhost:1"])
