@@ -9,6 +9,19 @@ Single writer (I5): `run` holds a Postgres advisory lock; a worker that cannot t
 skips its passes. `sending` orders are only reclaimed by the first pass after taking
 the lock (startup recovery).
 
+Wake-up (intraday, mode B): between two full passes the lock holder listens on
+WAKE_CHANNEL (one subscription on its own Redis connection, opened while it holds the
+lock); a message carries the id of an order just committed (`wake_broker_sync`) and runs
+`tick_orders` on those orders only, in the same task (never concurrently with a full
+pass), after checking the lock connection again; then it waits for the rest of the
+interval, so the full pass still runs every `interval_s` (a burst of wakes stops at the
+interval's end: what is left goes to the full pass). An automatic order (`auto_rule_id`)
+sent by a wake is read again every HOT_POLL_S for HOT_FOR_S (at most HOT_MAX at a time,
+the broker's request limit), then only by the full passes. Without messages, or with
+Redis unavailable (a plain sleep then), the passes are exactly those of before. The
+lock holder writes HEARTBEAT_KEY (ISO UTC, TTL HEARTBEAT_TTL_S) after every pass; a
+worker without the lock neither listens nor writes it.
+
 - `to_send` (never attempted): once the market is open, the local checks run again
   (locked/reduce-only portfolio, kill switch, piani; not for liquidation orders). The order is
   claimed (`sending`, `broker_sent_at`, committed) and only then sent. A broker
@@ -240,6 +253,13 @@ from smtrading.telegram.outbox import enqueue
 log = logging.getLogger("smtrading.brokers.sync")
 
 SYNC_INTERVAL_S = 2.0
+WAKE_CHANNEL = "brokersync:wake"
+HEARTBEAT_KEY = "brokersync:last_pass"
+HEARTBEAT_TTL_S = 30
+HOT_POLL_S = 0.5
+HOT_FOR_S = 10
+HOT_MAX = 4
+_WAKE_BATCH = 100  # wake messages read at once (the rest at the next wait)
 MATCH_WINDOW = timedelta(minutes=5)
 FILL_PRICE_WAIT = timedelta(minutes=10)
 # a liquidation still waiting on the symbol's other broker orders after this: notify once
@@ -340,6 +360,25 @@ async def _linked_ids(session: AsyncSession, link_id: UUID, but: UUID) -> frozen
     ))
 
 
+async def wake_broker_sync(redis, order_id: UUID) -> None:
+    """Asks BrokerSync to carry out `order_id` now; call it after the order's commit."""
+    await redis.publish(WAKE_CHANNEL, str(order_id))
+
+
+def _wake_ids(messages: list[dict]) -> list[UUID]:
+    """The order ids of the wake messages, deduplicated, in order (others ignored)."""
+    ids: dict[UUID, None] = {}
+    for message in messages:
+        if message.get("type") != "message":
+            continue
+        data = message.get("data")
+        try:
+            ids[UUID(data.decode() if isinstance(data, bytes) else str(data))] = None
+        except (ValueError, UnicodeDecodeError):
+            log.warning("broker sync: wake message ignored (not an order id)")
+    return list(ids)
+
+
 class BrokerSync:
     def __init__(
         self,
@@ -370,9 +409,15 @@ class BrokerSync:
         # starts the wait again, never shorter)
         self._waiting: dict[UUID, datetime] = {}
         self._unknown_reads: set[UUID] = set()  # orders marked unknown by a read (_get_order)
+        self._wake_sub = None  # the WAKE_CHANNEL subscription, while holding the lock
+        self._wake_down = False  # its failure was logged
+        self._hot: dict[UUID, float] = {}  # automatic order sent by a wake -> hot until
+        self._hot_next = 0.0  # loop time of the next hot read
 
     async def aclose(self) -> None:
-        """Closes the per-link LiveClients (run() does it when it ends)."""
+        """Closes the per-link LiveClients and the wake subscription (run() does it when
+        it ends)."""
+        await self._close_wake()
         clients, self._live_clients, self._adapters = self._live_clients, {}, {}
         for client, _ in clients.values():
             with contextlib.suppress(Exception):
@@ -390,12 +435,14 @@ class BrokerSync:
     async def _run(self) -> None:
         engine = self._sm.kw["bind"]
         warned = False
+        loop = asyncio.get_running_loop()
         while True:
             try:
                 async with engine.connect() as conn:
                     try:
                         held = False
                         while True:
+                            passed = False  # a pass of the lock holder completed
                             if not held:
                                 held = bool(await conn.scalar(
                                     text("select pg_try_advisory_lock(:k)"),
@@ -405,7 +452,7 @@ class BrokerSync:
                                 if held:
                                     log.info("broker sync: lock acquired")
                                     warned = False
-                                    await self._pass(recover=True)
+                                    passed = await self._pass(recover=True)
                                 elif not warned:
                                     log.warning(
                                         "broker sync: another worker holds the lock; waiting"
@@ -414,9 +461,17 @@ class BrokerSync:
                             else:
                                 await conn.scalar(text("select 1"))  # still holding it
                                 await conn.commit()
-                                await self._pass()
-                            await asyncio.sleep(self._interval_s)
+                                passed = await self._pass()
+                            if held:
+                                next_pass = loop.time() + self._interval_s
+                                if passed:
+                                    await self._heartbeat()
+                                await self._between_passes(conn, next_pass)
+                            else:
+                                await asyncio.sleep(self._interval_s)
                     finally:
+                        await self._close_wake()  # no lock, no listening
+                        self._hot.clear()
                         # never return a connection that may hold the lock to the pool
                         with contextlib.suppress(Exception):
                             await conn.invalidate()
@@ -426,11 +481,162 @@ class BrokerSync:
                 log.exception("broker sync: lock connection lost; reconnecting")
                 await asyncio.sleep(self._interval_s)
 
-    async def _pass(self, *, recover: bool = False) -> None:
+    async def _pass(self, *, recover: bool = False) -> bool:
         try:
             await self.tick(recover=recover)
         except Exception:
             log.exception("broker sync pass failed")
+            return False
+        return True
+
+    async def _heartbeat(self) -> None:
+        """HEARTBEAT_KEY = now (ISO UTC): the lock holder completed a pass (its time is
+        part of the interval)."""
+        try:
+            await asyncio.wait_for(self._redis.set(
+                HEARTBEAT_KEY, datetime.now(UTC).isoformat(), ex=HEARTBEAT_TTL_S,
+            ), timeout=self._interval_s)
+        except Exception:
+            log.warning("broker sync: heartbeat not written", exc_info=True)
+
+    # -- wake-up between passes (lock held) ------------------------------------------
+
+    async def _between_passes(self, conn, deadline: float) -> None:
+        """What `asyncio.sleep(interval_s)` was: waits for the interval, carrying out the
+        woken orders and the hot reads meanwhile until loop time `deadline` (the next
+        full pass), never delayed past it by them (they stop there)."""
+        loop = asyncio.get_running_loop()
+        await self._subscribe(deadline - loop.time())
+        while (left := deadline - loop.time()) > 0:
+            if self._hot:
+                left = min(left, max(self._hot_next - loop.time(), 0.0))
+            ids = await self._wait(left)
+            hot_due = bool(self._hot) and loop.time() >= self._hot_next
+            if not ids and not hot_due:
+                continue
+            await conn.scalar(text("select 1"))  # still holding the lock (single writer)
+            await conn.commit()
+            try:
+                if ids:
+                    await self._tick_ids(ids, until=deadline, heat=True)
+                if hot_due:
+                    await self._read_hot(until=deadline)
+            except Exception:
+                log.exception("broker sync of woken orders failed")
+
+    async def _subscribe(self, timeout: float) -> None:
+        """Opens the WAKE_CHANNEL subscription once (a Redis error: none, the wait is
+        a plain sleep until the next interval tries again)."""
+        if self._wake_sub is not None or timeout <= 0:
+            return
+        sub = None
+        try:
+            sub = self._redis.pubsub()
+            await asyncio.wait_for(sub.subscribe(WAKE_CHANNEL), timeout=timeout)
+        except Exception:
+            if not self._wake_down:
+                log.warning("broker sync: wake channel unavailable; passes only",
+                            exc_info=True)
+                self._wake_down = True
+            if sub is not None:
+                with contextlib.suppress(Exception):
+                    await sub.aclose()
+            return
+        self._wake_sub = sub
+        if self._wake_down:
+            log.info("broker sync: wake channel available again")
+            self._wake_down = False
+
+    async def _close_wake(self) -> None:
+        sub, self._wake_sub = self._wake_sub, None
+        if sub is not None:
+            with contextlib.suppress(Exception):
+                await sub.aclose()
+
+    async def _wait(self, timeout: float) -> list[UUID]:
+        """Up to `timeout` s for wake messages: the order ids received ([] at timeout).
+        Without a subscription, or on its error, a plain sleep."""
+        loop = asyncio.get_running_loop()
+        end = loop.time() + timeout
+        while (left := end - loop.time()) > 0:
+            if self._wake_sub is None:
+                await asyncio.sleep(left)
+                return []
+            try:
+                message = await self._wake_sub.get_message(
+                    ignore_subscribe_messages=True, timeout=left)
+                if message is None:
+                    continue  # a subscribe confirmation, or the timeout
+                messages = [message]
+                while len(messages) < _WAKE_BATCH and (message := await self._wake_sub
+                                                       .get_message(timeout=0)):
+                    messages.append(message)
+            except Exception:
+                log.warning("broker sync: wake channel lost; passes only", exc_info=True)
+                self._wake_down = True
+                await self._close_wake()
+                continue
+            if ids := _wake_ids(messages):
+                return ids
+        return []
+
+    async def tick_orders(self, ids: list[UUID]) -> None:
+        """A pass over the given orders only (those still open at a broker), like `tick`."""
+        await self._tick_ids(ids, heat=True)
+
+    async def _tick_ids(self, ids: list[UUID], *, until: float | None = None,
+                        heat: bool = False, sent_only: bool = False) -> set[UUID]:
+        """`_step` on the given orders still open at a broker, oldest first (stopping at
+        loop time `until`); with `heat`, an automatic order sent here becomes hot; with
+        `sent_only`, only orders already at the broker (a read, never a send).
+        Returns the ids found open."""
+        if not ids:
+            return set()
+        async with self._sm() as session:
+            rows = (await session.execute(
+                select(Order.id, Order.broker_status, Order.broker_order_id,
+                       Order.broker_sent_at, Order.auto_rule_id)
+                .where(Order.id.in_(ids), Order.broker_link_id.is_not(None),
+                       Order.status.in_(_SYNCED))
+                .order_by(Order.created_at, Order.id)
+            )).all()
+        loop = asyncio.get_running_loop()
+        for order_id, status, broker_order_id, sent_at, auto_rule_id in rows:
+            if until is not None and loop.time() >= until:
+                break  # the full pass is due: it takes the rest
+            if sent_only and broker_order_id is None:
+                continue
+            try:
+                await self._step(order_id, status, broker_order_id, sent_at, False)
+            except Exception:
+                log.exception("broker sync of order %s failed", order_id)
+            while self._followups:
+                follow = self._followups.pop(0)
+                try:
+                    await self._cancel(follow)
+                except Exception:
+                    log.exception("broker cancel of order %s failed", follow)
+            if (heat and auto_rule_id is not None and broker_order_id is None
+                    and order_id not in self._hot and len(self._hot) < HOT_MAX
+                    and await self._at_broker(order_id)):
+                if not self._hot:
+                    self._hot_next = loop.time() + HOT_POLL_S
+                self._hot[order_id] = loop.time() + HOT_FOR_S
+        return {row[0] for row in rows}
+
+    async def _at_broker(self, order_id: UUID) -> bool:
+        async with self._sm() as session:
+            return await session.scalar(
+                select(Order.broker_order_id).where(Order.id == order_id)) is not None
+
+    async def _read_hot(self, *, until: float) -> None:
+        """Reads the hot orders again; those no longer open or past HOT_FOR_S cool down."""
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        self._hot = {k: v for k, v in self._hot.items() if v > now}
+        self._hot_next = now + HOT_POLL_S
+        open_ids = await self._tick_ids(list(self._hot), until=until, sent_only=True)
+        self._hot = {k: v for k, v in self._hot.items() if k in open_ids}
 
     async def tick(self, *, recover: bool = False) -> None:
         """One pass over the open broker-managed orders, oldest first. With `recover`
