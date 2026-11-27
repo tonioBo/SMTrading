@@ -22,10 +22,23 @@ is written: a tick that jumps or disagrees with another provider is written mark
 `suspect` (fills and stops wait), and the symbol is polled through the router at once
 (at most every CONFIRM_EVERY_S), whose provider consensus confirms or replaces it.
 
-Automatic rules (intraday mode B, source `auto_rules`): under a provider's symbol cap, up to
-AUTO_RULES_RESERVE rule-only symbols rank before the watchlist-only ones (never before
-orders, positions, alerts or the portal); the stream also asks the provider for 1-minute
-bars of the rule symbols on it (`supports_stream_bars`), published to `bars1m:{symbol}`
+Subscription budget: a provider declares how many subscriptions one stream may hold
+(`DataProvider.stream_budget()`), what a symbol costs (Alpaca: quotes + trades = 2) and what
+its 1-minute bars add (Alpaca: 1). The manager ranks the symbols (orders, positions, alerts
+and the portal first, then the automatic rules' reserve, then watchlist-only symbols, then
+rule symbols over the reserve), streams as many as fit and polls the others; bars go only
+to rule symbols on the stream, as far as the subscriptions left allow. Providers without a
+declared budget keep `stream_symbol_limit`, one subscription a symbol, bars free.
+
+A «symbol limit» refusal (StreamSymbolLimit) retries the same set once; refused again, the
+next set carries half the subscriptions. That learnt cap lasts until the stream's tracked
+symbols change or `cap_cooldown_s` (CAP_COOLDOWN_S) passes, then the full budget is tried
+again.
+
+Automatic rules (intraday mode B, source `auto_rules`): AUTO_RULES_RESERVE subscriptions
+(SMT_AUTO_RULES_STREAM_RESERVE) are kept for rule-only symbols, taken only from
+watchlist-only slots (never from orders, positions, alerts or the portal); rule symbols
+that do not fit stay on polling. Bars are published to `bars1m:{symbol}`
 (marketdata.minute_bars) outside the quality guard. A «symbol limit» refusal with bars
 asked restarts the same symbols without bars (never fewer symbols). Without rule symbols
 nothing differs from the plain quote stream.
@@ -72,6 +85,7 @@ BACKOFF = "backoff"
 CLOSED_POLL_EVERY_S = 300
 CONFIRM_EVERY_S = 30
 DEFAULT_AUTO_RULES_RESERVE = 10
+CAP_COOLDOWN_S = 1800  # a cap learnt from a «symbol limit» refusal is dropped after this
 
 
 def auto_rules_reserve(raw: str | None) -> int:
@@ -90,7 +104,7 @@ def auto_rules_reserve(raw: str | None) -> int:
     return value
 
 
-# stream slots kept for automatic-rule symbols, taken only from watchlist-only symbols
+# stream subscriptions kept for automatic-rule symbols, taken only from watchlist-only ones
 AUTO_RULES_RESERVE = auto_rules_reserve(os.environ.get("SMT_AUTO_RULES_STREAM_RESERVE"))
 BARS_REFUSED_NOTE = ("Barre al minuto rifiutate dal fornitore: regole automatiche senza "
                      "volume e VWAP")
@@ -187,6 +201,8 @@ class _Stream:
     asset_class: AssetClass
     items: tuple[tuple[str, str], ...]
     bars: tuple[str, ...] = ()  # provider symbols of the items asked for 1-minute bars
+    # every tracked symbol of the stream's class it could carry (streamed or polled)
+    candidates: frozenset[str] = frozenset()
     state: str = CONNECTING
     note: str | None = None  # why it is refused (StreamRefused), for «Salute del sistema»
     task: asyncio.Task | None = field(default=None, repr=False)
@@ -213,6 +229,7 @@ class StreamManager:
         backoff_max_s: float = 60,
         closed_poll_every_s: float = CLOSED_POLL_EVERY_S,
         owner_ttl_s: float = OWNER_TTL_S,
+        cap_cooldown_s: float = CAP_COOLDOWN_S,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ):
         self._router = router
@@ -222,13 +239,15 @@ class StreamManager:
         self._poll_every_s = poll_every_s
         self._backoff_max_s = backoff_max_s
         self._closed_poll_every_s = closed_poll_every_s
+        self._cap_cooldown_s = cap_cooldown_s
         self._now = now
         self._streams: dict[str, _Stream] = {}
         # symbols without a stream provider (or unmappable by it), by asset class
         self._poll_only: dict[AssetClass, list[str]] = {}
         self._unknown: set[str] = set()
-        # stream key -> symbol cap learnt from a «symbol limit» refusal (halved each time)
-        self._caps: dict[str, int] = {}
+        # stream key -> (subscriptions, the candidates it was learnt on, when) from a
+        # «symbol limit» refusal; dropped when the candidates change or after cap_cooldown_s
+        self._caps: dict[str, tuple[int, frozenset[str], datetime]] = {}
         # stream key -> the provider refused the set with bars (asked again only once no
         # rule symbol is left on that stream)
         self._bars_refused: dict[str, bool] = {}
@@ -305,11 +324,10 @@ class StreamManager:
         instrs = await self._instruments(await tracked_symbols(self._redis))
         sources = await tracked_sources(self._redis)
 
-        auto_only = sorted(
-            s for s, src in sources.items()
-            if set(src) in ({"auto_rules"}, {"auto_rules", "watchlists"})
-        )
-        reserved = set(auto_only[:AUTO_RULES_RESERVE])
+        def auto_only(symbol: str) -> bool:
+            return set(sources.get(symbol, [])) in ({"auto_rules"}, {"auto_rules", "watchlists"})
+
+        reserved: set[str] = set()  # per stream: the rule symbols within the reserve
 
         def rank(symbol: str) -> tuple[int, str]:
             src = set(sources.get(symbol, []))
@@ -331,7 +349,7 @@ class StreamManager:
             by_class.setdefault(i.asset_class, []).append(i)
 
         wanted: dict[str, tuple[DataProvider, AssetClass, tuple[tuple[str, str], ...],
-                                tuple[str, ...]]] = {}
+                                tuple[str, ...], frozenset[str]]] = {}
         poll_only: dict[AssetClass, list[str]] = {}
         for asset_class, group in by_class.items():
             provider = await self._stream_provider(asset_class)
@@ -344,36 +362,64 @@ class StreamManager:
                     items.append((i.symbol, ps))
             if items:
                 key = f"{provider.name}:{asset_class}"
-                cap = self._caps.get(key, provider.stream_symbol_limit)
-                if cap is not None and len(items) > cap:
-                    items.sort(key=lambda it: rank(it[0]))
-                    poll_only.setdefault(asset_class, []).extend(s for s, _ in items[cap:])
-                    items = items[:cap]
-                items.sort()
+                candidates = frozenset(s for s, _ in items)
+                per_symbol = max(1, provider.stream_subscriptions_per_symbol)
+                per_bar = max(0, provider.stream_subscriptions_per_bar)
+                budget = self._budget(key, provider, candidates)
+                reserved.clear()
+                reserved.update(sorted(s for s in candidates if auto_only(s))
+                                [:AUTO_RULES_RESERVE // per_symbol])
+                items.sort(key=lambda it: rank(it[0]))  # most important first
+                if budget is not None and len(items) * per_symbol > budget:
+                    keep = budget // per_symbol
+                    poll_only.setdefault(asset_class, []).extend(s for s, _ in items[keep:])
+                    items = items[:keep]
                 bars: tuple[str, ...] = ()
                 if provider.supports_stream_bars:
-                    bars = tuple(sorted(ps for s, ps in items if wants_bars(s)))
-                    if not bars:
+                    rule_ps = [ps for s, ps in items if wants_bars(s)]  # in rank order
+                    if not rule_ps:
                         self._bars_refused.pop(key, None)  # no rule left: ask again later
-                    elif self._bars_refused.get(key):
-                        bars = ()
-                wanted[key] = (provider, asset_class, tuple(items), bars)
+                    elif not self._bars_refused.get(key):
+                        if budget is not None and per_bar:  # only what is left of the budget
+                            rule_ps = rule_ps[:max(0, budget - len(items) * per_symbol)
+                                              // per_bar]
+                        bars = tuple(sorted(rule_ps))
+                items.sort()
+                wanted[key] = (provider, asset_class, tuple(items), bars, candidates)
 
         # restarted only when its symbols or its bars change (a rule activated or paused)
         stale = [
             key for key, s in self._streams.items()
-            if key not in wanted or wanted[key][2:] != (s.items, s.bars)
+            if key not in wanted or wanted[key][2:4] != (s.items, s.bars)
         ]
         await self._stop(stale)
-        for key, (provider, asset_class, items, bars) in wanted.items():
-            if key not in self._streams:
-                stream = _Stream(provider, asset_class, items, bars)
+        for key, (provider, asset_class, items, bars, candidates) in wanted.items():
+            if key in self._streams:
+                self._streams[key].candidates = candidates
+            else:
+                stream = _Stream(provider, asset_class, items, bars, candidates=candidates)
                 if self._bars_refused.get(key):
                     stream.note = BARS_REFUSED_NOTE
                 stream.task = asyncio.create_task(self._run_stream(key, stream))
                 self._streams[key] = stream
         self._poll_only = poll_only
         await self._redis.set(STATUS_KEY, json.dumps(self.status()), ex=STATUS_TTL_S)
+
+    def _budget(self, key: str, provider: DataProvider,
+                candidates: frozenset[str]) -> int | None:
+        """Subscriptions the stream may hold: the cap learnt from a refusal while its
+        candidates are the same and the cool-down has not passed, else the provider's."""
+        learnt = self._caps.get(key)
+        if learnt is not None:
+            cap, seen, since = learnt
+            if (seen == candidates
+                    and (self._now() - since).total_seconds() < self._cap_cooldown_s):
+                return cap
+            del self._caps[key]
+            log.info("stream %s: learnt cap of %s subscriptions dropped (%s); trying the "
+                     "provider's budget again", key, cap,
+                     "symbols changed" if seen != candidates else "cool-down passed")
+        return provider.stream_budget()
 
     async def poll(self) -> None:
         if not self._owner:
@@ -483,6 +529,7 @@ class StreamManager:
 
     async def _run_stream(self, key: str, stream: _Stream) -> None:
         delay = 1.0
+        limit_retried = False  # a «symbol limit» refusal retries the same set once
         while True:
             stream.state = CONNECTING  # polled until the first quote proves the stream live
             delivered = False
@@ -494,6 +541,7 @@ class StreamManager:
                     async for q in quotes:
                         if not delivered:
                             delivered = True
+                            limit_retried = False
                             stream.state = CONNECTED
                             stream.note = (BARS_REFUSED_NOTE if self._bars_refused.get(key)
                                            else None)
@@ -521,14 +569,27 @@ class StreamManager:
                     log.warning("stream %s: symbol limit with minute bars (%s); restarting "
                                 "without bars", key, e)
                     return  # the next reconcile restarts it without bars
-                # too many symbols: the next set carries half
-                cap = max(1, len(stream.items) // 2)
-                self._caps[key] = cap
+                if not limit_retried:  # maybe transient (an old socket not yet released)
+                    limit_retried = True
+                    stream.state = BACKOFF
+                    stream.note = (f"Rifiutato dal provider ({e}): nuovo tentativo con gli "
+                                   f"stessi simboli")
+                    log.warning("stream %s: symbol limit (%s); retrying the same %s symbols "
+                                "once in %ss", key, e, len(stream.items), delay)
+                    await asyncio.sleep(delay)
+                    continue
+                # refused twice: the next set carries half the subscriptions, until the
+                # symbols change or the cool-down passes
+                per_symbol = max(1, stream.provider.stream_subscriptions_per_symbol)
+                used = (len(stream.items) * per_symbol
+                        + len(stream.bars) * max(0, stream.provider.stream_subscriptions_per_bar))
+                cap = max(per_symbol, used // 2)
+                self._caps[key] = (cap, stream.candidates, self._now())
                 stream.state = BACKOFF
-                stream.note = (f"Troppi simboli per il provider ({e}): {cap} in tempo reale, "
-                               f"gli altri in polling")
-                log.warning("stream %s: symbol limit (%s); restarting with %s symbols",
-                            key, e, cap)
+                stream.note = (f"Troppi simboli per il provider ({e}): {cap // per_symbol} in "
+                               f"tempo reale, gli altri in polling")
+                log.warning("stream %s: symbol limit again (%s); restarting with %s "
+                            "subscriptions (%s symbols)", key, e, cap, cap // per_symbol)
                 return  # the next reconcile restarts it with the smaller set
             except StreamRefused as e:  # refused for a while: the provider's own wait
                 stream.state = BACKOFF

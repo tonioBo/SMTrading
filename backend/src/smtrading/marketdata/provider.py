@@ -45,6 +45,22 @@ class DataProvider:
     # most symbols one stream may carry (None: no known limit); the stream manager streams
     # the most important tracked symbols up to it and polls the others
     stream_symbol_limit: ClassVar[int | None] = None
+    # subscriptions one stream may hold (None: `stream_symbol_limit`, one per symbol), what a
+    # symbol costs (e.g. Alpaca: quotes + trades = 2) and what its 1-minute bars add on top;
+    # the stream manager picks symbols, then bars, so the total stays within the budget
+    stream_subscription_limit: ClassVar[int | None] = None
+    stream_subscriptions_per_symbol: ClassVar[int] = 1
+    stream_subscriptions_per_bar: ClassVar[int] = 0
+
+    @classmethod
+    def stream_budget(cls) -> int | None:
+        """Subscriptions one stream may hold: the declared budget, else the symbol cap
+        priced at one subscription a symbol, else None (no known limit)."""
+        if cls.stream_subscription_limit is not None:
+            return cls.stream_subscription_limit
+        if cls.stream_symbol_limit is not None:
+            return cls.stream_symbol_limit * cls.stream_subscriptions_per_symbol
+        return None
     # can carry 1-minute bars on the quote stream (`stream(items, bars=...)`, StreamBar)
     supports_stream_bars: ClassVar[bool] = False
     capabilities: ClassVar[frozenset[Capability]] = frozenset()

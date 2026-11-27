@@ -767,3 +767,188 @@ async def test_socket_not_restarted_when_bars_unchanged(manager):
     assert FakeStream.stream_kwargs == [{"bars": frozenset({"BTCUSD"})}, {}]
     await asyncio.sleep(FAST * 4)
     assert len(FakeStream.connections) == 2 and FakeStream.max_active == 1
+
+
+# ---- subscription budget (Alpaca free plan: 30 subscriptions, quotes + trades per symbol)
+
+
+def _alpaca_like(monkeypatch, budget: int = 30):
+    """FakeStream priced like Alpaca: 2 subscriptions a symbol, +1 for its bars."""
+    monkeypatch.setattr(FakeStream, "stream_symbol_limit", None)
+    monkeypatch.setattr(FakeStream, "stream_subscription_limit", budget, raising=False)
+    monkeypatch.setattr(FakeStream, "stream_subscriptions_per_symbol", 2, raising=False)
+    monkeypatch.setattr(FakeStream, "stream_subscriptions_per_bar", 1, raising=False)
+    monkeypatch.setattr(FakeStream, "supports_stream_bars", True, raising=False)
+
+
+async def _reconciled_budget(env, plan):
+    router, redis, sm = env
+    for sym, srcs in plan.items():
+        for src in srcs:
+            await track(redis, [sym], source=src)
+    mgr = StreamManager(router, redis, sm)
+    await mgr.reconcile()
+    stream = mgr._streams.get("fake_stream:crypto")
+    return mgr, stream, sorted(mgr._poll_only.get(AssetClass.crypto, []))
+
+
+def test_alpaca_declares_its_subscription_budget():
+    from smtrading.marketdata.providers.alpaca import AlpacaProvider
+
+    assert AlpacaProvider.stream_subscription_limit == 30
+    assert AlpacaProvider.stream_subscriptions_per_symbol == 2  # quotes + trades
+    assert AlpacaProvider.stream_subscriptions_per_bar == 1
+    assert DataProvider.stream_subscriptions_per_symbol == 1  # the others: as before
+    assert DataProvider.stream_subscriptions_per_bar == 0
+
+
+async def test_budget_campaign_14_plus_7_rules(env, monkeypatch):
+    """Today's case: 14 campaign symbols (28 subscriptions) and 7 rule symbols: at most 15
+    streamed, every campaign symbol kept, no bars (no subscription left for them)."""
+    _alpaca_like(monkeypatch)
+    syms = await _add_crypto(env[2], 21)
+    campaign, rules = syms[7:], syms[:7]  # the rule symbols sort first
+    plan = {s: [("orders", "positions", "alerts")[i % 3]] for i, s in enumerate(campaign)}
+    plan |= {s: ["auto_rules"] for s in rules}
+    mgr, stream, polled = await _reconciled_budget(env, plan)
+    try:
+        assert len(stream.symbols) == 15
+        assert set(campaign) <= set(stream.symbols)
+        assert set(stream.symbols) - set(campaign) == {rules[0]}
+        assert polled == sorted(rules[1:])
+        assert stream.bars == ()
+        await _until(lambda: FakeStream.stream_kwargs)
+        assert FakeStream.stream_kwargs == [{}]
+    finally:
+        await mgr._stop(list(mgr._streams))
+
+
+async def test_budget_bars_only_within_what_is_left(env, monkeypatch):
+    """13 campaign symbols (26) + 2 rule symbols (4) = 30: no bars; with 12 campaign
+    symbols (24 + 4 = 28) bars fit for both rule symbols (30)."""
+    _alpaca_like(monkeypatch)
+    syms = await _add_crypto(env[2], 15)
+    rules, campaign = syms[:2], syms[2:]
+    plan = {s: ["orders"] for s in campaign} | {s: ["auto_rules"] for s in rules}
+    mgr, stream, polled = await _reconciled_budget(env, plan)
+    await mgr._stop(list(mgr._streams))
+    assert stream.symbols == sorted(syms) and polled == [] and stream.bars == ()
+    await untrack(env[1], [campaign[0]], source="orders")
+    await mgr.reconcile()
+    stream = mgr._streams["fake_stream:crypto"]
+    try:
+        assert stream.symbols == sorted(set(syms) - {campaign[0]})
+        assert stream.bars == tuple(sorted(s.replace("-", "") for s in rules))
+    finally:
+        await mgr._stop(list(mgr._streams))
+
+
+async def test_budget_bars_as_far_as_they_fit(env, monkeypatch):
+    """13 campaign symbols, 2 of them also traded by a rule (26) + 1 rule-only symbol (28):
+    2 subscriptions left, bars for the 2 campaign rule symbols first."""
+    _alpaca_like(monkeypatch)
+    syms = await _add_crypto(env[2], 14)
+    plan = {s: ["orders"] for s in syms[1:]}
+    plan[syms[0]] = ["auto_rules"]
+    for s in syms[12:]:
+        plan[s] = ["orders", "auto_rules"]
+    mgr, stream, polled = await _reconciled_budget(env, plan)
+    try:
+        assert stream.symbols == sorted(syms) and polled == []
+        assert stream.bars == tuple(s.replace("-", "") for s in syms[12:])
+    finally:
+        await mgr._stop(list(mgr._streams))
+
+
+async def test_budget_reserve_in_subscriptions(env, monkeypatch):
+    """The reserve (10 subscriptions) is 5 Alpaca rule symbols, taken from watchlist-only
+    slots only; orders, positions and alerts always first."""
+    _alpaca_like(monkeypatch)
+    syms = await _add_crypto(env[2], 21)
+    rules, core, lists = syms[:7], syms[7:10], syms[10:21]
+    plan = ({s: ["orders"] for s in core} | {s: ["watchlists"] for s in lists}
+            | {s: ["auto_rules"] for s in rules})
+    mgr, stream, polled = await _reconciled_budget(env, plan)
+    try:
+        assert len(stream.symbols) == 15
+        assert set(core) <= set(stream.symbols)
+        assert set(stream.symbols) & set(rules) == set(rules[:5])
+        assert set(stream.symbols) & set(lists) == set(lists[:7])
+        assert polled == sorted(rules[5:] + lists[7:])
+    finally:
+        await mgr._stop(list(mgr._streams))
+
+
+async def test_budget_no_rules_today_unchanged(env, monkeypatch):
+    """No rules: the 14 campaign symbols (orders, positions, watchlists) all streamed, the
+    plain call without bars."""
+    _alpaca_like(monkeypatch)
+    syms = await _add_crypto(env[2], 14)
+    plan = {s: [("orders", "positions", "watchlists")[i % 3]] for i, s in enumerate(syms)}
+    mgr, stream, polled = await _reconciled_budget(env, plan)
+    try:
+        assert stream.symbols == sorted(syms) and polled == []
+        await _until(lambda: FakeStream.stream_kwargs)
+        assert FakeStream.stream_kwargs == [{}]
+        assert set(mgr.status()["streams"]["fake_stream:crypto"]) == {"symbols", "state",
+                                                                     "note"}
+    finally:
+        await mgr._stop(list(mgr._streams))
+
+
+async def test_symbol_limit_retries_once_then_halves_then_resets(manager, monkeypatch):
+    """A 405 retries the same set once; refused again, half the subscriptions; the learnt
+    cap is dropped as soon as the tracked set changes."""
+    mgr, redis = manager
+    _alpaca_like(monkeypatch)
+    FakeStream.refuse_over = 1
+    await track(redis, ["BTC-USD"], source="orders")
+    await track(redis, ["ETH-USD"], source="positions")
+
+    await _until(lambda: len(FakeStream.connections) >= 3, timeout=3)
+    assert [len(c) for c in FakeStream.connections[:3]] == [2, 2, 1]
+    assert [s for s, _ in FakeStream.connections[2]] == ["BTC-USD"]
+    assert mgr._caps["fake_stream:crypto"][0] == 2  # 4 subscriptions halved
+    FakeStream.refuse_over = None
+    await track(redis, ["AAPL"], source="orders")  # another class: this set unchanged
+    await asyncio.sleep(FAST * 4)
+    assert "fake_stream:crypto" in mgr._caps
+    await untrack(redis, ["ETH-USD"], source="positions")
+    await track(redis, ["ETH-USD"], source="watchlists")  # same symbols: still capped
+    await asyncio.sleep(FAST * 4)
+    assert "fake_stream:crypto" in mgr._caps
+    async with env_session(mgr) as s:
+        s.add(Instrument(symbol="SOL-USD", name="Solana", asset_class=AssetClass.crypto,
+                         market="crypto", currency="USD"))
+        await s.commit()
+    await track(redis, ["SOL-USD"], source="orders")  # the set changed: cap dropped
+    await _until(lambda: len(FakeStream.connections[-1]) == 3)
+    assert "fake_stream:crypto" not in mgr._caps
+
+
+def env_session(mgr):
+    return mgr._sm()
+
+
+async def test_symbol_limit_cap_resets_after_cooldown(env, monkeypatch):
+    router, redis, sm = env
+    _alpaca_like(monkeypatch)
+    clock = [datetime(2026, 11, 27, 15, 0, tzinfo=UTC)]
+    mgr = StreamManager(router, redis, sm, now=lambda: clock[0], cap_cooldown_s=1800)
+    await track(redis, ["BTC-USD", "ETH-USD"], source="orders")
+    await mgr.reconcile()
+    key = "fake_stream:crypto"
+    await mgr._stop([key])
+    mgr._caps[key] = (2, frozenset({"BTC-USD", "ETH-USD"}), clock[0])
+    await mgr.reconcile()
+    try:
+        assert mgr._streams[key].symbols == ["BTC-USD"]
+        clock[0] = clock[0].replace(minute=29)
+        await mgr.reconcile()
+        assert mgr._streams[key].symbols == ["BTC-USD"]
+        clock[0] = clock[0].replace(minute=30)
+        await mgr.reconcile()
+        assert key not in mgr._caps
+        assert mgr._streams[key].symbols == ["BTC-USD", "ETH-USD"]
+    finally:
+        await mgr._stop(list(mgr._streams))

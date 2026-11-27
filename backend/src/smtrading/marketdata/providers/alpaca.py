@@ -21,7 +21,7 @@ INVALID_KEY = "alpaca: chiave non valida"
 # the free data plan allows one socket per key: a 406 means another session (another
 # client with the same key, or our own dropped one Alpaca has not timed out yet) holds it
 CONNECTION_LIMIT = 406
-# the free data plan also caps the symbols of a subscription: 405 «symbol limit exceeded»
+# the free data plan also caps the subscriptions of a socket: 405 «symbol limit exceeded»
 SYMBOL_LIMIT = 405
 CONNECTION_LIMIT_RETRY_S = 180
 
@@ -131,8 +131,11 @@ def parse_alpaca_bars(msg_list: list, reverse_map: dict[str, str] | None = None)
 
 @register
 class AlpacaProvider(DataProvider):
-    # free plan: 30 symbols per subscription (quotes and trades both subscribed)
-    stream_symbol_limit = 30
+    # free plan: 30 subscriptions per socket; every symbol takes quotes and trades (2), its
+    # 1-minute bars one more
+    stream_subscription_limit = 30
+    stream_subscriptions_per_symbol = 2
+    stream_subscriptions_per_bar = 1
     supports_stream_bars = True  # 1-minute bars on the same socket ("bars" channel)
     name = "alpaca"
     capabilities = frozenset({Capability.quote, Capability.bars, Capability.stream, Capability.news})
