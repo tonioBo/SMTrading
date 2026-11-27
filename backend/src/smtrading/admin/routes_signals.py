@@ -17,6 +17,7 @@ cost one computation per minute; `as_of` is when it was computed.
 
 import json
 import logging
+from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
 
@@ -29,13 +30,23 @@ from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.intraday.models import INTRADAY_TIMEFRAMES
 from smtrading.mcp.dto import to_jsonable
 from smtrading.portfolios.models import Portfolio
-from smtrading.signals.service import StrategySignal, strategy_signals
+from smtrading.signals.service import StrategySignal, SymbolSignal, strategy_signals
 
 log = logging.getLogger("smtrading.admin.signals")
 router = APIRouter(prefix="/api", tags=["signals"], dependencies=[Depends(require_access)])
 
 CACHE_KEY = "signals:v4"  # v2: `exit`; v3: `filters`; v4: `intraday`
 CACHE_TTL_S = 60
+
+
+_WATCH_ONLY = ("triggered_prev", "exit_prev")  # the intraday watch's, not the page's
+
+
+def _public(row: SymbolSignal) -> dict[str, Any]:
+    out = asdict(row)
+    for k in _WATCH_ONLY:
+        out.pop(k)
+    return out
 
 
 def _payload(items: list[StrategySignal], as_of: datetime,
@@ -48,7 +59,8 @@ def _payload(items: list[StrategySignal], as_of: datetime,
         })
         g["strategies"].append({
             "ref": s.ref, "name": s.name, "type": s.type, "params": s.params,
-            "timeframe": s.timeframe, "status": s.status, "symbols": s.symbols,
+            "timeframe": s.timeframe, "status": s.status,
+            "symbols": [_public(r) for r in s.symbols],
             "intraday": s.timeframe in INTRADAY_TIMEFRAMES and s.portfolio_id in intraday_ids,
         })
     return to_jsonable({"as_of": as_of, "portfolios": list(groups.values())})

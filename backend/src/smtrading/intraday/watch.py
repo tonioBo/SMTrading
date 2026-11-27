@@ -57,12 +57,16 @@ def intraday_selector(
     return select_
 
 
-async def _fire(redis: Any, key: str, now_value: bool) -> bool:
-    """Stores the current value of a rule; True if it went from false to true."""
+async def _fire(redis: Any, key: str, now_value: bool, before: bool | None) -> bool:
+    """Stores the current value of a rule; True if it went from false to true. With no
+    stored value yet (the first evaluation), `before` decides: the rule's value on the
+    previous closed bar, from the same bars (None: unknown, no trigger)."""
     prev = await redis.get(key)
     if isinstance(prev, bytes):
         prev = prev.decode()
     await redis.set(key, "1" if now_value else "0", ex=STATE_TTL_S)
+    if prev is None:
+        return now_value and before is False
     return now_value and prev == "0"
 
 
@@ -95,7 +99,7 @@ async def evaluate_close(
                     "timeframe": tf.value, "bar_close": bar_close, "price": r.last}
             entry = bool(r.triggered_closed) and r.position is None and not r.open_entry
             key = STATE_KEY.format(portfolio_id=p.id, ref=s.ref, symbol=r.symbol, rule="entry")
-            if await _fire(redis, key, entry):
+            if await _fire(redis, key, entry, r.triggered_prev):
                 out.append(Trigger(
                     **base, rule="entry", value=r.value_closed, threshold=r.threshold,
                     rule_text=f"{r.indicator} {_DIRECTION.get(r.direction, r.direction)} "
@@ -103,7 +107,8 @@ async def evaluate_close(
                     late=cutoff is not None and bar_close >= cutoff))
             ex = r.exit if r.position is not None else None
             key = STATE_KEY.format(portfolio_id=p.id, ref=s.ref, symbol=r.symbol, rule="exit")
-            if await _fire(redis, key, bool(ex and ex["triggered"])):
+            if await _fire(redis, key, bool(ex and ex["triggered"]),
+                           r.exit_prev if ex is not None else None):
                 out.append(Trigger(
                     **base, rule="exit", value=ex["value"], threshold=ex["threshold"],
                     rule_text=ex["rule"], late=False))

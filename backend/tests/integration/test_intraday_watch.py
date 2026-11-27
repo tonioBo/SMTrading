@@ -233,3 +233,38 @@ async def test_excluded_pair_and_other_portfolios(env):
         env.prev(p, "W-1", "WSPY", "entry", "0")
     out = await env.run(exclude=frozenset({(env.p1.id, "WSPY")}))
     assert [t.portfolio_id for t in out] == [env.p2.id]  # p1 excluded, plain is not intraday
+
+
+DROP = [100 + i for i in range(39)] + [50]  # RSI(2) high, then about 1 on the last bar
+JUMP = [200 - i for i in range(39)] + [250]  # RSI(2) low, then about 99 on the last bar
+
+
+async def test_first_evaluation_fires_when_the_previous_bar_was_false(env):
+    """27/11 Prova A: the watch started at the 14:45 close, on the very bar the entries
+    went true (sma_cross 3/8 across the overnight gap on XLF/XLE/XLK, RSI 3 under 40 on
+    AAPL); with no stored state they were swallowed. The previous closed bar is in the
+    same bars: false there and true now is a trigger, even on the first evaluation."""
+    await env.strategy("W-1", ["WSPY"], [env.p1])
+    env.bars("WSPY", DROP)
+    [t] = await env.run()
+    assert (t.symbol, t.rule) == ("WSPY", "entry")
+    key = STATE_KEY.format(portfolio_id=env.p1.id, ref="W-1", symbol="WSPY", rule="entry")
+    assert env.redis.data[key] == "1"
+    assert await env.run() == []  # the state is stored now: no second trigger
+
+
+async def test_first_evaluation_exit_fires_when_the_previous_bar_was_false(env):
+    await env.strategy("W-1", ["WSPY"], [env.p1])
+    env.bars("WSPY", JUMP)
+    env.s.add(Position(portfolio_id=env.p1.id, symbol="WSPY", qty=D(1), avg_price=D(100)))
+    await env.s.flush()
+    [t] = await env.run()
+    assert t.rule == "exit"
+
+
+async def test_first_evaluation_with_the_rule_already_true_does_not_fire(env):
+    await env.strategy("W-1", ["WSPY"], [env.p1])
+    env.bars("WSPY", RISING)
+    env.s.add(Position(portfolio_id=env.p1.id, symbol="WSPY", qty=D(1), avg_price=D(100)))
+    await env.s.flush()
+    assert await env.run() == []  # the exit was true on the previous bar already

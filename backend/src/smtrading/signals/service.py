@@ -126,6 +126,10 @@ class SymbolSignal:
     open_entry: bool = False  # a resting buy entry of the symbol in that portfolio
     exit: dict | None = None  # the exit rule's state while in position
     filters: list[dict] = field(default_factory=list)  # entry filters on the newest data
+    # the entry and exit rules one bar earlier (None: not enough bars): a watch with no
+    # stored state yet tells a fresh false -> true from a rule that was already true
+    triggered_prev: bool | None = None
+    exit_prev: bool | None = None
 
 
 @dataclass
@@ -428,6 +432,10 @@ async def _symbol(router: Any, kind: str, p: dict, tf: Timeframe, sym: str,
     current = out.value_now if forming.bar is not None else value
     newest = [*bars, forming.bar] if forming.bar is not None else bars
     out.exit = _exit(kind, p, newest)
+    if len(bars) > need:  # one bar earlier, the same rules
+        out.triggered_prev = _evaluate(kind, p, bars[:-1])[2]
+        before = _exit(kind, p, newest[:-1])
+        out.exit_prev = None if before is None else bool(before["triggered"])
     out.filters = _filters(kind, p, newest)
     out.distance = _distance(direction, current, out.threshold)
     return out, value is not None and out.threshold is not None
