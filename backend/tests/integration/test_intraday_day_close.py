@@ -273,8 +273,11 @@ async def test_refused_close_is_reported(sm, qs, monkeypatch):
     from smtrading.common.errors import ErrorCode, SMTError
     from smtrading.intraday import day_close
 
+    calls = []
+
     async def refuse(*args, **kwargs):
-        raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE, "quote unavailable")
+        calls.append(1)
+        raise SMTError(ErrorCode.INVALID_ORDER, "order not valid")
 
     monkeypatch.setattr(day_close, "close_position", refuse)
     pid = await _portfolio(sm)
@@ -282,7 +285,61 @@ async def test_refused_close_is_reported(sm, qs, monkeypatch):
     await _tick(sm, qs, CUTOFF)
     await _tick(sm, qs, CUTOFF + timedelta(minutes=1))
     [row] = await _outbox(sm)
-    assert "PROVIDER_UNAVAILABLE" in row.text and "quote unavailable" in row.text
+    assert "INVALID_ORDER" in row.text and "order not valid" in row.text
+    assert len(calls) == 1  # a permanent refusal is not retried
+
+
+@pytest.mark.parametrize("code", ["STALE_QUOTE", "PROVIDER_UNAVAILABLE", "PORTFOLIO_LOCKED",
+                                  "RATE_LIMITED", "TRADING_HALTED"])
+async def test_temporary_refusal_is_retried_next_tick(sm, qs, monkeypatch, code):
+    from smtrading.common.errors import ErrorCode, SMTError
+    from smtrading.intraday import day_close
+
+    real = day_close.close_position
+    calls = []
+
+    async def refuse_once(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise SMTError(ErrorCode(code), "temporarily refused")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(day_close, "close_position", refuse_once)
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, 10, BOUGHT)
+    await _tick(sm, qs, CUTOFF)
+    assert await _system_orders(sm, pid) == [] and await _outbox(sm) == []
+    await _tick(sm, qs, CUTOFF + timedelta(seconds=15))
+    [o] = await _system_orders(sm, pid)
+    assert (o.side, o.qty, o.status) == (OrderSide.sell, D(10), OrderStatus.filled)
+    [row] = await _outbox(sm)
+    assert "10 in vendita a mercato" in row.text
+    assert len(calls) == 2
+
+
+async def test_temporary_refusal_in_the_last_minute_is_reported(sm, qs, monkeypatch):
+    from smtrading.common.errors import ErrorCode, SMTError
+    from smtrading.intraday import day_close
+
+    calls = []
+
+    async def refuse(*args, **kwargs):
+        calls.append(1)
+        raise SMTError(ErrorCode.STALE_QUOTE, "quote too old")
+
+    monkeypatch.setattr(day_close, "close_position", refuse)
+    pid = await _portfolio(sm)
+    await _buy(sm, qs, pid, 10, BOUGHT)
+    await _tick(sm, qs, CUTOFF)
+    await _tick(sm, qs, CUTOFF + timedelta(minutes=3))
+    assert await _outbox(sm) == []  # retried silently while there is time
+    last = CLOSE - timedelta(seconds=50)  # in the last minute: reported, not retried
+    await _tick(sm, qs, last)
+    await _tick(sm, qs, last + timedelta(seconds=15))
+    texts = [r.text for r in await _outbox(sm)]
+    assert sum("Chiusura di sicurezza rifiutata" in t and "STALE_QUOTE" in t
+               for t in texts) == 1
+    assert len(calls) == 3
 
 
 async def test_off_portfolio_untouched(sm, qs):

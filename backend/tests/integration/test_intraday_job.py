@@ -77,11 +77,13 @@ class Calls:
         self.evaluations: list[tuple] = []
         self.day_ticks: list[datetime] = []
         self.account_reads: list[datetime] = []
+        self.order: list[str] = []  # the steps in the order they ran
         calls = self
 
         async def fake_evaluate(session, router, redis, tf, market, bar_close, now, *,
                                 exclude=frozenset()):
             calls.evaluations.append((tf.value, market, bar_close, exclude))
+            calls.order.append("bar")
             return []
 
         class FakeDayCloser:
@@ -90,6 +92,7 @@ class Calls:
 
             async def tick(self, now):
                 calls.day_ticks.append(now)
+                calls.order.append("day_close")
 
         async def fake_refresh(sessionmaker, http, now):
             calls.account_reads.append(now)
@@ -214,6 +217,16 @@ async def test_bar_processed_once(env, monkeypatch):
     async with sm() as s:
         keys = list(await s.scalars(select(JobRun.key).where(JobRun.job == BAR_JOB)))
     assert keys == [f"15m:NYSE:{BAR.isoformat()}"]
+
+
+async def test_day_close_runs_before_the_bar_evaluations(env, monkeypatch):
+    sm, _ = env
+    calls = Calls(monkeypatch)
+    pid = await _portfolio(sm, intraday=True)
+    await _strategy(sm, "J-1", ["JOBSPY"], [pid])
+    job, _ = _job(sm, BAR + timedelta(seconds=65))
+    await job.tick()
+    assert calls.order == ["day_close", "bar"]
 
 
 async def test_one_evaluation_per_market(env, monkeypatch):

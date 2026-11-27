@@ -6,8 +6,9 @@ the system with a reduce-only order
 (`engine.close_position`, which also cancels the symbol's stop and target): at market on a
 tight quote, with a DAY limit at the last trade minus the profile's margin on a quote wider
 than MAX_SPREAD (it expires at the session end, never rests overnight), nothing without a
-last trade. Once per (portfolio, symbol, session) (`job_runs`); never with the market
-closed. A Telegram notice for every close, and one more when a minute before the end the
+last trade. Once per (portfolio, symbol, session) (`job_runs`); a temporary refusal
+(`TEMPORARY_REFUSALS`) is rolled back and retried at every tick until a minute before the
+end; never with the market closed. A Telegram notice for every close, and one more when a minute before the end the
 day quantity is still open (never a second order). Telegram only (`source="system"`), never
 the activity feed the agents read.
 
@@ -24,7 +25,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from smtrading.common.errors import SMTError
+from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.quotesource import QuoteSource
 from smtrading.engine.service import close_position
 from smtrading.events import discard_post_commit, dispatch_post_commit
@@ -50,6 +51,17 @@ DAY_CLOSE_CHECK_JOB = "intraday_day_close_check"
 CHECK_BEFORE_END = timedelta(minutes=1)
 DEFAULT_MARGIN_PCT = Decimal("0.5")
 _CENT = Decimal("0.01")
+# refusals that can clear by the next tick: the whole close (claim and rejected order) is
+# rolled back and tried again at every tick until CHECK_BEFORE_END; any other refusal, or a
+# temporary one in the last minute, is final for the session (claim kept, one notice)
+TEMPORARY_REFUSALS = frozenset({
+    ErrorCode.STALE_QUOTE, ErrorCode.PROVIDER_UNAVAILABLE, ErrorCode.PORTFOLIO_LOCKED,
+    ErrorCode.RATE_LIMITED, ErrorCode.TRADING_HALTED,
+})
+
+
+class _RetryLater(Exception):
+    """A temporary refusal: roll the close back, try again at the next tick."""
 
 
 def close_limit_price(
@@ -182,6 +194,10 @@ class DayCloser:
                 if qty and qty > 0:
                     await self._send(s, due, qty, wide, limit, now)
                 await s.commit()
+            except _RetryLater:
+                discard_post_commit(s)
+                await s.rollback()  # the claim goes too: the next tick tries again
+                return
             except BaseException:
                 discard_post_commit(s)
                 raise
@@ -205,6 +221,10 @@ class DayCloser:
                 agent_id=None, now=now, redis=self._redis, limit_price=limit,
                 client_order_id=f"smt-dayclose-{due.day:%Y%m%d}-{due.symbol}")
         except SMTError as e:  # the rejected order is kept (committed by the caller)
+            if e.code in TEMPORARY_REFUSALS and now < due.close - CHECK_BEFORE_END:
+                log.warning("safety close of %s refused for now (%s): retried next tick",
+                            due.key, e.code)
+                raise _RetryLater from e
             log.warning("safety close of %s refused: %s", due.key, e.code)
             await self._notify(s, (
                 f"Chiusura di sicurezza rifiutata · {due.name} · {due.symbol}: "

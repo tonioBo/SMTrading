@@ -2,11 +2,12 @@
 
 1. one query: the non-archived portfolios with either switch on (`DAY_SCOPE`); none →
    nothing else (no Redis, market data, Paperclip or broker): the live campaign's case;
-2. mode A portfolios only: for every (timeframe, market) of their approved intraday
+2. the safety close (`DayCloser`) of every portfolio in scope, first: a slow bar
+   evaluation or agent wake never delays it;
+3. mode A portfolios only: for every (timeframe, market) of their approved intraday
    strategies, the bar that just closed is claimed once in `job_runs` (committed before any
    work: never evaluated twice, across overlapping runs and restarts), evaluated
    (`evaluate_close`, once per market) and its triggers handed to the `Waker`;
-3. the safety close (`DayCloser`) of every portfolio in scope;
 4. the broker account states (`refresh_account_states`) every ACCOUNT_READ_INTERVAL_S
    while the DAY_TRADE_MARKET session is open, and once in the AFTER_CLOSE_READ after it;
 5. SUMMARY_AFTER_CLOSE after that close, one Telegram summary per mode A portfolio with
@@ -90,9 +91,10 @@ class IntradayJob:
         if not portfolios:
             return
         mode_a = [p for p in portfolios if p.intraday_enabled]
+        # the safety close first: never delayed by bar evaluations or agent wakes
+        await self._safely("intraday day close", self._day_closer.tick, now)
         if mode_a:
             await self._safely("intraday bars", self._bars, mode_a, now)
-        await self._safely("intraday day close", self._day_closer.tick, now)
         await self._safely("intraday account states", self._account_states, now)
         if mode_a:
             await self._safely("intraday summaries", self._summaries, mode_a, now)
