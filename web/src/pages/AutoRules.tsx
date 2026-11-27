@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useAutoRuleAction, useAutoRuleModels, useAutoRuleResults, useAutoRules, useAutoRuleTrades, usePurgeAutoRules, type AutoRuleActionName } from "@/api/hooks/autoRules";
-import { useIsAdmin } from "@/api/hooks/auth";
+import { useIsAdmin, useMe } from "@/api/hooks/auth";
 import { usePortfolios } from "@/api/hooks/portfolios";
 import type { AutoRule, AutoRuleResult, AutoRuleStream, AutoTrade } from "@/api/types";
 import { AutoRuleBacktest } from "@/components/AutoRuleBacktest";
@@ -18,7 +18,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BLOCKED_LABELS, EXIT_REASON_LABELS, MODEL_LABELS, TRADE_STATUS_LABELS } from "@/lib/autoRules";
 import { errorMessage } from "@/lib/errors";
-import { formatDateTime, formatMoney, formatQty } from "@/lib/format";
+import { formatDateTime, formatDecimal, formatMoney, formatQty } from "@/lib/format";
 
 const INTRO = "Prove: le regole lavorano solo sui portafogli con l'interruttore acceso. Il kill switch ferma tutto.";
 const STATUS_TONE: Record<string, StatusTone> = { draft: "neutral", active: "ok", paused: "warn", braked: "danger" };
@@ -29,6 +29,12 @@ const STREAM_TITLE: Record<AutoRuleStream, string> = {
   polling: "I prezzi si leggono a intervalli: la regola non entra",
   none: "Nessun flusso di prezzi per questo simbolo: la regola non entra",
 };
+
+/** A result in its currency; with no currency the bare number (never a guessed one). */
+function Net({ value, currency }: { value: string | null; currency: string | null }) {
+  if (value == null) return <span className="num text-muted">—</span>;
+  return currency ? <Pnl value={value} currency={currency} /> : <span className="num">{formatDecimal(value, 2)}</span>;
+}
 
 const ms = (v: number | string | null | undefined) => (v == null ? "—" : `${formatQty(String(v))} ms`);
 
@@ -188,7 +194,7 @@ function resultColumns(label: (id: string) => string): Column<AutoRuleResult>[] 
     { key: "rule", header: "Regola", sortValue: (r) => label(r.rule_id), cell: (r) => `${label(r.rule_id)} · v${r.version}` },
     { key: "trades", header: "Operazioni", align: "right", sortValue: (r) => r.trades, cell: (r) => <span className="num">{r.trades}</span> },
     { key: "wl", header: "Vinte / perse", align: "right", cell: (r) => <span className="num">{r.wins} / {r.losses}</span> },
-    { key: "net", header: "Netto", align: "right", sortValue: (r) => Number(r.net), cell: (r) => <Pnl value={r.net} currency={r.net_currency ?? "EUR"} /> },
+    { key: "net", header: "Netto", align: "right", sortValue: (r) => Number(r.net), cell: (r) => <Net value={r.net} currency={r.net_currency} /> },
     { key: "fees", header: "Commissioni", align: "right", cell: (r) => <span className="num whitespace-nowrap">{feesText(r.fees)}</span> },
     { key: "t1", header: "Scatto → invio", align: "right", cell: (r) => <span className="num">{ms(r.median_ms_trigger_to_send)}</span> },
     { key: "t2", header: "Invio → broker", align: "right", cell: (r) => <span className="num">{ms(r.median_ms_send_to_broker)}</span> },
@@ -238,8 +244,8 @@ const tradeColumns: Column<AutoTrade>[] = [
   { key: "m1", header: "Scatto → invio", align: "right", cell: (t) => <span className="num">{ms(t.ms_trigger_to_send)}</span> },
   { key: "m2", header: "Invio → broker", align: "right", cell: (t) => <span className="num">{ms(t.ms_send_to_broker)}</span> },
   { key: "m3", header: "Broker → riempimento", align: "right", cell: (t) => <span className="num">{ms(t.ms_broker_to_fill)}</span> },
-  { key: "fees", header: "Commissioni", align: "right", cell: (t) => <Money value={t.fees_currency ? t.fees : null} currency={t.fees_currency ?? "EUR"} /> },
-  { key: "net", header: "Netto", align: "right", cell: (t) => <Pnl value={t.net_result} currency={t.net_currency ?? "EUR"} /> },
+  { key: "fees", header: "Commissioni", align: "right", cell: (t) => t.fees_currency ? <Money value={t.fees} currency={t.fees_currency} /> : <span className="text-muted">—</span> },
+  { key: "net", header: "Netto", align: "right", cell: (t) => <Net value={t.net_result} currency={t.net_currency} /> },
   { key: "error", header: "Errore", hideOnMobile: false, cell: (t) => (t.error ? <span className="text-xs text-loss">{t.error}</span> : <span className="text-muted">—</span>) },
 ];
 
@@ -341,6 +347,8 @@ function RulesAdmin() {
 
 export default function AutoRules() {
   const admin = useIsAdmin();
+  const me = useMe();
+  if (me.isLoading) return <PageHeader title="Regole automatiche" />;
   if (!admin) {
     return (
       <>

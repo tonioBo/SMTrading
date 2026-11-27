@@ -24,7 +24,7 @@ function ParamField({ p, value, error, onChange }: { p: ModelParam; value: strin
           ))}
         </select>
       ) : (
-        <Input type="number" step="any" value={value} min={p.lo ?? undefined} max={p.hi ?? undefined} onChange={(e) => onChange(e.target.value)} />
+        <Input value={value} inputMode="decimal" onChange={(e) => onChange(e.target.value)} />
       )}
     </FormField>
   );

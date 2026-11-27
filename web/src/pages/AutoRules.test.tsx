@@ -159,6 +159,29 @@ describe("AutoRules", () => {
     });
   });
 
+  it("reads a comma decimal as the numeric string and refuses a bad optional value instead of sending null", async () => {
+    const user = userEvent.setup();
+    renderApp("/regole-automatiche");
+    await user.click(await screen.findByRole("button", { name: "Nuova regola" }));
+    const form = await screen.findByRole("form", { name: "Nuova regola" });
+    await within(within(form).getByLabelText("Portafoglio")).findByRole("option", { name: "Prova" });
+    await user.selectOptions(within(form).getByLabelText("Portafoglio"), "p1");
+    await user.type(within(form).getByLabelText("Simbolo"), "AAPL");
+    await user.type(within(form).getByLabelText("Numero di pezzi"), "5");
+    const stop = within(form).getByLabelText("Stop (%)");
+    await user.clear(stop);
+    await user.type(stop, "0,3");
+    const vol = within(form).getByLabelText(/Volume minimo/);
+    await user.type(vol, "abc");
+    await user.click(within(form).getByRole("button", { name: "Crea la regola" }));
+    expect(await within(form).findByText("Volume minimo (multiplo della media): un numero")).toBeInTheDocument();
+    expect(posts).toEqual([]);
+    await user.clear(vol);
+    await user.click(within(form).getByRole("button", { name: "Crea la regola" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect((posts[0] as { params: Record<string, unknown> }).params).toMatchObject({ stop_pct: "0.3", volume_mult: null });
+  });
+
   it("refuses a value outside the catalog's bounds in the page, without posting", async () => {
     const user = userEvent.setup();
     renderApp("/regole-automatiche");
