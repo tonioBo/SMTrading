@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from smtrading.admin.portfolio_ops import reset_portfolio
 from smtrading.brokers import registry
 from smtrading.brokers import sync as sync_module
-from smtrading.brokers.base import BrokerAdapter, BrokerOrder
+from smtrading.brokers.base import BrokerAdapter, BrokerOrder, BrokerUnreachable
 from smtrading.brokers.models import Reconciliation
 from smtrading.brokers.service import create_link, link_portfolio, update_link
 from smtrading.brokers.sync import BrokerSync, reconcile, reconcile_all
@@ -86,6 +86,9 @@ class Broker:
         self.candidates: list[str] = []  # non-idempotent find_order matches
         self.ignore_exclude = False
         self.finds = 0
+        self.down_kinds: set[str] = set()  # adapters whose broker does not answer
+        self.attempts = 0  # place_order calls (answered or not)
+        self.find_raises: Exception | None = None
 
     def set(self, broker_id: str, status: str, filled, avg) -> None:
         self.orders[broker_id] = BrokerOrder(
@@ -110,7 +113,13 @@ class FakeBrokerAdapter(BrokerAdapter):
     def supports(self, order, instrument) -> bool:
         return self.routable(order, instrument) and not BROKER.unsupported
 
+    def _down(self) -> None:
+        if self.kind in BROKER.down_kinds:
+            raise BrokerUnreachable(f"{self.kind}: ConnectTimeout")
+
     async def place_order(self, order, instrument) -> BrokerOrder:
+        BROKER.attempts += 1
+        self._down()
         if BROKER.fail_next:
             BROKER.fail_next -= 1
             raise RuntimeError("fake: HTTP 503: error")
@@ -127,6 +136,7 @@ class FakeBrokerAdapter(BrokerAdapter):
         return BROKER.orders[bid]
 
     async def get_order(self, broker_order_id: str) -> BrokerOrder:
+        self._down()
         return BROKER.orders[broker_order_id]
 
     async def cancel_order(self, broker_order_id: str) -> None:
@@ -146,8 +156,16 @@ class FakeBrokerAdapter(BrokerAdapter):
 
     async def find_order(self, order, instrument, since, exclude=frozenset()):
         BROKER.finds += 1  # by client reference, like Alpaca
+        self._down()
+        if BROKER.find_raises is not None:
+            raise BROKER.find_raises
         bid = BROKER.by_ref.get(self.client_ref(order))
         return None if bid is None or bid in exclude else BROKER.orders[bid]
+
+
+@registry.register
+class FakeOtherAdapter(FakeBrokerAdapter):
+    kind: ClassVar[str] = "fake_other_test"
 
 
 @registry.register
@@ -663,6 +681,43 @@ async def test_non_idempotent_failure_is_never_resent(maker, redis, qs):
     o2 = await _order(maker, oid2)
     assert o2.status == OrderStatus.rejected and "unknown" in o2.reject_message
     assert BROKER.placed == []
+
+
+async def test_unreachable_broker_one_warning_and_the_link_skipped(maker, redis, qs, caplog):
+    """An expected network failure is one WARNING line (no traceback); once a link failed
+    a connection in a pass, its other orders wait for the next pass (no timeout each);
+    the other links are served."""
+    pid, _ = await _linked_portfolio(maker)
+    other, _ = await _linked_portfolio(maker, kind="fake_other_test")
+    a = await _place(maker, redis, qs, pid)
+    b = await _place(maker, redis, qs, pid)
+    c = await _place(maker, redis, qs, other)
+    BROKER.down_kinds = {"fake_test"}
+    sync = _sync(maker, redis, qs)
+    with caplog.at_level(logging.WARNING, logger="smtrading.brokers.sync"):
+        await sync.tick()
+        assert BROKER.attempts == 2  # a (not answered) and c; b skipped
+        assert (await _order(maker, a)).broker_sent_at is not None
+        assert (await _order(maker, b)).broker_sent_at is None
+        assert (await _order(maker, c)).broker_order_id is not None
+        await sync.tick()  # a: looked up, not answered; b skipped again
+        assert BROKER.finds == 1 and BROKER.attempts == 2
+    mine = [r for r in caplog.records if r.name == "smtrading.brokers.sync"]
+    assert mine and all(r.levelno == logging.WARNING and r.exc_info is None for r in mine)
+    assert any("ConnectTimeout" in r.getMessage() and str(a) in r.getMessage()
+               for r in mine)
+
+    caplog.clear()
+    BROKER.down_kinds, BROKER.find_raises = set(), ValueError("bug")
+    with caplog.at_level(logging.WARNING, logger="smtrading.brokers.sync"):
+        await sync.tick()  # an unexpected error keeps ERROR with its traceback
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert errors and errors[0].exc_info is not None
+    BROKER.find_raises = None
+    await sync.tick()  # a: not at the broker -> to_send
+    await sync.tick()
+    assert (await _order(maker, a)).broker_order_id is not None
+    assert (await _order(maker, b)).broker_order_id is not None
 
 
 async def test_bracket_exits_follow_the_entry_to_the_broker(maker, redis, qs):

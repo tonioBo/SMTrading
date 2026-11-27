@@ -7,6 +7,7 @@ import pytest
 import respx
 
 from smtrading.brokers.alpaca_paper import _STATUS, PAPER_URL, AlpacaPaperAdapter
+from smtrading.brokers.base import BrokerUnreachable
 from smtrading.brokers.live.alpaca_live import AlpacaLiveAdapter
 from smtrading.brokers.service import (
     create_link,
@@ -161,6 +162,28 @@ async def test_network_error_does_not_leak(http):
     with pytest.raises(RuntimeError) as e:
         await AlpacaPaperAdapter(CFG, http).get_positions()
     assert "KID-SECRET" not in str(e.value)
+
+
+@respx.mock
+@pytest.mark.parametrize("exc", [httpx.ConnectTimeout("t"), httpx.ConnectError("refused"),
+                                 httpx.ReadTimeout("r")])
+async def test_network_failure_is_broker_unreachable(http, exc):
+    """An expected outage (timeout, refused, DNS) is a BrokerUnreachable: still a
+    retryable RuntimeError, with the same text."""
+    respx.get(f"{PAPER_URL}/v2/positions").mock(side_effect=exc)
+    with pytest.raises(BrokerUnreachable) as e:
+        await AlpacaPaperAdapter(CFG, http).get_positions()
+    assert isinstance(e.value, RuntimeError)
+    assert str(e.value) == f"alpaca_paper: {type(exc).__name__}"
+
+
+@respx.mock
+async def test_protocol_error_is_not_broker_unreachable(http):
+    respx.get(f"{PAPER_URL}/v2/positions").mock(
+        side_effect=httpx.RemoteProtocolError("bad"))
+    with pytest.raises(RuntimeError) as e:
+        await AlpacaPaperAdapter(CFG, http).get_positions()
+    assert not isinstance(e.value, BrokerUnreachable)
 
 
 @pytest.mark.parametrize("url", [AlpacaLiveAdapter.BASE_URL, "http://localhost:1"])

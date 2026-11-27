@@ -4,6 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import ClassVar, Literal
 
+import httpx
 from sqlalchemy import inspect
 
 from smtrading.brokers.tradable import Tradability, buyable, not_found
@@ -68,6 +69,20 @@ def market_view(order: Order) -> Order:
 class RateLimited(RuntimeError):  # retryable, like any RuntimeError
     """The broker refused the request for its rate limit (HTTP 429): not a rejection,
     and the request was not processed."""
+
+
+class BrokerUnreachable(RuntimeError):  # retryable, like any RuntimeError
+    """The broker did not answer at the network level (connect or read timeout, connection
+    refused, DNS): expected during an outage, logged as a warning without traceback.
+    Its text is the same as a plain RuntimeError's (`<kind>: <httpx error name>`)."""
+
+
+def transport_error(kind: str, e: Exception) -> RuntimeError:
+    """The adapter error for an httpx failure (never its text: it may carry secrets):
+    BrokerUnreachable for a timeout or a network error, a plain RuntimeError otherwise
+    (protocol errors and the like)."""
+    unreachable = isinstance(e, httpx.TimeoutException | httpx.NetworkError)
+    return (BrokerUnreachable if unreachable else RuntimeError)(f"{kind}: {type(e).__name__}")
 
 
 class OutcomeUnknown(RuntimeError):

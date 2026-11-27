@@ -16,7 +16,7 @@ import pytest
 import respx
 
 from smtrading.brokers import etoro_core
-from smtrading.brokers.base import BrokerAdapter, RateLimited
+from smtrading.brokers.base import BrokerAdapter, BrokerUnreachable, RateLimited
 from smtrading.brokers.etoro_core import (
     ETORO_NS,
     ETORO_URL,
@@ -642,6 +642,15 @@ async def test_auth_failure_is_retryable_error_without_keys(plain, mock):
     with pytest.raises(RuntimeError, match="HTTP 401") as e:
         await EtoroDemoAdapter(dict(CFG), plain).health_check()
     assert CFG["api_key"] not in str(e.value) and CFG["user_key"] not in str(e.value)
+
+
+async def test_network_failure_is_broker_unreachable(plain, mock):
+    mock.get(PNL).mock(side_effect=httpx.ConnectTimeout("t"))
+    with pytest.raises(BrokerUnreachable, match="ConnectTimeout"):
+        await EtoroDemoAdapter(dict(CFG), plain).health_check()
+    mock.get(SEARCH).mock(side_effect=httpx.ConnectError("dns"))
+    with pytest.raises(BrokerUnreachable, match="ConnectError"):
+        await etoro_core.search_instrument(plain, {}, "AAPL")
 
 
 def test_other_base_url_forbidden():

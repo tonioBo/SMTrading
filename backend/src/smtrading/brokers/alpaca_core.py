@@ -59,6 +59,7 @@ from smtrading.brokers.base import (
     BrokerOrder,
     BrokerStatus,
     market_view,
+    transport_error,
 )
 from smtrading.brokers.tradable import Tradability, buyable, not_found, unknown
 from smtrading.common.errors import ErrorCode, SMTError
@@ -278,7 +279,7 @@ class _AlpacaProtocol(BrokerAdapter):
                 extensions={"smt_order_id": str(order.id)} if order is not None else None,
             )
         except httpx.HTTPError as e:
-            raise RuntimeError(f"{self.kind}: {type(e).__name__}") from None
+            raise transport_error(self.kind, e) from None
 
     @staticmethod
     def _parse(resp: httpx.Response):
