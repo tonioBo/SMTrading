@@ -371,8 +371,10 @@ async def test_results_per_rule_and_day(env):
     pid = await _portfolio(env)
     rule = await _create(env, pid)
     rid = rule["id"]
-    d1 = datetime(2026, 11, 2, 15, 0, tzinfo=UTC)
-    d2 = datetime(2026, 11, 3, 15, 0, tzinfo=UTC)
+    # the counters live 3 days: yesterday and today
+    d2 = datetime.now(UTC).replace(hour=0, minute=1, second=0, microsecond=0)
+    d1 = d2 - timedelta(days=1) + timedelta(hours=15)
+    day1, day2 = d1.date().isoformat(), d2.date().isoformat()
     await _trade(env, rid, pid, key="1", at=d1, net="3", fees="0.5", ms=(10, 100, 7), slip="2")
     await _trade(env, rid, pid, key="2", at=d1 + timedelta(minutes=5), net="-1", fees="0.5",
                  ms=(20, 200, 9), slip="3")
@@ -382,12 +384,16 @@ async def test_results_per_rule_and_day(env):
                  version=2)
     await _trade(env, rid, pid, key="5", at=d2 + timedelta(minutes=1), status="rejected",
                  net=None, fees="0", ms=(15, 60, 3), slip=None, version=2)
-    await env.redis.hset(f"autorules:blocked:{rid}:20261102", mapping={"stale": 2, "spread": 1})
+    await env.redis.hset(f"autorules:blocked:{rid}:{d1:%Y%m%d}",
+                         mapping={"stale": 2, "spread": 1})
+    old = d2 - timedelta(days=10)  # older than the counters' life: not looked up
+    await env.redis.hset(f"autorules:blocked:{rid}:{old:%Y%m%d}", "stale", 5)
     r = await env.client.get("/api/auto-rules/results", params={
-        "portfolio_id": pid, "from": "2026-11-01", "to": "2026-11-04"})
+        "portfolio_id": pid, "from": (old - timedelta(days=1)).date().isoformat(),
+        "to": day2})
     assert r.status_code == 200, r.text
     rows = r.json()
-    assert [(x["rule_id"], x["day"]) for x in rows] == [(rid, "2026-11-02"), (rid, "2026-11-03")]
+    assert [(x["rule_id"], x["day"]) for x in rows] == [(rid, day1), (rid, day2)]
     one, two = rows
     assert (one["version"], one["trades"], one["wins"], one["losses"]) == (1, 3, 2, 1)
     assert one["net"] == "4" and one["fees"] == {"USD": "1.25"}
@@ -466,6 +472,71 @@ async def test_backtest_endpoint_limits(env):
         assert D(r.json()["fees"]) == 0 and len(r.json()["trades"]) == 2
 
 
+def _fake_result(n: int):
+    from smtrading.autorules.replay import ReplayResult, ReplayTrade
+
+    t0 = datetime(2026, 11, 2, 15, tzinfo=UTC)
+    trades = [ReplayTrade(t0 + timedelta(minutes=i), D(100), t0 + timedelta(minutes=i, seconds=30),
+                          D(101), "target", D(1), D(0), D(1)) for i in range(n)]
+    return ReplayResult(trades, D(n), D(0), n, 0, D(0), ["nota"])
+
+
+def _backtest_body():
+    return {"symbol": SYMBOL, "model": "breakout", "params": {}, "qty": "1",
+            "from": "2026-11-02", "to": "2026-11-02", "fee_rule": "zero"}
+
+
+async def test_backtest_does_not_block_the_loop_and_runs_one_at_a_time(env, monkeypatch):
+    import time as _time
+
+    from smtrading.admin import routes_auto_rules
+
+    def slow_replay(*a, **kw):
+        _time.sleep(1.5)  # CPU-bound work stand-in: blocks its thread, not the loop
+        return _fake_result(3)
+
+    monkeypatch.setattr(routes_auto_rules, "replay", slow_replay)
+    body = _backtest_body()
+    with respx.mock(assert_all_mocked=True, assert_all_called=False) as mock:
+        mock.get(BARS_URL).mock(return_value=httpx.Response(200, json={
+            "bars": {SYMBOL: _alpaca_bars(datetime(2026, 11, 2, tzinfo=UTC))},
+            "next_page_token": None}))
+        long = asyncio.create_task(env.client.post("/api/auto-rules/backtest", json=body))
+        await asyncio.sleep(0.5)  # the replay is running
+        t0 = _time.monotonic()
+        health = await env.client.get("/health")
+        # answered while the replay runs (503 here: no worker heartbeat in the test)
+        assert health.status_code in (200, 503) and _time.monotonic() - t0 < 0.8
+        assert not long.done()
+        busy = await env.client.post("/api/auto-rules/backtest", json=body)
+        _refused(busy, code="RATE_LIMITED", text="già in corso")
+        r = await long
+        assert r.status_code == 200, r.text
+        assert r.json()["trades_total"] == 3 and r.json()["truncated"] is False
+        # the slot is free again
+        r = await env.client.post("/api/auto-rules/backtest", json=body)
+        assert r.status_code == 200, r.text
+
+
+async def test_backtest_trades_truncated(env, monkeypatch):
+    from smtrading.admin import routes_auto_rules
+
+    monkeypatch.setattr(routes_auto_rules, "replay", lambda *a, **kw: _fake_result(600))
+    with respx.mock(assert_all_mocked=True, assert_all_called=False) as mock:
+        mock.get(BARS_URL).mock(return_value=httpx.Response(200, json={
+            "bars": {SYMBOL: _alpaca_bars(datetime(2026, 11, 2, tzinfo=UTC))},
+            "next_page_token": None}))
+        r = await env.client.post("/api/auto-rules/backtest", json=_backtest_body())
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["truncated"] is True and got["trades_total"] == 600
+    assert len(got["trades"]) == routes_auto_rules.MAX_RETURNED_TRADES
+    assert got["net"] == "600" and got["wins"] == 600  # the totals count every trade
+    # the newest kept: trades 100..599
+    assert got["trades"][0]["entry_ts"] == "2026-11-02T16:40:00+00:00"
+    assert got["trades"][-1]["entry_ts"] == "2026-11-03T00:59:00+00:00"
+
+
 async def test_backtest_fees_from_the_link_preset(env):
     from smtrading.brokers.service import create_link
 
@@ -527,6 +598,22 @@ async def test_purge_refuses_and_deletes(env):
     rule = await _create(env, shared)
     r = await env.client.delete(f"/api/portfolios/{shared}/auto-rules")
     _refused(r, text="agenti")
+
+    from datetime import date
+
+    from smtrading.campaigns.models import Campaign, CampaignPortfolio
+
+    in_campaign = await _portfolio(env)
+    await _create(env, in_campaign)
+    async with env.sm() as s:
+        c = Campaign(name=f"C-{uuid.uuid4().hex[:6]}", start_date=date(2026, 11, 1),
+                     end_date=date(2026, 12, 23))
+        s.add(c)
+        await s.flush()
+        s.add(CampaignPortfolio(campaign_id=c.id, portfolio_id=uuid.UUID(in_campaign)))
+        await s.commit()
+    r = await env.client.delete(f"/api/portfolios/{in_campaign}/auto-rules")
+    _refused(r, text="campagna")
 
     pid = await _portfolio(env)
     first = await _create(env, pid)

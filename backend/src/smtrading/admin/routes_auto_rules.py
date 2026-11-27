@@ -17,6 +17,8 @@ travel as strings (ints accepted): a JSON number with a fraction is refused with
 message, never read through float. Numbers go out as strings (`to_jsonable`). Nothing
 here carries an account id or a secret: the broker link appears only as its id."""
 
+import asyncio
+import functools
 import uuid
 from dataclasses import asdict
 from datetime import UTC, date, datetime, time, timedelta
@@ -40,7 +42,7 @@ from smtrading.agents.service import write_audit
 from smtrading.autorules import rules as service
 from smtrading.autorules.brakes import day_start
 from smtrading.autorules.feed import read_stream_status, stream_state
-from smtrading.autorules.guards import BLOCKED_KEY
+from smtrading.autorules.guards import BLOCKED_KEY, BLOCKED_TTL_S
 from smtrading.autorules.models import model_catalog, validate_brakes, validate_params
 from smtrading.autorules.replay import ReplayResult, max_drawdown, replay
 from smtrading.autorules.tables import (
@@ -72,6 +74,10 @@ STREAM_IT = {"stream": "con flusso", "polling": "in polling", "none": "senza flu
 DEFAULT_TRADE_LIMIT, MAX_TRADE_LIMIT = 100, 500
 DEFAULT_RESULT_DAYS, MAX_RESULT_DAYS = 30, 92
 BACKTEST_MAX_DAYS, BACKTEST_MAX_SYMBOLS = 30, 5
+MAX_RETURNED_TRADES = 500  # the newest ones; the totals count them all
+BACKTEST_BUSY = "una prova sullo storico è già in corso: riprova tra poco"
+# one backtest at a time per API worker (the replay is CPU work, run in a thread)
+_backtest_slot = asyncio.Semaphore(1)
 MAX_SPREAD_PCT, MAX_DELAY_S = Decimal(5), 60
 DEFAULT_DAY_CLOSE_MINUTES = 10  # the portfolios' column default, when no portfolio is given
 FLOAT_MESSAGE = '{label} {key}: scrivi i numeri decimali come testo, per esempio "0.3"'
@@ -290,7 +296,10 @@ async def results(
         .order_by(AutoTrade.trigger_at, AutoTrade.id)))
     session.expunge_all()  # the rows stay loaded (a rollback would expire them)
     await session.rollback()  # no transaction open across the Redis reads
-    days = [first + timedelta(days=i) for i in range((last - first).days + 1)]
+    # the counters expire after BLOCKED_TTL_S: older days are not looked up
+    oldest = datetime.now(UTC).date() - timedelta(seconds=BLOCKED_TTL_S)
+    days = [d for d in (first + timedelta(days=i) for i in range((last - first).days + 1))
+            if d >= oldest]
     keys = [(rid, d) for rid in versions for d in days]
     async with redis.pipeline(transaction=False) as pipe:
         for rid, d in keys:
@@ -489,13 +498,17 @@ async def _fee_rules(session: AsyncSession, body: AutoBacktestIn,
 
 
 def _result_dto(results: dict[str, ReplayResult], start: datetime, end: datetime) -> dict:
+    """The totals over every trade; `trades` holds at most the MAX_RETURNED_TRADES newest
+    (by exit time), `truncated` says when some were left out."""
     trades = sorted(((s, t) for s, r in results.items() for t in r.trades),
                     key=lambda x: (x[1].exit_ts, x[0]))
     nets = [t.net for _, t in trades]
     notes = list(dict.fromkeys(n for r in results.values() for n in r.notes))
+    shown = trades[-MAX_RETURNED_TRADES:]
     return to_jsonable({
         "symbols": list(results), "from": start, "to": end,
-        "trades": [{"symbol": s, **asdict(t)} for s, t in trades],
+        "trades": [{"symbol": s, **asdict(t)} for s, t in shown],
+        "trades_total": len(trades), "truncated": len(shown) < len(trades),
         "net": sum(nets, Decimal(0)),
         "fees": sum((t.fees for _, t in trades), Decimal(0)),
         "wins": sum(r.wins for r in results.values()),
@@ -513,7 +526,16 @@ async def backtest(body: AutoBacktestIn, request: Request, session: DbSession) -
     """The replay (autorules.replay) of a model on one-minute bars (MarketDataRouter,
     shared cache and rate limit): at most BACKTEST_MAX_DAYS days and BACKTEST_MAX_SYMBOLS
     symbols (RISK_LIMIT_EXCEEDED beyond). The reads come first, then the transaction is
-    closed: no transaction is open during the history fetch."""
+    closed: no transaction is open during the history fetch. The replay and the result run
+    in a worker thread (the event loop keeps serving), one backtest at a time per worker:
+    another one meanwhile is refused (RATE_LIMITED)."""
+    if _backtest_slot.locked():
+        raise SMTError(ErrorCode.RATE_LIMITED, BACKTEST_BUSY)
+    async with _backtest_slot:
+        return await _backtest(body, request, session)
+
+
+async def _backtest(body: AutoBacktestIn, request: Request, session: AsyncSession) -> dict:
     symbols = _backtest_symbols(body)
     start, end = _backtest_span(body)
     params = validate_params(body.model, decimals_as_text(body.params, "parametro"))
@@ -549,9 +571,9 @@ async def backtest(body: AutoBacktestIn, request: Request, session: DbSession) -
     for s, instr in instruments.items():
         bars = await md.get_bars(s, Timeframe.m1, start, end)
         buy, sell = fees[s]
-        results[s] = replay(
-            bars, model=body.model, params=params, market=instr.market,
+        results[s] = await asyncio.to_thread(functools.partial(
+            replay, bars, model=body.model, params=params, market=instr.market,
             tick_size=instr.tick_size, qty=qty, notional=notional, fee_rule=buy,
             exit_fee_rule=sell, spread_pct=spread, delay_s=body.delay_s,
-            day_close_minutes=day_close, lot_size=instr.lot_size)
-    return _result_dto(results, start, end)
+            day_close_minutes=day_close, lot_size=instr.lot_size))
+    return await asyncio.to_thread(_result_dto, results, start, end)

@@ -37,6 +37,7 @@ from smtrading.autorules.tables import (
     AutoRuleVersion,
     AutoTrade,
 )
+from smtrading.campaigns.models import CampaignPortfolio
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.models import OPEN_STATUSES, Order
 from smtrading.events import (
@@ -301,6 +302,8 @@ async def pause_all(session: AsyncSession, portfolio_id: uuid.UUID, *, by: str,
 
 PURGE_AGENTS = ("il portafoglio è assegnato ad agenti: la pulizia delle regole automatiche "
                 "vale solo per i portafogli di prova senza agenti")
+PURGE_CAMPAIGN = ("il portafoglio fa parte di una campagna: la pulizia delle regole "
+                  "automatiche vale solo per i portafogli di prova fuori dalle campagne")
 PURGE_ACTIVE = "c'è una regola attiva sul portafoglio: mettila in pausa prima della pulizia"
 PURGE_OPEN = ("ci sono operazioni automatiche ancora aperte o in invio sul portafoglio: "
               "aspetta che si chiudano prima della pulizia")
@@ -310,14 +313,17 @@ async def purge_portfolio(session: AsyncSession, portfolio_id: uuid.UUID, *,
                           by: str) -> dict:
     """End of a drill: deletes every rule of the portfolio, its versions (cascade) and its
     trades (`orders.auto_rule_id` goes to null by itself), audited as
-    `admin:auto_rules.purge`. Only on a portfolio without `agent_portfolios` rows, no
-    active rule and no trade `sent`/`open`. After the commit: the symbols no active rule
+    `admin:auto_rules.purge`. Only on a portfolio without `agent_portfolios` rows, in no
+    campaign (`campaign_portfolios`), with no active rule and no trade `sent`/`open`. After the commit: the symbols no active rule
     uses any more leave the stream (`untrack`) and lose their `bars1m:{symbol}` stream;
     the rules' blocked-entry counters and refusal cooldowns are deleted. {rules, trades}."""
     await lock_portfolio(session, portfolio_id)
     if await session.scalar(select(exists().where(
             AgentPortfolio.portfolio_id == portfolio_id))):
         raise _invalid(PURGE_AGENTS, portfolio_id=str(portfolio_id))
+    if await session.scalar(select(exists().where(
+            CampaignPortfolio.portfolio_id == portfolio_id))):
+        raise _invalid(PURGE_CAMPAIGN, portfolio_id=str(portfolio_id))
     rules = list(await session.scalars(
         select(AutoRule).where(AutoRule.portfolio_id == portfolio_id)
         .order_by(AutoRule.id).with_for_update().execution_options(populate_existing=True)))
