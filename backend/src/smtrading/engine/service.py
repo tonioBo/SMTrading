@@ -827,11 +827,18 @@ def _check_bracket_prices(
 async def place_bracket_order(
     session: AsyncSession, qs: QuoteSource, req: PlaceOrderRequest, *,
     take_profit: Decimal, stop_loss: Decimal, now: datetime | None = None, redis=None,
+    expected_price: Decimal | None = None, max_drift: Decimal | None = None,
 ) -> list[Order]:
     """[entry, take_profit, stop_loss]; the children are `held` until the entry fills.
 
     The children are reduce_only (Ruling R22). A replayed client_order_id is looked up
-    before the prices are validated against the current quote."""
+    before the prices are validated against the current quote.
+
+    `expected_price` and `max_drift` (both or neither; the automatic entries'): the
+    price the caller computed the levels from and how far the placement quote (the one
+    the prices are validated and the entry filled on) may be from it. Further away,
+    nothing is stored: INVALID_ORDER with `reason` "price_moved" (never a bracket whose
+    levels straddle another price than the caller's). Without them, as before."""
     req = _validate_request(req)
     if req.type not in (OrderType.market, OrderType.limit):
         raise _invalid("a bracket entry must be a market or limit order")
@@ -857,13 +864,26 @@ async def place_bracket_order(
             )
         return [entry, *children]
 
-    reference = req.limit_price
-    if reference is None:
+    drift_check = expected_price is not None and max_drift is not None
+    quoted = None  # the placement quote's side of the entry
+    if req.limit_price is None or drift_check:
         quote = await _try_quote(adm.qs, instrument.symbol)
         if quote is not None:
             bid, ask = await _bid_ask(session, instrument, quote)
-            reference = ask if req.side == OrderSide.buy else bid
-    _check_bracket_prices(req.side, take_profit, stop_loss, reference)
+            quoted = ask if req.side == OrderSide.buy else bid
+    reference = req.limit_price if req.limit_price is not None else quoted
+    if drift_check and quoted is not None and abs(quoted - expected_price) > max_drift:
+        log.info("bracket on %s not placed: price moved (placement %s, expected %s, "
+                 "tolerance %s)", instrument.symbol, quoted, expected_price, max_drift)
+        raise _invalid("price moved since the levels were computed", reason="price_moved",
+                       reference=quoted, expected=expected_price, max_drift=max_drift)
+    try:
+        _check_bracket_prices(req.side, take_profit, stop_loss, reference)
+    except SMTError:
+        log.warning("bracket on %s refused: reference %s, expected %s, stop %s, target %s "
+                    "(%s)", instrument.symbol, reference, expected_price, stop_loss,
+                    take_profit, req.side.value)
+        raise
     await _check_admission(session, adm)
 
     entry = await _persist(session, adm, role="entry")

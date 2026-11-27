@@ -709,3 +709,74 @@ async def test_stale_bars_block_logged_once_and_clear_logged(sm, redis, qs, capl
     assert await ex.enter(rule, _runner(rule, NOW - timedelta(minutes=4)), _entry(q), q)
     infos = [r for r in caplog.records if r.levelno == logging.INFO and "fresh again" in r.getMessage()]
     assert len(infos) == 1
+
+
+# --- the placement quote against the trigger's ---------------------------------------------
+
+def _jpm_trigger() -> Quote:
+    """The live drill's trigger (stop_pct 0.3, target_pct 0.5): expected = ask 323.38,
+    stop 322.40 (322.41 live), target 325.00."""
+    return Quote(symbol="AAPL", bid=D("323.10"), ask=D("323.38"), last=D("323.32"), ts=NOW,
+                 provider="fake")
+
+
+async def _tick(sm, symbol="AAPL") -> None:
+    async with sm() as s:
+        (await s.get(Instrument, symbol)).tick_size = D("0.01")
+        await s.commit()
+
+
+@pytest.mark.parametrize("cached_ask", ["325.10", "322.30", "324.00"])
+async def test_price_moved_since_the_trigger_no_order(sm, redis, qs, cached_ask, caplog):
+    """The cache the engine places on holds another ask than the trigger's, beyond half
+    the stop distance: no order, no trade row, no cooldown, counted `price_moved`."""
+    from smtrading.autorules import executor as executor_module
+
+    await _tick(sm)
+    rule = await _rule(sm, params={"stop_pct": "0.3", "target_pct": "0.5"})
+    await _ready(redis, "AAPL")
+    await _quote(redis, bid=str(D(cached_ask) - D("0.28")), ask=cached_ask)
+    trigger = _jpm_trigger()
+    runner = _runner(rule)
+    assert runner.levels(trigger.ask) == (D("322.40"), D("325.00"))
+    caplog.set_level("INFO")
+    assert await Executor(sm, redis, qs, clock=Clock(NOW)).enter(
+        rule, runner, _entry(trigger), trigger) is None
+    assert await _orders(sm, rule) == [] and await _trades(sm, rule) == []
+    assert await _blocked(redis, rule) == {"price_moved": 1}
+    assert not await redis.exists(executor_module.REJECT_KEY.format(rule_id=rule.rule_id))
+    assert runner.state == "flat"
+    assert any("price moved" in r.getMessage() and cached_ask in r.getMessage()
+               and "323.38" in r.getMessage() for r in caplog.records)
+
+
+async def test_placement_quote_close_to_trigger_levels_from_trigger(sm, redis, qs):
+    """Within the tolerance the bracket goes, its levels from the trigger's price."""
+    await _tick(sm)
+    rule = await _rule(sm, params={"stop_pct": "0.3", "target_pct": "0.5"})
+    await _ready(redis, "AAPL")
+    await _quote(redis, bid="323.20", ask="323.50")
+    trigger = _jpm_trigger()
+    trade = await Executor(sm, redis, qs, clock=Clock(NOW)).enter(
+        rule, _runner(rule), _entry(trigger), trigger)
+    assert trade is not None and trade.status == SENT
+    assert trade.expected_price == D("323.38")
+    by_role = {o.role: o for o in await _orders(sm, rule)}
+    assert by_role["take_profit"].limit_price == D("325.00")
+    assert by_role["stop_loss"].stop_price == D("322.40")
+
+
+async def test_bracket_price_refusal_logged(sm, redis, qs, caplog):
+    """A bracket-price refusal logs the reference, the expected price and the levels."""
+    await _tick(sm)
+    rule = await _rule(sm)
+    await _ready(redis, "AAPL")
+    q = await _quote(redis)
+    runner = _runner(rule)
+    runner.levels = lambda expected: (expected + D(1), expected + D(2))  # stop above
+    caplog.set_level("INFO")
+    trade = await Executor(sm, redis, qs, clock=Clock(NOW)).enter(rule, runner, _entry(q), q)
+    assert trade is not None and trade.status == REJECTED
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "reference 200.00" in text and "expected 200.00" in text
+    assert "stop 201.00" in text and "target 202.00" in text

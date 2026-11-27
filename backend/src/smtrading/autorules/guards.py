@@ -21,6 +21,7 @@ BRAKED = "braked"
 SIZE = "size"  # the rule's amount buys less than one lot: no order
 REJECTED = "rejected"  # a risk refusal of the rule is cooling down: no new attempt
 INACTIVE = "inactive"  # switch off, rule no longer active or a newer version at send time
+PRICE_MOVED = "price_moved"  # the placement quote too far from the trigger's: no order
 BARS_STALE = "bars_stale"  # the runner's newest minute bar is too old: frozen indicators
 
 # the runner's newest minute bar closed longer ago than this with the market open: its

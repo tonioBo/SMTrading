@@ -17,6 +17,14 @@ nothing (`inactive` counted). A risk refusal is stored once (the rejected trade 
 entry) and the rule makes no new attempt for REJECT_COOLDOWN_S: the repeats are only
 counted (`rejected`), never new rows.
 
+The levels are computed from the trigger's price (`expected`, its ask) and the engine
+validates and fills the bracket on its own placement quote (the cache, read again): the
+two may differ (another write of the cache, a later tick). The engine is given
+`expected` and a tolerance of half the nearer level's distance: a placement quote further
+away places nothing (`price_moved` counted, no trade row, no cooldown); within it the
+levels cannot straddle the placement price. Any bracket-price refusal is logged with the
+reference, the expected price and the levels.
+
 The time and end-of-session exits (`exit`) are the scalper's: one reduce-only market
 order per trade (`smt-autox-{trade}`, the engine's `close_position`, which cancels the
 bracket's stop and target, Ruling R16), never refused by the day-trade checks (risk step
@@ -55,6 +63,7 @@ from smtrading.autorules.broker_times import auto_exit_client_id
 from smtrading.autorules.feed import read_stream_status, stream_state
 from smtrading.autorules.guards import (
     INACTIVE,
+    PRICE_MOVED,
     REJECT_KEY,
     SIZE,
     check_entry,
@@ -276,17 +285,33 @@ class Executor:
                     raise  # logged by enter as an error
                 log.info("automatic rule %s: trigger %s already worked", rule.rule_id, key)
                 return None
-            error = await self._place(session, req, target, stop, now, trade)
-            if error is not None:
-                trade.status, trade.error = REJECTED, _error_text(error)
+            # the placement quote may be this far from the trigger's: half the nearer
+            # level, so the bracket never straddles another price than `expected`
+            drift = min(expected - stop, target - expected) / 2
+            error = await self._place(session, req, target, stop, now, trade,
+                                      expected=expected, drift=drift if drift > 0 else None)
+            moved = error is not None and (error.details or {}).get("reason") == PRICE_MOVED
+            if moved:
+                await session.rollback()  # no trade row, no cooldown: a blocked entry
             else:
-                trade.sent_at = self._clock()
-                trade.ms_trigger_to_send = _ms(trade.sent_at - entry.ts)
-            await session.commit()
-            await dispatch_post_commit(session, self._redis)
+                if error is not None:
+                    trade.status, trade.error = REJECTED, _error_text(error)
+                else:
+                    trade.sent_at = self._clock()
+                    trade.ms_trigger_to_send = _ms(trade.sent_at - entry.ts)
+                await session.commit()
+                await dispatch_post_commit(session, self._redis)
+        if moved:
+            log.info("automatic rule %s: entry on %s not sent, price moved (placement %s, "
+                     "trigger %s, stop %s, target %s)", rule.rule_id, rule.symbol,
+                     error.details.get("reference"), expected, stop, target)
+            await self._count(rule, now, PRICE_MOVED)
+            return None
         if error is not None:
-            log.info("automatic rule %s: entry on %s refused (%s); no new attempt for %s s",
-                     rule.rule_id, rule.symbol, trade.error, REJECT_COOLDOWN_S)
+            log.info("automatic rule %s: entry on %s refused (%s; reference %s, expected %s, "
+                     "stop %s, target %s); no new attempt for %s s", rule.rule_id,
+                     rule.symbol, trade.error, (error.details or {}).get("reference"),
+                     expected, stop, target, REJECT_COOLDOWN_S)
             try:
                 await self._redis.set(REJECT_KEY.format(rule_id=rule.rule_id),
                                       str(error.code), ex=REJECT_COOLDOWN_S)
@@ -314,7 +339,8 @@ class Executor:
         return row is not None and row.status == ACTIVE and row.version == rule.version
 
     async def _place(self, session, req: PlaceOrderRequest, target: Decimal, stop: Decimal,
-                     now: datetime, trade: AutoTrade) -> SMTError | None:
+                     now: datetime, trade: AutoTrade, *, expected: Decimal,
+                     drift: Decimal | None) -> SMTError | None:
         """The bracket in a savepoint: a refusal the engine stored (`persisted`: the
         rejected entry) stays; any other refusal leaves nothing behind."""
         effects = session.info.setdefault(POST_COMMIT_KEY, [])
@@ -324,7 +350,7 @@ class Executor:
                 try:
                     orders = await place_bracket_order(
                         session, self.qs, req, take_profit=target, stop_loss=stop, now=now,
-                        redis=self._redis)
+                        redis=self._redis, expected_price=expected, max_drift=drift)
                 except SMTError as e:
                     if not e.persisted:
                         raise

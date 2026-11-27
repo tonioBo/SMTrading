@@ -39,6 +39,7 @@ export const BLOCKED_LABELS: Record<string, string> = {
   rejected: "rifiutata dai controlli di rischio",
   inactive: "regola non più attiva",
   bars_stale: "barre al minuto ferme",
+  price_moved: "prezzo cambiato all'invio",
 };
 
 export const PARAM_LABELS: Record<string, { label: string; help: string }> = {
