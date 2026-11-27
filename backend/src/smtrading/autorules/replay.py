@@ -10,17 +10,20 @@ the parts of the executor and the broker:
   after `trigger + delay_s`; stop and target are `runner.levels(ask at the trigger)` (the
   executor's expected price); the quantity is `qty`, or `notional / ask at the trigger`
   rounded down to `lot_size` when given (none: nothing to buy, like the live guard);
-- from the price after the fill: the stop touched (`p <= stop`) sells at
-  `min(stop, bid)`, the target touched (`p >= target`) at the target; the runner's own
+- from the price after the fill, triggered on the bid like the engine's sell orders
+  (`engine.triggers`): the stop (`bid <= stop`) sells at `min(stop, bid)`, the target
+  (`bid >= target`) at the target; the runner's own
   exits (time, end of session) sell at the bid of the first price at or after
   `exit + delay_s` (the bracket's stop and target canceled, as `close_position` does);
 - fees `compute_trade_fee(fee_rule, notional)` on the entry and on the exit.
 
 Declared limits (in every result's notes): inside a minute only four prices are known,
 so a bar that reaches both the target and the stop is taken as a stop (prudent), even
-when its path reaches the target first; one-minute volume of equities on the free data
+when its path reaches the target first (and the runner's time or session exit is not
+taken at a price above the target before that stop); one-minute volume of equities on the free data
 plan is IEX only. A trade still open at the end of the history is closed at the last bid
-(`end`, noted). Brakes, guards on stale quotes and the risk checks are not replayed."""
+(`end`, noted). Brakes, the guards on stale quotes and on the spread, the risk checks
+and the currency conversion of the fees are not replayed (noted)."""
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import ROUND_FLOOR, Decimal
@@ -34,6 +37,8 @@ MINUTE_NOTE = ("al minuto non si vedono i movimenti dentro il minuto; volume sol
                "le azioni con il flusso gratuito")
 PRUDENT_NOTE = ("stop e obiettivo raggiunti nello stesso minuto: si assume lo stop "
                 "(scelta prudente)")
+NOT_SIMULATED_NOTE = ("freni, controlli su prezzi vecchi e forbice, controlli di rischio e "
+                      "cambio valuta delle commissioni non sono simulati")
 END_NOTE = "operazione ancora aperta alla fine dello storico: chiusa all'ultimo prezzo"
 _STEP = timedelta(seconds=15)
 
@@ -128,7 +133,7 @@ def replay(bars: list[Bar], *, model: str, params: dict, market: str, tick_size:
     half = spread_pct / 200
     delay = timedelta(seconds=delay_s)
     trades: list[ReplayTrade] = []
-    notes = [MINUTE_NOTE, PRUDENT_NOTE]
+    notes = [MINUTE_NOTE, PRUDENT_NOTE, NOT_SIMULATED_NOTE]
     trade: _Trade | None = None
     last: tuple[datetime, Decimal] | None = None  # the last price's ts and bid
 
@@ -159,15 +164,19 @@ def replay(bars: list[Bar], *, model: str, params: dict, market: str, tick_size:
                     close(ts, bid, trade.exit_reason)
                 continue
             if trade is not None:  # open, its stop and target resting
-                if p <= trade.stop:
+                # the engine's triggers of a sell: stop on bid <= stop, limit on bid >= limit
+                if bid <= trade.stop:
                     close(ts, min(trade.stop, bid), "stop")
                     continue
-                if p >= trade.target and not target_blocked:
-                    if any(q <= trade.stop for _, q in path[i + 1:]):
-                        target_blocked = True
-                    else:
+                if bid >= trade.target:
+                    if not target_blocked and not any(
+                            q * (1 - half) <= trade.stop for _, q in path[i + 1:]):
                         close(ts, trade.target, "target")
                         continue
+                    # the stop comes later in this minute (prudent): no exit of the
+                    # runner above the target at this price either
+                    target_blocked = True
+                    continue
             intent = runner.on_price(ts, p, bid, ask)
             if isinstance(intent, Entry):
                 size = _size(qty, notional, lot_size, ask)

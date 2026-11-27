@@ -7,7 +7,13 @@ from uuid import uuid4
 
 import pytest
 
-from smtrading.autorules.replay import MINUTE_NOTE, ReplayResult, price_path, replay
+from smtrading.autorules.replay import (
+    MINUTE_NOTE,
+    NOT_SIMULATED_NOTE,
+    ReplayResult,
+    price_path,
+    replay,
+)
 from smtrading.common.errors import SMTError
 from smtrading.fees.calculator import FeeRuleData, compute_trade_fee
 from smtrading.fees.models import FeeScope, FeeSide
@@ -108,6 +114,35 @@ def test_stop_exit_at_most_the_stop():
     assert t.exit_reason == "stop" and t.exit_price == D("100.99") * (1 - D("0.2") / 200)
 
 
+def test_target_needs_the_bid():
+    """With a 0.2% spread the target is ⌈101.3012 × 1.005⌉ = 101.81: a high of 101.81 is
+    the mid only, its bid (101.70819) never reaches the sell limit → no target exit."""
+    mid_only = bar(at(21), "101.3", "101.81", "101.3", "101.5")
+    [t] = run([*WARM, BREAKOUT, mid_only], spread="0.2").trades
+    assert t.exit_reason == "end"
+    reached = bar(at(21), "101.3", "101.92", "101.3", "101.5")  # bid 101.81808
+    [t] = run([*WARM, BREAKOUT, reached], spread="0.2").trades
+    assert t.exit_reason == "target" and t.exit_price == D("101.81")
+
+
+def test_stop_triggers_on_the_bid():
+    """The mid stays above the stop (100.99), the bid below it: the stop fires."""
+    dip = bar(at(21), "101.1", "101.1", "101.05", "101.08")  # bid at the low 100.94895
+    [t] = run([*WARM, BREAKOUT, dip], spread="0.2").trades
+    assert t.exit_reason == "stop" and t.exit_ts == at(21, 30)
+    assert t.exit_price == D("101.05") * (1 - D("0.2") / 200)
+
+
+def test_blocked_target_no_runner_exit_above_it():
+    """The time exit is due at 22:15, the point where the falling bar's high reaches the
+    target with the stop later in the minute: no exit at 102 there, the stop at 22:30."""
+    held = flat(at(21), 1, "101.2")
+    both = bar(at(22), "101.3", "102", "100.5", "100.8")
+    [t] = run([*WARM, BREAKOUT, *held, both], params={"max_hold_s": 105}).trades
+    assert t.exit_reason == "stop" and t.exit_ts == at(22, 30)
+    assert t.exit_price == D("100.5")
+
+
 def test_time_exit():
     held = flat(at(21), 3, "101.2")
     [t] = run([*WARM, BREAKOUT, *held], params={"max_hold_s": 120}).trades
@@ -153,6 +188,9 @@ def test_notes_declare_minute_limit():
                            "solo IEX per le azioni con il flusso gratuito")
     assert MINUTE_NOTE in result.notes
     assert any("stop" in n for n in result.notes)  # the prudent rule is declared
+    assert NOT_SIMULATED_NOTE == ("freni, controlli su prezzi vecchi e forbice, controlli di "
+                                  "rischio e cambio valuta delle commissioni non sono simulati")
+    assert NOT_SIMULATED_NOTE in result.notes
     assert result.trades == [] and result.net == 0 and result.max_drawdown == 0
 
 
