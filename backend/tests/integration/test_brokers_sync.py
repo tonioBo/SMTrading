@@ -18,7 +18,7 @@ from smtrading.admin.portfolio_ops import reset_portfolio
 from smtrading.brokers import registry
 from smtrading.brokers import sync as sync_module
 from smtrading.brokers.base import BrokerAdapter, BrokerOrder, BrokerUnreachable
-from smtrading.brokers.models import Reconciliation
+from smtrading.brokers.models import BrokerLink, Reconciliation
 from smtrading.brokers.service import create_link, link_portfolio, update_link
 from smtrading.brokers.sync import BrokerSync, reconcile, reconcile_all
 from smtrading.common.db import make_engine
@@ -60,6 +60,7 @@ from smtrading.risk.margin import check_portfolio_margin
 from smtrading.risk.models import Notification, TradingHalt
 from smtrading.risk.settings import set_kill_switch
 from smtrading.seed import run_seed
+from smtrading.telegram.models import TelegramOutbox
 
 D = Decimal
 TEN = D(10)
@@ -152,6 +153,7 @@ class FakeBrokerAdapter(BrokerAdapter):
             )
 
     async def get_positions(self) -> dict[str, Decimal]:
+        self._down()
         return dict(BROKER.positions)
 
     async def find_order(self, order, instrument, since, exclude=frozenset()):
@@ -718,6 +720,76 @@ async def test_unreachable_broker_one_warning_and_the_link_skipped(maker, redis,
     await sync.tick()
     assert (await _order(maker, a)).broker_order_id is not None
     assert (await _order(maker, b)).broker_order_id is not None
+
+
+async def _system_texts(maker) -> list[str]:
+    async with maker() as s:
+        return list(await s.scalars(
+            select(TelegramOutbox.text).where(TelegramOutbox.category == "system")
+            .order_by(TelegramOutbox.id)))
+
+
+async def _link(maker, link_id) -> BrokerLink:
+    async with maker() as s:
+        return await s.get(BrokerLink, link_id)
+
+
+async def test_unreachable_paper_link_alerts_once_and_once_back(maker, redis, qs):
+    """A paper/demo link that stops answering: one Telegram (system) at the third failed
+    pass in a row, nothing more while it lasts, one when it answers again."""
+    pid, link_id = await _linked_portfolio(maker)
+    oid = await _place(maker, redis, qs, pid)
+    name = (await _link(maker, link_id)).name
+    BROKER.down_kinds = {"fake_test"}
+    sync = _sync(maker, redis, qs)
+    for _ in range(2):
+        await sync.tick()
+    assert await _system_texts(maker) == []
+    link = await _link(maker, link_id)
+    assert (link.status, link.health_failures) == ("error", 2)
+    assert "ConnectTimeout" in link.last_error
+    for _ in range(3):
+        await sync.tick()
+    texts = await _system_texts(maker)
+    assert len(texts) == 1 and name in texts[0] and "non raggiungibile" in texts[0]
+    assert "ConnectTimeout" in texts[0]
+    assert await reconcile_all(maker, None) == 0  # also a failure: no second message
+    assert len(await _system_texts(maker)) == 1
+
+    BROKER.down_kinds = set()
+    await sync.tick()  # looked up: answered
+    await sync.tick()
+    await reconcile_all(maker, None)
+    texts = await _system_texts(maker)
+    assert len(texts) == 2 and name in texts[1] and "di nuovo raggiungibile" in texts[1]
+    link = await _link(maker, link_id)
+    assert (link.status, link.health_failures, link.last_error) == ("ok", 0, None)
+    assert (await _order(maker, oid)).broker_order_id is not None
+
+
+async def test_reconcile_all_failures_alert_a_link_without_orders(maker):
+    _, link_id = await _linked_portfolio(maker)
+    BROKER.down_kinds = {"fake_test"}
+    for _ in range(4):
+        await reconcile_all(maker, None)
+    texts = await _system_texts(maker)
+    assert len(texts) == 1 and "non raggiungibile" in texts[0]
+    assert (await _link(maker, link_id)).health_failures == 4
+    BROKER.down_kinds = set()
+    await reconcile_all(maker, None)
+    await reconcile_all(maker, None)
+    texts = await _system_texts(maker)
+    assert len(texts) == 2 and "di nuovo raggiungibile" in texts[1]
+
+
+async def test_a_blip_below_the_threshold_sends_nothing(maker):
+    _, link_id = await _linked_portfolio(maker)
+    BROKER.down_kinds = {"fake_test"}
+    await reconcile_all(maker, None)
+    BROKER.down_kinds = set()
+    await reconcile_all(maker, None)
+    assert await _system_texts(maker) == []
+    assert (await _link(maker, link_id)).status == "ok"
 
 
 async def test_bracket_exits_follow_the_entry_to_the_broker(maker, redis, qs):

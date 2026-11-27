@@ -173,6 +173,7 @@ from smtrading.brokers.base import (
     RateLimited,
     market_view,
 )
+from smtrading.brokers.health import record_link_health
 from smtrading.brokers.live import LIVE_KINDS
 from smtrading.brokers.live.account import account_fingerprint, snapshot_record
 from smtrading.brokers.live.audit import record_live_audit
@@ -420,7 +421,9 @@ class BrokerSync:
         self._heartbeat_down = False  # a heartbeat failure was logged (once until back)
         self._hot: dict[UUID, float] = {}  # automatic order sent by a wake -> hot until
         self._hot_next = 0.0  # loop time of the next hot read
-        self._down: dict[UUID, str] = {}  # links that failed a connection in this pass
+        # links that failed a connection in this pass (-> the error), links that answered
+        self._down: dict[UUID, str] = {}
+        self._answered: set[UUID] = set()
 
     async def aclose(self) -> None:
         """Closes the per-link LiveClients and the wake subscription (run() does it when
@@ -615,7 +618,7 @@ class BrokerSync:
                 .order_by(Order.created_at, Order.id)
             )).all()
         loop = asyncio.get_running_loop()
-        self._down = {}
+        self._down, self._answered = {}, set()
         for order_id, status, broker_order_id, sent_at, auto_rule_id, link_id in rows:
             if until is not None and loop.time() >= until:
                 break  # the full pass is due: it takes the rest
@@ -629,6 +632,7 @@ class BrokerSync:
                 if not self._hot:
                     self._hot_next = loop.time() + HOT_POLL_S
                 self._hot[order_id] = loop.time() + HOT_FOR_S
+        await self._record_health()
         return {row[0] for row in rows}
 
     async def _at_broker(self, order_id: UUID) -> bool:
@@ -658,10 +662,30 @@ class BrokerSync:
             )).all()
         open_ids = {row[0] for row in rows}  # the waits of orders no longer open end
         self._waiting = {k: v for k, v in self._waiting.items() if k in open_ids}
-        self._down = {}
+        self._down, self._answered = {}, set()
         for order_id, status, broker_order_id, sent_at, link_id in rows:
             await self._step_safely(order_id, link_id, status, broker_order_id, sent_at,
                                     recover)
+        await self._record_health()
+
+    async def _record_health(self) -> None:
+        """The pass's health of its paper/demo links (brokers.health): a connection failure,
+        else a broker answer; a link already `ok` with no failures is not written."""
+        seen = {**dict.fromkeys(self._answered - self._down.keys()), **self._down}
+        for link_id, error in seen.items():
+            try:
+                async with self._sm() as session:
+                    row = (await session.execute(
+                        select(BrokerLink.status, BrokerLink.health_failures,
+                               BrokerLink.live_state).where(BrokerLink.id == link_id)
+                    )).one_or_none()
+                    if row is None or row.live_state is not None or (
+                            error is None and row.status == "ok" and not row.health_failures):
+                        continue
+                    await record_link_health(session, link_id, error)
+                    await session.commit()
+            except Exception:
+                log.exception("broker sync: health of link %s not recorded", link_id)
 
     async def _step_safely(self, order_id, link_id, status, broker_order_id, sent_at,
                            recover) -> None:
@@ -1104,6 +1128,7 @@ class BrokerSync:
             else:
                 await self._update(order_id, lambda s, o: self._mark_unknown(s, o, reason))
             return
+        self._answered.add(link.id)
         payload = _sent_payload(
             self._live_client(link.id)[1].reached.pop(str(order_id), None)) if live else None
         await self._update(order_id, lambda s, o: self._placed(s, o, bo, payload), bo)
@@ -1619,6 +1644,7 @@ class BrokerSync:
         since = order.broker_sent_at
         sent = market_view(order) if order.synthetic else order
         bo = await adapter.find_order(sent, instrument, since, exclude)
+        self._answered.add(order.broker_link_id)
         if bo is not None:  # _adopt checks again, under the lock, that it is unused
             await self._update(order_id, lambda s, o: self._matched(s, o, bo), bo)
             return
@@ -1701,7 +1727,7 @@ class BrokerSync:
         """The broker's view of the order; None when it cannot be read safely
         (OutcomeUnknown: the outcome is marked unknown, reduce-only; read again next pass)."""
         try:
-            return await adapter.get_order(order.broker_order_id)
+            bo = await adapter.get_order(order.broker_order_id)
         except OutcomeUnknown as e:
             log.error("order %s: %s", order_id, e)
             if order_id not in self._unknown_reads:  # once per process, not every pass
@@ -1709,6 +1735,8 @@ class BrokerSync:
                 await self._update(order_id, lambda s, o: self._mark_unknown(s, o, reason))
                 self._unknown_reads.add(order_id)
             return None
+        self._answered.add(order.broker_link_id)
+        return bo
 
     async def _cancel(self, order_id: UUID) -> None:
         read = await self._read(order_id)
@@ -2041,8 +2069,8 @@ async def _previous_diffs(
 
 
 async def reconcile_all(sessionmaker: async_sessionmaker[AsyncSession], http) -> int:
-    """Reconcile every enabled paper/demo link (scheduler job); the link status records
-    the outcome. Real-money links (live_state not null) are left to the LiveMonitor,
+    """Reconcile every enabled paper/demo link (scheduler job); the outcome is the link's
+    health (brokers.health: status, and Telegram once it stops answering / answers again). Real-money links (live_state not null) are left to the LiveMonitor,
     which reconciles them through the live gate. Returns how many reconciliations found
     differences. A difference is recorded in the activity feed but never sent to Telegram
     (`notify=False`): the reconciliation job (`smtrading.reconciliation`) alerts the owner."""
@@ -2056,15 +2084,13 @@ async def reconcile_all(sessionmaker: async_sessionmaker[AsyncSession], http) ->
     for link_id in link_ids:
         try:
             rows = await reconcile(sessionmaker, link_id, http, notify=False)
-            status, error = "ok", None
+            error = None
         except Exception as e:  # noqa: BLE001  (any failure goes to the link status)
             log.warning("reconciliation of broker link %s failed: %s", link_id, e)
-            rows, status, error = [], "error", str(e)[:500]
+            rows, error = [], str(e)[:500]
         async with sessionmaker() as session:
-            link = await session.get(BrokerLink, link_id)
-            if link is not None:
-                link.status, link.last_error = status, error
-                await session.commit()
+            await record_link_health(session, link_id, error)  # status, Telegram (health)
+            await session.commit()
         bad = [r for r in rows if not r.ok]
         if bad:
             mismatched += len(bad)
