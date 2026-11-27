@@ -27,23 +27,23 @@ Per ogni passo: azione, controllo atteso, cosa annotare nel documento di prontez
    - Annotare: data/ora, stato del flusso iniziale (servirà ai passi 5 e 14).
 
 2. **Controllo del collegamento.**
-   - Azione: dal portale verificare «Alpaca Intraday e Scraping» con il test in sola lettura; `GET /api/intraday/accounts`.
+   - Azione: dal portale verificare «Alpaca Intraday e Scraping» con il test in sola lettura; `GET /api/intraday/accounts`. Conto e posizioni si leggono sempre dal portale (questa risposta e la pagina Posizioni), mai con le chiavi dalla shell.
    - Atteso: conto letto con `buying_power`, `multiplier` 2, `margin: true`, `trading_blocked` e `account_blocked` falsi; `fresh: true` dopo aver acceso un interruttore (passo 3).
    - Annotare: valori letti (senza chiavi).
 
 3. **Due portafogli di prova nascosti** (`POST /api/portfolios`, poi `PATCH /api/portfolios/{id}`), sullo stesso collegamento.
-   - Comune: `in_totals=false`, nessuna riga `agent_portfolios`, `leverage=2` (un tentativo con 2,5 deve essere rifiutato dal portale: provarlo e annotarlo).
+   - Comune: `in_totals=false`, nessuna riga `agent_portfolios`, `leverage=2` (provare anche il rifiuto: il `PATCH` che accende il modo, con `leverage=2.5`, deve essere rifiutato dal portale; annotarlo).
    - **Prova A**: `intraday_enabled=true`, `intraday_timeframes=["15m"]`, `max_day_trades_5d=1`.
    - **Prova B**: `auto_rules_enabled=true` (il portale accetta: conto con margine, non bloccato), `max_day_trades_5d=2`, freni di portafoglio di default.
    - Atteso: entrambi creati e accesi senza errori; nei totali non compaiono. Annotare gli id.
 
 4. **Modo A: strategia 15m.**
-   - Azione: scegliere 1-2 titoli liquidi già seguiti dalla campagna; approvare la strategia per la sola Prova A: `python -m smtrading.cli intraday drill-strategy --portfolio <id|nome> --agent <nome agente> --ref <rif> --type <rsi|incrocio> --params '<json>' --timeframe 15m --symbols A,B`.
+   - Azione: scegliere 1-2 titoli liquidi già seguiti dalla campagna; approvare la strategia per la sola Prova A: `python -m smtrading.cli intraday drill-strategy --portfolio <id|nome> --agent <nome> (qualsiasi agente esistente va bene: la decisione resta invisibile perché Prova A non ha righe `agent_portfolios`) --ref <rif> --type <rsi|incrocio> --params '<json>' --timeframe 15m --symbols A,B`.
    - Atteso: per alcune sedute scatti registrati nella pagina Segnali e messaggi Telegram alle chiusure di barra giuste; nessuno sveglio (Prova A non ha agenti); nessun messaggio a mercato chiuso.
    - Annotare: numero di scatti, orari rispetto alla chiusura di barra, eventuali scatti mancanti o doppi.
 
 5. **Modo B: regole automatiche su Prova B.**
-   - Azione: 1-2 regole su titoli liquidi **diversi** da quelli del passo 4 (`breakout`, `vwap_pullback`, importi piccoli) e 1-2 su cripto liquide (`mean_reversion`). Prima di attivare, per ognuna la prova sullo storico dalla pagina «Regole automatiche» (ultimi 5 giorni, `POST /api/auto-rules/backtest`): annotare il risultato.
+   - Azione: 1-2 regole su titoli liquidi **diversi** da quelli del passo 4 (`breakout`, `vwap_pullback`, importi piccoli) e 1-2 su cripto liquide (`mean_reversion`). Prima di attivare, per ognuna la prova sullo storico dalla pagina «Regole automatiche» (ultimi 5 giorni, `POST /api/auto-rules/backtest` con `from` e `to` nel formato `YYYY-MM-DD`; al massimo 30 giorni e 5 simboli per prova): annotare il risultato.
    - Attivazione (`POST /api/auto-rules/{id}/activate`): la pagina mostra «con flusso»; `python -m smtrading.marketdata.cli status`.
    - Atteso: i simboli della campagna con ordini e posizioni ancora tutti nello stream; barre solo per i simboli delle regole; Alpaca accetta il canale barre entro il limite gratuito di 30 simboli (limite noto 3).
    - Annotare: simboli totali nello stream, eventuali rifiuti del canale.
@@ -58,12 +58,12 @@ Per ogni passo: azione, controllo atteso, cosa annotare nel documento di prontez
    - Annotare: tabella delle misure e lo scarto rispetto allo storico.
 
 8. **Uscite del modo B.**
-   - Azione: (a) uscita a tempo: `PATCH /api/auto-rules/{id}` con `max_hold_s=60` su una regola; (b) uscita di fine seduta: lasciare una posizione aperta apposta vicino alla fine; (c) stop o obiettivo.
+   - Azione: (a) uscita a tempo: `max_hold_s` sta dentro `params` (10-3600 s) e la modifica è rifiutata su una regola attiva (crea una nuova versione): `POST /api/auto-rules/{id}/pause`, poi `PATCH /api/auto-rules/{id}` con `{"params": {…tutti i parametri attuali…, "max_hold_s": 60}}`, poi `POST /api/auto-rules/{id}/resume`; (b) uscita di fine seduta: lasciare una posizione aperta apposta vicino alla fine; (c) stop o obiettivo.
    - Atteso: (a) e (b) chiuse dallo `scalper` (la fine seduta 2 minuti prima della rete di sistema); (c) eseguito dalla coppia sintetica di SMTrading.
    - Annotare: orari attesi ed effettivi.
 
 9. **Freni.**
-   - Azione: su una regola `max_trades_hour=1`; su un'altra `max_consecutive_losses=1`.
+   - Azione: su una regola `max_trades_hour=1`; su un'altra `max_consecutive_losses=1`. I freni si cambiano come i parametri: pausa → `PATCH` con `{"brakes": {…tutti i freni…}}` (sostituiti per intero) → ripresa.
    - Atteso: seconda entrata dell'ora bloccata; dopo una perdita la regola risulta «fermata dai freni» con avviso Telegram; riattivazione manuale con `POST /api/auto-rules/{id}/resume`.
    - Annotare: messaggi e orari.
 
@@ -90,14 +90,18 @@ Per ogni passo: azione, controllo atteso, cosa annotare nel documento di prontez
     - Atteso: nessun compito Paperclip nuovo; nessun cambio nei portafogli della campagna; catalogo MCP invariato; stato del flusso uguale al passo 1; uscite della campagna nei tempi di sempre.
     - Annotare: sì/no per voce.
 
-15. **Pulizia completa.** Ordine obbligatorio: prima si cancellano i dati di prova, **poi** si spengono gli interruttori.
-    1. Regole in pausa; chiudere le posizioni (manualmente, regole già in pausa) e le cripto residue.
-    2. Conto **vuoto**: su Alpaca (`GET /v2/account` e posizioni) nessuna posizione, nessun ordine aperto, nessun residuo.
-    3. Decisioni di prova: `python -m smtrading.cli intraday drill-revoke --portfolio <Prova A> --agent <nome> --ref <rif> --purge`.
+15. **Pulizia completa.** Ordine obbligatorio: prima si cancellano i dati di prova, poi si spengono gli interruttori, si scollegano e si archiviano i portafogli; le righe di audit si cancellano per ultime.
+    1. Regole in pausa; chiudere le posizioni (a mano, regole già in pausa) e le cripto residue; nessun ordine aperto.
+    2. Conto **vuoto**, letto dal portale (`GET /api/intraday/accounts`, pagina Posizioni): nessuna posizione, nessun ordine aperto, nessun residuo. Mai con le chiavi nella shell.
+    3. Decisioni di prova: `python -m smtrading.cli intraday drill-revoke --portfolio <Prova A> --agent <lo stesso agente del passo 4> --ref <rif> --purge`.
     4. Regole automatiche, versioni, operazioni, chiavi Redis `autorules:*` e `bars1m:*` dei simboli di prova: `python -m smtrading.cli autorules purge --portfolio <Prova B>` (equivale a `DELETE /api/portfolios/{id}/auto-rules`).
     5. Scatti: `DELETE /api/portfolios/{id}/intraday-triggers` su Prova A.
-    6. Righe di audit dei portafogli di prova eliminate (come per le prove reali di novembre: nessuna traccia per gli agenti).
-    7. Spegnere gli interruttori `intraday_enabled` e `auto_rules_enabled` (`PATCH /api/portfolios/{id}`), poi `POST /api/portfolios/{id}/archive` su entrambi.
-    8. **Il collegamento resta attivo**: ospiterà il portafoglio intraday degli agenti da 3.000 $.
-    9. Verifiche: `md:tracked:auto_rules` vuoto; `SELECT count(*) FROM portfolios WHERE (intraday_enabled OR auto_rules_enabled) AND status <> 'archived'` → 0.
+    6. Spegnere gli interruttori `intraday_enabled` e `auto_rules_enabled` (`PATCH /api/portfolios/{id}`).
+    7. **Scollegare i portafogli dal collegamento** (l'archiviazione altrimenti è rifiutata con «Scollega prima il broker»): `PUT /api/portfolios/{id}/broker-link` con `{"broker_link_id": null}`, per Prova A e Prova B. Il collegamento **non** si disattiva. Per un collegamento `alpaca_paper` il codice non vincola lo scollegamento alla storia contabile (blocca solo ordini ancora in corso sul broker e, per i soli collegamenti reali, posizioni aperte): se il portale lo rifiutasse, annotare il testo esatto e fermarsi. Il portafoglio intraday da 3.000 $ degli agenti non viene toccato.
+    8. Archiviare entrambi: `POST /api/portfolios/{id}/archive`.
+    9. Il collegamento «Alpaca Intraday e Scraping» resta attivo: ospiterà il portafoglio intraday degli agenti.
+    10. **Ultimo passo: righe di audit.** Le righe `admin:*` stanno nella tabella `mcp_audit_log`. Verificato nel codice: non è append-only (nessun trigger, a differenza di `live_audit`), nessuno strumento MCP la legge e il guardiano esclude le righe `admin:%`: sono visibili solo agli amministratori, mai agli agenti. Si cancellano comunque quelle dei due portafogli di prova (come per le prove di novembre), con gli id annotati al passo 3:
+        `DELETE FROM mcp_audit_log WHERE method LIKE 'admin:%' AND (params::text LIKE '%<id Prova A>%' OR params::text LIKE '%<id Prova B>%');`
+        Dopo di questo nessun altro comando amministrativo sui due portafogli (ognuno scrive una riga nuova); se ne serve uno, ripetere la cancellazione. La cancellazione stessa non scrive audit.
+    11. Verifiche: `SELECT count(*) FROM mcp_audit_log WHERE params::text LIKE '%<id Prova A>%' OR params::text LIKE '%<id Prova B>%'` → 0; `md:tracked:auto_rules` vuoto; `SELECT count(*) FROM portfolios WHERE (intraday_enabled OR auto_rules_enabled) AND status <> 'archived'` → 0.
     - Annotare: esito nel documento di prontezza e messaggio Telegram con l'esito.
