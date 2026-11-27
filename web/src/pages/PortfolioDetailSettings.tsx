@@ -4,6 +4,7 @@ import { usePatchPortfolio, useRiskProfiles } from "@/api/hooks/portfolios";
 import type { Portfolio } from "@/api/types";
 import { AdminOnly } from "@/components/AdminOnly";
 import { FormField, selectClass } from "@/components/FormField";
+import { AutoBrakesSettings } from "@/components/AutoBrakesSettings";
 import { IntradaySettings } from "@/components/IntradaySettings";
 import { NameWarning } from "@/components/NameWarning";
 import { Button } from "@/components/ui/button";
@@ -180,6 +181,7 @@ export function PortfolioSettings({ portfolio }: { portfolio: Portfolio }) {
         <InTotalsToggle portfolio={portfolio} />
         <AdminOnly>
           <IntradaySettings portfolio={portfolio} />
+          <AutoBrakesSettings portfolio={portfolio} />
         </AdminOnly>
       </CardContent>
     </Card>

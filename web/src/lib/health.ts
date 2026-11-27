@@ -39,6 +39,7 @@ export const JOB_LABELS: Record<string, string> = {
   "price quality alarm": "Allarme prezzi non affidabili",
   "system sentinel": "Sentinella di sistema",
   "broker tradability": "Strumenti presso il broker",
+  scalper: "Regole automatiche",
 };
 
 export const ASSET_CLASS_LABELS: Record<string, string> = {

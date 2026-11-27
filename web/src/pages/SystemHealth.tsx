@@ -63,6 +63,13 @@ function Section({ id, section, children, link }: { id: string; section: HealthS
   );
 }
 
+/** What a job adds under its name: «fermato» when it was stopped on purpose, the scalper's active rules. */
+function JobFacts({ j }: { j: HealthJob }) {
+  const rules = j.name === "scalper" ? j.info?.active_rules : undefined;
+  const parts = [j.note === "fermato" ? "fermato" : null, typeof rules === "number" ? (rules === 0 ? "nessuna regola attiva" : rules === 1 ? "1 regola attiva" : `${rules} regole attive`) : null].filter(Boolean);
+  return parts.length > 0 ? <span className="text-xs text-muted">{parts.join(" · ")}</span> : null;
+}
+
 const jobColumns: Column<HealthJob>[] = [
   {
     key: "name",
@@ -73,6 +80,7 @@ const jobColumns: Column<HealthJob>[] = [
       <span className="flex flex-wrap items-center gap-2">
         <span title={j.name}>{JOB_LABELS[j.name] ?? j.name}</span>
         {j.status !== "ok" && <Status status={j.status} />}
+        <JobFacts j={j} />
       </span>
     ),
   },

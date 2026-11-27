@@ -104,4 +104,38 @@ describe("PortfolioSettings: lavoro in giornata", () => {
       expect(patches).toEqual([{ intraday_timeframes: ["5m", "15m", "1h"], intraday_wake_agent_id: "a1", max_day_trades_5d: 3 }]),
     );
   });
+
+  it("shows the automatic rules' brakes only with the switch on, and saves them as numeric strings (blank = off)", async () => {
+    const on = { ...portfolio, auto_rules_enabled: true, auto_brakes: { max_trades_hour: 60, max_trades_day: 300, max_loss_day: null, max_loss_day_pct: "2", max_consecutive_losses: 5, max_open_positions: 5 } } as unknown as Portfolio;
+    const { user } = setup(on);
+    const section = await screen.findByRole("form", { name: "Freni delle regole automatiche" });
+    expect(screen.getByText("Freni delle regole automatiche", { selector: "h3" })).toBeInTheDocument();
+    const pct = within(section).getByLabelText("Perdita massima del giorno (%)");
+    expect(pct).toHaveValue("2");
+    await user.clear(pct);
+    await user.type(pct, "1,5");
+    await user.clear(within(section).getByLabelText("Posizioni aperte insieme"));
+    await user.click(within(section).getByRole("button", { name: "Salva i freni" }));
+    await waitFor(() =>
+      expect(patches).toEqual([{ auto_brakes: { max_trades_hour: 60, max_trades_day: 300, max_loss_day: null, max_loss_day_pct: "1.5", max_consecutive_losses: 5, max_open_positions: null } }]),
+    );
+  });
+
+  it("refuses an out-of-range brake in the page", async () => {
+    const on = { ...portfolio, auto_rules_enabled: true } as unknown as Portfolio;
+    const { user } = setup(on);
+    const section = await screen.findByRole("form", { name: "Freni delle regole automatiche" });
+    const hour = within(section).getByLabelText("Operazioni all'ora");
+    await user.clear(hour);
+    await user.type(hour, "500");
+    await user.click(within(section).getByRole("button", { name: "Salva i freni" }));
+    expect(await within(section).findByText(/Operazioni all'ora: un numero intero/)).toBeInTheDocument();
+    expect(patches).toEqual([]);
+  });
+
+  it("does not show the brakes with the switch off", async () => {
+    setup();
+    await screen.findByText("Impostazioni del portafoglio");
+    expect(screen.queryByRole("form", { name: "Freni delle regole automatiche" })).not.toBeInTheDocument();
+  });
 });

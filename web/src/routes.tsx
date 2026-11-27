@@ -7,6 +7,7 @@ import AgentCosts from "@/pages/AgentCosts";
 import AgentResults from "@/pages/AgentResults";
 import AgentDocs from "@/pages/AgentDocs";
 import Agents from "@/pages/Agents";
+import AutoRules from "@/pages/AutoRules";
 import Brokers from "@/pages/Brokers";
 import Campaigns from "@/pages/Campaigns";
 import Connectors from "@/pages/Connectors";
@@ -66,6 +67,7 @@ export const routes: RouteObject[] = [
           { path: "notifiche", element: <Notifications /> },
           { path: "decisioni", element: <Decisions /> },
           { path: "mercati", element: <Markets /> },
+          { path: "regole-automatiche", element: <AutoRules /> },
           { path: "log-mcp", element: <McpLog /> },
           { path: "registro-attivita", element: <ActivityLog /> },
           { path: "impostazioni", element: <Settings /> },

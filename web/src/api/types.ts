@@ -200,6 +200,8 @@ export interface Portfolio {
   /** day-trade cap over 5 sessions, null: no cap */
   max_day_trades_5d?: number | null;
   intraday_max_wakes_per_hour?: number;
+  /** brakes of the automatic rules, per portfolio (null = brake off) */
+  auto_brakes?: Record<string, string | number | null>;
 }
 
 export interface PortfolioCreate {
@@ -232,6 +234,7 @@ export interface PortfolioPatch {
   day_close_minutes?: number;
   max_day_trades_5d?: number | null;
   intraday_max_wakes_per_hour?: number;
+  auto_brakes?: Record<string, string | number | null>;
 }
 
 export interface PositionValuation {
@@ -2199,6 +2202,8 @@ export interface HealthJob {
   crashes: number;
   last_crash_at: string | null;
   last_error: string | null;
+  /** small facts the job reports with each pass (the scalper: `active_rules`) */
+  info?: Record<string, unknown> | null;
 }
 
 export interface HealthProvider {
@@ -2512,4 +2517,160 @@ export interface IntradayAccount {
   /** multiplier above 1: leverage is available (every Alpaca account is a margin account) */
   margin: boolean;
   portfolios: IntradayAccountPortfolio[];
+}
+
+// --- Automatic rules (mode B): /api/auto-rules ------------------------------------------
+
+export type AutoRuleStatus = "draft" | "active" | "paused" | "braked";
+export type AutoRuleStream = "stream" | "polling" | "none";
+export type AutoParamKind = "dec" | "int" | "choice" | "opt_dec";
+/** decimals arrive and travel as numeric strings, integers as numbers */
+export type AutoValue = string | number | null;
+
+export interface ModelParam {
+  name: string;
+  kind: AutoParamKind;
+  lo: AutoValue;
+  hi: AutoValue;
+  default: AutoValue;
+  choices: string[];
+  /** a parameter every model has (stop, target, times, spread) */
+  common: boolean;
+}
+
+export interface ModelSpec {
+  name: string;
+  params: ModelParam[];
+}
+
+export interface AutoRule {
+  id: string;
+  portfolio_id: string;
+  portfolio_name: string;
+  symbol: string;
+  model: string;
+  status: AutoRuleStatus;
+  status_it: string;
+  status_reason: string | null;
+  status_changed_at: string | null;
+  version: number;
+  params: Record<string, AutoValue>;
+  qty: string | null;
+  notional: string | null;
+  brakes: Record<string, AutoValue>;
+  stream: AutoRuleStream;
+  stream_it: string;
+  open_trade: boolean;
+  /** the figures of the portfolio's local day (the brakes count the same day) */
+  today: { trades: number; net: string; net_currency: string };
+}
+
+export interface AutoRuleBody {
+  params?: Record<string, AutoValue>;
+  qty?: string;
+  notional?: string;
+  brakes?: Record<string, AutoValue>;
+}
+
+export interface AutoRuleCreate extends AutoRuleBody {
+  portfolio_id: string;
+  symbol: string;
+  model: string;
+}
+
+export type AutoExitReason = "stop" | "target" | "time" | "session" | "manual" | "day_close";
+
+export interface AutoTrade {
+  id: number;
+  rule_id: string;
+  rule_version: number;
+  symbol: string;
+  trigger_at: string;
+  trigger_price: string;
+  expected_price: string;
+  status: "sent" | "open" | "closed" | "canceled" | "rejected";
+  filled_at: string | null;
+  fill_price: string | null;
+  qty: string | null;
+  exit_reason: AutoExitReason | null;
+  exit_filled_at: string | null;
+  exit_expected: string | null;
+  exit_price: string | null;
+  fees: string;
+  fees_currency: string | null;
+  net_result: string | null;
+  net_currency: string | null;
+  entry_slippage_bps: string | null;
+  exit_slippage_bps: string | null;
+  ms_trigger_to_send: number | null;
+  ms_send_to_broker: number | null;
+  ms_broker_to_fill: number | null;
+  error: string | null;
+}
+
+/** One rule on one UTC day (GET /api/auto-rules/results). */
+export interface AutoRuleResult {
+  rule_id: string;
+  version: number;
+  /** YYYY-MM-DD, UTC */
+  day: string;
+  trades: number;
+  wins: number;
+  losses: number;
+  net: string;
+  net_currency: string | null;
+  /** per currency */
+  fees: Record<string, string>;
+  median_ms_trigger_to_send: string | null;
+  median_ms_send_to_broker: string | null;
+  median_ms_broker_to_fill: string | null;
+  avg_entry_slippage_bps: string | null;
+  /** blocked entries by reason */
+  blocked: Record<string, number>;
+}
+
+export interface AutoRuleResultsParams {
+  portfolio_id?: string;
+  from?: string;
+  to?: string;
+}
+
+export interface ReplayTrade {
+  symbol: string;
+  entry_ts: string;
+  entry_price: string;
+  exit_ts: string;
+  exit_price: string;
+  exit_reason: "target" | "stop" | "time" | "session" | "end";
+  qty: string;
+  fees: string;
+  net: string;
+}
+
+export interface ReplayResult {
+  symbols: string[];
+  from: string;
+  to: string;
+  trades: ReplayTrade[];
+  trades_total: number;
+  truncated: boolean;
+  net: string;
+  fees: string;
+  wins: number;
+  losses: number;
+  max_drawdown: string;
+  /** the limits of the minute replay, to show as they are */
+  notes: string[];
+  per_symbol: { symbol: string; trades: number; net: string; fees: string; wins: number; losses: number; max_drawdown: string }[];
+}
+
+export interface AutoBacktestBody extends AutoRuleBody {
+  symbol: string;
+  model: string;
+  from: string;
+  to: string;
+  spread_pct: string;
+  delay_s: number;
+  fee_rule: "broker" | "zero";
+  portfolio_id?: string;
 }

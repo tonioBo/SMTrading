@@ -25,6 +25,7 @@ import {
   Target,
   Trophy,
   Wallet,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useId, useState } from "react";
@@ -60,6 +61,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/obiettivi", label: "Obiettivi", icon: Flag },
       { to: "/campagne", label: "Campagne", icon: FlaskConical },
       { to: "/mercati", label: "Mercati", icon: Globe },
+      { to: "/regole-automatiche", label: "Regole automatiche", icon: Zap, adminOnly: true },
     ],
   },
   {

@@ -53,7 +53,7 @@ describe("Layout", () => {
     const nav = await screen.findByRole("navigation", { name: "Navigazione principale" });
     // «Agenti» and «Sistema» start closed; their headings open them
     expect(within(nav).getAllByRole("link").map((a) => a.textContent)).toEqual([
-      "Dashboard", "Portafogli", "Segnali", "Posizioni", "Diario operazioni", "Strategie", "Obiettivi", "Campagne", "Mercati",
+      "Dashboard", "Portafogli", "Segnali", "Posizioni", "Diario operazioni", "Strategie", "Obiettivi", "Campagne", "Mercati", "Regole automatiche",
     ]);
     for (const name of ["Agenti", "Sistema"]) {
       const heading = within(nav).getByRole("button", { name });
@@ -75,6 +75,7 @@ describe("Layout", () => {
       "Obiettivi",
       "Campagne",
       "Mercati",
+      "Regole automatiche",
       "Agenti",
       "Istruzioni agenti",
       "Costi agenti",

@@ -149,6 +149,42 @@ describe("SystemHealth", () => {
   });
 });
 
+describe("SystemHealth scalper job", () => {
+  it("shows the scalper with its active rules and the «fermato» state", async () => {
+    body = {
+      ...HEALTH_OK,
+      sections: {
+        ...HEALTH_OK.sections,
+        services: {
+          ...HEALTH_OK.sections.services,
+          jobs: [
+            { name: "scalper", status: "ok", note: null, started_at: "2026-11-19T09:00:00Z", last_tick_at: "2026-11-19T09:59:50Z", interval_s: 30, crashes: 0, last_crash_at: null, last_error: null, info: { active_rules: 3 } },
+            { name: "broker sync", status: "ok", note: "fermato", started_at: "2026-11-19T09:00:00Z", last_tick_at: null, interval_s: null, crashes: 0, last_crash_at: null, last_error: null },
+          ],
+        },
+      },
+    };
+    renderApp("/salute-sistema");
+    const services = await screen.findByRole("region", { name: "Servizi" });
+    expect(await within(services).findByText("Regole automatiche")).toBeInTheDocument();
+    expect(within(services).getByText("3 regole attive")).toBeInTheDocument();
+    expect(within(services).getByText("fermato")).toBeInTheDocument();
+  });
+
+  it("says «nessuna regola attiva» for a scalper with none", async () => {
+    body = {
+      ...HEALTH_OK,
+      sections: {
+        ...HEALTH_OK.sections,
+        services: { ...HEALTH_OK.sections.services, jobs: [{ name: "scalper", status: "ok", note: "fermato", started_at: "2026-11-19T09:00:00Z", last_tick_at: null, interval_s: 30, crashes: 0, last_crash_at: null, last_error: null, info: { active_rules: 0 } }] },
+      },
+    };
+    renderApp("/salute-sistema");
+    const services = await screen.findByRole("region", { name: "Servizi" });
+    expect(await within(services).findByText("fermato · nessuna regola attiva")).toBeInTheDocument();
+  });
+});
+
 describe("SystemHealth sentinel", () => {
   it("shows the sentinel's open problems and last pass, outside the overall status", async () => {
     body = {
