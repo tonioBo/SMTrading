@@ -205,7 +205,9 @@ class FinnhubProvider(DataProvider):
                 events.append(CalendarEvent(canonical, "earnings", date.fromisoformat(r["date"]), payload))
         return events
 
-    async def stream(self, items: list[tuple[str, str]]) -> AsyncIterator[Quote]:
+    async def stream(
+        self, items: list[tuple[str, str]], *, bars: frozenset[str] = frozenset()
+    ) -> AsyncIterator[Quote]:  # no minute bars: `bars` ignored
         token = self._token()
         reverse = {ps: canonical for canonical, ps in items}
         url = self.config.get("ws_url") or f"{WS_URL}?token={urlquote(token)}"

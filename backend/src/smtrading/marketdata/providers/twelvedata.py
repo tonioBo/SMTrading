@@ -198,7 +198,9 @@ class TwelveDataProvider(DataProvider):
             raise RuntimeError(f"twelvedata: no exchange rate for {base}/{quote}")
         return rate
 
-    async def stream(self, items: list[tuple[str, str]]) -> AsyncIterator[Quote]:
+    async def stream(
+        self, items: list[tuple[str, str]], *, bars: frozenset[str] = frozenset()
+    ) -> AsyncIterator[Quote]:  # no minute bars: `bars` ignored
         key = self._key()
         reverse: dict[str, str] = {}
         for canonical, ps in items:

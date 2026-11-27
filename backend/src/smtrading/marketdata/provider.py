@@ -45,6 +45,8 @@ class DataProvider:
     # most symbols one stream may carry (None: no known limit); the stream manager streams
     # the most important tracked symbols up to it and polls the others
     stream_symbol_limit: ClassVar[int | None] = None
+    # can carry 1-minute bars on the quote stream (`stream(items, bars=...)`, StreamBar)
+    supports_stream_bars: ClassVar[bool] = False
     capabilities: ClassVar[frozenset[Capability]] = frozenset()
     asset_classes: ClassVar[frozenset[AssetClass]] = frozenset()
     requires_key: ClassVar[bool] = False
@@ -120,7 +122,11 @@ class DataProvider:
     async def screen(self, f: ScreenFilter) -> list[dict]:
         raise self._unsupported("screener")
 
-    async def stream(self, items: list[tuple[str, str]]) -> AsyncIterator[Quote]:
+    async def stream(
+        self, items: list[tuple[str, str]], *, bars: frozenset[str] = frozenset()
+    ) -> AsyncIterator[Quote]:
+        """Quotes of `items` ((canonical, provider symbol)); with `supports_stream_bars`,
+        also StreamBar for the provider symbols in `bars` (others ignore it)."""
         raise self._unsupported("stream")
         yield  # pragma: no cover - makes this an async generator
 

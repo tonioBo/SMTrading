@@ -134,3 +134,33 @@ async def test_cancelling_the_consumer_cancels_the_reader():
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 1)
     assert ws.cancelled
+
+
+# ---- 1-minute bars on the same socket (intraday mode B): never coalesced away
+
+
+def _bar(symbol: str, minute: int):
+    from smtrading.marketdata.minute_bars import StreamBar
+    from smtrading.marketdata.types import Bar
+
+    return StreamBar(symbol, Bar(ts=T0 + timedelta(minutes=minute), open=Decimal(1),
+                                 high=Decimal(2), low=Decimal(1), close=Decimal(minute),
+                                 volume=Decimal(100)))
+
+
+async def test_bars_never_coalesced():
+    b1, b2 = _bar("AAPL", 0), _bar("AAPL", 1)
+
+    async def handle(raw):
+        return raw
+
+    ws = FakeWs([[b1, _q("AAPL", 1), _q("AAPL", 2), b2, _q("AAPL", 3)]])
+    out = [item async for item in coalesced(ws, handle)]
+    assert out == [b1, _q("AAPL", 3), b2]  # both bars, the latest quote only
+
+
+async def test_quotes_coalescing_unchanged():
+    # the same batch as test_a_batch_carries_each_symbol_once: per-symbol key, first position
+    ws = FakeWs([[("AAPL", 1), ("SPY", 1), ("AAPL", 2)], [("SPY", 5)]])
+    out = [(q.symbol, q.last) async for q in coalesced(ws, _parse)]
+    assert out == [("AAPL", 2), ("SPY", 1), ("SPY", 5)]

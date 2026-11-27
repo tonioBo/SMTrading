@@ -127,7 +127,9 @@ class BinanceProvider(DataProvider):
             cursor = int(rows[-1][0]) + 1
         return out
 
-    async def stream(self, items: list[tuple[str, str]]) -> AsyncIterator[Quote]:
+    async def stream(
+        self, items: list[tuple[str, str]], *, bars: frozenset[str] = frozenset()
+    ) -> AsyncIterator[Quote]:  # no minute bars: `bars` ignored
         reverse = {ps: canonical for canonical, ps in items}
         streams = "/".join(f"{ps.lower()}@bookTicker" for ps in reverse)
         url = f"{self.config.get('ws_url', WS_URL)}?streams={streams}"

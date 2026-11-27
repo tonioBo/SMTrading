@@ -171,7 +171,9 @@ class KrakenProvider(DataProvider):
         ]
         return [b for b in bars if b.ts <= end]
 
-    async def stream(self, items: list[tuple[str, str]]) -> AsyncIterator[Quote]:
+    async def stream(
+        self, items: list[tuple[str, str]], *, bars: frozenset[str] = frozenset()
+    ) -> AsyncIterator[Quote]:  # no minute bars: `bars` ignored
         reverse = {self.ws_symbol(canonical): canonical for canonical, _ in items}
         url = self.config.get("ws_url", WS_URL)
         subscribe = {"method": "subscribe", "params": {"channel": "ticker", "symbol": list(reverse)}}

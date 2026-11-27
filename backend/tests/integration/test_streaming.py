@@ -37,6 +37,8 @@ class FakeStream(DataProvider):
     refuse_over: ClassVar[int | None] = None  # refuse («symbol limit») sets larger than this
     polls: ClassVar[list[list[str]]] = []
     first_quote_delay: ClassVar[float] = 0
+    stream_kwargs: ClassVar[list[dict]] = []  # keyword arguments of each connection
+    refuse_bars: ClassVar[bool] = False  # «symbol limit» whenever bars are asked
 
     def _default_symbol(self, symbol, asset_class):
         return symbol.replace("-", "")
@@ -47,9 +49,12 @@ class FakeStream(DataProvider):
             s: Quote(s, None, None, Decimal("1.5"), datetime.now(UTC), "poll") for s, _ in items
         }
 
-    async def stream(self, items):
+    async def stream(self, items, **kw):
         cls = type(self)
         cls.connections.append(list(items))
+        cls.stream_kwargs.append(kw)
+        if cls.refuse_bars and kw.get("bars"):
+            raise StreamSymbolLimit("stream error 405: symbol limit exceeded")
         if len(cls.connections) <= cls.fail_first:
             raise ConnectionError("refused")
         if len(cls.connections) <= cls.refuse_first:
@@ -100,6 +105,9 @@ async def env(fresh_db, redis_url, monkeypatch):
     monkeypatch.setattr(FakeStream, "refuse_over", None)
     monkeypatch.setattr(FakeStream, "polls", [])
     monkeypatch.setattr(FakeStream, "first_quote_delay", 0)
+    monkeypatch.setattr(FakeStream, "stream_kwargs", [])
+    monkeypatch.setattr(FakeStream, "refuse_bars", False)
+    monkeypatch.setattr(FakeStream, "supports_stream_bars", False, raising=False)
     monkeypatch.setattr(FakePoll, "polls", [])
     engine = make_engine(fresh_db)
     sm = async_sessionmaker(engine, expire_on_commit=False)
@@ -539,3 +547,223 @@ async def test_symbol_limit_refusal_shrinks_the_set_and_keeps_polling(manager):
     assert len(FakeStream.connections) <= 3
     s = mgr.status()["streams"]["fake_stream:crypto"]
     assert "ETH-USD" not in s.get("symbols", ["ETH-USD"]) or s.get("note")
+
+
+# ---- intraday mode B: reserved quota for rule symbols, 1-minute bars on the same socket
+
+
+def _old_rank(sources, symbol):
+    """The ranking before the auto_rules quota (copied verbatim from reconcile)."""
+    return (0 if set(sources.get(symbol, [])) - {"watchlists"} else 1, symbol)
+
+
+async def _add_crypto(sm, n: int) -> list[str]:
+    syms = [f"C{i:02d}-USD" for i in range(n)]
+    async with sm() as s:
+        s.add_all([Instrument(symbol=sym, name=sym, asset_class=AssetClass.crypto,
+                              market="crypto", currency="USD") for sym in syms])
+        await s.commit()
+    return syms
+
+
+async def _reconciled(env, sources_by_symbol: dict[str, list[str]], cap: int = 30):
+    """One reconcile with the given tracking: (manager, streamed symbols, polled symbols)."""
+    router, redis, sm = env
+    FakeStream.stream_symbol_limit = cap
+    for sym, srcs in sources_by_symbol.items():
+        for src in srcs:
+            await track(redis, [sym], source=src)
+    mgr = StreamManager(router, redis, sm)
+    await mgr.reconcile()
+    stream = mgr._streams.get("fake_stream:crypto")
+    streamed = stream.symbols if stream else []
+    polled = sorted(mgr._poll_only.get(AssetClass.crypto, []))
+    return mgr, streamed, polled
+
+
+async def test_no_auto_rules_same_subscription(env):
+    """Review Focus 3: without auto_rules symbols the streamed set, the polled set and the
+    call to the provider are the ones of today (old ranking copied above)."""
+    _, redis, sm = env
+    FakeStream.supports_stream_bars = True  # even a provider that could carry bars
+    syms = await _add_crypto(sm, 33)  # + BTC-USD and ETH-USD: 35 symbols
+    plan: dict[str, list[str]] = {}
+    for i, sym in enumerate(syms):
+        plan[sym] = (["orders"] if i % 3 == 0 else ["positions"] if i % 3 == 1
+                     else ["watchlists"])
+        if i % 5 == 0 and plan[sym] != ["watchlists"]:
+            plan[sym] = [*plan[sym], "watchlists"]  # campaign symbols also on a list
+    plan["BTC-USD"] = ["alerts", "watchlists"]
+    plan["ETH-USD"] = ["watchlists"]
+    mgr, streamed, polled = await _reconciled(env, plan)
+    try:
+        from smtrading.marketdata.streaming import tracked_sources
+
+        sources = await tracked_sources(redis)
+        assert "auto_rules" not in {s for v in sources.values() for s in v}
+        ordered = sorted(plan, key=lambda s: _old_rank(sources, s))
+        assert streamed == sorted(ordered[:30])
+        assert polled == sorted(ordered[30:])
+        await _until(lambda: FakeStream.connections)
+        assert FakeStream.stream_kwargs == [{}]  # stream(items): no bars argument at all
+        assert FakeStream.connections == [list(mgr._streams["fake_stream:crypto"].items)]
+        assert "bars" not in mgr.status()["streams"]["fake_stream:crypto"]
+        assert set(mgr.status()["streams"]["fake_stream:crypto"]) == {"symbols", "state",
+                                                                     "note"}
+    finally:
+        await mgr._stop(list(mgr._streams))
+
+
+async def test_reserve_never_displaces_campaign(env):
+    """Review Focus 3: the quota of 10 takes only watchlist-only slots, never those of
+    orders and positions."""
+    syms = await _add_crypto(env[2], 45)
+    # rule symbols sort first: a plain alphabetical tie-break would let them displace
+    rules, campaign, lists = syms[:12], syms[12:37], syms[37:45]
+    plan = {s: ["orders" if i % 2 else "positions"] for i, s in enumerate(campaign)}
+    plan |= {s: ["watchlists"] for s in lists}
+    plan |= {s: ["auto_rules"] for s in rules}
+    mgr, streamed, polled = await _reconciled(env, plan)
+    await mgr._stop(list(mgr._streams))
+    assert set(campaign) <= set(streamed)
+    assert set(streamed) - set(campaign) == set(sorted(rules)[:5])
+    assert set(lists) <= set(polled) and set(sorted(rules)[5:]) <= set(polled)
+
+
+async def test_reserve_never_displaces_campaign_full_cap(env):
+    syms = await _add_crypto(env[2], 42)
+    rules, campaign = syms[:12], syms[12:42]
+    plan = {s: ["orders"] for s in campaign} | {s: ["auto_rules"] for s in rules}
+    mgr, streamed, polled = await _reconciled(env, plan)
+    await mgr._stop(list(mgr._streams))
+    assert streamed == sorted(campaign)
+    assert set(rules) <= set(polled)
+
+
+async def test_reserve_takes_watchlist_slots(env):
+    syms = await _add_crypto(env[2], 47)
+    rules, orders, lists = syms[:12], syms[12:27], syms[27:47]
+    plan = ({s: ["orders"] for s in orders} | {s: ["watchlists"] for s in lists}
+            | {s: ["auto_rules"] for s in rules})
+    mgr, streamed, polled = await _reconciled(env, plan)
+    await mgr._stop(list(mgr._streams))
+    assert len(streamed) == 30
+    assert set(orders) <= set(streamed)
+    assert set(streamed) & set(rules) == set(sorted(rules)[:10])
+    assert set(streamed) & set(lists) == set(sorted(lists)[:5])
+    assert set(polled) & set(rules) == set(sorted(rules)[10:])  # 2 rules over the quota
+    assert len(polled) == 17
+
+
+async def test_reserve_rule_symbol_on_a_watchlist_counts_as_rule(env):
+    syms = await _add_crypto(env[2], 4)
+    plan = {syms[0]: ["orders"], syms[1]: ["watchlists"], syms[2]: ["watchlists"],
+            syms[3]: ["auto_rules", "watchlists"]}
+    mgr, streamed, _ = await _reconciled(env, plan, cap=2)
+    await mgr._stop(list(mgr._streams))
+    assert streamed == sorted([syms[0], syms[3]])
+
+
+async def test_bars_only_for_rule_symbols(env):
+    FakeStream.supports_stream_bars = True
+    syms = await _add_crypto(env[2], 5)
+    plan = {syms[0]: ["orders"], syms[1]: ["orders", "auto_rules"], syms[2]: ["auto_rules"],
+            syms[3]: ["auto_rules"], syms[4]: ["watchlists"]}
+    mgr, streamed, polled = await _reconciled(env, plan, cap=3)
+    try:
+        assert streamed == sorted(syms[:3]) and polled == sorted(syms[3:])
+        await _until(lambda: FakeStream.stream_kwargs)
+        ps = {s: s.replace("-", "") for s in syms}
+        assert FakeStream.stream_kwargs == [{"bars": frozenset({ps[syms[1]], ps[syms[2]]})}]
+        assert mgr.status()["streams"]["fake_stream:crypto"]["bars"] == sorted(syms[1:3])
+    finally:
+        await mgr._stop(list(mgr._streams))
+
+
+async def test_bars_not_asked_from_a_provider_without_bars(env):
+    syms = await _add_crypto(env[2], 2)
+    mgr, streamed, _ = await _reconciled(env, {syms[0]: ["auto_rules"],
+                                               syms[1]: ["orders"]})
+    try:
+        await _until(lambda: FakeStream.stream_kwargs)
+        assert streamed == sorted(syms) and FakeStream.stream_kwargs == [{}]
+    finally:
+        await mgr._stop(list(mgr._streams))
+
+
+async def test_minute_bar_published(manager, monkeypatch):
+    from smtrading.marketdata.minute_bars import StreamBar, read_minute_bars
+    from smtrading.marketdata.types import Bar
+
+    _mgr, redis = manager
+    ts = datetime(2026, 12, 1, 15, 0, tzinfo=UTC)
+    bar = Bar(ts=ts, open=Decimal(1), high=Decimal(2), low=Decimal("0.5"),
+              close=Decimal("1.5"), volume=Decimal(100))
+
+    async def bars_only(self, items, **kw):
+        FakeStream.connections.append(list(items))
+        FakeStream.stream_kwargs.append(kw)
+        FakeStream.active += 1
+        try:
+            for canonical, _ in items:
+                yield StreamBar(canonical, bar)
+            await asyncio.Event().wait()
+        finally:
+            FakeStream.active -= 1
+
+    monkeypatch.setattr(FakeStream, "stream", bars_only)
+    FakeStream.supports_stream_bars = True
+    await track(redis, ["BTC-USD"], source="auto_rules")
+
+    async def published():
+        return await read_minute_bars(redis, "BTC-USD")
+
+    [(_id, got)] = await _until(published)
+    assert got == bar
+    assert await redis.exists("quote:BTC-USD") == 0  # no write_quote, no quality guard
+    assert FakeStream.stream_kwargs[0] == {"bars": frozenset({"BTCUSD"})}
+
+
+async def test_bar_refusal_retries_without_bars(manager):
+    """Review Focus 3: a «symbol limit» with bars asked never halves the campaign's
+    symbols: the next socket carries the same items without bars, with a note."""
+    mgr, redis = manager
+    FakeStream.supports_stream_bars = True
+    FakeStream.refuse_bars = True
+    await track(redis, ["ETH-USD"], source="orders")
+    await track(redis, ["BTC-USD"], source="auto_rules")
+
+    async def streamed():
+        q = await read_quote(redis, "BTC-USD")
+        return q is not None and q.provider == "fake_stream"
+
+    await _until(streamed, timeout=2)
+    assert FakeStream.stream_kwargs[0] == {"bars": frozenset({"BTCUSD"})}
+    assert FakeStream.stream_kwargs[-1] == {}
+    assert FakeStream.connections[-1] == FakeStream.connections[0]  # same items
+    assert len(FakeStream.connections) == 2
+    assert mgr._caps == {}
+    s = mgr.status()["streams"]["fake_stream:crypto"]
+    assert s["note"] == ("Barre al minuto rifiutate dal fornitore: regole automatiche senza "
+                         "volume e VWAP")
+    assert s["symbols"] == ["BTC-USD", "ETH-USD"] and "bars" not in s
+    await asyncio.sleep(FAST * 4)
+    assert len(FakeStream.connections) == 2  # no retry loop with bars
+
+
+async def test_socket_not_restarted_when_bars_unchanged(manager):
+    mgr, redis = manager
+    FakeStream.supports_stream_bars = True
+    await track(redis, ["BTC-USD", "ETH-USD"], source="orders")
+    await track(redis, ["BTC-USD"], source="auto_rules")
+    await _until(lambda: (mgr.status()["streams"].get("fake_stream:crypto") or {}).get("state")
+                 == "connected")
+    await track(redis, ["BTC-USD", "ETH-USD"], source="watchlists")  # sources change only
+    await asyncio.sleep(FAST * 5)
+    assert len(FakeStream.connections) == 1 and FakeStream.max_active == 1
+    await untrack(redis, ["BTC-USD"], source="auto_rules")  # the rule paused: bars change
+    await _until(lambda: len(FakeStream.connections) == 2)
+    assert FakeStream.connections[1] == FakeStream.connections[0]
+    assert FakeStream.stream_kwargs == [{"bars": frozenset({"BTCUSD"})}, {}]
+    await asyncio.sleep(FAST * 4)
+    assert len(FakeStream.connections) == 2 and FakeStream.max_active == 1

@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 import websockets
 
 from smtrading.instruments.models import AssetClass
+from smtrading.marketdata.minute_bars import StreamBar
 from smtrading.marketdata.provider import DataProvider, StreamRefused, StreamSymbolLimit
 from smtrading.marketdata.registry import register
 from smtrading.marketdata.types import Bar, Capability, DayChange, NewsItem, Quote, Timeframe
@@ -106,10 +107,33 @@ def parse_alpaca_ws(
     return quotes
 
 
+def parse_alpaca_bars(msg_list: list, reverse_map: dict[str, str] | None = None) -> list[StreamBar]:
+    """Pure parser for the minute bar messages (T == "b") of a WS frame. reverse_map: Alpaca
+    symbol -> canonical (unknown symbols dropped); None: "BTC/USD" -> "BTC-USD"."""
+    out: list[StreamBar] = []
+    for msg in msg_list:
+        if not isinstance(msg, dict) or msg.get("T") != "b":
+            continue
+        symbol = msg.get("S")
+        if not isinstance(symbol, str):
+            continue
+        canonical = (reverse_map.get(symbol) if reverse_map is not None
+                     else symbol.replace("/", "-"))
+        ts = _ts(msg.get("t"))
+        o, h, low, c = (_dec(msg.get(k)) for k in ("o", "h", "l", "c"))
+        if canonical is None or ts is None or None in (o, h, low, c):
+            continue
+        volume = _dec(msg.get("v")) or Decimal(0)
+        out.append(StreamBar(canonical, Bar(ts=ts, open=o, high=h, low=low, close=c,
+                                            volume=volume)))
+    return out
+
+
 @register
 class AlpacaProvider(DataProvider):
     # free plan: 30 symbols per subscription (quotes and trades both subscribed)
     stream_symbol_limit = 30
+    supports_stream_bars = True  # 1-minute bars on the same socket ("bars" channel)
     name = "alpaca"
     capabilities = frozenset({Capability.quote, Capability.bars, Capability.stream, Capability.news})
     asset_classes = frozenset({AssetClass.us_equity, AssetClass.crypto})
@@ -277,7 +301,9 @@ class AlpacaProvider(DataProvider):
             )
         return sorted(items, key=lambda n: n.ts, reverse=True)[:limit]
 
-    async def stream(self, items: list[tuple[str, str]]) -> AsyncIterator[Quote]:
+    async def stream(
+        self, items: list[tuple[str, str]], *, bars: frozenset[str] = frozenset()
+    ) -> AsyncIterator[Quote | StreamBar]:
         key_id, secret = self._credentials()
         crypto = bool(items) and _is_crypto(items[0][1])
         reverse = {ps: c for c, ps in items if _is_crypto(ps) == crypto}
@@ -287,9 +313,13 @@ class AlpacaProvider(DataProvider):
         auth = {"action": "auth", "key": key_id, "secret": secret}
         # trades too (free IEX and crypto feeds): quotes alone carry no last price
         subscribe = {"action": "subscribe", "quotes": list(reverse), "trades": list(reverse)}
+        # minute bars only for symbols already subscribed to quotes and trades
+        bar_symbols = [ps for ps in reverse if ps in bars]
+        if bar_symbols:
+            subscribe["bars"] = bar_symbols
         merged: dict[str, Quote] = {}
 
-        async def handle(raw) -> list[Quote]:
+        async def handle(raw) -> list[Quote | StreamBar]:
             frame = json.loads(raw, parse_float=Decimal)
             msgs = frame if isinstance(frame, list) else [frame]
             for msg in msgs:
@@ -307,12 +337,15 @@ class AlpacaProvider(DataProvider):
                     await ws.send(json.dumps(auth))
                 elif kind == "success" and msg.get("msg") == "authenticated":
                     await ws.send(json.dumps(subscribe))
-            return parse_alpaca_ws(msgs, reverse, merged)
+            quotes: list[Quote | StreamBar] = list(parse_alpaca_ws(msgs, reverse, merged))
+            if bar_symbols:
+                quotes.extend(parse_alpaca_bars(msgs, reverse))
+            return quotes
 
         try:
             async with websockets.connect(url, ping_timeout=PING_TIMEOUT_S) as ws:
-                async for quote in coalesced(ws, handle):
-                    yield quote
+                async for item in coalesced(ws, handle):
+                    yield item
         except (StreamRefused, StreamSymbolLimit):
             raise
         except (TimeoutError, websockets.WebSocketException, OSError) as exc:

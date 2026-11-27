@@ -21,12 +21,21 @@ Every stream tick passes the router's quote quality guard (marketdata.quality) b
 is written: a tick that jumps or disagrees with another provider is written marked
 `suspect` (fills and stops wait), and the symbol is polled through the router at once
 (at most every CONFIRM_EVERY_S), whose provider consensus confirms or replaces it.
+
+Automatic rules (intraday mode B, source `auto_rules`): under a provider's symbol cap, up to
+AUTO_RULES_RESERVE rule-only symbols rank before the watchlist-only ones (never before
+orders, positions, alerts or the portal); the stream also asks the provider for 1-minute
+bars of the rule symbols on it (`supports_stream_bars`), published to `bars1m:{symbol}`
+(marketdata.minute_bars) outside the quality guard. A «symbol limit» refusal with bars
+asked restarts the same symbols without bars (never fewer symbols). Without rule symbols
+nothing differs from the plain quote stream.
 """
 
 import asyncio
 import contextlib
 import json
 import logging
+import os
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -40,6 +49,7 @@ from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.instruments.service import canonical_symbol
 from smtrading.marketdata.cache import write_quote
+from smtrading.marketdata.minute_bars import StreamBar, publish_minute_bar
 from smtrading.marketdata.provider import (
     DataProvider,
     ProviderUnsupported,
@@ -61,6 +71,10 @@ CONNECTED = "connected"
 BACKOFF = "backoff"
 CLOSED_POLL_EVERY_S = 300
 CONFIRM_EVERY_S = 30
+# stream slots kept for automatic-rule symbols, taken only from watchlist-only symbols
+AUTO_RULES_RESERVE = int(os.environ.get("SMT_AUTO_RULES_STREAM_RESERVE", "10"))
+BARS_REFUSED_NOTE = ("Barre al minuto rifiutate dal fornitore: regole automatiche senza "
+                     "volume e VWAP")
 
 
 def _source_key(source: str) -> str:
@@ -153,6 +167,7 @@ class _Stream:
     provider: DataProvider
     asset_class: AssetClass
     items: tuple[tuple[str, str], ...]
+    bars: tuple[str, ...] = ()  # provider symbols of the items asked for 1-minute bars
     state: str = CONNECTING
     note: str | None = None  # why it is refused (StreamRefused), for «Salute del sistema»
     task: asyncio.Task | None = field(default=None, repr=False)
@@ -160,6 +175,11 @@ class _Stream:
     @property
     def symbols(self) -> list[str]:
         return sorted(s for s, _ in self.items)
+
+    @property
+    def bar_symbols(self) -> list[str]:
+        bars = set(self.bars)
+        return sorted(s for s, ps in self.items if ps in bars)
 
 
 class StreamManager:
@@ -190,6 +210,9 @@ class StreamManager:
         self._unknown: set[str] = set()
         # stream key -> symbol cap learnt from a «symbol limit» refusal (halved each time)
         self._caps: dict[str, int] = {}
+        # stream key -> the provider refused the set with bars (asked again only once no
+        # rule symbol is left on that stream)
+        self._bars_refused: dict[str, bool] = {}
         self._markets: dict[str, str] = {}  # tracked symbol -> instrument market
         self._last_poll: dict[str, datetime] = {}
         self._confirming: dict[str, float] = {}  # symbol -> loop time of the last confirm
@@ -211,13 +234,17 @@ class StreamManager:
 
     def status(self) -> dict:
         return {
-            "streams": {
-                key: {"symbols": s.symbols, "state": s.state, "note": s.note}
-                for key, s in sorted(self._streams.items())
-            },
+            "streams": {key: self._stream_status(s) for key, s in sorted(self._streams.items())},
             "polling": sorted(s for group in self._polling().values() for s in group),
             "owner": self._owner,
         }
+
+    @staticmethod
+    def _stream_status(s: _Stream) -> dict:
+        out = {"symbols": s.symbols, "state": s.state, "note": s.note}
+        if s.bars:  # only with rule symbols on the stream: otherwise the status of before
+            out["bars"] = s.bar_symbols
+        return out
 
     # ---------------------------------------------------------------- loops
 
@@ -259,9 +286,24 @@ class StreamManager:
         instrs = await self._instruments(await tracked_symbols(self._redis))
         sources = await tracked_sources(self._redis)
 
+        auto_only = sorted(
+            s for s, src in sources.items()
+            if set(src) in ({"auto_rules"}, {"auto_rules", "watchlists"})
+        )
+        reserved = set(auto_only[:AUTO_RULES_RESERVE])
+
         def rank(symbol: str) -> tuple[int, str]:
-            # orders, positions, alerts and the portal first; watchlist-only symbols after
-            return (0 if set(sources.get(symbol, [])) - {"watchlists"} else 1, symbol)
+            src = set(sources.get(symbol, []))
+            if src - {"watchlists", "auto_rules"}:  # orders, positions, alerts, portal
+                return (0, symbol)
+            if symbol in reserved:  # the automatic rules' quota
+                return (1, symbol)
+            if "auto_rules" in src and "watchlists" not in src:  # rules over the quota
+                return (3, symbol)
+            return (2, symbol)  # watchlist-only (and untagged) symbols, as before
+
+        def wants_bars(symbol: str) -> bool:
+            return "auto_rules" in sources.get(symbol, [])
 
         self._markets = {i.symbol: i.market for i in instrs}
         self._last_poll = {s: t for s, t in self._last_poll.items() if s in self._markets}
@@ -269,7 +311,8 @@ class StreamManager:
         for i in instrs:
             by_class.setdefault(i.asset_class, []).append(i)
 
-        wanted: dict[str, tuple[DataProvider, AssetClass, tuple[tuple[str, str], ...]]] = {}
+        wanted: dict[str, tuple[DataProvider, AssetClass, tuple[tuple[str, str], ...],
+                                tuple[str, ...]]] = {}
         poll_only: dict[AssetClass, list[str]] = {}
         for asset_class, group in by_class.items():
             provider = await self._stream_provider(asset_class)
@@ -287,16 +330,27 @@ class StreamManager:
                     items.sort(key=lambda it: rank(it[0]))
                     poll_only.setdefault(asset_class, []).extend(s for s, _ in items[cap:])
                     items = items[:cap]
-                wanted[key] = (provider, asset_class, tuple(sorted(items)))
+                items.sort()
+                bars: tuple[str, ...] = ()
+                if provider.supports_stream_bars:
+                    bars = tuple(sorted(ps for s, ps in items if wants_bars(s)))
+                    if not bars:
+                        self._bars_refused.pop(key, None)  # no rule left: ask again later
+                    elif self._bars_refused.get(key):
+                        bars = ()
+                wanted[key] = (provider, asset_class, tuple(items), bars)
 
+        # restarted only when its symbols or its bars change (a rule activated or paused)
         stale = [
             key for key, s in self._streams.items()
-            if key not in wanted or wanted[key][2] != s.items
+            if key not in wanted or wanted[key][2:] != (s.items, s.bars)
         ]
         await self._stop(stale)
-        for key, (provider, asset_class, items) in wanted.items():
+        for key, (provider, asset_class, items, bars) in wanted.items():
             if key not in self._streams:
-                stream = _Stream(provider, asset_class, items)
+                stream = _Stream(provider, asset_class, items, bars)
+                if self._bars_refused.get(key):
+                    stream.note = BARS_REFUSED_NOTE
                 stream.task = asyncio.create_task(self._run_stream(key, stream))
                 self._streams[key] = stream
         self._poll_only = poll_only
@@ -414,14 +468,23 @@ class StreamManager:
             stream.state = CONNECTING  # polled until the first quote proves the stream live
             delivered = False
             try:
-                async with contextlib.aclosing(
-                    stream.provider.stream(list(stream.items))
-                ) as quotes:
+                # bars passed only when asked: the call of before for every other stream
+                gen = (stream.provider.stream(list(stream.items), bars=frozenset(stream.bars))
+                       if stream.bars else stream.provider.stream(list(stream.items)))
+                async with contextlib.aclosing(gen) as quotes:
                     async for q in quotes:
                         if not delivered:
                             delivered = True
                             stream.state = CONNECTED
-                            stream.note = None
+                            stream.note = (BARS_REFUSED_NOTE if self._bars_refused.get(key)
+                                           else None)
+                        if isinstance(q, StreamBar):  # no quality guard, no quote written
+                            try:
+                                await publish_minute_bar(self._redis, q)
+                            except Exception:
+                                log.warning("stream %s: publishing the bar of %s failed", key,
+                                            q.symbol, exc_info=True)
+                            continue
                         q = await self._router.guard.check_stream(q, stream.asset_class)
                         if q.suspect is not None:
                             self._confirm(q.symbol)
@@ -431,7 +494,15 @@ class StreamManager:
                             log.warning("stream %s: writing %s failed", key, q.symbol,
                                         exc_info=True)
                 raise ConnectionError("stream ended")
-            except StreamSymbolLimit as e:  # too many symbols: the next set carries half
+            except StreamSymbolLimit as e:
+                if stream.bars:  # with bars: the same symbols again, without bars
+                    self._bars_refused[key] = True
+                    stream.state = BACKOFF
+                    stream.note = BARS_REFUSED_NOTE
+                    log.warning("stream %s: symbol limit with minute bars (%s); restarting "
+                                "without bars", key, e)
+                    return  # the next reconcile restarts it without bars
+                # too many symbols: the next set carries half
                 cap = max(1, len(stream.items) // 2)
                 self._caps[key] = cap
                 stream.state = BACKOFF
