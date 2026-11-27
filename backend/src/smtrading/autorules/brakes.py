@@ -11,8 +11,12 @@
   day's loss reaching `max_loss_day` or `max_loss_day_pct` % of the day's opening equity
   (the `day_open` snapshot, `equity_eur` converted at the portfolio's rate). The rule's
   brakes stop the rule; the portfolio's stop every active rule of the portfolio
-  («fermata dai freni», `rules.brake`) until someone resumes it by hand. One Telegram
-  notice (`source="system"`) per rule, day and reason (`job_runs`).
+  («fermata dai freni», `rules.brake`) until someone resumes it by hand. The rule's
+  losses in a row count only the closes since its last activation (a resume starts a
+  new run); the day's losses count the whole day (a rule resumed on a day already over
+  its limit stops again at its next close). One Telegram notice (`source="system"`) per
+  trip: per rule, day, reason and activation (`job_runs`), so a rule resumed by hand
+  and stopped again is announced again.
 - The day is the portfolio's local day (midnight in `portfolios.timezone`, as
   `risk.daily_loss.next_local_midnight`).
 
@@ -22,7 +26,9 @@ the global brake (the engine's risk checks).
 
 Fail closed for entries: a failed check blocks the entry (`braked`), and a close whose
 brakes could not be judged blocks every entry of its portfolio until it is judged (tried
-again at the next entry). Nothing here raises to the scalper. The reads come first, the
+again at the next entry): its failure is logged at most every FAILURE_LOG_EVERY, and one
+Telegram notice says the portfolio's automatic entries are blocked. Nothing here raises
+to the scalper. The reads come first, the
 exchange rates with no session open, then one short transaction (portfolio row lock, then
 the rules', R11) for the brakes and their notices."""
 import logging
@@ -60,6 +66,8 @@ from smtrading.telegram.outbox import enqueue
 log = logging.getLogger(__name__)
 
 BRAKE_JOB = "autorules_brake"
+PENDING_JOB = "autorules_brake_pending"
+FAILURE_LOG_EVERY = timedelta(minutes=10)
 HOUR = timedelta(hours=1)
 COUNTED = (SENT, OPEN, CLOSED)  # a trade that reached the market (not refused, canceled)
 BUSY = (SENT, OPEN)
@@ -98,13 +106,15 @@ def _losing_run(nets: list[Decimal]) -> int:
 
 
 def stop_trip(brakes: Brakes, nets: list[Decimal], *, currency: str,
-              opening: Decimal | None, portfolio: bool) -> Trip | None:
+              opening: Decimal | None, portfolio: bool,
+              streak: list[Decimal] | None = None) -> Trip | None:
     """The first brake that stops for the closed trades' results `nets` of the day (newest
-    first, in `currency`), or None. `opening`: the day's opening equity in `currency`."""
+    first, in `currency`), or None. `opening`: the day's opening equity in `currency`;
+    `streak`: the results the losses in a row are counted on (default `nets`)."""
     scope = "portfolio" if portfolio else "rule"
     whose = " del portafoglio" if portfolio else ""
     if brakes.max_consecutive_losses is not None:
-        run = _losing_run(nets)
+        run = _losing_run(nets if streak is None else streak)
         if run >= brakes.max_consecutive_losses:
             where = " nel portafoglio" if portfolio else ""
             losses = "perdita" if run == 1 else "perdite"
@@ -132,6 +142,12 @@ def notice_text(portfolio: str, rule: AutoRule, trip: Trip) -> str:
             "Riattivala a mano dal portale quando vuoi.")
 
 
+def pending_text(portfolio: str) -> str:
+    return (f"Regole automatiche · {portfolio}: non è stato possibile valutare i freni "
+            "dopo un'operazione chiusa. Le nuove entrate automatiche del portafoglio "
+            "restano bloccate finché la valutazione non riesce; le uscite continuano.")
+
+
 @dataclass
 class _Day:
     """What the brakes of a close are judged on (read in one session)."""
@@ -139,8 +155,9 @@ class _Day:
     timezone: str
     currency: str
     rule_brakes: Brakes | None  # None: the rule (or its version) is gone
+    activated_at: datetime | None  # the rule's last activation (while active)
     portfolio_brakes: Brakes
-    closed: list[tuple[uuid.UUID, Decimal, str | None]]  # newest first
+    closed: list[tuple[uuid.UUID, Decimal, str | None, datetime]]  # newest first
     opening_eur: Decimal | None
 
 
@@ -152,6 +169,16 @@ class BrakeChecker:
         self._redis = redis  # for the stream's untrack after a brake (post-commit)
         # closes whose brakes could not be judged: portfolio -> trade id -> trade
         self._pending: dict[uuid.UUID, dict[int, AutoTrade]] = {}
+        self._logged: dict[object, datetime] = {}  # failure -> last logged
+        self._noticed: set[int] = set()  # pending trades whose notice is queued
+
+    def _log_due(self, key: object, now: datetime) -> bool:
+        """True at most once every FAILURE_LOG_EVERY per `key`."""
+        last = self._logged.get(key)
+        if last is not None and now - last < FAILURE_LOG_EVERY:
+            return False
+        self._logged[key] = now
+        return True
 
     # --- before an entry -----------------------------------------------------------
 
@@ -164,8 +191,9 @@ class BrakeChecker:
                 return BLOCKED_BRAKED
             return await self._caps(rule, now)
         except Exception:
-            log.warning("automatic rule %s: brake check failed; entry blocked",
-                        rule.rule_id, exc_info=True)
+            if self._log_due(("caps", rule.rule_id), now):
+                log.warning("automatic rule %s: brake check failed; entries blocked",
+                            rule.rule_id, exc_info=True)
             return BLOCKED_BRAKED
 
     async def _judged(self, portfolio_id: uuid.UUID, now: datetime) -> bool:
@@ -219,27 +247,54 @@ class BrakeChecker:
         try:
             await self._judge(trade, now)
         except Exception:
-            log.exception("automatic trade %s: brakes not judged; entries of the "
-                          "portfolio blocked until they are", trade.id)
+            if self._log_due(("judge", trade.id), now):
+                log.exception("automatic trade %s: brakes not judged; entries of the "
+                              "portfolio blocked until they are", trade.id)
             self._pending.setdefault(trade.portfolio_id, {})[trade.id] = trade
+            await self._notice_pending(trade)
             return
+        self._logged.pop(("judge", trade.id), None)
+        self._noticed.discard(trade.id)
         pending = self._pending.get(trade.portfolio_id)
         if pending is not None:
             pending.pop(trade.id, None)
             if not pending:
                 del self._pending[trade.portfolio_id]
 
+    async def _notice_pending(self, trade: AutoTrade) -> None:
+        """One Telegram notice per trade left to judge (best effort: the database may be
+        what failed; tried again at the next failure until queued)."""
+        if trade.id in self._noticed:
+            return
+        try:
+            async with self._sm() as s:
+                name = await s.scalar(select(Portfolio.name).where(
+                    Portfolio.id == trade.portfolio_id))
+                if await run_job_once(s, PENDING_JOB, str(trade.id)):
+                    await enqueue(s, source="system", category="system", level="warning",
+                                  text=pending_text(name or "?"))
+                await s.commit()
+        except Exception:
+            log.debug("automatic trade %s: pending-brakes notice not queued", trade.id,
+                      exc_info=True)
+            return
+        self._noticed.add(trade.id)
+
     async def _read(self, trade: AutoTrade, now: datetime) -> _Day:
         async with self._sm() as s:
             p = await s.get_one(Portfolio, trade.portfolio_id)
-            raw = await s.scalar(
-                select(AutoRuleVersion.brakes)
+            rule = (await s.execute(
+                select(AutoRuleVersion.brakes, AutoRule.status, AutoRule.status_changed_at)
                 .join(AutoRule, (AutoRule.id == AutoRuleVersion.rule_id)
                       & (AutoRule.version == AutoRuleVersion.version))
-                .where(AutoRule.id == trade.rule_id))
+                .where(AutoRule.id == trade.rule_id))).one_or_none()
+            raw = None if rule is None else rule.brakes
+            activated = (rule.status_changed_at
+                         if rule is not None and rule.status == ACTIVE else None)
             start = day_start(p.timezone, now)
             closed = [tuple(r) for r in await s.execute(
-                select(AutoTrade.rule_id, AutoTrade.net_result, AutoTrade.net_currency)
+                select(AutoTrade.rule_id, AutoTrade.net_result, AutoTrade.net_currency,
+                       AutoTrade.exit_filled_at)
                 .where(AutoTrade.portfolio_id == p.id, AutoTrade.status == CLOSED,
                        AutoTrade.net_result.is_not(None),
                        AutoTrade.exit_filled_at >= start)
@@ -250,6 +305,7 @@ class BrakeChecker:
                 EquitySnapshot.local_date == local_date(p, now)))
             return _Day(p.name, p.timezone, p.base_currency,
                         validate_brakes(raw, level="rule") if raw is not None else None,
+                        activated,
                         validate_brakes(p.auto_brakes or {}, level="portfolio"),
                         closed, opening)
 
@@ -268,10 +324,14 @@ class BrakeChecker:
         day = await self._read(trade, now)
         # the exchange rates, with no session open
         rates = {c: await self.qs.get_fx_rate(c, day.currency)
-                 for c in {c for _, _, c in day.closed if c and c != day.currency}}
-        results = [(rid, net * rates.get(c, Decimal(1))) for rid, net, c in day.closed]
-        mine = [net for rid, net in results if rid == trade.rule_id]
-        everyone = [net for _, net in results]
+                 for c in {c for _, _, c, _ in day.closed if c and c != day.currency}}
+        results = [(rid, net * rates.get(c, Decimal(1)), at)
+                   for rid, net, c, at in day.closed]
+        mine = [net for rid, net, _ in results if rid == trade.rule_id]
+        everyone = [net for _, net, _ in results]
+        # the run of losses starts again at the rule's last activation (a resume)
+        mine_since = [net for rid, net, at in results if rid == trade.rule_id
+                      and (day.activated_at is None or at >= day.activated_at)]
         opening = None
         pct_brakes = [b for b in (day.rule_brakes, day.portfolio_brakes)
                       if b is not None and b.max_loss_day_pct is not None]
@@ -281,7 +341,8 @@ class BrakeChecker:
                 opening_eur = await self._opening_eur(trade.portfolio_id, now)
             opening = opening_eur * await self.qs.get_fx_rate(EUR, day.currency)
         rule_trip = None if day.rule_brakes is None else stop_trip(
-            day.rule_brakes, mine, currency=day.currency, opening=opening, portfolio=False)
+            day.rule_brakes, mine, currency=day.currency, opening=opening, portfolio=False,
+            streak=mine_since)
         portfolio_trip = stop_trip(day.portfolio_brakes, everyone, currency=day.currency,
                                    opening=opening, portfolio=True)
         if rule_trip is None and portfolio_trip is None:
@@ -307,8 +368,10 @@ class BrakeChecker:
                 return
             day = local_date(portfolio, now).isoformat()
             for rule, trip in targets:
+                activated = int(rule.status_changed_at.timestamp() * 1_000_000)
                 await brake(s, rule.id, trip.reason)
-                if await run_job_once(s, BRAKE_JOB, f"{rule.id}:{day}:{trip.code}"):
+                key = f"{rule.id}:{day}:{trip.code}:{activated}"
+                if await run_job_once(s, BRAKE_JOB, key):
                     await enqueue(s, source="system", category="system", level="warning",
                                   text=notice_text(portfolio.name, rule, trip))
             await s.commit()

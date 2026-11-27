@@ -97,6 +97,11 @@ def queue_untrack(session: AsyncSession, symbol: str, source: str) -> None:
     _queue(session).append(("untrack", symbol, source))
 
 
+def queue_redis_delete(session: AsyncSession, key: str) -> None:
+    """After commit, delete a Redis key (a cooldown the committed change ends)."""
+    _queue(session).append(("delete", key))
+
+
 def queue_live_trip(session: AsyncSession, link_id, exclude, cause: str,
                     details: dict) -> None:
     """After commit, put the other portfolios of a real-money link in reduce-only (a fuse
@@ -139,6 +144,8 @@ async def dispatch_post_commit(session: AsyncSession, redis) -> int:
                 await track(redis, [args[0]], source=args[1])
             elif kind == "untrack":
                 await untrack(redis, [args[0]], source=args[1])
+            elif kind == "delete":
+                await redis.delete(args[0])
             else:
                 raise ValueError(f"unknown post-commit effect {kind!r}")
             done += 1

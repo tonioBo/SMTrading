@@ -24,6 +24,8 @@ INACTIVE = "inactive"  # switch off, rule no longer active or a newer version at
 BROKER_SILENT_AFTER = timedelta(seconds=10)  # BrokerSync writes its heartbeat every pass
 MAX_FUTURE_S = Decimal(1)  # a quote stamped further ahead (clock skew) is not trusted
 BLOCKED_KEY = "autorules:blocked:{rule_id}:{day}"
+# a risk refusal's cooldown (the executor's; cleared when the rule is activated or resumed)
+REJECT_KEY = "autorules:rejected:{rule_id}"
 BLOCKED_TTL_S = 3 * 24 * 3600
 
 

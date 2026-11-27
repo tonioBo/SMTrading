@@ -52,7 +52,13 @@ from smtrading.autorules import guards
 from smtrading.autorules.brakes import BrakeChecker
 from smtrading.autorules.broker_times import auto_exit_client_id
 from smtrading.autorules.feed import read_stream_status, stream_state
-from smtrading.autorules.guards import INACTIVE, SIZE, check_entry, count_blocked
+from smtrading.autorules.guards import (
+    INACTIVE,
+    REJECT_KEY,
+    SIZE,
+    check_entry,
+    count_blocked,
+)
 from smtrading.autorules.quotes import CacheQuoteSource
 from smtrading.autorules.rules import ActiveRule
 from smtrading.autorules.runner import Entry, Exit, RuleRunner
@@ -97,7 +103,6 @@ TRIGGER_CONSTRAINT = "uq_auto_trades_rule_trigger"
 # a kill switch or a used-up budget, rarely ends within seconds): one rejected row per
 # cooldown, the repeats only counted (Redis)
 REJECT_COOLDOWN_S = 300
-REJECT_KEY = "autorules:rejected:{rule_id}"
 EXIT_RETRY_S = 5  # a failed exit is tried again after this long (the runner repeats it)
 _CHILD_ROLES = ("take_profit", "stop_loss")
 

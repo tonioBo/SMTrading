@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from smtrading.autorules import rules
 from smtrading.autorules.brakes import BrakeChecker
 from smtrading.autorules.executor import Executor
-from smtrading.autorules.guards import BRAKED, blocked_key
+from smtrading.autorules.guards import BRAKED, REJECT_KEY, blocked_key
 from smtrading.autorules.quotes import CacheQuoteSource
 from smtrading.autorules.rules import ActiveRule, active_rules
 from smtrading.autorules.runner import Entry, RuleRunner
@@ -35,6 +35,7 @@ from smtrading.brokers.sync import HEARTBEAT_KEY, BrokerSync
 from smtrading.common.db import make_engine
 from smtrading.engine.models import OPEN_STATUSES, Order, OrderType
 from smtrading.engine.quotesource import FakeQuoteSource
+from smtrading.events import dispatch_post_commit
 from smtrading.marketdata.cache import write_quote
 from smtrading.marketdata.streaming import CONNECTED, STATUS_KEY
 from smtrading.marketdata.types import Quote
@@ -141,16 +142,26 @@ async def _portfolio(sm, *, brakes=None, cash=100000, base="EUR", link=False):
         return p
 
 
+ACTIVATED = NOW - timedelta(days=2)  # before every trade of the tests
+
+
 async def _rule(sm, portfolio, symbol="AAPL", *, brakes=None, params=None) -> ActiveRule:
     async with sm() as s:
         r = await rules.create_rule(s, portfolio_id=portfolio.id, symbol=symbol,
                                     model="breakout",
                                     params={"lookback_min": 20, **(params or {})},
                                     qty=D(1), notional=None, brakes=brakes, by=BY)
-        await rules.activate(s, r.id, by=BY, now=NOW)
+        await rules.activate(s, r.id, by=BY, now=ACTIVATED)
         await s.commit()
         [rule] = [a for a in await active_rules(s) if a.rule_id == r.id]
         return rule
+
+
+async def _resume(sm, redis, rule, now) -> None:
+    async with sm() as s:
+        await rules.resume(s, rule.rule_id, by=BY, now=now)
+        await s.commit()
+        await dispatch_post_commit(s, redis)
 
 
 async def _trade(sm, rule: ActiveRule, *, net=None, at=NOW, status=CLOSED,
@@ -183,10 +194,10 @@ async def _status(sm, rule) -> tuple[str, str | None]:
         return r.status, r.status_reason
 
 
-async def _notices(sm) -> list[tuple]:
+async def _notices(sm, prefix=NOTICE) -> list[tuple]:
     async with sm() as s:
         rows = await s.scalars(select(TelegramOutbox).where(
-            TelegramOutbox.text.startswith(NOTICE)).order_by(TelegramOutbox.id))
+            TelegramOutbox.text.startswith(prefix)).order_by(TelegramOutbox.id))
         return [(r.source, r.category, r.level, r.text) for r in rows]
 
 
@@ -335,6 +346,75 @@ async def test_portfolio_brake_stops_all_rules(sm, redis, qs):
     notices = await _notices(sm)
     assert len(notices) == 2
     assert {n[3].split(" · ")[2].split(" ")[0] for n in notices} == {"AAPL", "MSFT"}
+
+
+async def test_resume_then_day_loss_brakes_again_with_notice(sm, redis, qs):
+    """Resumed by hand on a day already over its loss limit: the next close stops the
+    rule again, and this trip is announced too."""
+    p = await _portfolio(sm)
+    rule = await _rule(sm, p, brakes={"max_loss_day": D(10), "max_consecutive_losses": None})
+    checker = BrakeChecker(sm, qs, clock=Clock(NOW), redis=redis)
+    await _close(sm, checker, rule, "-12", at=NOW - timedelta(minutes=30))
+    assert (await _status(sm, rule))[0] == RULE_BRAKED
+    await _resume(sm, redis, rule, NOW - timedelta(minutes=20))
+    await _close(sm, checker, rule, "-1", at=NOW - timedelta(minutes=10))
+    assert await _status(sm, rule) == (
+        RULE_BRAKED, "perdita del giorno 13,00 EUR (limite 10,00 EUR)")
+    assert len(await _notices(sm)) == 2
+
+
+async def test_resume_starts_a_new_losing_run(sm, redis, qs):
+    p = await _portfolio(sm, brakes={"max_consecutive_losses": None})  # the rule's only
+    rule = await _rule(sm, p, brakes={"max_consecutive_losses": 3})
+    checker = BrakeChecker(sm, qs, clock=Clock(NOW), redis=redis)
+    for minutes in (50, 45, 40):
+        await _close(sm, checker, rule, "-5", at=NOW - timedelta(minutes=minutes))
+    assert (await _status(sm, rule))[0] == RULE_BRAKED
+    await _resume(sm, redis, rule, NOW - timedelta(minutes=35))
+    await _close(sm, checker, rule, "-5", at=NOW - timedelta(minutes=30))
+    await _close(sm, checker, rule, "-5", at=NOW - timedelta(minutes=25))
+    assert (await _status(sm, rule))[0] == ACTIVE  # 2 since the resume, not 5
+    await _close(sm, checker, rule, "-5", at=NOW - timedelta(minutes=20))
+    assert await _status(sm, rule) == (RULE_BRAKED, "3 perdite di fila")
+    assert len(await _notices(sm)) == 2
+
+
+async def test_resume_clears_refusal_cooldown(sm, redis, qs):
+    p = await _portfolio(sm)
+    rule = await _rule(sm, p, brakes={"max_consecutive_losses": 1})
+    checker = BrakeChecker(sm, qs, clock=Clock(NOW), redis=redis)
+    await _close(sm, checker, rule, "-5", at=NOW - timedelta(minutes=30))
+    key = REJECT_KEY.format(rule_id=rule.rule_id)
+    await redis.set(key, "RISK_LIMIT_EXCEEDED", ex=300)
+    await _resume(sm, redis, rule, NOW)
+    assert not await redis.exists(key)
+
+
+async def test_pending_judgement_logs_and_notifies_once(sm, redis, qs, monkeypatch, caplog):
+    p = await _portfolio(sm)
+    rule = await _rule(sm, p)
+    checker = BrakeChecker(sm, qs, clock=Clock(NOW), redis=redis)
+
+    async def boom(*a, **k):
+        raise RuntimeError("database down")
+
+    monkeypatch.setattr(checker, "_judge", boom)
+    t = await _trade(sm, rule, net="-1", at=NOW - timedelta(minutes=5))
+    caplog.set_level("INFO", logger="smtrading.autorules.brakes")
+    await checker.after_close(t, NOW)
+    for i in range(5):
+        assert await checker.blocked(rule, NOW + timedelta(seconds=i)) == BRAKED
+
+    def logged():
+        return [r for r in caplog.records if "brakes not judged" in r.getMessage()]
+
+    assert len(logged()) == 1
+    [(source, category, level, text)] = await _notices(sm, "Regole automatiche")
+    assert (source, category, level) == ("system", "system", "warning")
+    assert text.startswith(f"Regole automatiche · {p.name}: ")
+    assert await checker.blocked(rule, NOW + timedelta(minutes=11)) == BRAKED
+    assert len(logged()) == 2  # again after the interval
+    assert len(await _notices(sm, "Regole automatiche")) == 1
 
 
 async def test_brake_check_failure_blocks_entries(sm, redis, qs, monkeypatch):

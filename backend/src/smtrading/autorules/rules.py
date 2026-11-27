@@ -22,6 +22,7 @@ from sqlalchemy import exists, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from smtrading.autorules.guards import REJECT_KEY
 from smtrading.autorules.models import Brakes, validate_brakes, validate_params
 from smtrading.autorules.tables import (
     ACTIVE,
@@ -36,7 +37,7 @@ from smtrading.autorules.tables import (
 )
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine.models import OPEN_STATUSES, Order
-from smtrading.events import json_safe, queue_track, queue_untrack
+from smtrading.events import json_safe, queue_redis_delete, queue_track, queue_untrack
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.instruments.service import canonical_symbol
 from smtrading.intraday.models import INTRADAY_TIMEFRAMES
@@ -198,7 +199,8 @@ async def _check_activation(session: AsyncSession, rule: AutoRule,
 async def _switch_on(session: AsyncSession, rule_id: uuid.UUID, now: datetime,
                      allowed: tuple[str, ...], refused: str) -> AutoRule:
     """→ active from one of `allowed`: the portfolio's lock, then the rule's (R11), then
-    the checks; an active rule is returned as it is."""
+    the checks; an active rule is returned as it is. After the commit the rule's refusal
+    cooldown (executor) is cleared."""
     rule = await _rule(session, rule_id, lock=False)
     portfolio = await lock_portfolio(session, rule.portfolio_id)
     rule = await _rule(session, rule_id)
@@ -214,6 +216,8 @@ async def _switch_on(session: AsyncSession, rule_id: uuid.UUID, now: datetime,
     except IntegrityError:
         raise _invalid(ACTIVE_TAKEN, rule, symbol=rule.symbol) from None
     queue_track(session, rule.symbol, STREAM_SOURCE)
+    # a refusal's cooldown from before does not hold back the rule switched on by hand
+    queue_redis_delete(session, REJECT_KEY.format(rule_id=rule.id))
     return rule
 
 
