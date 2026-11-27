@@ -45,8 +45,8 @@ scegli **una** cosa, nell'ordine: portafoglio senza strategia o senza segnali da
 giorni di borsa; obiettivo **in ritardo** (strategie o parametri migliori entro il profilo,
 mai più rischio); risultati reali lontani dal backtest. Passi della ricerca sopra, max 2 idee
 aperte per portafoglio; candidata valida → «APPROVA STRATEGIA …» al CEO, altrimenti
-`log_decision` `other` con cosa hai scartato. Un obiettivo irraggiungibile non ferma la
-ricerca: la rende prioritaria.
+`log_decision` `other` con cosa hai scartato. L'obiettivo è vincolante: un obiettivo in
+ritardo rende la ricerca prioritaria, mai la ferma.
 
 1. Leggi portafoglio/i, stile, universo, vincoli.
 2. `get_risk_limits` del portafoglio: mercati consentiti, short (i backtest sono solo long).

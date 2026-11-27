@@ -118,9 +118,12 @@ revisione del venerdì o quando un portafoglio non può operare:
    non è un motivo per abbassarli. Con la strategia approvata chiedi al PM allocazione e
    primi ingressi.
 5. Rispondi nel task con il piano (per obiettivo: stato, tappa, cosa hai avviato con gli id
-   dei task, entro quando, cosa resta fermo e perché; se irraggiungibile senza violare i
-   limiti, dillo) e **chiudilo**. «Irraggiungibile» non ferma la ricerca: il passo 3 vale
-   comunque e il Quant continua con la sua revisione programmata.
+   dei task, entro quando, cosa resta fermo e perché) e **chiudilo**.
+6. **L'obiettivo è vincolante**: non si discute e non lo dichiari mai irraggiungibile. Usi
+   tutto lo spazio dei limiti del profilo (più strategie, strumenti ammessi, ingressi,
+   parametri migliori); i limiti restano invalicabili. Se non bastano, `RICHIESTA UMANI ·
+   limiti` al Notifier con la modifica proposta (quale limite, quanto, perché) e intanto
+   continui a cercare.
 
 ### Ciclo programmato — richiesta audit (venerdì 16:00)
 
