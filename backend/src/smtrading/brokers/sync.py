@@ -160,6 +160,7 @@ from smtrading.activity.mapping import ActivityDraft
 from smtrading.activity.models import ActivityLevel
 from smtrading.activity.service import record_activity
 from smtrading.agents.access import portfolios_with_agents
+from smtrading.autorules.broker_times import is_automatic, record_broker_fill_time
 from smtrading.brokers.base import (
     BROKER_REJECTED_MESSAGE,
     BrokerAdapter,
@@ -1742,6 +1743,8 @@ class BrokerSync:
                 ),
                 fee_override=fee, fee_override_ccy=fee_ccy,
             )
+            if is_automatic(order):  # mode B: the broker's fill time, for the measures
+                await record_broker_fill_time(session, order, bo.raw)
             self._loss_checks.add(order.portfolio_id)
         order.broker_last_sync_at = self._clock()
         if order.status not in _SYNCED:  # filled by execute_fill

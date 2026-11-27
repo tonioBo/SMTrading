@@ -17,9 +17,21 @@ nothing (`inactive` counted). A risk refusal is stored once (the rejected trade 
 entry) and the rule makes no new attempt for REJECT_COOLDOWN_S: the repeats are only
 counted (`rejected`), never new rows.
 
+The time and end-of-session exits (`exit`) are the scalper's: one reduce-only market
+order per trade (`smt-autox-{trade}`, the engine's `close_position`, which cancels the
+bracket's stop and target, Ruling R16), never refused by the day-trade checks (risk step
+10 judges only buys) nor by the symbol's owner (step 11 lets reduce-only orders pass);
+the guards of the entries do not apply (a lost stream or a silent BrokerSync leaves it
+`to_send` until BrokerSync resumes). The runner repeats its Exit until the fill: the
+trade's `exit_order_id` (and a set in memory) makes the exit once per trade; a failure
+is logged and tried again after EXIT_RETRY_S, an exit order that ended unfilled (refused
+or canceled at the broker) is replaced by a new one (`smt-autox-{trade}-{n}`). A stop or target already handed to the
+broker is left to finish (no second sell). `cancel_stale_entry` cancels a limit entry
+not filled in time (the Tracker's call).
+
 No transaction is open across a network call: the guards read Redis and one short
 query, the order path reads the quote cache; the wake is published after the commit.
-`enter` never raises: a failure is logged and the rule stays flat."""
+`enter`, `exit` and `cancel_stale_entry` never raise: a failure is logged."""
 import hashlib
 import logging
 import uuid
@@ -27,26 +39,48 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from smtrading.autorules import guards
+from smtrading.autorules.broker_times import auto_exit_client_id
 from smtrading.autorules.feed import read_stream_status, stream_state
 from smtrading.autorules.guards import INACTIVE, SIZE, check_entry, count_blocked
 from smtrading.autorules.quotes import CacheQuoteSource
 from smtrading.autorules.rules import ActiveRule
-from smtrading.autorules.runner import Entry, RuleRunner
+from smtrading.autorules.runner import Entry, Exit, RuleRunner
 from smtrading.autorules.tables import ACTIVE, OPEN, REJECTED, SENT, AutoRule, AutoTrade
 from smtrading.brokers.sync import HEARTBEAT_KEY, wake_broker_sync
 from smtrading.common.errors import SMTError
-from smtrading.engine.models import OPEN_STATUSES, Order, OrderSide, OrderType, TimeInForce
-from smtrading.engine.service import PlaceOrderRequest, place_bracket_order
-from smtrading.events import POST_COMMIT_KEY, dispatch_post_commit, json_safe
+from smtrading.engine.models import (
+    FILLABLE_STATUSES,
+    OPEN_STATUSES,
+    BrokerState,
+    Order,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    TimeInForce,
+)
+from smtrading.engine.service import (
+    PlaceOrderRequest,
+    cancel_held_children,
+    cancel_orders,
+    close_position,
+    place_bracket_order,
+)
+from smtrading.events import (
+    POST_COMMIT_KEY,
+    discard_post_commit,
+    dispatch_post_commit,
+    json_safe,
+)
 from smtrading.instruments.market_hours import market_status
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.marketdata.types import Quote
-from smtrading.portfolios.locks import lock_portfolio
+from smtrading.portfolios.locks import lock_live_portfolio, lock_portfolio
 from smtrading.portfolios.models import PortfolioStatus
+from smtrading.positions.models import Position
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +91,8 @@ TRIGGER_CONSTRAINT = "uq_auto_trades_rule_trigger"
 # cooldown, the repeats only counted (Redis)
 REJECT_COOLDOWN_S = 300
 REJECT_KEY = "autorules:rejected:{rule_id}"
+EXIT_RETRY_S = 5  # a failed exit is tried again after this long (the runner repeats it)
+_CHILD_ROLES = ("take_profit", "stop_loss")
 
 
 def trigger_key(rule: ActiveRule, entry: Entry) -> str:
@@ -83,6 +119,11 @@ def _error_text(e: SMTError) -> str:
     return f"{code}: {e.message}"[:200]
 
 
+def _dead(order: Order | None) -> bool:
+    """An exit order that ended with nothing filled (refused or canceled)."""
+    return order is not None and order.status not in OPEN_STATUSES and order.filled_qty == 0
+
+
 def _parse_ts(raw) -> datetime | None:
     if raw is None:
         return None
@@ -100,6 +141,8 @@ class Executor:
         self._redis = redis
         self.qs = qs
         self._clock = clock
+        self._exited: set[int] = set()  # trades whose exit order exists
+        self._exit_retry: dict[int, datetime] = {}  # trade -> no new attempt before
 
     # --- the guards --------------------------------------------------------------
 
@@ -263,3 +306,152 @@ class Executor:
             return e
         trade.entry_order_id = orders[0].id
         return None
+
+    # --- the exits -----------------------------------------------------------------
+
+    async def exit(self, rule: ActiveRule, runner: RuleRunner, ex: Exit,
+                   trade: AutoTrade) -> None:
+        """The rule's time or end-of-session exit of an open trade: once per trade."""
+        if trade.id in self._exited:
+            return
+        now = self._clock()
+        retry = self._exit_retry.get(trade.id)
+        if retry is not None and now < retry:
+            return
+        try:
+            order_id = await self._exit(rule, ex, trade, now)
+        except Exception:
+            log.exception("automatic rule %s: exit of trade %s failed; retrying in %s s",
+                          rule.rule_id, trade.id, EXIT_RETRY_S)
+            self._exit_retry[trade.id] = now + timedelta(seconds=EXIT_RETRY_S)
+            return
+        if order_id is None:
+            return
+        self._exited.add(trade.id)
+        self._exit_retry.pop(trade.id, None)
+        try:
+            await wake_broker_sync(self._redis, order_id)
+        except Exception:  # the next full pass sends it
+            log.warning("automatic rule %s: BrokerSync not woken for the exit", rule.rule_id,
+                        exc_info=True)
+
+    async def _bid(self, symbol: str) -> Decimal | None:
+        try:
+            quote = (await self.qs.get_quotes([symbol])).get(symbol)
+        except Exception:
+            log.warning("exit of %s: no cached quote", symbol, exc_info=True)
+            return None
+        return None if quote is None else quote.bid
+
+    async def _exit(self, rule: ActiveRule, ex: Exit, trade: AutoTrade,
+                    now: datetime) -> uuid.UUID | None:
+        """The exit order's id once it exists (sent now or earlier); None when there is
+        nothing to send now (the trade no longer open, a stop or target already on its
+        way to the broker, no position left: tried again later)."""
+        bid = await self._bid(rule.symbol)  # read with no transaction open
+        async with self._sm() as session:
+            await lock_live_portfolio(session, trade.portfolio_id)  # R11: portfolio first
+            row = await session.get(AutoTrade, trade.id, with_for_update=True,
+                                    populate_existing=True)
+            if row is None or row.status != OPEN:
+                await session.rollback()
+                return None
+            attempt = 0
+            if row.exit_order_id is not None:
+                prior = await session.get(Order, row.exit_order_id)
+                if not _dead(prior):
+                    await session.rollback()
+                    return row.exit_order_id
+                base = auto_exit_client_id(row.id)
+                attempt = await session.scalar(select(func.count()).where(
+                    Order.portfolio_id == row.portfolio_id,
+                    or_(Order.client_order_id == base,
+                        Order.client_order_id.startswith(f"{base}-")))) or 0
+            if await self._exit_at_broker(session, row):
+                await session.rollback()
+                self._exit_retry[trade.id] = now + timedelta(seconds=EXIT_RETRY_S)
+                log.info("automatic rule %s: stop or target of trade %s already at the "
+                         "broker; time exit waits", rule.rule_id, trade.id)
+                return None
+            held = await session.scalar(select(Position.qty).where(
+                Position.portfolio_id == row.portfolio_id, Position.symbol == row.symbol))
+            if not held or held <= 0:
+                await session.rollback()
+                self._exit_retry[trade.id] = now + timedelta(seconds=EXIT_RETRY_S)
+                log.warning("automatic rule %s: trade %s has no position left to exit",
+                            rule.rule_id, trade.id)
+                return None
+            try:
+                order = await close_position(
+                    session, self.qs, row.portfolio_id, row.symbol, qty=min(row.qty, held),
+                    source="system", agent_id=None, now=now, redis=self._redis,
+                    client_order_id=auto_exit_client_id(row.id, attempt))
+            except SMTError as e:
+                await session.rollback()
+                discard_post_commit(session)
+                self._exit_retry[trade.id] = now + timedelta(seconds=EXIT_RETRY_S)
+                log.warning("automatic rule %s: exit of trade %s refused (%s); retrying in "
+                            "%s s", rule.rule_id, trade.id, _error_text(e), EXIT_RETRY_S)
+                return None
+            row.exit_trigger_at = ex.ts
+            row.exit_reason = ex.reason
+            row.exit_expected = bid
+            row.exit_order_id = order.id
+            await session.commit()
+            await dispatch_post_commit(session, self._redis)
+        log.info("automatic rule %s: %s exit of trade %s sent (order %s)", rule.rule_id,
+                 ex.reason, trade.id, order.id)
+        return order.id
+
+    @staticmethod
+    async def _exit_at_broker(session, trade: AutoTrade) -> bool:
+        """A stop or target of the trade's entry triggered and handed to the broker (or
+        on its way): it sells the position itself."""
+        if trade.entry_order_id is None:
+            return False
+        return bool(await session.scalar(select(exists().where(
+            Order.parent_id == trade.entry_order_id, Order.role.in_(_CHILD_ROLES),
+            Order.status.in_(OPEN_STATUSES), Order.broker_status.is_not(None)))))
+
+    def exit_failed(self, trade_id: int) -> None:
+        """The trade's exit order ended unfilled (refused or canceled) with the position
+        still open: the next Exit of the runner sends a new one."""
+        self._exited.discard(trade_id)
+
+    async def cancel_stale_entry(self, trade: AutoTrade) -> bool:
+        """Cancel the trade's entry (a limit not filled within `entry_timeout_s`): locally,
+        or asked of BrokerSync (woken) when at the broker. Only the entry is canceled:
+        held exits go with an entry that ends unfilled, and size to what a partly filled
+        one bought. True when a cancel was asked now."""
+        try:
+            order_id = await self._cancel_entry(trade)
+        except Exception:
+            log.exception("trade %s: stale entry not canceled", trade.id)
+            return False
+        if order_id is None:
+            return False
+        try:
+            await wake_broker_sync(self._redis, order_id)
+        except Exception:
+            log.warning("trade %s: BrokerSync not woken for the cancel", trade.id,
+                        exc_info=True)
+        return True
+
+    async def _cancel_entry(self, trade: AutoTrade) -> uuid.UUID | None:
+        if trade.entry_order_id is None:
+            return None
+        async with self._sm() as session:
+            await lock_portfolio(session, trade.portfolio_id)
+            order = await session.get(Order, trade.entry_order_id, with_for_update=True,
+                                      populate_existing=True)
+            if (order is None or order.status not in FILLABLE_STATUSES
+                    or order.broker_status == BrokerState.CANCEL_REQUESTED):
+                await session.rollback()
+                return None
+            await cancel_orders(session, [order], by="system")
+            if order.status == OrderStatus.canceled and order.filled_qty == 0:
+                await cancel_held_children(session, order, by="system")
+            await session.commit()
+            await dispatch_post_commit(session, self._redis)
+        log.info("trade %s: limit entry not filled in time; cancel asked", trade.id)
+        return order.id

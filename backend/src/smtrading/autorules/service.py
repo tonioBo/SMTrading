@@ -7,7 +7,13 @@ symbols are tracked again for the price stream (idempotent: a pause/activate rac
 leave a rule unfollowed), the feed follows exactly them, a new rule or a changed version
 gets a new runner warmed up from the minute history, a rule gone is dropped (its open
 trades stay with the Tracker). A bar goes to the runners of its symbol; a quote too, and
-an entry intent goes to the executor. The guards before a send live in the executor."""
+an entry intent goes to the executor. The guards before a send live in the executor.
+
+Every TRACK_EVERY_S (every `reload_s` while no trade is `sent` or `open` and no rule is
+active) the Tracker follows the trades (fills, exits, measures) and the runners in `long`
+are asked for their exit at the clock's time, so a time or end-of-session exit leaves
+even without quotes (a lost stream); an exit intent goes to `Executor.exit` (once per
+trade). Every SUMMARY_CHECK_S the evening summaries due are queued (`autorules.summary`)."""
 import asyncio
 import logging
 import uuid
@@ -24,7 +30,9 @@ from smtrading.autorules.feed import (
 )
 from smtrading.autorules.quotes import CacheQuoteSource
 from smtrading.autorules.rules import STREAM_SOURCE, ActiveRule, active_rules
-from smtrading.autorules.runner import Entry, RuleRunner
+from smtrading.autorules.runner import Entry, Exit, RuleRunner
+from smtrading.autorules.summary import SUMMARY_CHECK_S, send_due_summaries
+from smtrading.autorules.tracker import TRACK_EVERY_S, Tracker
 from smtrading.marketdata.minute_bars import StreamBar
 from smtrading.marketdata.streaming import track
 from smtrading.marketdata.types import Quote
@@ -62,6 +70,9 @@ class Scalper:
         self._feed = PriceFeed(redis, router, clock=self._clock)
         self._executor = (executor_factory(sessionmaker, redis, self.qs, clock=self._clock)
                           if executor_factory is not None else None)
+        self._tracker = Tracker(sessionmaker, redis, self.qs, clock=self._clock,
+                                executor=self._executor)
+        self._summaries_checked: set[str] = set()
         self._rules: dict[uuid.UUID, tuple[ActiveRule, RuleRunner]] = {}
         self._by_symbol: dict[str, list[tuple[ActiveRule, RuleRunner]]] = {}
         self.stream_status: dict | None = None  # md:stream_status at the last refresh
@@ -146,17 +157,60 @@ class Scalper:
             intent = runner.on_price(ev.ts, price, ev.bid, ev.ask)
             if isinstance(intent, Entry) and self._executor is not None:
                 await self._executor.enter(rule, runner, intent, ev)
-            # an Exit is the Tracker's (open trades), not the entry path
+            elif isinstance(intent, Exit):
+                await self._exit(rule, runner, intent)
+
+    # --- the trades --------------------------------------------------------------
+
+    async def _exit(self, rule: ActiveRule, runner: RuleRunner, ex: Exit) -> None:
+        trade = self._tracker.open_trade(rule.rule_id)
+        if trade is not None and self._executor is not None:
+            await self._executor.exit(rule, runner, ex, trade)
+
+    async def track(self) -> None:
+        """One Tracker step, then the exits due at the clock's time."""
+        await self._tracker.step({rid: runner for rid, (_, runner) in self._rules.items()})
+        now = self._clock()
+        for rule, runner in list(self._rules.values()):
+            if runner.state != "long":
+                continue
+            intent = runner.on_price(now, runner.fill_price, None, None)  # long: exits only
+            if isinstance(intent, Exit):
+                await self._exit(rule, runner, intent)
+
+    async def summaries(self) -> int:
+        return await send_due_summaries(self._sm, self._redis, self._clock(),
+                                        checked=self._summaries_checked)
 
     # --- loops -------------------------------------------------------------------
 
-    async def _reload_loop(self) -> None:
+    async def _loop(self) -> None:
+        """The refresh (every `reload_s`), the summaries (every SUMMARY_CHECK_S) and the
+        tracking (every TRACK_EVERY_S, or at each refresh while idle), one after the
+        other: never two of them on the database at once."""
+        loop = asyncio.get_running_loop()
+        next_reload = next_summary = loop.time()
         while True:
+            if loop.time() >= next_reload:
+                try:
+                    await self.reload()
+                except Exception:
+                    log.warning("scalper refresh failed; retrying", exc_info=True)
+                next_reload = loop.time() + self._reload_s
+            if loop.time() >= next_summary:
+                try:
+                    await self.summaries()
+                except Exception:
+                    log.exception("automatic rules summaries failed; retrying")
+                next_summary = loop.time() + SUMMARY_CHECK_S
             try:
-                await self.reload()
+                await self.track()
             except Exception:
-                log.warning("scalper refresh failed; retrying", exc_info=True)
-            await asyncio.sleep(self._reload_s)
+                log.exception("scalper tracking failed; retrying")
+            wait = max(0.0, next_reload - loop.time())
+            if self._rules or self._tracker.active:
+                wait = min(wait, TRACK_EVERY_S)
+            await asyncio.sleep(wait)
 
     async def _consume(self) -> None:
         async for ev in self._feed.events():
@@ -168,7 +222,7 @@ class Scalper:
     async def run(self) -> None:
         try:
             async with asyncio.TaskGroup() as tg:
-                tg.create_task(self._reload_loop())
+                tg.create_task(self._loop())
                 tg.create_task(self._consume())
         finally:
             await self.close()
