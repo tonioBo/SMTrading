@@ -3,7 +3,8 @@ blocked (`autorules:blocked:{rule_id}:{yyyymmdd}`, a Redis hash reason -> n, for
 evening summary; no database row).
 
 The order of `check_entry` is the order of the checks: the first that fails is the
-reason. A quote's age is judged from its own event time (`quote.ts`), so the time it
+reason. The exits never pass through them (a stale bar or quote never holds an exit).
+A quote's age is judged from its own event time (`quote.ts`), so the time it
 spent queued before reaching the scalper counts."""
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -20,7 +21,12 @@ BRAKED = "braked"
 SIZE = "size"  # the rule's amount buys less than one lot: no order
 REJECTED = "rejected"  # a risk refusal of the rule is cooling down: no new attempt
 INACTIVE = "inactive"  # switch off, rule no longer active or a newer version at send time
+BARS_STALE = "bars_stale"  # the runner's newest minute bar is too old: frozen indicators
 
+# the runner's newest minute bar closed longer ago than this with the market open: its
+# indicators are frozen (stream bars and the REST fallback both failing), no entry
+BARS_STALE_AFTER = timedelta(minutes=3)
+BAR_LENGTH = timedelta(minutes=1)
 BROKER_SILENT_AFTER = timedelta(seconds=10)  # BrokerSync writes its heartbeat every pass
 MAX_FUTURE_S = Decimal(1)  # a quote stamped further ahead (clock skew) is not trusted
 BLOCKED_KEY = "autorules:blocked:{rule_id}:{day}"
@@ -35,12 +41,16 @@ def _seconds(d: timedelta) -> Decimal:
 
 
 def check_entry(*, quote: Quote, now: datetime, params: dict, market_open: bool,
-                busy: bool, stream: str, broker_last_pass: datetime | None) -> str | None:
-    """The reason an entry must not be sent now, or None."""
+                busy: bool, stream: str, broker_last_pass: datetime | None,
+                last_bar: datetime | None) -> str | None:
+    """The reason an entry must not be sent now, or None. `last_bar`: the start of the
+    runner's newest minute bar (None: no bar at all)."""
     if not market_open:
         return CLOSED
     if stream != "stream":
         return NO_STREAM
+    if last_bar is None or now - (last_bar + BAR_LENGTH) > BARS_STALE_AFTER:
+        return BARS_STALE
     if broker_last_pass is None or now - broker_last_pass > BROKER_SILENT_AFTER:
         return BROKER_DOWN
     age = _seconds(now - quote.ts)

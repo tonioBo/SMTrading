@@ -49,7 +49,7 @@ from smtrading.instruments.models import Instrument
 from smtrading.intraday.day_close import DayCloser
 from smtrading.marketdata.cache import write_quote
 from smtrading.marketdata.streaming import CONNECTED, STATUS_KEY
-from smtrading.marketdata.types import Quote
+from smtrading.marketdata.types import Bar, Quote
 from smtrading.portfolios.models import Portfolio
 from smtrading.portfolios.service import create_portfolio
 from smtrading.positions.models import Position
@@ -230,11 +230,18 @@ def _sync(maker, redis, qs, broker, now) -> BrokerSync:
     return BrokerSync(maker, redis, qs, broker.http, clock=Clock(now), interval_s=30)
 
 
+def _fresh_bar(now: datetime) -> Bar:
+    """The minute bar closed at `now` (the runner's bars are fresh: entries allowed)."""
+    ts = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
+    return Bar(ts=ts, open=D(199), high=D(200), low=D(198), close=D(199), volume=D(100))
+
+
 async def _send(maker, redis, qs, broker, rule, runner, *, now=NOW, sent_at=None,
                 bid="199.90", ask="200.00") -> AutoTrade:
     """An entry triggered at `now`, written at `sent_at` (default `now`)."""
     await _ready(redis, sent_at or now)
     q = await _quote(redis, now, bid, ask)
+    runner.on_bar(_fresh_bar(now))
     trade = await Executor(maker, redis, qs, clock=Clock(sent_at or now)).enter(
         rule, runner, Entry(q.ts, q.ask, {}), q)
     assert trade is not None and trade.entry_order_id is not None, trade
@@ -419,6 +426,21 @@ async def test_time_exit_sent_by_scalper(maker, redis, qs, broker, router):
     assert closed.exit_price == D("200.40")
     assert closed.exit_filled_at == broker.fill_time
     assert runner.state == "flat"
+
+
+async def test_time_exit_on_stale_bars(maker, redis, qs, broker, router):
+    """Bars frozen for 10 minutes block entries, never the rule's exits."""
+    rule = await _rule(maker, params={"max_hold_s": 600})
+    row, runner = await _open(maker, redis, qs, broker, rule)
+    clock = Clock(row.filled_at + timedelta(seconds=600))
+    assert clock.now - runner.series.closed(1)[-1].ts > timedelta(minutes=10)
+    await _ready(redis, clock.now)
+    await _quote(redis, clock.now, bid="200.50", ask="200.60")
+    sc = _scalper(maker, redis, router, clock, rule, runner)
+    await sc.track()
+    [exit_order] = await _autox(maker, rule)
+    assert exit_order.reduce_only and exit_order.qty == row.qty
+    assert (await _trade(maker, row.id)).exit_reason == "time"
 
 
 async def test_refused_exit_replaced(maker, redis, qs, broker, router):

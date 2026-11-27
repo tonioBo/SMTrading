@@ -173,14 +173,16 @@ class Executor:
                                Order.status.in_(OPEN_STATUSES)),
             ))))
 
-    async def _blocked(self, rule: ActiveRule, quote: Quote, now: datetime) -> str | None:
+    async def _blocked(self, rule: ActiveRule, quote: Quote, now: datetime,
+                       last_bar: datetime | None) -> str | None:
         if await self._redis.exists(REJECT_KEY.format(rule_id=rule.rule_id)):
             return guards.REJECTED
         status = await read_stream_status(self._redis)
         last_pass = _parse_ts(await self._redis.get(HEARTBEAT_KEY))
         args = {"quote": quote, "now": now, "params": rule.params,
                 "market_open": market_status(rule.market, now).is_open,
-                "stream": stream_state(status, rule.symbol), "broker_last_pass": last_pass}
+                "stream": stream_state(status, rule.symbol), "broker_last_pass": last_pass,
+                "last_bar": last_bar}
         reason = check_entry(busy=False, **args)
         if reason is None:  # the database is asked only when nothing else blocks
             reason = check_entry(busy=await self._busy(rule), **args)
@@ -224,7 +226,7 @@ class Executor:
     async def _enter(self, rule: ActiveRule, runner: RuleRunner, entry: Entry,
                      quote: Quote) -> AutoTrade | None:
         now = self._clock()
-        reason = await self._blocked(rule, quote, now)
+        reason = await self._blocked(rule, quote, now, runner.last_bar_ts)
         if reason is not None:
             await self._count(rule, now, reason)
             return None
