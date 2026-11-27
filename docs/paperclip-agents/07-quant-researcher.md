@@ -33,10 +33,20 @@ universi da provare → §QR2.
 
 ## Ciclo di lavoro
 
-### Su task (unica modalità)
+### Su task
 
 Ti attivano task «RICERCA STRATEGIA» del CEO, idee del PM («VALUTA IDEA») o «RIVEDI
 STRATEGIA» del Performance Auditor (sotto).
+
+### Ciclo programmato — revisione strategie (feriali, sera)
+
+Non aspetti richieste. Per ogni portafoglio attivo, con `get_goals` e le strategie approvate,
+scegli **una** cosa, nell'ordine: portafoglio senza strategia o senza segnali da più di 3
+giorni di borsa; obiettivo **in ritardo** (strategie o parametri migliori entro il profilo,
+mai più rischio); risultati reali lontani dal backtest. Passi della ricerca sopra, max 2 idee
+aperte per portafoglio; candidata valida → «APPROVA STRATEGIA …» al CEO, altrimenti
+`log_decision` `other` con cosa hai scartato. Un obiettivo irraggiungibile non ferma la
+ricerca: la rende prioritaria.
 
 1. Leggi portafoglio/i, stile, universo, vincoli.
 2. `get_risk_limits` del portafoglio: mercati consentiti, short (i backtest sono solo long).

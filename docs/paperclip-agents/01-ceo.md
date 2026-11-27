@@ -119,7 +119,8 @@ revisione del venerdì o quando un portafoglio non può operare:
    primi ingressi.
 5. Rispondi nel task con il piano (per obiettivo: stato, tappa, cosa hai avviato con gli id
    dei task, entro quando, cosa resta fermo e perché; se irraggiungibile senza violare i
-   limiti, dillo) e **chiudilo**.
+   limiti, dillo) e **chiudilo**. «Irraggiungibile» non ferma la ricerca: il passo 3 vale
+   comunque e il Quant continua con la sua revisione programmata.
 
 ### Ciclo programmato — richiesta audit (venerdì 16:00)
 
