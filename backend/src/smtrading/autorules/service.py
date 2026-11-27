@@ -15,6 +15,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+from smtrading.autorules.executor import Executor
 from smtrading.autorules.feed import (
     PriceFeed,
     read_stream_status,
@@ -52,7 +53,7 @@ def _price(q: Quote) -> Decimal | None:
 class Scalper:
     def __init__(self, sessionmaker, redis, router, *,
                  clock: Callable[[], datetime] | None = None, reload_s: float = 5,
-                 executor_factory=None) -> None:
+                 executor_factory=Executor) -> None:
         self._sm = sessionmaker
         self._redis = redis
         self._clock = clock or (lambda: datetime.now(UTC))

@@ -868,6 +868,7 @@ async def place_bracket_order(
             status=OrderStatus.held, parent_id=entry.id, oco_group_id=group, role=role,
             # the exits keep their own tif: the entry's valid_until is not theirs
             expires_at=_tif_expiry(adm), source=entry.source, reduce_only=True,
+            auto_rule_id=entry.auto_rule_id,  # an automatic entry's exits are its rule's
         )
         for role, type, limit, stop in (
             ("take_profit", OrderType.limit, take_profit, None),
