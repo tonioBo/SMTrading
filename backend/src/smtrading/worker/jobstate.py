@@ -73,10 +73,13 @@ class JobRecorder:
         self._job(name)["state"] = "restarting"
         await self._write(name)
 
-    async def tick(self, name: str) -> None:
+    async def tick(self, name: str, info: dict[str, Any] | None = None) -> None:
+        """A pass of `name`; `info` (small, JSON) replaces the job's facts shown with it."""
         now = self._clock()
         job = self._job(name)
         job["last_tick_at"] = now
+        if info is not None:
+            job["info"] = info
         if now - self._written.get(name, 0.0) >= TICK_WRITE_EVERY_S:
             await self._write(name)
 
@@ -86,11 +89,11 @@ def bind(recorder: JobRecorder | None, name: str) -> None:
     _current.set((recorder, name) if recorder is not None else None)
 
 
-async def job_tick() -> None:
+async def job_tick(info: dict[str, Any] | None = None) -> None:
     """One pass of the current job is done (no-op outside a supervised job)."""
     cur = _current.get()
     if cur is not None:
-        await cur[0].tick(cur[1])
+        await cur[0].tick(cur[1], info)
 
 
 async def read_jobs(redis) -> tuple[float | None, dict[str, dict[str, Any]]]:

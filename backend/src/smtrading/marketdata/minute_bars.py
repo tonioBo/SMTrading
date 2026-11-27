@@ -57,12 +57,14 @@ async def read_minute_bars(
 ) -> list[tuple[str, Bar]]:
     """The bars after entry `since_id` (exclusive), oldest first, at most `count`."""
     found = await redis.xread({BARS_KEY.format(symbol=symbol): since_id}, count=count)
-    out: list[tuple[str, Bar]] = []
-    for _key, entries in found or []:
-        for entry_id, raw in entries:
-            f = {_s(k): _s(v) for k, v in raw.items()}
-            out.append((_s(entry_id), Bar(
-                ts=datetime.fromisoformat(f["ts"]), open=Decimal(f["o"]), high=Decimal(f["h"]),
-                low=Decimal(f["l"]), close=Decimal(f["c"]), volume=Decimal(f["v"]),
-            )))
-    return out
+    return [(_s(entry_id), bar_from_fields(raw))
+            for _key, entries in found or [] for entry_id, raw in entries]
+
+
+def bar_from_fields(raw: dict) -> Bar:
+    """The Bar of one `bars1m:{symbol}` entry (str or bytes fields)."""
+    f = {_s(k): _s(v) for k, v in raw.items()}
+    return Bar(
+        ts=datetime.fromisoformat(f["ts"]), open=Decimal(f["o"]), high=Decimal(f["h"]),
+        low=Decimal(f["l"]), close=Decimal(f["c"]), volume=Decimal(f["v"]),
+    )

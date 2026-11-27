@@ -71,6 +71,13 @@ services:
     <<: *app
     command: ["python", "-m", "smtrading.worker.main"]
 
+  # Automatic rules (intraday mode B), same image: prices only from the worker's price
+  # publication in Redis (no data connection of its own), orders through the engine with
+  # BrokerSync woken up. With no active rule it only queries the rules every 5 s.
+  scalper:
+    <<: *app
+    command: ["python", "-m", "smtrading.autorules.main"]
+
   # Admin web app (nginx: SPA + proxy of /api/ and /ws to api). Ruling R12:
   # https://<pc-ip>/ for the LAN (certificate from a local CA kept in `web_certs`; port 80
   # redirects to https), plain http only on the local entry 127.0.0.1:3000.

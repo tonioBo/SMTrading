@@ -86,11 +86,12 @@ JOB_INTERVALS: dict[str, float] = {
     "hand-off watchdog": 300, "protection alarm": 300, "goal alerts": 300,
     "telegram summaries": 30, "price quality alarm": 60, "system sentinel": 300,
     "broker tradability": 300,
+    "scalper": 5,  # the scalper service (intraday mode B): a pass per rule refresh
 }
 LATE_FACTOR = 3  # a pass later than 3 intervals is late
 GATED_JOBS = ("protection alarm", "goal alerts", "plan closer", "pre-open check",
               "hand-off watchdog", "weekly report", "system sentinel",
-              "broker tradability")
+              "broker tradability", "scalper")
 GATE_GRACE_S = 15 * 60  # the gated jobs may wait for the startup gate this long
 CONNECTOR_CHECK_LATE_S = 15 * 60
 PAPERCLIP_LATE_S = 15 * 60
@@ -159,7 +160,8 @@ def job_rows(jobs: dict[str, dict[str, Any]], worker_started: float | None, now:
                      "started_at": _iso(j.get("started_at")),
                      "last_tick_at": _iso(tick_at), "interval_s": interval,
                      "crashes": int(j.get("crashes") or 0),
-                     "last_crash_at": _iso(crash_at), "last_error": j.get("last_error")})
+                     "last_crash_at": _iso(crash_at), "last_error": j.get("last_error"),
+                     "info": j.get("info")})
     return rows
 
 
