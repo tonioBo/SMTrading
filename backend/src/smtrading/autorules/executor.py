@@ -26,10 +26,11 @@ the guards of the entries do not apply (a lost stream or a silent BrokerSync lea
 trade's `exit_order_id` (and a set in memory) makes the exit once per trade; a failure
 is logged and tried again after EXIT_RETRY_S; an exit order that ended short (refused,
 canceled or partly filled at the broker) is replaced for what is left
-(`smt-autox-{trade}-{n}`). A stop or target already handed to the broker, the worker's
-safety close or any other reduce-only sell still open is left to finish (no second
-sell). `cancel_stale_entry` cancels a limit entry
-not filled in time (the Tracker's call).
+(`smt-autox-{trade}-{n}`). What other open reduce-only sells still sell (a stop or
+target already handed to the broker, the worker's safety close, a manual reduce-only
+order resting at the broker) is left to them: the exit sells only the rest of the
+position (never more than held) and waits only while they cover it all.
+`cancel_stale_entry` cancels a limit entry not filled in time (the Tracker's call).
 
 The brakes (`autorules.brakes`) come right after the guards (the rule busy included): a cap
 of the rule or the portfolio reached, a braked rule or a failed check blocks the entry
@@ -384,12 +385,6 @@ class Executor:
                     Order.portfolio_id == row.portfolio_id,
                     or_(Order.client_order_id == base,
                         Order.client_order_id.startswith(f"{base}-")))) or 0
-            if await self._selling(session, row):
-                await session.rollback()
-                self._exit_retry[trade.id] = now + timedelta(seconds=EXIT_RETRY_S)
-                log.info("automatic rule %s: another sell of %s on its way; the exit of "
-                         "trade %s waits", rule.rule_id, row.symbol, trade.id)
-                return None
             held = await session.scalar(select(Position.qty).where(
                 Position.portfolio_id == row.portfolio_id, Position.symbol == row.symbol))
             if not held or held <= 0:
@@ -398,9 +393,16 @@ class Executor:
                 log.warning("automatic rule %s: trade %s has no position left to exit",
                             rule.rule_id, trade.id)
                 return None
+            qty = min(row.qty, held - await self._selling(session, row))
+            if qty <= 0:
+                await session.rollback()
+                self._exit_retry[trade.id] = now + timedelta(seconds=EXIT_RETRY_S)
+                log.info("automatic rule %s: other sells of %s already cover the position; "
+                         "the exit of trade %s waits", rule.rule_id, rule.symbol, trade.id)
+                return None
             try:
                 order = await close_position(
-                    session, self.qs, row.portfolio_id, row.symbol, qty=min(row.qty, held),
+                    session, self.qs, row.portfolio_id, row.symbol, qty=qty,
                     source="system", agent_id=None, now=now, redis=self._redis,
                     client_order_id=auto_exit_client_id(row.id, attempt))
             except SMTError as e:
@@ -421,20 +423,25 @@ class Executor:
         return order.id
 
     @staticmethod
-    async def _selling(session, trade: AutoTrade) -> bool:
-        """Another reduce-only sell of the symbol is open (a stop or target triggered and
-        handed to the broker, the worker's safety close, a manual close): it sells the
-        position itself, a second sell is not sent. The entry's stop and target still
-        resting here do not count (the exit cancels them)."""
+    async def _selling(session, trade: AutoTrade) -> Decimal:
+        """What other open reduce-only sells of the symbol still sell (their quantity
+        left): a stop or target triggered and handed to the broker, the worker's safety
+        close, a manual close or a manual reduce-only limit resting at the broker. The
+        exit sells only the rest (`held - this`), so it is never held back by an order
+        that covers part of the position and never sells more than held; it waits only
+        while these orders cover it all. The entry's own stop and target still resting
+        here do not count (the exit cancels them)."""
         handed = Order.synthetic.is_(True) & Order.broker_status.is_not(None)
         # no NULL in the test (a sell without a parent is never a resting child)
         resting_child = Order.parent_id.is_not(None) & (
             Order.parent_id == trade.entry_order_id) & ~handed
-        return bool(await session.scalar(select(exists().where(
-            Order.portfolio_id == trade.portfolio_id, Order.symbol == trade.symbol,
-            Order.side == OrderSide.sell, Order.reduce_only.is_(True),
-            Order.status.in_(OPEN_STATUSES),
-            ~resting_child if trade.entry_order_id is not None else true()))))
+        left = await session.scalar(
+            select(func.coalesce(func.sum(Order.qty - Order.filled_qty), 0)).where(
+                Order.portfolio_id == trade.portfolio_id, Order.symbol == trade.symbol,
+                Order.side == OrderSide.sell, Order.reduce_only.is_(True),
+                Order.status.in_(OPEN_STATUSES), Order.qty.is_not(None),
+                ~resting_child if trade.entry_order_id is not None else true()))
+        return Decimal(left or 0)
 
     def exit_failed(self, trade_id: int) -> None:
         """The trade's exit order ended unfilled (refused or canceled) with the position

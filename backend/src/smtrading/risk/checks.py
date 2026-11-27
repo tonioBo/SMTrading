@@ -394,10 +394,14 @@ async def _run(
         raise _Reject(ErrorCode.INSUFFICIENT_BUYING_POWER, "insufficient buying power")
 
     # 10: day trades: the portfolio's own cap and the broker's buying power. Only buys
-    # flagged day_trade of a portfolio in day_scope; sells are never refused
-    if side == OrderSide.buy and day_trade and day_scope(portfolio):
+    # flagged day_trade, or entries of an automatic rule (crypto too, never flagged
+    # day_trade: leverage and buying power only), of a portfolio in day_scope; sells are
+    # never refused
+    if (side == OrderSide.buy and (day_trade or auto_rule_id is not None)
+            and day_scope(portfolio)):
         at = now or datetime.now(UTC)
-        await _check_own_day_trade_cap(session, portfolio, instrument, at)
+        if day_trade:
+            await _check_own_day_trade_cap(session, portfolio, instrument, at)
         link = (await session.get(BrokerLink, portfolio.broker_link_id)
                 if portfolio.broker_link_id else None)
         _check_day_trade_leverage(portfolio, link, valuation, notional_eur, costs, increases)

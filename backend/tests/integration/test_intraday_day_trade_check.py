@@ -322,3 +322,82 @@ async def test_preview_reports_day_trade_limit(db_session, seeded, qs):
     r = await _preview(db_session, qs, _req(p, day_trade=True))
     assert r.ok is False and r.code == "DAY_TRADE_LIMIT"
     assert await _outbox(db_session) == []
+
+
+# automatic entries (auto_rule_id): step 10's leverage and broker buying power apply to
+# every buy entry, crypto included (not flagged day_trade); the own cap stays day_trade only
+
+AUTO_BY = "admin@example.com"
+
+
+async def _auto_rule(db_session, p, symbol="BTC-USD"):
+    from smtrading.autorules import rules
+
+    rule = await rules.create_rule(db_session, portfolio_id=p.id, symbol=symbol,
+                                   model="breakout", params={"lookback_min": 20},
+                                   qty=D(1), by=AUTO_BY)
+    await rules.activate(db_session, rule.id, by=AUTO_BY, now=WED)
+    await db_session.flush()
+    return rule
+
+
+async def test_crypto_auto_entry_over_non_marginable_buying_power(db_session, seeded, qs):
+    link = await _link(db_session, account(bp="100000", nmbp="500"))
+    p = await _pf(db_session, link, auto_rules_enabled=True)
+    rule = await _auto_rule(db_session, p)
+    r = await _preview(db_session, qs, _req(p, symbol="BTC-USD", qty=D(1),
+                                            auto_rule_id=rule.id))
+    assert not r.ok and r.code == ErrorCode.INSUFFICIENT_BUYING_POWER
+    assert r.details["reason"] == "broker_buying_power"
+    assert r.details["buying_power"] == "500"
+    link.pdt_state, link.pdt_state_at = account(bp="0", nmbp="5000")
+    await db_session.flush()
+    assert (await _preview(db_session, qs, _req(p, symbol="BTC-USD", qty=D(1),
+                                                auto_rule_id=rule.id))).ok
+
+
+async def _levered_auto(db_session, leverage, kind="alpaca_paper"):
+    p = await _levered(db_session, leverage, kind=kind)
+    p.intraday_enabled, p.auto_rules_enabled = False, True
+    await db_session.flush()
+    return p, await _auto_rule(db_session, p)
+
+
+# BTC-USD at 1,000 $, 1 EUR = 1.25 $: 1 BTC = 800 EUR; 10,000 EUR of equity:
+# 26 = 20,800 EUR (over 2), 24 = 19,200 (within 2); 13 = 10,400 (over 1), 12 = 9,600
+
+
+async def test_crypto_auto_entry_over_day_leverage_on_paper(db_session, seeded, qs):
+    p, rule = await _levered_auto(db_session, 3)
+    r = await _preview(db_session, qs, _req(p, symbol="BTC-USD", qty=D(26),
+                                            auto_rule_id=rule.id))
+    assert not r.ok and r.code == ErrorCode.INSUFFICIENT_BUYING_POWER
+    assert r.details == {"reason": "day_trade_leverage", "leverage": "2"}
+    assert (await _preview(db_session, qs, _req(p, symbol="BTC-USD", qty=D(24),
+                                                auto_rule_id=rule.id))).ok
+
+
+async def test_live_crypto_auto_entry_capped_at_leverage_one(db_session, seeded, qs,
+                                                             monkeypatch):
+    from smtrading.risk import checks
+
+    async def no_live_checks(*a, **k):  # arming, cash cap, fuse: not under test here
+        return None
+
+    monkeypatch.setattr(checks, "live_pre_trade", no_live_checks)
+    p, rule = await _levered_auto(db_session, 2, kind="alpaca_live")
+    r = await _preview(db_session, qs, _req(p, symbol="BTC-USD", qty=D(13),
+                                            auto_rule_id=rule.id))
+    assert not r.ok and r.code == ErrorCode.INSUFFICIENT_BUYING_POWER
+    assert r.details == {"reason": "day_trade_leverage", "leverage": "1"}
+    assert (await _preview(db_session, qs, _req(p, symbol="BTC-USD", qty=D(12),
+                                                auto_rule_id=rule.id))).ok
+
+
+async def test_crypto_auto_entry_skips_the_own_day_trade_cap(db_session, seeded, qs):
+    link = await _link(db_session)
+    p = await _pf(db_session, link, auto_rules_enabled=True, max_day_trades_5d=1)
+    await _round_trips(db_session, p, 1)
+    rule = await _auto_rule(db_session, p)
+    assert (await _preview(db_session, qs, _req(p, symbol="BTC-USD", qty=D(1),
+                                                auto_rule_id=rule.id))).ok

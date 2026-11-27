@@ -18,8 +18,8 @@ wrote (it never talks to a broker).
   filled quantities and slippage (same sign convention as the entry's: `(exit -
   expected) / expected × 10000`), the broker's real fees (the sum of the
   `Fill.fee_amount` of entry and exits) and the net result `Σ (exit - fill) × filled -
-  fees` in the portfolio's currency, at the exchange rate the portfolio uses
-  (`qs.get_fx_rate`). The runner is told (`exited`). A partial exit keeps the trade
+  fees` (on the trade's quantity at most) in the portfolio's currency, at the exchange
+  rate the portfolio uses (`qs.get_fx_rate`). The runner is told (`exited`). A partial exit keeps the trade
   open; the rule's own exit that ended short is replaced (`Executor.exit_failed`). The
   trades closed at a step are in `closed` (the scalper judges the brakes on them).
 - A restarted scalper has new runners: an `open` trade puts its runner back in `long`
@@ -363,7 +363,9 @@ class Tracker:
         proceeds = sum((e.order.avg_fill_price * e.order.filled_qty for e in exits),
                        Decimal(0))
         exit_price = proceeds / sold
-        gross = proceeds - trade.fill_price * sold
+        # the trade's own quantity at most: an exit that sold more (a manual close of a
+        # position also holding earlier shares) is not counted as the rule's result
+        gross = (exit_price - trade.fill_price) * min(sold, trade.qty)
         fees_base = sum((a * fee_rates[c] for c, a in fees.items()), Decimal(0))
         if len(fees) == 1:
             [(fees_ccy, fees_total)] = fees.items()

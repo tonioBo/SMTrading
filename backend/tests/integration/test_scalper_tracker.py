@@ -33,7 +33,14 @@ from smtrading.brokers.models import BrokerLink
 from smtrading.brokers.service import create_link, link_portfolio
 from smtrading.brokers.sync import HEARTBEAT_KEY, BrokerSync
 from smtrading.common.db import make_engine
-from smtrading.engine.models import BrokerState, Fill, Order, OrderStatus, OrderType
+from smtrading.engine.models import (
+    OPEN_STATUSES,
+    BrokerState,
+    Fill,
+    Order,
+    OrderStatus,
+    OrderType,
+)
 from smtrading.engine.processor import OrderProcessor
 from smtrading.engine.quotesource import FakeQuoteSource
 from smtrading.engine.service import close_position
@@ -703,6 +710,39 @@ async def test_day_close_skips_pending_rule_exit(maker, redis, qs, broker, route
     await DayCloser(maker, qs, redis).tick(net)
     assert not [o for o in await _orders(maker, rule)
                 if (o.client_order_id or "").startswith("smt-dayclose-")]
+
+
+async def test_resting_reduce_only_limit_does_not_block_the_time_exit(maker, redis, qs,
+                                                                      broker, router):
+    """A reduce-only limit sell of 1 of the 2 held rests at the broker (a manual one, far
+    from the price): the time exit is not held back by it, and sells only what that order
+    does not already cover (held - its quantity left), never more than held."""
+    from smtrading.engine.models import OrderSide
+    from smtrading.engine.service import PlaceOrderRequest, place_order
+
+    rule = await _rule(maker, qty=D(2), params={"max_hold_s": 60})
+    row, runner = await _open(maker, redis, qs, broker, rule)
+    at = row.filled_at + timedelta(seconds=30)
+    FROZEN["now"] = at
+    await _quote(redis, at)
+    async with maker() as s:
+        resting = await place_order(s, qs, PlaceOrderRequest(
+            portfolio_id=rule.portfolio_id, symbol="AAPL", side=OrderSide.sell,
+            type=OrderType.limit, qty=D(1), limit_price=D(250), reduce_only=True,
+            source="portal"), now=at)
+        await s.commit()
+        await dispatch_post_commit(s, redis)
+    await _settle(maker, redis, qs, broker, at)
+    clock = Clock(row.filled_at + timedelta(seconds=60))
+    FROZEN["now"] = clock.now
+    await _quote(redis, clock.now)
+    sc = _scalper(maker, redis, router, clock, rule, runner)
+    await sc.track()
+    [exit_order] = await _autox(maker, rule)
+    assert exit_order.qty == D(1) and exit_order.status != OrderStatus.rejected
+    async with maker() as s:
+        still = await s.get(Order, resting.id)
+        assert still.status in OPEN_STATUSES  # left resting, not canceled
 
 
 async def test_partial_exit_replaced_for_the_rest(maker, redis, qs, broker, router):
