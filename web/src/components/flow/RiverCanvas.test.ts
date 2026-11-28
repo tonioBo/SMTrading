@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FlowEvent, FlowMap } from "@/api/types";
-import { MAX_PULSES, QUEUE_MAX, REPLAY_DELAY_MS, RiverCanvas } from "./RiverCanvas";
+import { HEALTH_COLORS, MAX_PULSES, QUEUE_MAX, REPLAY_DELAY_MS, RiverCanvas } from "./RiverCanvas";
 
 /** jsdom has no 2D context: a stand-in where every call is a no-op */
 function fakeContext(): CanvasRenderingContext2D {
@@ -273,5 +273,173 @@ describe("RiverCanvas", () => {
       links: [...withZz.links, ["agent:yy", "pc"]],
     });
     expect(river.scheduledCount()).toBe(1);
+  });
+});
+
+describe("RiverCanvas v2", () => {
+  const T0 = Date.parse(NOW);
+  const iso = (ms: number) => new Date(T0 + ms).toISOString();
+  let frame = 1000;
+  const frames = (n: number, step = 50) => {
+    for (let i = 0; i < n; i++) river.drawFrame((frame += step));
+  };
+
+  /** a context recording what is drawn: fillText strings and stroke colours */
+  function recordingRiver() {
+    const texts: string[] = [];
+    const strokes: string[] = [];
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => {
+      const ctx = fakeContext() as unknown as Record<string, unknown>;
+      return new Proxy(ctx, {
+        get: (t, p: string) => {
+          if (p === "fillText") return (s: string) => texts.push(s);
+          if (p === "stroke") return () => strokes.push(String(t.strokeStyle));
+          return t[p];
+        },
+        set: (t, p: string, v) => {
+          t[p] = v;
+          return true;
+        },
+      }) as never;
+    });
+    const host = document.createElement("div");
+    Object.defineProperty(host, "clientWidth", { value: 1200 });
+    Object.defineProperty(host, "clientHeight", { value: 560 });
+    const c = document.createElement("canvas");
+    host.appendChild(c);
+    river.destroy();
+    river = new RiverCanvas(c, document.createElement("canvas"));
+    return { texts, strokes };
+  }
+
+  beforeEach(() => {
+    frame = 1000;
+    river.setMap(MAP);
+  });
+
+  describe("replay", () => {
+    it("plays a past window on its own clock at the chosen speed", () => {
+      const launched: string[] = [];
+      river.onLaunch((e) => launched.push(e.id));
+      river.startReplay(T0, T0 + 3_600_000);
+      river.addReplay([event({ id: "r:1", ts: iso(30_000) }), event({ id: "r:2", ts: iso(600_000) })]);
+      river.setReplayHorizon(T0 + 3_600_000);
+      river.setReplaySpeed(60);
+      expect(river.replayClock()).toBe(T0);
+      frames(1); // first frame: no time yet
+      frames(10); // 0.5 s at 60× = 30 s
+      expect(launched).toEqual(["r:1"]);
+      expect(river.replayClock()).toBe(T0 + 30_000);
+      river.setPaused(true);
+      frames(100);
+      expect(river.replayClock()).toBe(T0 + 30_000);
+    });
+
+    it("skips what lies before the time jumped to, and stops at the end of the window", () => {
+      const launched: string[] = [];
+      river.onLaunch((e) => launched.push(e.id));
+      river.startReplay(T0, T0 + 60_000);
+      river.addReplay([event({ id: "r:1", ts: iso(10_000) }), event({ id: "r:2", ts: iso(50_000) })]);
+      river.setReplayHorizon(T0 + 60_000);
+      river.setReplaySpeed(300);
+      river.seek(T0 + 40_000);
+      frames(20);
+      expect(launched).toEqual(["r:2"]);
+      expect(river.replayClock()).toBe(T0 + 60_000);
+      expect(river.replayEnded()).toBe(true);
+    });
+
+    it("merges the pages as they arrive, once each, and caps the comets", () => {
+      river.startReplay(T0, T0 + 60_000);
+      const page = Array.from({ length: 1500 }, (_, i) => event({ id: `b:${i}`, ts: iso(1000 + (i % 10)) }));
+      river.addReplay(page.slice(0, 1000));
+      river.addReplay(page.slice(900)); // overlapping page
+      expect(river.replayCount()).toBe(1500);
+      river.setReplayHorizon(T0 + 60_000);
+      river.setReplaySpeed(10);
+      frames(10);
+      expect(river.pulseCount()).toBeLessThanOrEqual(MAX_PULSES + 1);
+    });
+
+    it("waits at the edge of the pages loaded so far, never skipping a page still to come", () => {
+      const launched: string[] = [];
+      river.onLaunch((e) => launched.push(e.id));
+      river.startReplay(T0, T0 + 3_600_000);
+      river.setReplaySpeed(300);
+      frames(20); // nothing loaded yet: the clock waits at the start
+      expect(river.replayClock()).toBe(T0);
+      river.addReplay([event({ id: "p1", ts: iso(60_000) })]);
+      river.setReplayHorizon(T0 + 60_000);
+      frames(20);
+      expect(river.replayClock()).toBe(T0 + 60_000);
+      river.addReplay([event({ id: "p2", ts: iso(61_000) })]); // the next page
+      river.setReplayHorizon(T0 + 3_600_000); // all loaded
+      frames(5);
+      expect(launched).toEqual(["p1", "p2"]);
+    });
+
+    it("ignores live pushes while replaying and goes back to the live clock after", () => {
+      river.startReplay(T0 - 3_600_000, T0);
+      river.push([event({ id: "live" })], NOW);
+      expect(river.scheduledCount()).toBe(0);
+      river.stopReplay();
+      expect(river.replayClock()).toBeNull();
+      river.push([event({ id: "live2" })], NOW);
+      expect(river.scheduledCount()).toBe(1);
+    });
+  });
+
+  it("reports the comet clicked, and a node click the page may take", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(T0));
+    try {
+      const selected: string[] = [];
+      const clicked: string[] = [];
+      river.onSelect((e) => selected.push(e.id));
+      river.onNodeClick((k) => {
+        clicked.push(k);
+        return k === "mcp";
+      });
+      river.startReplay(T0, T0 + 60_000);
+      river.addReplay([event({ id: "c:1", ts: iso(100) })]);
+      river.setReplayHorizon(T0 + 60_000);
+      river.setReplaySpeed(1);
+      frames(8);
+      const [head] = river.cometHeads();
+      expect(head.id).toBe("c:1");
+      river.clickAt(head.x, head.y);
+      expect(selected).toEqual(["c:1"]);
+      const mcp = river.nodePosition("mcp")!;
+      river.clickAt(mcp.x, mcp.y);
+      expect(clicked).toEqual(["mcp"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rings each node in the colour of its health and writes the agents' badges", () => {
+    const { texts, strokes } = recordingRiver();
+    river.setMap(MAP);
+    river.setHealth({
+      mcp: { state: "ok", reason: "tutto bene" },
+      ng: { state: "errore", reason: "get_forecast fallita" },
+      eng: { state: "attenzione", reason: "coda lenta" },
+    });
+    river.setBadges({ "agent:a1": "oggi 1,20 $ · mese 12,00 $ / 50,00 $" });
+    river.drawFrame(1000);
+    expect(strokes).toContain(HEALTH_COLORS.errore);
+    expect(strokes).toContain(HEALTH_COLORS.attenzione);
+    expect(strokes).toContain(HEALTH_COLORS.ok);
+    expect(texts).toContain("oggi 1,20 $ · mese 12,00 $ / 50,00 $");
+  });
+
+  it("takes the width window in minutes («oggi»: since midnight)", () => {
+    river.setSummary({
+      links: { "pc|mcp": { calls: 600, errors: 0, top_tools: [] } },
+      nodes: {},
+      head: { calls_per_min: 1, orders_today: 0, errors_window: 0, mcp_latency_ms: null },
+    });
+    river.setWindow(600);
+    expect(river.linkRate("pc|mcp")).toBe(1);
   });
 });

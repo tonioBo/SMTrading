@@ -5,8 +5,12 @@
  * comets from the real events, each replayed `REPLAY_DELAY_MS` after its time on the server
  * clock, so the traffic flows smoothly between two polls. Nothing is invented: no event,
  * no comet; no traffic, thin bands.
+ *
+ * v2: a replay mode (a past window on its own clock, at 1×–300×, with jumps), a click on
+ * a comet (the page opens its story) or on a node (the page may open its lens), health
+ * rings around the nodes and a spend badge under the agents.
  */
-import type { FlowEvent, FlowMap, FlowSummary, FlowWindow } from "@/api/types";
+import type { FlowEvent, FlowHealthState, FlowMap, FlowSummary } from "@/api/types";
 
 /** colour per node kind (the sketch's palette) */
 export const KIND_COLORS: Record<string, string> = {
@@ -19,6 +23,13 @@ export const KIND_COLORS: Record<string, string> = {
   db: "#9fb4d9",
 };
 export const ERROR_COLOR = "#ff4d6d";
+/** the health ring of a node */
+export const HEALTH_COLORS: Record<FlowHealthState, string> = {
+  ok: "rgba(52,224,196,.35)",
+  attenzione: "#ffb347",
+  errore: "#ff4d6d",
+  sconosciuto: "rgba(139,153,195,.45)",
+};
 export const kindColor = (kind: string): string => KIND_COLORS[kind] ?? KIND_COLORS.core;
 
 /** the six columns, left to right (FlowNode.column) */
@@ -59,6 +70,11 @@ const TIMELINE_S = 120;
 export const MAX_PULSES = 160;
 /** events waiting for their comet: beyond, the oldest join the history */
 export const QUEUE_MAX = 500;
+/** replay: comets started in one frame at most (a dense second at 300×), the rest join
+ * the diary and the timeline */
+export const REPLAY_BURST = 40;
+/** a click this close to a comet's head selects it */
+const COMET_HIT = 12;
 /** events kept before the map arrives, and with a node the map does not have yet */
 const WAITING_MAX = 2_000;
 const BW = 14; // node bar width
@@ -111,6 +127,7 @@ interface RLink {
 }
 interface Pulse {
   evId: string;
+  ev: FlowEvent;
   link: RLink;
   fwd: boolean;
   t: number;
@@ -155,7 +172,16 @@ export class RiverCanvas {
   private nodes = new Map<string, RNode>();
   private links = new Map<string, RLink>();
   private summary: FlowSummary | null = null;
-  private win: FlowWindow = 1;
+  /** the width window in minutes (rates per minute, prevailing directions) */
+  private win = 1;
+  /** replay: the window and the next event of `recent` to play (in replay `recent` holds
+   * every event loaded, in time order) */
+  private replay: { from: number; to: number; speed: number; next: number; horizon: number } | null = null;
+  private health: Record<string, { state: FlowHealthState }> = {};
+  private badges: Record<string, string> = {};
+  private heads: { id: string; x: number; y: number; ev: FlowEvent }[] = [];
+  private selectCb: ((e: FlowEvent) => void) | null = null;
+  private nodeClickCb: ((key: string) => boolean) | null = null;
   private speed = 1;
   private paused = false;
   private follow = false;
@@ -201,11 +227,7 @@ export class RiverCanvas {
       canvas.style.cursor = "default";
       this.hoverCb?.(null);
     });
-    this.listen(canvas, "click", (e) => {
-      const h = this.hitTest((e as MouseEvent).offsetX, (e as MouseEvent).offsetY);
-      this.lockNode = h.node && h.node !== this.lockNode ? h.node : null;
-      this.refreshFocus();
-    });
+    this.listen(canvas, "click", (e) => this.clickAt((e as MouseEvent).offsetX, (e as MouseEvent).offsetY));
     this.resize();
     if (typeof requestAnimationFrame !== "undefined") {
       const loop = (t: number) => {
@@ -284,14 +306,23 @@ export class RiverCanvas {
     this.applySummary();
   }
 
-  /** the width window of the summary (rates per minute, prevailing directions) */
-  setWindow(w: FlowWindow): void {
-    this.win = w;
+  /** the width window of the summary in minutes (rates per minute, prevailing
+   * directions): 1, 5, 15, the minutes since midnight («oggi»), or a replayed window */
+  setWindow(minutes: number): void {
+    this.win = Math.max(1, minutes);
     this.lastStats = -1e9;
+    this.applySummary();
   }
 
-  push(events: FlowEvent[], serverNow: string): void {
-    const server = Date.parse(serverNow);
+  linkRate(key: string): number {
+    return this.links.get(key)?.rate ?? 0;
+  }
+
+  /** live events; `serverNow` (the poll's server clock) sets the clock offset — events
+   * from another read (Paperclip runs) come without it */
+  push(events: FlowEvent[], serverNow?: string): void {
+    if (this.replay) return; // the live traffic waits while a past window plays
+    const server = serverNow ? Date.parse(serverNow) : NaN;
     if (Number.isFinite(server)) this.offset = server - Date.now();
     if (this.playT === null) this.playT = this.liveNow() - REPLAY_DELAY_MS;
     const fresh = events.filter((e) => !this.seen.has(e.id));
@@ -311,6 +342,139 @@ export class RiverCanvas {
 
   setSpeed(x: 0.5 | 1 | 2): void {
     this.speed = x;
+  }
+
+  // ---- replay
+
+  /** play [from, to] (server ms) instead of the live traffic: everything live is dropped,
+   * the clock stands at `from` (paused or not, as set) */
+  startReplay(from: number, to: number): void {
+    this.clearTraffic();
+    this.replay = { from, to, speed: this.replay?.speed ?? 1, next: 0, horizon: from };
+    this.recent = [];
+    this.playT = from;
+  }
+
+  /** a loaded page (or several): merged once each by id, in time order */
+  addReplay(events: FlowEvent[]): void {
+    const r = this.replay;
+    if (!r) return;
+    const fresh: Seen[] = [];
+    for (const ev of events) {
+      const t = Date.parse(ev.ts);
+      if (!Number.isFinite(t) || this.seen.has(ev.id)) continue;
+      this.seen.add(ev.id);
+      fresh.push({ t, ev });
+    }
+    if (!fresh.length) return;
+    fresh.sort((a, b) => a.t - b.t);
+    // the pages come in time order: a linear merge keeps a long window cheap
+    const old = this.recent;
+    const merged: Seen[] = new Array(old.length + fresh.length);
+    let i = 0;
+    let j = 0;
+    let k = 0;
+    while (i < old.length && j < fresh.length) merged[k++] = old[i].t <= fresh[j].t ? old[i++] : fresh[j++];
+    while (i < old.length) merged[k++] = old[i++];
+    while (j < fresh.length) merged[k++] = fresh[j++];
+    this.recent = merged;
+    r.next = this.upper(this.playT ?? r.from);
+    this.lastStats = -1e9;
+  }
+
+  /** how far the pages loaded so far reach (the window's end once all are read): the
+   * clock waits there, so a page still to come is never skipped */
+  setReplayHorizon(t: number): void {
+    if (this.replay) this.replay.horizon = Math.min(this.replay.to, t);
+  }
+
+  setReplaySpeed(x: number): void {
+    if (this.replay) this.replay.speed = x;
+  }
+
+  /** jump to `t` in the window: what lies before is history, no comet */
+  seek(t: number): void {
+    const r = this.replay;
+    if (!r) return;
+    this.playT = Math.max(r.from, Math.min(r.to, t));
+    this.pulses = [];
+    this.flashes = [];
+    this.followRun = null;
+    r.next = this.upper(this.playT);
+    this.lastStats = -1e9;
+  }
+
+  /** back to the live traffic (the next push restarts the live clock) */
+  stopReplay(): void {
+    if (!this.replay) return;
+    this.replay = null;
+    this.clearTraffic();
+    this.recent = [];
+    this.playT = null;
+  }
+
+  /** the time shown in replay (server ms), null live */
+  replayClock(): number | null {
+    return this.replay ? this.playT : null;
+  }
+
+  replayEnded(): boolean {
+    return !!this.replay && this.playT !== null && this.playT >= this.replay.to;
+  }
+
+  replayCount(): number {
+    return this.replay ? this.recent.length : 0;
+  }
+
+  // ---- v2 decorations and clicks
+
+  setHealth(h: Record<string, { state: FlowHealthState }>): void {
+    this.health = h;
+  }
+
+  /** a short text under a node (the agents' spend) */
+  setBadges(b: Record<string, string>): void {
+    this.badges = b;
+  }
+
+  /** a comet clicked: its event */
+  onSelect(cb: (e: FlowEvent) => void): void {
+    this.selectCb = cb;
+  }
+
+  /** a node clicked: true when the page takes it (a lens), else it locks the focus */
+  onNodeClick(cb: (key: string) => boolean): void {
+    this.nodeClickCb = cb;
+  }
+
+  /** the comets' heads drawn in the last frame */
+  cometHeads(): { id: string; x: number; y: number }[] {
+    return this.heads.map(({ id, x, y }) => ({ id, x, y }));
+  }
+
+  nodePosition(key: string): { x: number; y: number } | null {
+    const n = this.nodes.get(key);
+    return n ? { x: n.x, y: n.y } : null;
+  }
+
+  clickAt(x: number, y: number): void {
+    let best: (typeof this.heads)[number] | null = null;
+    let bd = COMET_HIT;
+    for (const h of this.heads) {
+      const d = Math.hypot(h.x - x, h.y - y);
+      if (d < bd) {
+        bd = d;
+        best = h;
+      }
+    }
+    if (best) {
+      this.selectCb?.(best.ev);
+      return;
+    }
+    const h = this.hitTest(x, y);
+    if (h.node && this.nodeClickCb?.(h.node)) return;
+    this.lockNode = h.node && h.node !== this.lockNode ? h.node : null;
+    this.refreshFocus();
   }
 
   setFollow(b: boolean): void {
@@ -383,6 +547,8 @@ export class RiverCanvas {
     this.observer?.disconnect();
     this.unlisten.forEach((f) => f());
     this.hoverCb = this.launchCb = this.followCb = null;
+    this.selectCb = null;
+    this.nodeClickCb = null;
   }
 
   // ------------------------------------------------------------------ events
@@ -390,6 +556,33 @@ export class RiverCanvas {
   private listen(el: EventTarget, type: string, f: (e: Event) => void): void {
     el.addEventListener(type, f);
     this.unlisten.push(() => el.removeEventListener(type, f));
+  }
+
+  private clearTraffic(): void {
+    this.queue = [];
+    this.pulses = [];
+    this.flashes = [];
+    this.heads = [];
+    this.seen = new Set();
+    this.waiting = [];
+    this.unknown = [];
+    if (this.followRun) {
+      this.followRun = null;
+      this.followCb?.(null);
+    }
+    this.lastStats = -1e9;
+  }
+
+  /** the first index of `recent` later than t (binary search) */
+  private upper(t: number): number {
+    let lo = 0;
+    let hi = this.recent.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.recent[mid].t <= t) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
   }
 
   private liveNow(): number {
@@ -474,6 +667,7 @@ export class RiverCanvas {
       const link = h.link;
       this.pulses.push({
         evId: ev.id,
+        ev,
         link,
         fwd: h.fwd,
         t: 0,
@@ -637,7 +831,12 @@ export class RiverCanvas {
     this.links.forEach((l) => {
       if (l.L === k || l.R === k) s.add(l.key);
     });
-    for (const { ev } of this.recent) {
+    // live: the last 15 minutes kept; replay: the 15 minutes before the time shown
+    const play = this.playT ?? this.liveNow();
+    const start = this.replay ? this.upper(play - KEEP_MS) : 0;
+    const end = this.replay ? this.upper(play) : this.recent.length;
+    for (let j = start; j < end; j++) {
+      const { ev } = this.recent[j];
       if (!ev.path.includes(k)) continue;
       for (let i = 0; i < ev.path.length - 1; i++) {
         const h = this.hopLink(ev.path[i], ev.path[i + 1]);
@@ -695,7 +894,7 @@ export class RiverCanvas {
   drawFrame(now: number): void {
     const raw = this.last ? Math.min(0.05, Math.max(0, (now - this.last) / 1000)) : 0;
     this.last = now;
-    const dt = this.paused ? 0 : raw * this.speed;
+    const dt = this.paused ? 0 : raw * (this.replay ? 1 : this.speed);
     this.advanceClock(raw);
     if (now - this.lastStats > 1000) this.stats(now);
     const g = this.g;
@@ -778,6 +977,7 @@ export class RiverCanvas {
     // comets
     g.globalCompositeOperation = "lighter";
     const chips: [number, number, Pulse][] = [];
+    const heads: typeof this.heads = [];
     for (let i = this.pulses.length - 1; i >= 0; i--) {
       const p = this.pulses[i];
       if (!p.link._pL || !p.link._pR) {
@@ -800,12 +1000,14 @@ export class RiverCanvas {
       }
       const [hx, hy] = this.pointOn(p.link, p.fwd ? u : 1 - u, 0.5);
       chips.push([hx, hy, p]);
+      heads.push({ id: p.evId, x: hx, y: hy, ev: p.ev });
       if (p.t >= 1) {
         this.pulses.splice(i, 1);
         p.done();
       }
     }
     g.globalCompositeOperation = "source-over";
+    this.heads = heads;
     // nodes
     this.nodes.forEach((n) => {
       n.heat *= Math.pow(0.1, dt);
@@ -826,11 +1028,27 @@ export class RiverCanvas {
       g.textBaseline = "middle";
       g.fillStyle = hexA("#e8eeff", al);
       g.fillText(n.label, n.x + (left ? -16 : 16), n.y);
+      const badge = this.badges[n.key];
+      if (badge) {
+        g.font = `600 10.5px ${MONO}`;
+        g.fillStyle = hexA("#b9c6f2", al * 0.85);
+        g.fillText(badge, n.x + (left ? -16 : 16), n.y + 16);
+      }
       if (n.h > 46) {
         g.font = `11.5px ${FONT}`;
         g.fillStyle = hexA("#8b99c3", al);
         const pm = this.summary?.nodes[n.key] ?? 0;
-        g.fillText(`${pm > 0 && pm < 1 ? pm.toLocaleString("it-IT", { maximumFractionDigits: 1 }) : Math.round(pm)} / min`, n.x + (left ? -16 : 16), n.y + 17);
+        g.fillText(`${pm > 0 && pm < 1 ? pm.toLocaleString("it-IT", { maximumFractionDigits: 1 }) : Math.round(pm)} / min`, n.x + (left ? -16 : 16), n.y + (badge ? 31 : 17));
+      }
+      // health ring: the node's state (GET /api/flow/health), the reason in the card
+      const hs = this.health[n.key]?.state;
+      if (hs) {
+        g.strokeStyle = HEALTH_COLORS[hs];
+        g.lineWidth = hs === "ok" ? 1 : 2;
+        g.setLineDash?.(hs === "sconosciuto" ? [3, 3] : []);
+        this.roundRect(g, n.x - BW / 2 - 4, n.y - n.h / 2 - 4, BW + 8, n.h + 8, 9);
+        g.stroke();
+        g.setLineDash?.([]);
       }
     });
     // flash rings
@@ -875,6 +1093,18 @@ export class RiverCanvas {
    * over SPREAD_MS (no comet storm); due events start their comets */
   private advanceClock(raw: number): void {
     if (this.playT === null || this.paused) return;
+    const r = this.replay;
+    if (r) {
+      const limit = Math.min(r.to, r.horizon);
+      if (this.playT < limit) this.playT = Math.min(limit, this.playT + Math.round(raw * 1000) * r.speed);
+      let n = 0;
+      while (r.next < this.recent.length && this.recent[r.next].t <= this.playT) {
+        const ev = this.recent[r.next++].ev;
+        if (n++ < REPLAY_BURST && this.valid(ev)) this.run(ev);
+        else this.launchCb?.(ev); // diary and timeline only
+      }
+      return;
+    }
     const live = this.liveNow();
     const target = live - REPLAY_DELAY_MS;
     this.playT = Math.min(this.playT + raw * 1000 * this.speed, target);
@@ -894,17 +1124,20 @@ export class RiverCanvas {
   private stats(now: number): void {
     this.lastStats = now;
     const play = this.playT ?? this.liveNow();
-    const keepFrom = this.liveNow() - KEEP_MS; // the live clock: trimmed during a pause too
-    let cut = 0;
-    while (cut < this.recent.length && this.recent[cut].t < keepFrom) cut++;
-    if (cut) this.recent.splice(0, cut);
+    if (!this.replay) {
+      const keepFrom = this.liveNow() - KEEP_MS; // the live clock: trimmed during a pause too
+      let cut = 0;
+      while (cut < this.recent.length && this.recent[cut].t < keepFrom) cut++;
+      if (cut) this.recent.splice(0, cut);
+    }
     this.links.forEach((l) => {
       l.dirF = 0;
       l.dirB = 0;
     });
     const from = play - this.win * 60_000;
-    for (const { t, ev } of this.recent) {
-      if (t < from || t > play) continue;
+    for (let i = this.upper(from - 1), end = this.upper(play); i < end; i++) {
+      const { t, ev } = this.recent[i];
+      if (t < from) continue;
       for (let i = 0; i < ev.path.length - 1; i++) {
         const h = this.hopLink(ev.path[i], ev.path[i + 1]);
         if (!h) continue;
@@ -940,9 +1173,8 @@ export class RiverCanvas {
     if (!tg || TW <= 0 || TH <= 0) return;
     const play = this.playT ?? this.liveNow() - REPLAY_DELAY_MS;
     const series = Array.from({ length: TIMELINE_S }, () => ({ agent: 0, rules: 0, system: 0 }));
-    for (let i = this.recent.length - 1; i >= 0; i--) {
+    for (let i = this.upper(play) - 1; i >= 0; i--) {
       const { t, ev } = this.recent[i];
-      if (t > play) continue;
       const ago = Math.floor((play - t) / 1000);
       if (ago >= TIMELINE_S) break;
       series[TIMELINE_S - 1 - ago][originOf(ev)]++;
@@ -979,7 +1211,7 @@ export class RiverCanvas {
     tg.font = `11px ${FONT}`;
     tg.textBaseline = "alphabetic";
     tg.textAlign = "right";
-    tg.fillText("adesso", TW - 2, 12);
+    tg.fillText(this.replay ? "ora mostrata" : "adesso", TW - 2, 12);
     tg.textAlign = "left";
     tg.fillText("−2 min", 2, 12);
   }
