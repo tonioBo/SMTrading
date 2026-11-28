@@ -103,7 +103,7 @@ async def test_add_pair_and_send_wakes_the_tv_and_opens_the_link(env, tv, caplog
     c, _email, _user_id = await _client(env)
     area = (await c.get("/api/tv")).json()
     assert area["tvs"] == [] and area["link"] == {"active": False, "created_at": None,
-                                                  "url": None}
+                                                  "url": None, "reason": None}
     assert [s["key"] for s in area["screens"]] == ["flow", "campaign", "health"]
     assert area["display"] == {"screen": "campaign", "rotation": False, "interval_s": 30,
                                "version": 0, "updated_at": area["display"]["updated_at"],
@@ -198,6 +198,35 @@ async def test_tv_off_or_unreachable_answers_fast_with_the_fallback_url(env, tv,
     assert body["ok"] is False and "non raggiungibile" in body["message"]
     assert body["url"] and loop.time() - t0 < 10
     assert (await c.get(f"/api/tv/screens/{t['id']}/power")).json() == {"power": "unreachable"}
+
+
+async def test_no_https_portal_address_no_display_url(env, tv):
+    c, _, _ = await _client(env)
+    t = await _paired(c, tv)
+    before = (len(tv.connections), len(tv.launches))
+    # the portal opened from localhost: no address the TV can reach
+    c.headers["Host"] = "localhost:3000"
+    c.headers["X-Forwarded-Proto"] = "http"
+    r = await c.post(f"/api/tv/screens/{t['id']}/send", json={})
+    assert r.status_code == 400 and r.json()["details"]["field"] == "portal_url"
+    assert r.json()["message"] == tvs.NO_PORTAL
+    area = (await c.post("/api/tv/link/rotate")).json()
+    assert area["link"]["active"] is True and area["link"]["url"] is None
+    assert area["link"]["reason"] == tvs.NO_PORTAL
+    # a plain http address: the Secure cookie would never be kept, so no URL either
+    c.headers["Host"] = "192.168.30.7"
+    r = await c.post(f"/api/tv/screens/{t['id']}/send", json={})
+    assert r.status_code == 400 and r.json()["details"]["field"] == "portal_url"
+    assert r.json()["message"] == tvs.NOT_HTTPS and "https" in tvs.NOT_HTTPS
+    area = (await c.get("/api/tv")).json()
+    assert area["link"]["url"] is None and area["link"]["reason"] == tvs.NOT_HTTPS
+    # a configured http portal address is refused the same way; https works
+    area = (await c.put("/api/tv/display", json={"portal_url": "http://192.168.30.7"})).json()
+    assert area["link"]["url"] is None and area["link"]["reason"] == tvs.NOT_HTTPS
+    area = (await c.put("/api/tv/display", json={"portal_url": "https://smt.lan"})).json()
+    assert area["link"]["url"].startswith("https://smt.lan/tv#token=tv-display.")
+    assert area["link"]["reason"] is None
+    assert (len(tv.connections), len(tv.launches)) == before  # the TV never contacted
 
 
 async def test_only_home_network_addresses(env, tv, monkeypatch):

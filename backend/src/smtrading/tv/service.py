@@ -65,6 +65,8 @@ NOT_PAIRED = "TV non collegata: premi «Collega la TV» e accetta sulla TV"
 NOT_SAMSUNG = "a questo indirizzo non risponde una TV Samsung"
 NOT_ON = ("la TV non si è accesa: accendila col telecomando e riprova, oppure apri a mano "
           "l'indirizzo (codice QR)")
+NOT_HTTPS = ("serve l'indirizzo https del portale: la TV apre le schermate solo in https "
+             "(per esempio https://192.168.1.7)")
 NO_PORTAL = ("indirizzo del portale per la TV mancante: apri il portale dal suo indirizzo di "
              "rete (non localhost) oppure scrivilo nella sezione")
 
@@ -198,9 +200,23 @@ def revoke_link(d: TvDisplay) -> None:
     d.link_id = d.link_secret_encrypted = d.link_created_at = None
 
 
+def url_problem(base: str | None) -> str | None:
+    """Why no display URL can be built on `base` (None: it can). The display cookie is
+    Secure: the TV page works only over https."""
+    if not base:
+        return NO_PORTAL
+    if not base.lower().startswith("https://"):
+        return NOT_HTTPS
+    return None
+
+
 def display_url(base: str | None, d: TvDisplay) -> str | None:
+    """`<base>/tv#token=<link>` (a fragment: never sent to a server), or None without an
+    https portal address or an active link."""
     token = tvlink.token_for(d.link_id, d.link_secret_encrypted)
-    return f"{base}/tv#token={token}"  # a fragment: never sent to a server if base and token else None
+    if url_problem(base) is not None or not token:
+        return None
+    return f"{base}/tv#token={token}"
 
 
 def record_event(session: AsyncSession, user_id: uuid.UUID, tv_id: uuid.UUID | None,
@@ -251,7 +267,8 @@ def display_dto(d: TvDisplay, user: AdminUser) -> dict[str, Any]:
 def link_dto(d: TvDisplay, base: str | None) -> dict[str, Any]:
     active = bool(d.link_id and d.link_secret_encrypted)
     return {"active": active, "created_at": _iso(d.link_created_at),
-            "url": display_url(base, d) if active else None}
+            "url": display_url(base, d) if active else None,
+            "reason": url_problem(base)}
 
 
 def effective_screen(d: TvDisplay, user: AdminUser) -> str:

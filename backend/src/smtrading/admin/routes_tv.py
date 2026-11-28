@@ -233,10 +233,12 @@ async def send_tv(tv_id: str, body: SelectionIn, request: Request, user: Current
         d = await tv.get_display(session, user.id, lock=True)
         _apply_selection(d, body, user)
         tv.ensure_link(d)
-        url = tv.display_url(_base(request, d.portal_url), d)
+        base = _base(request, d.portal_url)
+        problem = tv.url_problem(base)
+        if problem is not None:
+            raise _invalid("portal_url", problem)  # nothing changed, the TV not contacted
+        url = tv.display_url(base, d)
         host, mac, tid = t.host, t.mac, t.id
-    if url is None:
-        raise _invalid("portal_url", tv.NO_PORTAL)
     result, new_token = await tv.send(host, token, mac, url)
     async with _transaction(session, redis):
         t = await tv.own_tv(session, user.id, tid, lock=True)
