@@ -12,7 +12,7 @@ controllo per gli allarmi. Deve essere «molto bello da vedere».
 ## Obiettivi
 
 1. Una pagina nuova del portale, **«Fiume dei flussi»**, con lo stile della bozza approvata
-   (`.superpowers/brainstorm/…/content/fiume-pro.html`): sei colonne da sinistra a destra (agenti ·
+   (`docs/design-sketches/fiume-pro.html`, con `flussi-shared.js`): sei colonne da sinistra a destra (agenti ·
    orchestrazione · porta MCP · motore e dati · uscite · broker), correnti larghe quanto il traffico, scie di
    particelle nel verso prevalente, una cometa per ogni passaggio con il nome dello strumento, onda sul nodo che
    riceve (rossa se errore), schede al passaggio del mouse, clic su un nodo per fissare il suo fiume, andamento
