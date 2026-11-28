@@ -59,6 +59,11 @@ la vista generale resta pulita (stesse colonne e nodi); pagina solo amministrato
   dati dallo stato dei flussi già pubblicato (`md:stream_status`) e dalla salute dei fornitori. Guardia: ogni
   fornitore del router ha un nome nella mappa.
 
+## 6. Larghezza «oggi»
+
+Oltre a 1, 5 e 15 minuti, la larghezza delle correnti può guardare a tutta la giornata (da mezzanotte di Roma), così
+nei momenti quieti le correnti mostrano comunque il traffico del giorno (Matteo, 28/11: «è normale che non veda nulla?»).
+
 ## Fuori
 
 Spinta in tempo reale (dopo il 23/12), modalità dimostrazione (esclusa da Matteo), azioni dalla pagina.
