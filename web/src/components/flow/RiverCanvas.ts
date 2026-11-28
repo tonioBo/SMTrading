@@ -429,7 +429,7 @@ export class RiverCanvas {
 
   // ---- v2 decorations and clicks
 
-  setHealth(h: Record<string, { state: FlowHealthState }>): void {
+  setHealth(h: Record<string, { state: FlowHealthState; reason?: string }>): void {
     this.health = h;
   }
 

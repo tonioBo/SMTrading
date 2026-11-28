@@ -16,7 +16,6 @@ import { HEALTH_COLORS, kindColor, ORIGINS, RiverCanvas, type HoverTarget } from
 import { LENS_NODES, storyTarget, SummaryTally, type LensKind, windowLabel, windowMinutes, type Range, type ReplaySpeed, type StoryTarget } from "@/components/flow/replay";
 import { StoryPanel } from "@/components/flow/StoryPanel";
 import { BTN, BTN_ON, clock, GLASS, H4, num } from "@/components/flow/styles";
-import { formatMoney } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /** «Fiume dei flussi»: who talks to whom in SMTrading, on the real traffic (read every 2 s).
@@ -34,20 +33,9 @@ const SPEEDS = [0.5, 1, 2] as const;
 const WINDOWS: FlowWindow[] = [1, 5, 15, "today"];
 /** Paperclip runs older than this are not drawn live (the river keeps 15 minutes) */
 const RUNS_LIVE_MS = 15 * 60_000;
-const UNAVAILABLE = "costi non disponibili";
+const UNAVAILABLE = "dati di Paperclip non disponibili";
 
-const usd = (v: string | null | undefined) => (v == null ? "—" : formatMoney(v, "USD"));
 
-/** the badge under an agent: today's and the month's spend, and the cap */
-function badgesOf(a: FlowAgents | undefined): Record<string, string> {
-  if (!a) return {};
-  return Object.fromEntries(
-    a.agents.map((g) => [
-      g.key,
-      a.available ? `oggi ${usd(g.today_usd)} · mese ${usd(g.month_usd)}${g.cap_usd ? ` / ${usd(g.cap_usd)}` : ""}` : UNAVAILABLE,
-    ]),
-  );
-}
 
 /** the name a diary line shows for an event (the tool, for an MCP call) */
 function toolOf(e: FlowEvent): string {
@@ -273,7 +261,6 @@ export default function FlowRiver() {
     if (health.data) river.current?.setHealth(health.data.nodes);
   }, [health.data]);
 
-  useEffect(() => river.current?.setBadges(badgesOf(agents.data)), [agents.data]);
 
   useEffect(() => river.current?.setPaused(inReplay ? !playing : paused), [paused, playing, inReplay]);
   useEffect(() => river.current?.setSpeed(speed), [speed]);
@@ -587,12 +574,6 @@ function HoverCard({ hover, host, nodes, label, win, summary, river, lastPass, m
                   <dd className="font-semibold text-[#e8eeff]">{agent.status_it}</dd>
                 </>
               )}
-              <dt>spesa oggi</dt>
-              <dd className="num font-semibold text-[#e8eeff]">{usd(agent.today_usd)}</dd>
-              <dt>spesa del mese</dt>
-              <dd className="num font-semibold text-[#e8eeff]">{usd(agent.month_usd)}</dd>
-              <dt>tetto mensile</dt>
-              <dd className="num font-semibold text-[#e8eeff]">{agent.cap_usd ? usd(agent.cap_usd) : "nessuno"}</dd>
             </>
           )}
         </dl>

@@ -43,12 +43,44 @@ ricerca sulla rete locale avviata dal portale.
 
 Caratteri grandi, contrasto alto, nessuna interazione richiesta, aggiornamento automatico, nessun dato segreto.
 
+## Area riservata per utente (Matteo, 28/11: «prepara un'area riservata per permettere a chi ha accesso di fare la stessa cosa, per utente»)
+
+- La sezione «Schermo TV» è disponibile a **ogni utente del portale** (amministratori e sola lettura), ognuno nella
+  **propria area**: le sue TV (indirizzo, nome, token cifrato), i suoi link di visualizzazione, la sua schermata o
+  rotazione corrente. Un utente non vede né usa le TV o i link di un altro.
+- Gli amministratori vedono l'elenco di tutte le TV collegate (utente, nome, ultimo uso) e possono revocarle.
+- Le azioni sulla propria TV sono permesse anche agli utenti di sola lettura (non toccano il trading) e sono
+  registrate nel registro delle attività come le altre.
+- Le schermate mostrano gli stessi dati che quell'utente vede nel portale.
+- Limite di rete dichiarato nella pagina: i comandi partono dal server di SMTrading, quindi la TV deve essere
+  raggiungibile da lì (stessa rete di casa o rete privata collegata); se non lo è, resta la strada A (aprire a
+  mano sulla TV l'indirizzo con il link personale, mostrato anche come codice QR).
+
+Decisioni di Matteo (28/11): la ricerca automatica delle TV sulla rete è **solo per gli amministratori**; la TV
+in standby si accende **solo** quando l'utente preme «Manda alla TV» (rotazione e cambi di schermata non la
+riaccendono mai).
+
+## Suoni (Matteo, 28/11: «la tv ha anche gli altoparlanti… fai tu e decidi tu») — scelte di Claude
+
+- **Pochi suoni, solo per fatti veri che contano**, mai per ogni chiamata (sarebbe rumore continuo):
+  - ordine eseguito: un rintocco breve e morbido (tono diverso per acquisto e vendita);
+  - stop o obiettivo scattato: due note (discendenti per lo stop, ascendenti per l'obiettivo);
+  - qualcosa diventa rosso nella salute (servizio, broker, prezzi, Neurograph, agente): un avviso basso e chiaro,
+    una volta sola finché non torna a posto; un suono di «tutto a posto» quando rientra;
+  - nessun suono per chiamate degli agenti, prezzi, rotazione o cambi di schermata.
+- Suoni generati nella pagina (Web Audio, nessun file da scaricare), volume moderato, al massimo un suono ogni
+  pochi secondi (quelli in più si accorpano).
+- **Spenti di default**; ognuno li accende nella sua area con volume e **ore di silenzio** (predefinite 22:00–08:00
+  ora di Roma, in cui non suona nulla).
+- Il browser della TV può bloccare l'audio finché non si preme un tasto: la schermata mostra in piccolo «premi OK
+  sul telecomando per attivare i suoni» quando i suoni sono accesi ma bloccati.
+
 ## Vincoli
 
 - Sola lettura; il link della TV non dà accesso ad altro.
 - Il token della TV è un segreto: mai nei log, nelle risposte, su Telegram.
 - Nessuna modifica al percorso degli agenti, al motore o al catalogo MCP.
-- La sezione è per gli amministratori; la messa in linea con gli agenti fermi.
+- La sezione è per ogni utente, ciascuno nella sua area; la messa in linea con gli agenti fermi.
 - Ogni pezzo nuovo compare nella Roadmap e, se è un flusso nuovo (SMTrading → TV), nel Fiume dei flussi.
 
 ## Lasciato a chi costruisce
