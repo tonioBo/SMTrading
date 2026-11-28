@@ -194,6 +194,7 @@ Gli agenti non possono creare portafogli, depositare, prelevare o modificare i l
   hanno la precedenza sul calendario e sono gia' comprese negli orari. `LSE` (Londra) c'e'
   **solo per gli orari**: i titoli londinesi non sono negoziabili (non entrano in catalogo).
 - `get_indicators`: indicatori tecnici (sma, ema, rsi, atr, bollinger, macd, vwap).
+- `get_forecast`: forchetta di rischio a `horizon` barre (1-20) da Neurograph (GARCH(1,1) con t di Student sulle barre chiuse del simbolo): `range80_pct`, `range80_price`, `sigma_pct`, quantili 10-90 % per ogni passo. Misura di rischio simmetrica, mai un segnale d'ordine. Richiede `SMT_NEUROGRAPH_URL` (es. `http://192.168.4.4:18088/api/serie`, sulla VPN WireGuard); senza, o se Neurograph non risponde, `PROVIDER_UNAVAILABLE`.
 - `get_fx_rate`: cambio tra due valute.
 - `get_news`: ultime notizie per simboli (default: quelli in portafoglio).
 - `get_fundamentals`: dati fondamentali: settore, capitalizzazione, P/E, EPS, dividend yield.
