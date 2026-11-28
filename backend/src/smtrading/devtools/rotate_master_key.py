@@ -22,6 +22,11 @@ decrypted with the new key, all in ONE transaction with the rows locked:
 The output, the logs and the audit rows carry counts, field names and row ids only: never
 a key, a key fingerprint, a decrypted value or an encrypted blob.
 
+Run it with nobody using the portal and no «Schermo TV» pairing or send in progress (in
+practice: the api serving no one, worker and backup stopped, as in the README
+procedure): a value the api writes during the rotation (a TV token from a pairing that
+ends meanwhile) would be encrypted with the old key and that TV paired again.
+
 The key is used for nothing else: portal sessions are random ids in Redis (not signed),
 the CSRF token is random, passwords are argon2 hashes without pepper, agent tokens are
 not derived from it. After a rotation nobody is logged out and passwords keep working;

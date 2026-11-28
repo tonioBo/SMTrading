@@ -807,6 +807,8 @@ Procedura (dal PC, nella cartella del progetto):
 2. **Agenti fermi:** in Paperclip nessun agente al lavoro (come per un aggiornamento),
    nessuno usa il portale. Poi `docker compose stop worker backup` (l'`api` resta accesa
    per eseguire lo strumento).
+   Nessun «Collega la TV» né «Manda alla TV» in corso (Schermo TV): l'`api` non deve
+   salvare segreti mentre la chiave cambia, altrimenti quella TV va ricollegata.
 3. **Genera la nuova chiave:**
    `docker compose exec api python -m smtrading.devtools.rotate_master_key --generate`.
 4. **Salvala in KeePass** come nuova voce («SMT_MASTER_KEY dal GG/MM/AAAA»). La voce con la

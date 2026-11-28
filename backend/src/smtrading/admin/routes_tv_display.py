@@ -1,7 +1,12 @@
 """The TV screens' API, opened by a user's display link only (no portal session, no
-password): `?token=<link>` or the `smt_tv` cookie set from it (path /api/tv-display).
-Read only; the data that user sees in the portal, nothing else. A missing, revoked or
-foreign link is 401 at once (each request checks the stored link).
+password). The TV page is `/tv#token=<link>`: the fragment never reaches a server (nor
+its access logs); the page posts it once to `/session`, which checks it and sets the
+`smt_tv` cookie (HttpOnly, Secure, SameSite=Strict, path /api/tv-display). Every other
+route accepts only that cookie (a `?token=` query is ignored). Read only; the data that
+user sees in the portal, nothing else. A missing, revoked or foreign link is 401 at once
+(each request checks the stored link, also behind a cookie set before).
+
+    POST /api/tv-display/session {token}   {"ok": true} + the cookie (401 if invalid)
 
     GET /api/tv-display/selection?after=   {screen, rotation, interval_s, version,
                                            screens, updated_at, poll_s, now, sound,
@@ -15,15 +20,16 @@ foreign link is 401 at once (each request checks the stored link).
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from smtrading.admin.auth import DbSession, RedisClient
 from smtrading.admin.models import AdminUser
 from smtrading.common.errors import ErrorCode
 from smtrading.flow.health import flow_health
 from smtrading.mcp.dto import to_jsonable
-from smtrading.tv import display, sounds
+from smtrading.tv import display, link, sounds
 from smtrading.tv import service as tv
 from smtrading.tv.models import TvDisplay
 
@@ -46,17 +52,14 @@ def refused_response(e: DisplayRefused) -> JSONResponse:
                          "details": {}}, status_code=e.status)
 
 
-async def _owner(request: Request, response: Response, session: DbSession,
-                 token: Annotated[str | None, Query()] = None
-                 ) -> tuple[TvDisplay, AdminUser]:
-    raw = token or request.cookies.get(COOKIE)
-    owner = await tv.display_owner(session, raw)
+class SessionIn(BaseModel):
+    token: str = Field(max_length=link.TOKEN_MAX)
+
+
+async def _owner(request: Request, session: DbSession) -> tuple[TvDisplay, AdminUser]:
+    owner = await tv.display_owner(session, request.cookies.get(COOKIE))
     if owner is None:
         raise DisplayRefused(401, INVALID_LINK)
-    if token:  # the TV keeps the link in a cookie: later calls need no query
-        secure = (request.headers.get("x-forwarded-proto") or request.url.scheme) == "https"
-        response.set_cookie(COOKIE, token, max_age=COOKIE_MAX_AGE_S, httponly=True,
-                            samesite="lax", secure=secure, path="/api/tv-display")
     return owner
 
 
@@ -90,6 +93,16 @@ async def _sound_events(session, redis, admin: bool, after: datetime | None,
     events += sounds.health_events(state, since, now, admin=admin)
     events.sort(key=lambda e: (e["at"], e["id"]))
     return events[-sounds.EVENTS_MAX:]
+
+
+@router.post("/session")
+async def open_session(body: SessionIn, response: Response, session: DbSession) -> dict:
+    """The TV page's first call: the link from the URL fragment becomes the cookie."""
+    if await tv.display_owner(session, body.token) is None:
+        raise DisplayRefused(401, INVALID_LINK)
+    response.set_cookie(COOKIE, body.token, max_age=COOKIE_MAX_AGE_S, httponly=True,
+                        secure=True, samesite="strict", path="/api/tv-display")
+    return {"ok": True}
 
 
 @router.get("/selection")

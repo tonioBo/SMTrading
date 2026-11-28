@@ -25,6 +25,7 @@ def _master_key(monkeypatch):
 
 @pytest.fixture
 async def tv(monkeypatch):
+    monkeypatch.setattr(samsung, "ALLOW_LOOPBACK", True)
     fake = await FakeSamsungTv().start()
     fake.point(monkeypatch)
     yield fake
@@ -131,8 +132,10 @@ def test_magic_packet_and_wake_on_lan():
     pkt = samsung.magic_packet("02:00:5e:00:00:01")
     assert len(pkt) == 102 and pkt[:6] == b"\xff" * 6
     assert pkt[6:12] == bytes.fromhex("02005e000001") and pkt[-6:] == pkt[6:12]
-    with pytest.raises(ValueError):
-        samsung.magic_packet("nope")
+    for bad in ("nope", "zz:zz:zz:zz:zz:zz", None):
+        with pytest.raises(samsung.TvError) as e:
+            samsung.magic_packet(bad)
+        assert e.value.kind == "mac"
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as rx:
         rx.bind(("127.0.0.1", 0))
         rx.settimeout(2)
@@ -152,6 +155,25 @@ def _fake_lan(devices: dict[str, dict]) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
+async def test_a_huge_answer_is_not_a_tv_and_the_search_is_bounded():
+    big = {"type": "Samsung SmartTV", "device": {"type": "Samsung SmartTV",
+                                                 "name": "x" * (samsung.BODY_MAX + 10)}}
+    lan = _fake_lan({"192.168.5.2": big})
+    async with lan:
+        assert await samsung.device_info("192.168.5.2", client=lan) is None
+
+    async def slow(request):
+        await asyncio.sleep(30)
+
+    hang = httpx.AsyncClient(transport=httpx.MockTransport(slow))
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    async with hang:
+        found = await discovery.discover(["192.168.5.9"], client=hang, timeout=60,
+                                         timeout_s=0.5)
+    assert found == [] and loop.time() - t0 < 3
+
+
 async def test_discovery_finds_only_samsung_tvs():
     tvjson = FakeSamsungTv(power="standby").device_json()
     lan = _fake_lan({"192.168.5.84": tvjson, "192.168.5.10": {"type": "Router"},
@@ -166,13 +188,17 @@ async def test_discovery_finds_only_samsung_tvs():
                         "mac": "02:00:5e:00:00:01", "power": "standby"}
 
 
-def test_subnets():
+def test_subnets(monkeypatch):
+    for bad in ("10.0.0.0/16",  # too big
+                "8.8.8.0/24", "100.64.0.0/24", "192.0.0.0/24", "198.18.0.0/24",
+                "169.254.1.0/24", "127.0.0.0/24", "0.0.0.0/24", "nonsense"):
+        with pytest.raises(discovery.SubnetError):
+            discovery.parse_subnet(bad)
+    for good in ("10.1.2.0/24", "172.16.5.0/24", "172.31.0.0/24", "192.168.30.0/24"):
+        assert discovery.parse_subnet(good)
     with pytest.raises(discovery.SubnetError):
-        discovery.parse_subnet("10.0.0.0/16")  # too big
-    with pytest.raises(discovery.SubnetError):
-        discovery.parse_subnet("8.8.8.0/24")  # not local
-    with pytest.raises(discovery.SubnetError):
-        discovery.parse_subnet("nonsense")
+        discovery.parse_subnet("172.32.0.0/24")
+    monkeypatch.setattr(samsung, "ALLOW_LOOPBACK", True)  # the tests' fake TV only
     assert discovery.scan_hosts(discovery.parse_subnet("127.0.0.1/32")) == ["127.0.0.1"]
     assert str(discovery.default_subnet("192.168.30.7")) == "192.168.30.0/24"
     assert str(discovery.default_subnet("192.168.30.7:3000")) == "192.168.30.0/24"

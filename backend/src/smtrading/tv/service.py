@@ -1,10 +1,13 @@
 """«Schermo TV»: what the portal routes do, per user (each user only ever reaches their
 own rows: `own_tv` / `get_display` filter on the user id).
 
-- A TV (`tv_screens`): a private IPv4 address of the user's network, paired once
+- A TV (`tv_screens`): an address of the user's home network, paired once
   (`start_pairing`: in the background, the TV asks «Consentire?» and waits up to
   PAIR_WAIT_S; the page polls `GET /api/tv`). Pairing again always starts without the
-  old token and replaces it.
+  old token and replaces it. A user may add any address of the network, also a TV that
+  another user paired: nothing is shared (each pairing has its own token) and the TV
+  itself still asks for consent on screen («Consentire?»), so nobody drives a TV
+  without someone accepting with its remote.
 - «Manda alla TV» (`send`): the only action that wakes a TV in standby (KEY_POWER, then a
   Wake-on-LAN packet when the TV gives its MAC), then the TV browser opens the user's
   display link; everything within SEND_TIMEOUT_S. A screen change or the rotation only
@@ -30,8 +33,8 @@ from smtrading.common.config import get_settings
 from smtrading.common.crypto import decrypt_json, encrypt_json
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.common.logsetup import register_secret
+from smtrading.tv import discovery, samsung
 from smtrading.tv import link as tvlink
-from smtrading.tv import samsung
 from smtrading.tv.models import TvDisplay, TvEvent, TvScreen
 
 log = logging.getLogger(__name__)
@@ -82,15 +85,16 @@ def _now() -> datetime:
 
 
 def clean_host(raw: Any) -> str:
-    """A private IPv4 address (the TV on the user's network): nothing else is ever
-    contacted."""
+    """An IPv4 address of a home network (10/8, 172.16/12, 192.168/16, not .0 or .255:
+    `discovery.is_lan_host`): nothing else is ever contacted."""
     try:
         ip = ipaddress.IPv4Address(str(raw or "").strip())
     except ValueError:
         raise _invalid("host", "indirizzo non valido: scrivi l'indirizzo IP della TV, per "
                                "esempio 192.168.1.50") from None
-    if not ip.is_private or ip.is_unspecified or ip.is_multicast or ip.is_link_local:
-        raise _invalid("host", "solo indirizzi della rete locale (privati)")
+    if not discovery.is_lan_host(ip):
+        raise _invalid("host", "solo indirizzi della rete di casa: 10.x, 172.16–31.x o "
+                               "192.168.x")
     return str(ip)
 
 
@@ -196,7 +200,7 @@ def revoke_link(d: TvDisplay) -> None:
 
 def display_url(base: str | None, d: TvDisplay) -> str | None:
     token = tvlink.token_for(d.link_id, d.link_secret_encrypted)
-    return f"{base}/tv?token={token}" if base and token else None
+    return f"{base}/tv#token={token}"  # a fragment: never sent to a server if base and token else None
 
 
 def record_event(session: AsyncSession, user_id: uuid.UUID, tv_id: uuid.UUID | None,

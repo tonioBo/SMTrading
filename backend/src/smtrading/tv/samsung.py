@@ -36,6 +36,10 @@ log = logging.getLogger(__name__)
 
 # the ports and scheme of the TV (module values: the tests point them at a fake TV)
 REST_PORT = 8001
+# loopback addresses accepted as a TV or a network to search (the tests' fake TV only;
+# always False in the application)
+ALLOW_LOOPBACK = False
+BODY_MAX = 64 * 1024  # the device description is ~2 KB: anything bigger is not a TV
 WS_PORT = 8002
 WS_SCHEME = "wss"
 APP_NAME = "SMTrading"
@@ -88,6 +92,22 @@ def _device(raw: Any) -> dict[str, Any] | None:
     }
 
 
+async def _read_capped(client: httpx.AsyncClient, url: str, timeout: float) -> Any:
+    """The JSON body of a 200 (None otherwise, or beyond BODY_MAX bytes: not a TV)."""
+    async with client.stream("GET", url, timeout=timeout) as r:
+        if r.status_code != 200:
+            return None
+        body = b""
+        async for chunk in r.aiter_bytes():
+            body += chunk
+            if len(body) > BODY_MAX:
+                return None
+    try:
+        return json.loads(body)
+    except ValueError:
+        return None
+
+
 async def device_info(host: str, *, client: httpx.AsyncClient | None = None,
                       timeout: float = PROBE_TIMEOUT_S) -> dict[str, Any] | None:
     """The TV at `host` (None: something answers, but not a Samsung TV). TvError
@@ -96,11 +116,10 @@ async def device_info(host: str, *, client: httpx.AsyncClient | None = None,
     try:
         if client is None:
             async with httpx.AsyncClient(timeout=timeout, trust_env=False) as c:
-                r = await c.get(url)
+                raw = await _read_capped(c, url, timeout)
         else:
-            r = await client.get(url, timeout=timeout)
-        raw = r.json() if r.status_code == 200 else None
-    except (httpx.HTTPError, ValueError, OSError):
+            raw = await _read_capped(client, url, timeout)
+    except (httpx.HTTPError, OSError):
         raise TvError(UNREACHABLE, "unreachable") from None
     return _device(raw)
 
@@ -242,11 +261,18 @@ async def pair(host: str, *, wait_s: float) -> str:
         return s.token
 
 
+BAD_MAC = "indirizzo MAC della TV non valido: accendila col telecomando"
+
+
 def magic_packet(mac: str) -> bytes:
-    digits = "".join(c for c in mac if c.isalnum())
-    if len(digits) != 12:
-        raise ValueError("bad MAC address")
-    return b"\xff" * 6 + bytes.fromhex(digits) * 16
+    """TvError `mac` for an address that is not 12 hex digits."""
+    digits = "".join(c for c in str(mac or "") if c.isalnum())
+    try:
+        if len(digits) != 12:
+            raise ValueError
+        return b"\xff" * 6 + bytes.fromhex(digits) * 16
+    except ValueError:
+        raise TvError(BAD_MAC, "mac") from None
 
 
 def wake_on_lan(mac: str, targets: list[tuple[str, int]]) -> int:

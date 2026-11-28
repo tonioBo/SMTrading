@@ -11,6 +11,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
 
+import httpx
 import pytest
 from fake_samsung_tv import FakeSamsungTv
 from sqlalchemy import select
@@ -28,6 +29,12 @@ from smtrading.tv.models import TvDisplay, TvEvent, TvScreen
 from smtrading.useractivity.models import UserActivity
 
 HOST = "127.0.0.1"
+
+
+@pytest.fixture(autouse=True)
+def _loopback_tv(monkeypatch):
+    """The fake TV lives on 127.0.0.1: accepted only through this test-only flag."""
+    monkeypatch.setattr(samsung, "ALLOW_LOOPBACK", True)
 
 
 @pytest.fixture
@@ -60,6 +67,20 @@ async def _client(env, role="admin"):
     c.headers["Host"] = "192.168.30.7"
     c.headers["X-Forwarded-Proto"] = "https"
     return c, email, user_id
+
+
+def _token(url: str) -> str:
+    assert "#token=" in url and "?" not in url  # a fragment: never sent to a server
+    return url.split("#token=", 1)[1]
+
+
+async def _page(env, token: str, *, expect: int = 200):
+    """The TV page: posts the link from the fragment once, then lives on the cookie."""
+    page = httpx.AsyncClient(transport=env.transport, base_url="https://192.168.30.7")
+    env.clients.append(page)
+    r = await page.post("/api/tv-display/session", json={"token": token})
+    assert r.status_code == expect, r.text
+    return page
 
 
 async def _paired(c, tv) -> dict:
@@ -104,7 +125,7 @@ async def test_add_pair_and_send_wakes_the_tv_and_opens_the_link(env, tv, caplog
     assert r.status_code == 200 and body["ok"] is True, body
     assert body["powered_on"] is True and body["confirmed"] is True
     assert body["app_id"] == "org.tizen.browser"
-    assert body["url"].startswith("https://192.168.30.7/tv?token=tv-display.")
+    assert body["url"].startswith("https://192.168.30.7/tv#token=tv-display.")
     assert tv.keys == ["KEY_POWER"] and tv.power == "on"
     assert tv.launches[-1]["metaTag"] == body["url"]
     area = (await c.get("/api/tv")).json()
@@ -163,7 +184,7 @@ async def test_tv_off_or_unreachable_answers_fast_with_the_fallback_url(env, tv,
     t0 = loop.time()
     body = (await c.post(f"/api/tv/screens/{t['id']}/send", json={})).json()
     assert body["ok"] is False and "non si è accesa" in body["message"]
-    assert body["url"].startswith("https://192.168.30.7/tv?token=")
+    assert body["url"].startswith("https://192.168.30.7/tv#token=")
     assert _no_wol and _no_wol[0][0] == "02:00:5e:00:00:01"  # tried, never sent
     assert loop.time() - t0 < 10
     area = (await c.get("/api/tv")).json()
@@ -177,6 +198,38 @@ async def test_tv_off_or_unreachable_answers_fast_with_the_fallback_url(env, tv,
     assert body["ok"] is False and "non raggiungibile" in body["message"]
     assert body["url"] and loop.time() - t0 < 10
     assert (await c.get(f"/api/tv/screens/{t['id']}/power")).json() == {"power": "unreachable"}
+
+
+async def test_only_home_network_addresses(env, tv, monkeypatch):
+    c, _, _ = await _client(env)
+    for bad in ("8.8.8.8", "100.64.0.1", "0.0.0.1", "192.0.0.5", "198.18.0.1",
+                "169.254.1.1", "255.255.255.255", "192.168.1.255", "192.168.1.0",
+                "172.32.0.1", "224.0.0.1", "nonsense", ""):
+        r = await c.post("/api/tv/screens", json={"host": bad})
+        assert r.status_code == 400, bad
+        assert r.json()["details"]["field"] == "host"
+    monkeypatch.setattr(samsung, "ALLOW_LOOPBACK", False)  # the application's value
+    assert (await c.post("/api/tv/screens", json={"host": HOST})).status_code == 400
+    assert (await c.post("/api/tv/discover", json={"subnet": "127.0.0.1/32"})
+            ).status_code == 400
+    for good in ("10.0.0.7", "172.16.4.2", "172.31.255.254", "192.168.30.84"):
+        assert tvs.clean_host(good) == good
+
+
+async def test_a_bad_mac_is_a_saved_failure_not_a_500(env, tv, monkeypatch):
+    monkeypatch.setattr(samsung, "wake_on_lan",
+                        lambda mac, targets: len(samsung.magic_packet(mac)))  # never sent
+    c, _, _ = await _client(env)
+    t = await _paired(c, tv)
+    async with env.sm() as s:
+        await s.execute(TvScreen.__table__.update().values(mac="not-a-mac"))
+        await s.commit()
+    tv.power, tv.power_key_works = "standby", False
+    r = await c.post(f"/api/tv/screens/{t['id']}/send", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is False and "MAC" in r.json()["message"]
+    t = (await c.get("/api/tv")).json()["tvs"][0]
+    assert t["last_ok"] is False and "MAC" in t["last_message"]
 
 
 async def test_refused_pairing_and_pairing_again_replaces_the_token(env, tv):
@@ -254,12 +307,12 @@ async def test_each_user_has_their_own_area(env, tv):
                              "paired_at", "last_used_at", "last_ok", "revoked_at",
                              "revoked_by", "created_at"}
     # an admin revokes the viewer's TV: pairing forgotten, the viewer's link locked out
-    token = viewer_url.split("token=", 1)[1]
-    assert (await viewer.get(f"/api/tv-display/selection?token={token}")).status_code == 200
+    page = await _page(env, _token(viewer_url))
+    assert (await page.get("/api/tv-display/selection")).status_code == 200
     r = await admin.post(f"/api/tv/admin/screens/{v_tv['id']}/revoke")
     assert r.status_code == 200 and r.json()["paired"] is False
     assert r.json()["revoked_by"] == admin_email
-    assert (await viewer.get(f"/api/tv-display/selection?token={token}")).status_code == 401
+    assert (await page.get("/api/tv-display/selection")).status_code == 401
     v = (await viewer.get("/api/tv")).json()
     assert v["tvs"][0]["paired"] is False and v["link"]["active"] is False
     assert (await admin.get("/api/tv")).json()["link"]["url"] == admin_url  # untouched
@@ -280,75 +333,82 @@ async def test_discovery_is_for_admins_and_finds_the_tv(env, tv):
 async def test_display_link_valid_rotated_revoked_wrong_scope(env, tv):
     c, _, user_id = await _client(env)
     url = (await c.post("/api/tv/link/rotate")).json()["link"]["url"]
-    token = url.split("token=", 1)[1]
-    import httpx
-    tvc = httpx.AsyncClient(transport=env.transport, base_url="http://test")
+    token = _token(url)
+    bare = httpx.AsyncClient(transport=env.transport, base_url="https://192.168.30.7")
+    env.clients.append(bare)
+    # the query form opens nothing (a token in a URL would land in access logs)
+    for path in ("selection", "campaign", "health", "flow"):
+        r = await bare.get(f"/api/tv-display/{path}?token={token}")
+        assert r.status_code == 401, path
+        assert "set-cookie" not in r.headers
+    # the session call sets the cookie: HttpOnly, Secure, SameSite=Strict, own path
+    tvc = httpx.AsyncClient(transport=env.transport, base_url="https://192.168.30.7")
     env.clients.append(tvc)
-    r = await tvc.get(f"/api/tv-display/selection?token={token}")
+    r = await tvc.post("/api/tv-display/session", json={"token": token})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    cookie = r.headers["set-cookie"].lower()
+    for part in ("smt_tv=", "httponly", "secure", "samesite=strict",
+                 "path=/api/tv-display"):
+        assert part in cookie, part
+    r = await tvc.get("/api/tv-display/selection")
     assert r.status_code == 200, r.text
     sel = r.json()
     assert set(sel) == {"screen", "rotation", "interval_s", "version", "updated_at",
                         "screens", "poll_s", "now", "sound", "sound_events", "sound_cursor"}
     assert sel["screens"] == ["flow", "campaign", "health"] and sel["poll_s"] == 4
-    assert "smt_tv" in r.headers["set-cookie"] and "HttpOnly" in r.headers["set-cookie"]
-    # the cookie alone opens the screens
     assert (await tvc.get("/api/tv-display/campaign")).status_code == 200
     # nothing else of the portal
     assert (await tvc.get("/api/portfolios")).status_code == 401
-    assert (await tvc.get(f"/api/tv?token={token}")).status_code == 401
-    # wrong scope with the right link id: refused
+    assert (await tvc.get("/api/tv")).status_code == 401
+    # wrong scope with the right link id, junk, or nothing: refused, no cookie
     async with env.sm() as s:
         d = await s.get(TvDisplay, user_id)
         secret = link.decrypt_secret(d.link_secret_encrypted)
-    other = link.sign("admin", d.link_id, secret)
-    bare = httpx.AsyncClient(transport=env.transport, base_url="http://test")
-    env.clients.append(bare)
-    r = await bare.get(f"/api/tv-display/selection?token={other}")
-    assert r.status_code == 401 and "link della TV" in r.json()["message"]
-    # rotation: the old link (and the cookie holding it) stop at once
+    for bad in (link.sign("admin", d.link_id, secret), "x.y.z", ""):
+        r = await bare.post("/api/tv-display/session", json={"token": bad})
+        assert r.status_code == 401 and "set-cookie" not in r.headers, bad
+        assert "link della TV" in r.json()["message"]
+    assert (await bare.post("/api/tv-display/session", json={})).status_code == 400
+    # rotation: the cookie holding the old link stops at the next request
     new_url = (await c.post("/api/tv/link/rotate")).json()["link"]["url"]
     assert new_url != url
     assert (await tvc.get("/api/tv-display/selection")).status_code == 401
-    assert (await bare.get(f"/api/tv-display/selection?token={token}")).status_code == 401
-    new_token = new_url.split("token=", 1)[1]
-    assert (await bare.get(f"/api/tv-display/health?token={new_token}")).status_code == 200
-    # revocation: nothing opens
+    await _page(env, token, expect=401)
+    page = await _page(env, _token(new_url))
+    assert (await page.get("/api/tv-display/health")).status_code == 200
+    # revocation: the cookie set before is refused at once
     assert (await c.post("/api/tv/link/revoke")).json()["link"]["active"] is False
-    assert (await bare.get(f"/api/tv-display/health?token={new_token}")).status_code == 401
+    assert (await page.get("/api/tv-display/health")).status_code == 401
     # a disabled user's link opens nothing
-    url = (await c.post("/api/tv/link/rotate")).json()["link"]["url"]
-    tok = url.split("token=", 1)[1]
-    assert (await bare.get(f"/api/tv-display/selection?token={tok}")).status_code == 200
+    page = await _page(env, _token((await c.post("/api/tv/link/rotate")).json()["link"]["url"]))
+    assert (await page.get("/api/tv-display/selection")).status_code == 200
     from smtrading.admin.models import AdminUser
     async with env.sm() as s:
         (await s.get(AdminUser, user_id)).disabled_at = datetime.now(UTC)
         await s.commit()
-    assert (await bare.get(f"/api/tv-display/selection?token={tok}")).status_code == 401
+    assert (await page.get("/api/tv-display/selection")).status_code == 401
 
 
 async def test_screens_data_and_what_a_viewer_sees(env, tv):
-    import httpx
     admin, _, _ = await _client(env)
     viewer, _, _ = await _client(env, "viewer")
-    a_tok = (await admin.post("/api/tv/link/rotate")).json()["link"]["url"].split("token=")[1]
-    v_tok = (await viewer.post("/api/tv/link/rotate")).json()["link"]["url"].split("token=")[1]
-    bare = httpx.AsyncClient(transport=env.transport, base_url="http://test")
-    env.clients.append(bare)
+    a = await _page(env, _token((await admin.post("/api/tv/link/rotate")).json()["link"]["url"]))
+    v = await _page(env, _token((await viewer.post("/api/tv/link/rotate")).json()["link"]["url"]))
 
-    flow = (await bare.get(f"/api/tv-display/flow?token={a_tok}")).json()
+    flow = (await a.get("/api/tv-display/flow")).json()
     assert set(flow) == {"screen", "now", "map", "summary", "health", "events", "cursor"}
     assert {n["key"] for n in flow["map"]["nodes"]} >= {"tv", "db", "mcp"}
     assert set(flow["summary"]) == {"links", "nodes", "head"}
-    r = await bare.get(f"/api/tv-display/flow?token={v_tok}")
+    r = await v.get("/api/tv-display/flow")
     assert r.status_code == 403  # the river is for admins only, like its page
 
-    camp = (await bare.get(f"/api/tv-display/campaign?token={v_tok}")).json()
+    camp = (await v.get("/api/tv-display/campaign")).json()
     assert set(camp) == {"screen", "now", "campaign", "equity", "goal", "portfolios",
                          "positions", "fills", "notes"}
     assert {"name", "day", "total_days", "state", "start", "end"} <= set(camp["campaign"])
 
-    ah = (await bare.get(f"/api/tv-display/health?token={a_tok}")).json()
-    vh = (await bare.get(f"/api/tv-display/health?token={v_tok}")).json()
+    ah = (await a.get("/api/tv-display/health")).json()
+    vh = (await v.get("/api/tv-display/health")).json()
     assert set(ah) == {"screen", "now", "status", "checked_at", "sections", "nodes", "alerts"}
     assert ah["nodes"] and vh["nodes"] == []
     assert set(ah["nodes"][0]) == {"key", "label", "kind", "state", "reason"}
@@ -358,7 +418,7 @@ async def test_screens_data_and_what_a_viewer_sees(env, tv):
     async with env.sm() as s:
         await s.execute(TvDisplay.__table__.update().values(screen="flow"))
         await s.commit()
-    sel = (await bare.get(f"/api/tv-display/selection?token={v_tok}")).json()
+    sel = (await v.get("/api/tv-display/selection")).json()
     assert sel["screen"] == "campaign" and sel["screens"] == ["campaign", "health"]
 
 
@@ -388,7 +448,6 @@ async def _fill(sm, *, role=None, otype=OrderType.market, side=OrderSide.buy, at
 
 
 async def test_sounds_settings_and_events_with_stable_ids(env, tv):
-    import httpx
     c, _, _ = await _client(env)
     r = await c.put("/api/tv/display", json={"sound_enabled": True, "sound_volume": 70,
                                              "quiet_start": "23:30", "quiet_end": "07:00"})
@@ -398,10 +457,8 @@ async def test_sounds_settings_and_events_with_stable_ids(env, tv):
         "enabled": True, "volume": 70, "quiet_start": "23:30", "quiet_end": "07:00"}
     for bad in ({"sound_volume": 101}, {"quiet_start": "25:00"}):
         assert (await c.put("/api/tv/display", json=bad)).status_code == 400, bad
-    tok = (await c.post("/api/tv/link/rotate")).json()["link"]["url"].split("token=")[1]
-    bare = httpx.AsyncClient(transport=env.transport, base_url="http://test")
-    env.clients.append(bare)
-    first = (await bare.get(f"/api/tv-display/selection?token={tok}")).json()
+    bare = await _page(env, _token((await c.post("/api/tv/link/rotate")).json()["link"]["url"]))
+    first = (await bare.get("/api/tv-display/selection")).json()
     assert first["sound_events"] == [] and first["sound"]["enabled"] is True
     cursor = first["sound_cursor"]
     now = datetime.now(UTC)
@@ -412,7 +469,7 @@ async def test_sounds_settings_and_events_with_stable_ids(env, tv):
     target = await _fill(env.sm, role="take_profit", otype=OrderType.limit,
                          side=OrderSide.sell, at=now)
     sel = (await bare.get("/api/tv-display/selection",
-                          params={"token": tok, "after": cursor})).json()
+                          params={"after": cursor})).json()
     kinds = {e["id"]: e["kind"] for e in sel["sound_events"] if e["id"].startswith("fill:")}
     # what was already red at the first look is the baseline: no sound for it
     assert not [e for e in sel["sound_events"] if e["kind"] == "health_bad"]
@@ -422,7 +479,7 @@ async def test_sounds_settings_and_events_with_stable_ids(env, tv):
     # sounds off: no events
     await c.put("/api/tv/display", json={"sound_enabled": False})
     sel = (await bare.get("/api/tv-display/selection",
-                          params={"token": tok, "after": cursor})).json()
+                          params={"after": cursor})).json()
     assert sel["sound_events"] == []
 
 
@@ -430,22 +487,36 @@ def test_health_incidents_once_per_incident_and_back_to_ok():
     t0 = datetime(2026, 11, 28, 10, tzinfo=UTC)
     state: dict = {}
     red = {"sections": {"backup": {"status": "problema", "label": "Backup"}}}
-    nodes = {"broker:alpaca_paper": {"state": "errore", "label": "x"}}
-    assert sounds.step_incidents(state, sounds.red_keys(red, nodes), t0, {"section", "node"})
-    assert not sounds.step_incidents(state, sounds.red_keys(red, nodes),
-                                     t0 + timedelta(minutes=1), {"section", "node"})
     ok = {"sections": {"backup": {"status": "ok"}}}
-    # a viewer's poll (no node health) never closes the admins' node incident
-    assert sounds.step_incidents(state, sounds.red_keys(ok, None), t0 + timedelta(minutes=2),
-                                 {"section"})
+    nodes = {"broker:alpaca_paper": {"state": "errore", "label": "x"}}
+    # a viewer's first poll: the red sections are the baseline, silently
+    assert sounds.step_incidents(state, sounds.red_keys(red, None), t0, {"section"})
+    assert state["history"] == [] and state["scopes"] == ["section"]
+    # an admin's first poll later: the red nodes are the nodes' own baseline, silently
+    t1 = t0 + timedelta(minutes=1)
+    assert sounds.step_incidents(state, sounds.red_keys(red, nodes), t1, {"section", "node"})
+    assert state["history"] == [] and sorted(state["scopes"]) == ["node", "section"]
+    assert not sounds.step_incidents(state, sounds.red_keys(red, nodes),
+                                     t1 + timedelta(minutes=1), {"section", "node"})
+    # back to ok (from a viewer's poll: the node incident is not closed by it)
+    t2 = t0 + timedelta(minutes=3)
+    assert sounds.step_incidents(state, sounds.red_keys(ok, None), t2, {"section"})
+    # a new incident on each scope, then the node back to ok
+    t3 = t0 + timedelta(minutes=4)
+    red2 = {"sections": {"mcp": {"status": "problema", "label": "MCP"}}}
+    n2 = {"px": {"state": "errore", "label": "Prezzi"}}
+    sounds.step_incidents(state, sounds.red_keys(red2, n2), t3, {"section", "node"})
+    t4 = t0 + timedelta(minutes=5)
+    sounds.step_incidents(state, sounds.red_keys(red2, {}), t4, {"section", "node"})
     ids = [h["id"] for h in state["history"]]
-    assert ids == [f"health:section:backup:{t0.isoformat()}:bad",
-                   f"health:node:broker:alpaca_paper:{t0.isoformat()}:bad",
-                   f"health:section:backup:{t0.isoformat()}:ok"]
-    assert list(state["open"]) == ["node:broker:alpaca_paper"]
-    ev = sounds.health_events(state, t0 - timedelta(seconds=1), t0 + timedelta(hours=1),
-                              admin=False)
-    assert [e["kind"] for e in ev] == ["health_bad", "health_ok"]  # no node for a viewer
+    assert ids == [f"health:section:backup:{t0.isoformat()}:ok",
+                   f"health:section:mcp:{t3.isoformat()}:bad",
+                   f"health:node:px:{t3.isoformat()}:bad",
+                   f"health:node:broker:alpaca_paper:{t1.isoformat()}:ok",
+                   f"health:node:px:{t3.isoformat()}:ok"]
+    ev = sounds.health_events(state, t0, t0 + timedelta(hours=1), admin=False)
+    assert [e["kind"] for e in ev] == ["health_ok", "health_bad"]  # no node for a viewer
+    assert [e["id"] for e in ev] == ids[:2]
     assert sounds.is_quiet("22:00", "08:00", datetime(2026, 11, 28, 22, 30, tzinfo=UTC),
                            "UTC")
     assert not sounds.is_quiet("22:00", "08:00", datetime(2026, 11, 28, 12, tzinfo=UTC), "UTC")

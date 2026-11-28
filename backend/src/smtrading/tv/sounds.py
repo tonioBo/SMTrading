@@ -11,8 +11,8 @@ Health incidents (`app_settings["tv_health_incidents"]`, shared by every TV): th
 «Salute del sistema» sections in `problema` (key `section:<name>`, every user) and the
 river's nodes in `errore` (key `node:<key>`, admins only, like the river). They are
 updated when a TV with sounds on polls (from the cached health reads), the last
-HISTORY_MAX transitions kept; the very first look takes what is already red as the
-baseline (no sound for it).
+HISTORY_MAX transitions kept; the first look at each scope (sections, nodes) takes what
+is already red as its baseline (no sound for it).
 
 Settings per user (`tv_displays`): on/off (off by default), volume 0–100, quiet hours
 «HH:MM»–«HH:MM» in SMT_TZ (default 22:00–08:00): `quiet_now` says whether it is quiet."""
@@ -107,21 +107,29 @@ def red_keys(health: dict[str, Any], flow_nodes: dict[str, dict] | None) -> dict
 def step_incidents(state: dict[str, Any], red: dict[str, str], now: datetime,
                    covered: set[str]) -> bool:
     """Open an incident for each new red key, close the open ones in `covered` scopes
-    (`section`, `node`) no longer red; True when something changed."""
+    (`section`, `node`) no longer red; True when something changed. The first look at a
+    scope (`state["scopes"]`) is its baseline: what is already red opens silently (the
+    sections at a viewer's first poll, the nodes at an admin's)."""
     open_: dict[str, dict] = state.setdefault("open", {})
     history: list[dict] = state.setdefault("history", [])
+    seen: list[str] = state.setdefault("scopes", [])
     changed = False
     for key, label in red.items():
         if key not in open_:
             since = now.isoformat()
             open_[key] = {"since": since, "label": label}
-            history.append({"id": f"health:{key}:{since}:bad", "kind": "health_bad",
-                            "key": key, "label": label, "at": since})
+            if key.split(":", 1)[0] in seen:
+                history.append({"id": f"health:{key}:{since}:bad", "kind": "health_bad",
+                                "key": key, "label": label, "at": since})
             changed = True
     for key in [k for k in open_ if k not in red and k.split(":", 1)[0] in covered]:
         e = open_.pop(key)
-        history.append({"id": f"health:{key}:{e['since']}:ok", "kind": "health_ok",
-                        "key": key, "label": e.get("label"), "at": now.isoformat()})
+        if key.split(":", 1)[0] in seen:
+            history.append({"id": f"health:{key}:{e['since']}:ok", "kind": "health_ok",
+                            "key": key, "label": e.get("label"), "at": now.isoformat()})
+        changed = True
+    for scope in sorted(covered - set(seen)):
+        seen.append(scope)
         changed = True
     state["history"] = history[-HISTORY_MAX:]
     return changed
@@ -132,12 +140,10 @@ async def update_incidents(session: AsyncSession, health: dict[str, Any],
     row = await session.scalar(
         select(AppSetting).where(AppSetting.key == INCIDENTS_KEY).with_for_update())
     state = dict(row.value) if row is not None and isinstance(row.value, dict) else {}
-    state = {"open": dict(state.get("open") or {}), "history": list(state.get("history") or [])}
+    state = {"open": dict(state.get("open") or {}), "history": list(state.get("history") or []),
+             "scopes": list(state.get("scopes") or [])}
     covered = {"section"} | ({"node"} if flow_nodes is not None else set())
-    first = row is None
     if step_incidents(state, red_keys(health, flow_nodes), now, covered):
-        if first:  # the first look: what is already red is the baseline, no sound
-            state["history"] = []
         stmt = insert(AppSetting).values(key=INCIDENTS_KEY, value=state)
         await session.execute(stmt.on_conflict_do_update(index_elements=["key"],
                                                          set_={"value": state}))
