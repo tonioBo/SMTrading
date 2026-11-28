@@ -13,6 +13,7 @@ import {
   HeartPulse,
   Landmark,
   Lightbulb,
+  Milestone,
   Layers,
   LayoutDashboard,
   NotebookPen,
@@ -54,6 +55,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Trading",
     items: [
       { to: "/", label: "Dashboard", icon: LayoutDashboard },
+      { to: "/roadmap", label: "Roadmap", icon: Milestone },
       { to: "/portafogli", label: "Portafogli", icon: Wallet },
       { to: "/segnali", label: "Segnali", icon: Radar },
       { to: "/posizioni", label: "Posizioni", icon: Layers },

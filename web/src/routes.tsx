@@ -26,6 +26,7 @@ import Portfolios from "@/pages/Portfolios";
 import Reconciliation from "@/pages/Reconciliation";
 import Positions from "@/pages/Positions";
 import Risk from "@/pages/Risk";
+import Roadmap from "@/pages/Roadmap";
 import Settings from "@/pages/Settings";
 import Signals from "@/pages/Signals";
 import Strategies from "@/pages/Strategies";
@@ -71,6 +72,7 @@ export const routes: RouteObject[] = [
           { path: "regole-automatiche", element: <AutoRules /> },
           { path: "log-mcp", element: <McpLog /> },
           { path: "fiume-flussi", element: <FlowRiver /> },
+          { path: "roadmap", element: <Roadmap /> },
           { path: "registro-attivita", element: <ActivityLog /> },
           { path: "impostazioni", element: <Settings /> },
           { path: "salute-sistema", element: <SystemHealth /> },
