@@ -44,6 +44,7 @@ from smtrading.admin.routes_reconciliation import router as reconciliation_route
 from smtrading.admin.routes_reports import router as reports_router
 from smtrading.admin.routes_risk import emergency_router as risk_emergency_router
 from smtrading.admin.routes_risk import router as risk_router
+from smtrading.admin.routes_roadmap import router as roadmap_router
 from smtrading.admin.routes_signals import router as signals_router
 from smtrading.admin.routes_strategies import router as strategies_router
 from smtrading.admin.routes_system import router as system_router
@@ -245,6 +246,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(intraday_router)  # portal only, never MCP
     app.include_router(auto_rules_router)  # portal only, admin only, never MCP
     app.include_router(flow_router)  # «Fiume dei flussi»: portal only, admin only, never MCP
+    app.include_router(roadmap_router)  # «Roadmap»: portal only, every user, never MCP
     app.include_router(telegram_router)
     app.include_router(paperclip_router)
     app.include_router(users_router)
