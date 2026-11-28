@@ -2693,6 +2693,8 @@ export interface FlowMap {
   /** v2: the MCP tool families (the lens) and the price sources' names */
   families?: { key: string; label: string; tools: string[] }[];
   price_sources?: { key: string; label: string }[];
+  /** the last regular US session (holidays and half days known to SMTrading) */
+  last_session?: { from: string; to: string } | null;
 }
 
 export interface FlowEvent {
@@ -2705,6 +2707,8 @@ export interface FlowEvent {
   outcome: "ok" | "error";
   latency_ms: number | null;
   symbol: string | null;
+  /** a fill's order (its story opens from the fill) */
+  order_id?: string | null;
 }
 
 export interface FlowEventsResponse {
@@ -2843,6 +2847,8 @@ export interface FlowMcpStory {
   symbol: string | null;
   path: string[];
   note: string | null;
+  /** the order the call created, when there is one */
+  order_id?: string | null;
 }
 
 /** a Paperclip run as an impulse Paperclip → agent */

@@ -1,6 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import type { FlowMcpStory, FlowOrderStory } from "@/api/types";
 import { StoryPanel } from "./StoryPanel";
 
@@ -121,7 +122,7 @@ describe("StoryPanel", () => {
     render(<StoryPanel target={{ kind: "mcp", id: "77" }} onClose={() => {}} />);
     expect(hooks.useFlowMcpStory).toHaveBeenCalledWith("77");
     expect(hooks.useFlowOrderStory).toHaveBeenCalledWith(null);
-    const panel = screen.getByRole("dialog", { name: "Storia dell'ordine" });
+    const panel = screen.getByRole("dialog", { name: "Chiamata MCP" });
     expect(panel).toHaveTextContent("place_order");
     expect(panel).toHaveTextContent("TSLA");
     expect(panel).toHaveTextContent("rifiutata");
@@ -130,11 +131,47 @@ describe("StoryPanel", () => {
   });
 
   it("says when the story can not be read, and closes", async () => {
-    hooks.useFlowOrderStory.mockReturnValue({ data: undefined, isLoading: false, isError: true });
+    hooks.useFlowOrderStory.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new ApiError(404, "NOT_FOUND", "x") });
     const onClose = vi.fn();
     render(<StoryPanel target={{ kind: "order", id: ORDER.order.id }} onClose={onClose} />);
-    expect(screen.getByRole("dialog")).toHaveTextContent("storia non disponibile");
+    expect(screen.getByRole("dialog")).toHaveTextContent("ordine non trovato o di un portafoglio nascosto");
     await userEvent.click(screen.getByRole("button", { name: "Chiudi la storia" }));
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("says «non riuscita» for a call that failed without a refusal", () => {
+    hooks.useFlowMcpStory.mockReturnValue({ data: { ...REFUSED, tool: "get_quote", reason_code: "PROVIDER_UNAVAILABLE", note: "chiamata non riuscita" }, isLoading: false, isError: false });
+    render(<StoryPanel target={{ kind: "mcp", id: "77" }} onClose={() => {}} />);
+    const panel = screen.getByRole("dialog", { name: "Chiamata MCP" });
+    expect(panel).toHaveTextContent("non riuscita");
+    expect(panel).not.toHaveTextContent("rifiutata");
+  });
+
+  it("offers the order's story from its MCP call when the call created one", async () => {
+    const onOpen = vi.fn();
+    hooks.useFlowMcpStory.mockReturnValue({ data: { ...REFUSED, outcome: "ok", reason_code: null, note: null, order_id: ORDER.order.id }, isLoading: false, isError: false });
+    render(<StoryPanel target={{ kind: "mcp", id: "77" }} onClose={() => {}} onOpen={onOpen} />);
+    await userEvent.click(screen.getByRole("button", { name: "apri la storia dell'ordine" }));
+    expect(onOpen).toHaveBeenCalledWith({ kind: "order", id: ORDER.order.id });
+  });
+
+  it("names a child without a role «ordine collegato»", () => {
+    hooks.useFlowOrderStory.mockReturnValue({
+      data: { ...ORDER, children: [{ ...ORDER.children[0], role_it: null as unknown as string }] },
+      isLoading: false,
+      isError: false,
+    });
+    render(<StoryPanel target={{ kind: "order", id: ORDER.order.id }} onClose={() => {}} />);
+    expect(screen.getByRole("dialog")).toHaveTextContent("ordine collegato");
+  });
+
+  it("tells a call not found from a read that failed", () => {
+    hooks.useFlowMcpStory.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new ApiError(404, "NOT_FOUND", "x") });
+    const { unmount } = render(<StoryPanel target={{ kind: "mcp", id: "77" }} onClose={() => {}} />);
+    expect(screen.getByRole("dialog")).toHaveTextContent("chiamata non trovata");
+    unmount();
+    hooks.useFlowMcpStory.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new TypeError("Failed to fetch") });
+    render(<StoryPanel target={{ kind: "mcp", id: "77" }} onClose={() => {}} />);
+    expect(screen.getByRole("dialog")).toHaveTextContent("storia non leggibile, riprova");
   });
 });

@@ -361,8 +361,9 @@ export class RiverCanvas {
     if (!r) return;
     const fresh: Seen[] = [];
     for (const ev of events) {
+      if (this.seen.has(ev.id)) continue;
       const t = Date.parse(ev.ts);
-      if (!Number.isFinite(t) || this.seen.has(ev.id)) continue;
+      if (!Number.isFinite(t)) continue;
       this.seen.add(ev.id);
       fresh.push({ t, ev });
     }

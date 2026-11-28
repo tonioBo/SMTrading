@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { fromRomeInput, PRESETS, presetRange, REPLAY_MAX_MS, REPLAY_SPEEDS, toRomeInput, type Range, type ReplaySpeed } from "./replay";
-import { BTN, BTN_ON, dayClock, GLASS, num } from "./styles";
+import { BTN, BTN_ON, clock, dayClock, GLASS, num } from "./styles";
 
 /** «Moviola»: the bar under the header — a past window (presets or from–to, Rome time,
  * at most 24 h), play/pause, 1×–300×, a scrub over the window and the time shown. */
@@ -15,6 +15,8 @@ export interface ReplayBarProps {
   speed: ReplaySpeed;
   loading: { pages: number; events: number; done: boolean; capped: boolean; error: string | null };
   now: () => number;
+  /** the last US session from SMTrading's calendar (GET /api/flow/map), if known */
+  lastSession?: Range | null;
   onRange: (r: Range) => void;
   onPlay: (b: boolean) => void;
   onSpeed: (s: ReplaySpeed) => void;
@@ -25,7 +27,7 @@ export interface ReplayBarProps {
 const INPUT =
   "h-[30px] rounded-[9px] border border-white/15 bg-white/[.06] px-2 text-xs text-[#e8eeff] [color-scheme:dark] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#34e0c4]";
 
-export function ReplayBar({ range, shown, playing, speed, loading, now, onRange, onPlay, onSpeed, onSeek, onClose }: ReplayBarProps) {
+export function ReplayBar({ range, shown, playing, speed, loading, now, lastSession, onRange, onPlay, onSpeed, onSeek, onClose }: ReplayBarProps) {
   const [from, setFrom] = useState(() => toRomeInput(range?.from ?? now() - 3_600_000));
   const [to, setTo] = useState(() => toRomeInput(range?.to ?? now()));
   const [invalid, setInvalid] = useState<string | null>(null);
@@ -34,13 +36,14 @@ export function ReplayBar({ range, shown, playing, speed, loading, now, onRange,
     const f = fromRomeInput(from);
     const t = fromRomeInput(to);
     if (f === null || t === null) return setInvalid("date non valide");
+    if (f > now()) return setInvalid("«da» non può essere nel futuro");
     if (f >= t) return setInvalid("«da» deve venire prima di «a»");
     if (t - f > REPLAY_MAX_MS) return setInvalid("al massimo 24 ore per volta");
     setInvalid(null);
     onRange({ from: f, to: Math.min(t, now()) });
   };
   const preset = (key: (typeof PRESETS)[number]["key"]) => {
-    const r = presetRange(key, now());
+    const r = presetRange(key, now(), lastSession);
     setFrom(toRomeInput(r.from));
     setTo(toRomeInput(r.to));
     setInvalid(null);
@@ -99,6 +102,7 @@ export function ReplayBar({ range, shown, playing, speed, loading, now, onRange,
             max={range.to}
             step={1000}
             value={shown ?? range.from}
+            aria-valuetext={clock(shown ?? range.from)}
             onChange={(e) => onSeek(Number(e.target.value))}
           />
         </>

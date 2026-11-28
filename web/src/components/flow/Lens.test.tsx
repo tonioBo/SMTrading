@@ -1,6 +1,6 @@
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FlowEvent, FlowSources, FlowTools } from "@/api/types";
 import { Lens } from "./Lens";
 
@@ -154,5 +154,42 @@ describe("Lens", () => {
     const sub = subscriber();
     render(<Lens kind="px" title="Prezzi" win="today" subscribe={sub.subscribe} onClose={() => {}} />);
     expect(screen.getByRole("dialog")).toHaveTextContent("caricamento…");
+  });
+
+  describe("comets across a refetch", () => {
+    afterEach(() => vi.useRealTimers());
+    it("keeps launching comets after the tools are read again, and frees the cap", () => {
+      vi.useFakeTimers();
+      const sub = subscriber();
+      const props = { kind: "mcp" as const, title: "MCP SMTrading", win: 5 as const, subscribe: sub.subscribe, onClose: () => {} };
+      const { container, rerender } = render(<Lens {...props} tools={TOOLS} />);
+      for (let i = 0; i < 8; i++) sub.emit(ev({ id: `mcp:c${i}` }));
+      expect(container.querySelectorAll('[data-comet="orders"]')).toHaveLength(8);
+      rerender(<Lens {...props} tools={{ ...TOOLS, families: TOOLS.families.map((f) => ({ ...f })) }} />); // a refetch
+      act(() => vi.advanceTimersByTime(2_000));
+      expect(container.querySelectorAll("[data-comet]")).toHaveLength(0);
+      sub.emit(ev({ id: "mcp:after" }));
+      expect(container.querySelectorAll('[data-comet="orders"]')).toHaveLength(1);
+      expect(sub.size()).toBe(1); // subscribed once
+    });
+  });
+
+  it("takes the focus and gives it back when it closes", () => {
+    const sub = subscriber();
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    const { unmount } = render(<Lens kind="mcp" title="MCP SMTrading" win={5} tools={TOOLS} subscribe={sub.subscribe} onClose={() => {}} />);
+    expect(document.activeElement).toBe(screen.getByRole("dialog"));
+    unmount();
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it("says the counts are live during a replay, and stills the comets for reduced motion", () => {
+    const sub = subscriber();
+    const { container } = render(<Lens kind="mcp" title="MCP SMTrading" win={5} tools={TOOLS} live subscribe={sub.subscribe} onClose={() => {}} />);
+    expect(screen.getByRole("dialog")).toHaveTextContent("conteggi in diretta");
+    expect(container.querySelector("style")?.textContent).toContain("prefers-reduced-motion");
   });
 });

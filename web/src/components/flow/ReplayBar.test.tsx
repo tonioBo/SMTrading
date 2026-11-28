@@ -84,4 +84,26 @@ describe("ReplayBar", () => {
     setup({ range, shown: range.from, loading: { pages: 0, events: 0, done: true, capped: false, error: "intervallo non leggibile, riprova" } });
     expect(screen.getByRole("alert")).toHaveTextContent("intervallo non leggibile, riprova");
   });
+
+  it("refuses a «da» in the future", async () => {
+    const p = setup();
+    fireEvent.change(screen.getByLabelText("da"), { target: { value: "2026-11-28T12:00" } });
+    fireEvent.change(screen.getByLabelText("a"), { target: { value: "2026-11-28T13:00" } });
+    await userEvent.click(screen.getByRole("button", { name: "Mostra" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("«da» non può essere nel futuro");
+    expect(p.onRange).not.toHaveBeenCalled();
+  });
+
+  it("reads the time shown aloud on the scrub", () => {
+    const range = { from: NOW - 3_600_000, to: NOW };
+    setup({ range, shown: NOW - 1_800_000, loading: { pages: 1, events: 1, done: true, capped: false, error: null } });
+    expect(screen.getByRole("slider", { name: "ora mostrata" })).toHaveAttribute("aria-valuetext", "10:30:00");
+  });
+
+  it("uses the last US session given by SMTrading", async () => {
+    const lastSession = { from: Date.parse("2026-11-25T14:30:00Z"), to: Date.parse("2026-11-25T18:00:00Z") }; // a half day
+    const p = setup({ lastSession });
+    await userEvent.click(screen.getByRole("button", { name: "ultima seduta USA" }));
+    expect(p.onRange).toHaveBeenCalledWith(lastSession);
+  });
 });

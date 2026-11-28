@@ -122,3 +122,24 @@ describe("useFlowSummary", () => {
     expect(asked).toBe("today");
   });
 });
+
+describe("useFlowReplay, a new range", () => {
+  it("never hands over the events of the previous range", async () => {
+    server.use(
+      http.get("/api/flow/events", ({ request }) => {
+        const q = new URL(request.url).searchParams;
+        return HttpResponse.json({ events: [ev(`mcp:${q.get("from")}`, q.get("from")!)], cursor: null, from: q.get("from"), to: q.get("to"), now: "x" });
+      }),
+    );
+    const client = createQueryClient();
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    const a = { from: Date.parse("2026-11-28T08:00:00Z"), to: Date.parse("2026-11-28T09:00:00Z") };
+    const b = { from: Date.parse("2026-11-28T09:00:00Z"), to: Date.parse("2026-11-28T10:00:00Z") };
+    const { result, rerender } = renderHook(({ r }) => useFlowReplay(r), { wrapper, initialProps: { r: a } });
+    await waitFor(() => expect(result.current.done).toBe(true));
+    rerender({ r: b });
+    expect(result.current.events).toEqual([]); // at once, before the effect runs
+    expect(result.current.done).toBe(false);
+    await waitFor(() => expect(result.current.events.map((e) => e.id)).toEqual(["mcp:2026-11-28T09:00:00.000Z"]));
+  });
+});

@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FlowEvent, FlowPriceSource, FlowSources, FlowTools, FlowWindow } from "@/api/types";
 import { cn } from "@/lib/utils";
 import { windowLabel, type LensKind } from "./replay";
 import { H4, num, PANEL } from "./styles";
+import { useDialog } from "./useDialog";
 
 /** «Lente sui metodi»: a node opened on request, over the river (never in the general
  * view). «MCP SMTrading» opens into its tool families (GET /api/flow/tools), each a small
@@ -19,6 +20,8 @@ export interface LensProps {
   win: FlowWindow;
   tools?: FlowTools;
   sources?: FlowSources;
+  /** during a replay: the counts are the live ones (the tools route has no past window) */
+  live?: boolean;
   /** the events the river launches; returns the unsubscribe */
   subscribe: (cb: (e: FlowEvent) => void) => () => void;
   onClose: () => void;
@@ -37,13 +40,16 @@ const ASSET_IT: Record<string, string> = { stocks: "azioni", crypto: "cripto", e
 
 const plural = (n: number, one: string, many: string) => `${num(n, 0)} ${n === 1 ? one : many}`;
 
-/** comets per row key, each removed after its run */
+/** comets per row key, each removed after its run; subscribed once (a refetch of the
+ * tools only changes how rows are found, through the ref) */
 function useComets(subscribe: LensProps["subscribe"], rowOf: (e: FlowEvent) => string | null) {
   const [comets, setComets] = useState<{ id: string; row: string }[]>([]);
+  const rowRef = useRef(rowOf);
+  rowRef.current = rowOf;
   useEffect(() => {
     const timers = new Set<ReturnType<typeof setTimeout>>();
     const off = subscribe((e) => {
-      const row = rowOf(e);
+      const row = rowRef.current(e);
       if (!row) return;
       setComets((c) => (c.some((x) => x.id === e.id) || c.filter((x) => x.row === row).length >= COMETS_PER_ROW ? c : [...c, { id: e.id, row }]));
       const t = setTimeout(() => {
@@ -55,8 +61,9 @@ function useComets(subscribe: LensProps["subscribe"], rowOf: (e: FlowEvent) => s
     return () => {
       off();
       timers.forEach(clearTimeout);
+      setComets([]); // no comet left without its timer
     };
-  }, [subscribe, rowOf]);
+  }, [subscribe]);
   return comets;
 }
 
@@ -172,7 +179,9 @@ function PriceLens({ sources, comets }: { sources: FlowSources; comets: { id: st
   );
 }
 
-export function Lens({ kind, title, win, tools, sources, subscribe, onClose }: LensProps) {
+export function Lens({ kind, title, win, tools, sources, live, subscribe, onClose }: LensProps) {
+  const dialog = useRef<HTMLDivElement>(null);
+  useDialog(dialog, onClose);
   const familyOf = useMemo(() => {
     const m = new Map<string, string>();
     tools?.families.forEach((f) => f.tools.forEach((t) => m.set(t.tool, f.key)));
@@ -187,20 +196,19 @@ export function Lens({ kind, title, win, tools, sources, subscribe, onClose }: L
   );
   const comets = useComets(subscribe, rowOf);
 
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    document.addEventListener("keydown", key);
-    return () => document.removeEventListener("keydown", key);
-  }, [onClose]);
-
   const ready = kind === "mcp" ? tools : sources;
   return (
     <div data-testid="lens-backdrop" className="absolute inset-0 z-30 flex items-center justify-center bg-[rgba(3,5,12,.35)] p-4" onClick={onClose}>
-      <style>{"@keyframes flow-lens-comet{from{left:-24px}to{left:100%}}"}</style>
+      <style>
+        {"@keyframes flow-lens-comet{from{left:-24px}to{left:100%}}" +
+          "@media (prefers-reduced-motion: reduce){[data-comet]{animation:none!important;left:auto;right:4px}}"}
+      </style>
       <div
+        ref={dialog}
+        tabIndex={-1}
         role="dialog"
         aria-label={`Lente su ${title}`}
-        className={cn(PANEL, "max-h-full w-[min(820px,100%)] overflow-y-auto px-5 py-4 text-[13px] text-[#e8eeff]")}
+        className={cn(PANEL, "max-h-full outline-none w-[min(820px,100%)] overflow-y-auto px-5 py-4 text-[13px] text-[#e8eeff]")}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-2 flex items-baseline gap-3">
@@ -209,6 +217,7 @@ export function Lens({ kind, title, win, tools, sources, subscribe, onClose }: L
           <span className="flex-1" />
           <span className="text-[11.5px] text-[#6f80b3]">clic fuori o Esc per chiudere</span>
         </div>
+        {live && <p className="m-0 mb-2 text-xs italic text-[#ffd08f]">conteggi in diretta: la moviola non li ricalcola (le comete seguono la moviola)</p>}
         {!ready ? (
           <div className="italic text-[#8b99c3]">caricamento…</div>
         ) : kind === "mcp" ? (

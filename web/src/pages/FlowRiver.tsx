@@ -9,11 +9,11 @@ import {
   useFlowSummary,
   useFlowTools,
 } from "@/api/hooks/flow";
-import type { FlowAgents, FlowEvent, FlowHealth, FlowNode, FlowTools, FlowWindow } from "@/api/types";
+import type { FlowAgents, FlowEvent, FlowHealth, FlowNode, FlowSummary, FlowTools, FlowWindow } from "@/api/types";
 import { Lens } from "@/components/flow/Lens";
 import { ReplayBar } from "@/components/flow/ReplayBar";
 import { HEALTH_COLORS, kindColor, ORIGINS, RiverCanvas, type HoverTarget } from "@/components/flow/RiverCanvas";
-import { LENS_NODES, storyTarget, summarizeEvents, type LensKind, windowLabel, windowMinutes, type Range, type ReplaySpeed, type StoryTarget } from "@/components/flow/replay";
+import { LENS_NODES, storyTarget, SummaryTally, type LensKind, windowLabel, windowMinutes, type Range, type ReplaySpeed, type StoryTarget } from "@/components/flow/replay";
 import { StoryPanel } from "@/components/flow/StoryPanel";
 import { BTN, BTN_ON, clock, GLASS, H4, num } from "@/components/flow/styles";
 import { formatMoney } from "@/lib/format";
@@ -100,6 +100,9 @@ export default function FlowRiver() {
   const [shown, setShown] = useState<number | null>(null);
   const [story, setStory] = useState<StoryTarget | null>(null);
   const [lens, setLens] = useState<LensKind | null>(null);
+  /** the replayed window's widths and event count, tallied page by page */
+  const [replayed, setReplayed] = useState<{ summary: FlowSummary; count: number } | null>(null);
+  const fed = useRef<{ events: number; runs: Set<string>; tally: SummaryTally | null }>({ events: 0, runs: new Set(), tally: null });
   const inReplay = range !== null;
 
   const map = useFlowMap();
@@ -107,7 +110,7 @@ export default function FlowRiver() {
   const { events, now, stale } = useFlowEvents();
   const agents = useFlowAgents();
   const health = useFlowHealth();
-  const tools = useFlowTools(win, lens === "mcp" || (!!hover?.link && !inReplay));
+  const tools = useFlowTools(win, lens === "mcp" || !!hover?.link);
   const sources = useFlowSources(lens === "px");
   const replay = useFlowReplay(range);
 
@@ -178,6 +181,8 @@ export default function FlowRiver() {
   useEffect(() => {
     setDiary([]);
     setStory(null);
+    fed.current = { events: 0, runs: new Set(), tally: null };
+    setReplayed(null);
     if (!range) {
       river.current?.stopReplay();
       setShown(null);
@@ -189,30 +194,34 @@ export default function FlowRiver() {
   }, [range]);
 
   const runs = agents.data?.runs;
-  const replayed = useMemo(() => {
-    if (!range) return [];
-    const inWindow = (runs ?? []).filter((e) => {
-      const t = Date.parse(e.ts);
-      return t >= range.from && t <= range.to;
-    });
-    return inWindow.length ? [...replay.events, ...inWindow] : replay.events;
-  }, [range, replay.events, runs]);
-
+  const mapLinks = map.data?.links;
+  // only what is new goes to the river and the tally: the page just read, and the
+  // window's Paperclip runs not handed over yet
   useEffect(() => {
     if (!range) return;
-    river.current?.addReplay(replayed);
+    const f = fed.current;
+    const fresh = replay.events.length > f.events ? replay.events.slice(f.events) : [];
+    f.events = Math.max(f.events, replay.events.length);
+    for (const e of runs ?? []) {
+      const t = Date.parse(e.ts);
+      if (t < range.from || t > range.to || f.runs.has(e.id)) continue;
+      f.runs.add(e.id);
+      fresh.push(e);
+    }
+    if (fresh.length) {
+      river.current?.addReplay(fresh);
+      f.tally ??= new SummaryTally(mapLinks ?? []);
+      f.tally.add(fresh);
+      setReplayed((r) => ({ summary: f.tally!.summary((range.to - range.from) / 60_000), count: (r?.count ?? 0) + fresh.length }));
+    }
     // the pages come in time order: the clock waits at the last one loaded
     const last = replay.events.length ? Date.parse(replay.events[replay.events.length - 1].ts) : range.from;
     river.current?.setReplayHorizon(replay.done ? range.to : last);
-  }, [range, replayed, replay.events, replay.done]);
+  }, [range, replay.events, replay.done, runs, mapLinks]);
 
   useEffect(() => river.current?.setReplaySpeed(replaySpeed), [replaySpeed, range]);
 
-  const mapLinks = map.data?.links;
-  const replaySummary = useMemo(
-    () => (range ? summarizeEvents(replayed, (range.to - range.from) / 60_000, mapLinks ?? []) : null),
-    [range, replayed, mapLinks],
-  );
+  const replaySummary = range ? (replayed?.summary ?? null) : null;
 
   useEffect(() => {
     if (replaySummary && range) {
@@ -263,25 +272,25 @@ export default function FlowRiver() {
     if (!follow) setFollowed(null);
   }, [follow]);
 
-  useEffect(() => {
-    if (!story) return;
-    const key = (e: KeyboardEvent) => e.key === "Escape" && setStory(null);
-    document.addEventListener("keydown", key);
-    return () => document.removeEventListener("keydown", key);
-  }, [story]);
-
   const closeReplay = () => {
     setReplayOpen(false);
     setRange(null);
     setPlaying(false);
   };
   const closeLens = useCallback(() => setLens(null), []);
+  const session = map.data?.last_session;
+  const lastSession = useMemo(() => {
+    if (!session) return null;
+    const from = Date.parse(session.from);
+    const to = Date.parse(session.to);
+    return Number.isFinite(from) && Number.isFinite(to) ? { from, to } : null;
+  }, [session]);
 
   const shownSummary = inReplay ? replaySummary : summary.data;
   const head = shownSummary?.head;
   const links = shownSummary?.links ?? {};
   const totalCalls = Object.values(links).reduce((a, l) => a + l.calls, 0);
-  const quiet = inReplay ? replay.done && replayed.length === 0 : summary.data !== undefined && totalCalls === 0;
+  const quiet = inReplay ? replay.done && !replayed?.count : summary.data !== undefined && totalCalls === 0;
   const latency = head?.mcp_latency_ms != null ? `${num(head.mcp_latency_ms, 0)} ms` : "—";
   const label = (k: string) => nodes.get(k)?.label ?? k;
   const winText = inReplay ? "nell'intervallo riprodotto" : win === "today" ? "oggi" : `ultimi ${win} min`;
@@ -356,8 +365,9 @@ export default function FlowRiver() {
           shown={shown}
           playing={playing}
           speed={replaySpeed}
-          loading={{ pages: replay.pages, events: replayed.length, done: replay.done, capped: replay.capped, error: replay.error }}
+          loading={{ pages: replay.pages, events: replayed?.count ?? 0, done: replay.done, capped: replay.capped, error: replay.error }}
           now={Date.now}
+          lastSession={lastSession}
           onRange={setRange}
           onPlay={(b) => {
             const r = river.current;
@@ -387,7 +397,11 @@ export default function FlowRiver() {
               {inReplay ? "Nessuna chiamata nell'intervallo" : win === "today" ? "Nessuna chiamata oggi" : `Nessuna chiamata negli ultimi ${win} minuti`}
             </div>
           )}
-          {paperclipDown && <div className={cn(GLASS, "px-3 py-1.5 text-xs text-[#a9b5dc]")}>{paperclipDown}</div>}
+          {paperclipDown && (
+            <div role="status" className={cn(GLASS, "px-3 py-1.5 text-xs text-[#a9b5dc]")}>
+              {paperclipDown}
+            </div>
+          )}
         </div>
         {follow && (
           <div className={cn(GLASS, "pointer-events-none absolute bottom-3 left-1/2 w-max max-w-[min(760px,92%)] -translate-x-1/2 px-4 py-2.5 text-center text-[13.5px]")}>
@@ -407,10 +421,18 @@ export default function FlowRiver() {
             mapLinks={map.data?.links ?? []}
             health={health.data}
             agents={agents.data}
-            tools={inReplay ? undefined : tools.data}
+            tools={tools.data}
           />
         )}
-        {story && <StoryPanel target={story} onClose={() => setStory(null)} />}
+        {/* the lenses from the keyboard: shown when focused */}
+        <div className="absolute left-2 top-2 z-10 flex gap-1">
+          {LENS_NODES.filter((k) => nodes.has(k)).map((k) => (
+            <button key={k} type="button" className={cn(BTN, "sr-only focus:not-sr-only")} onClick={() => setLens(k as LensKind)}>
+              Apri la lente su {label(k)}
+            </button>
+          ))}
+        </div>
+        {story && <StoryPanel target={story} onClose={() => setStory(null)} onOpen={setStory} />}
         {lens && (
           <Lens
             kind={lens}
@@ -418,6 +440,7 @@ export default function FlowRiver() {
             win={win}
             tools={tools.data}
             sources={sources.data}
+            live={inReplay}
             subscribe={subscribe}
             onClose={closeLens}
           />
@@ -619,6 +642,7 @@ function HoverCard({ hover, host, nodes, label, win, summary, river, lastPass, m
         </dl>
         {all && all.length > 0 && (
           <dl className="mt-1.5 grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 border-t border-white/10 pt-1.5 text-xs text-[#8b99c3]">
+            {win === null && <dt className="col-span-2 italic">strumenti in diretta (non della moviola)</dt>}
             {all.slice(0, 12).map((t) => (
               <div key={t.tool} className="contents">
                 <dt className="truncate font-mono text-[#cdb8ff]">{t.tool}</dt>

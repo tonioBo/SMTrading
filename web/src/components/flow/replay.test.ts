@@ -5,6 +5,7 @@ import {
   presetRange,
   romeMidnight,
   storyTarget,
+  SummaryTally,
   summarizeEvents,
   toRomeInput,
   windowLabel,
@@ -129,5 +130,27 @@ describe("storyTarget", () => {
     expect(storyTarget(ev())).toBeNull(); // get_forecast
     expect(storyTarget(ev({ id: "fill:3", kind: "fill" }))).toBeNull();
     expect(storyTarget(ev({ id: "run:abc", kind: "run" }))).toBeNull();
+  });
+});
+
+describe("v2 additions from the backend", () => {
+  it("prefers the session given by SMTrading", () => {
+    const given = { from: at("2026-11-25T14:30:00Z"), to: at("2026-11-25T18:00:00Z") };
+    expect(presetRange("session", at("2026-11-28T10:00:00Z"), given)).toEqual(given);
+  });
+
+  it("opens the order of a fill that carries it", () => {
+    expect(storyTarget(ev({ id: "fill:3", kind: "fill", order_id: "9b1c6c2e-1111-4111-8111-111111111111" }))).toEqual({
+      kind: "order",
+      id: "9b1c6c2e-1111-4111-8111-111111111111",
+    });
+  });
+
+  it("adds pages to a tally that gives the same summary as all at once", () => {
+    const links: [string, string][] = [["agent:a1", "pc"], ["pc", "mcp"], ["mcp", "ng"]];
+    const all = Array.from({ length: 50 }, (_, i) => ev({ id: `mcp:${i}`, outcome: i % 7 ? "ok" : "error", latency_ms: i }));
+    const tally = new SummaryTally(links);
+    for (let i = 0; i < 50; i += 10) tally.add(all.slice(i, i + 10));
+    expect(tally.summary(30)).toEqual(summarizeEvents(all, 30, links));
   });
 });

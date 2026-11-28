@@ -31,6 +31,8 @@ vi.mock("@/components/flow/RiverCanvas", async (importOriginal) => ({
     nodeClick: ((k: string) => boolean) | null = null;
     pushed: FlowEvent[] = [];
     replayed: FlowEvent[] = [];
+    added: string[][] = [];
+    summary: unknown = null;
     badges: Record<string, string> = {};
     health: Record<string, unknown> = {};
     windowMin = 0;
@@ -39,7 +41,9 @@ vi.mock("@/components/flow/RiverCanvas", async (importOriginal) => ({
       canvas.current = this as unknown as Record<string, unknown>;
     }
     setMap() {}
-    setSummary() {}
+    setSummary(s: unknown) {
+      this.summary = s;
+    }
     setWindow(m: number) {
       this.windowMin = m;
     }
@@ -62,7 +66,8 @@ vi.mock("@/components/flow/RiverCanvas", async (importOriginal) => ({
       this.replayed = [];
     }
     addReplay(events: FlowEvent[]) {
-      this.replayed = events;
+      this.added.push(events.map((e) => e.id));
+      this.replayed = [...this.replayed, ...events];
     }
     setReplaySpeed() {}
     setReplayHorizon() {}
@@ -107,6 +112,7 @@ const MAP: FlowMap = {
     { key: "mcp", label: "MCP SMTrading", kind: "core", column: 2, description: "La porta" },
     { key: "ng", label: "Neurograph", kind: "ng", column: 3, description: "Forchetta" },
     { key: "eng", label: "Motore ordini", kind: "core", column: 3, description: "Controlli" },
+    { key: "px", label: "Prezzi", kind: "data", column: 3, description: "Prezzi" },
   ],
   links: [
     ["agent:a1", "pc"],
@@ -194,6 +200,8 @@ const river = () => canvas.current as unknown as {
   badges: Record<string, string>;
   health: Record<string, unknown>;
   replayed: FlowEvent[];
+  added: string[][];
+  summary: FlowSummary;
   replaying: [number, number] | null;
   pushed: FlowEvent[];
   windowMin: number;
@@ -385,5 +393,60 @@ describe("FlowRiver", () => {
     render(<FlowRiver />);
     act(() => river().hover({ link: "pc|mcp", x: 10, y: 10 }));
     expect(screen.getByText(/Paperclip ↔ MCP SMTrading/).closest("div[class*=absolute]")).toHaveTextContent("get_forecast25 · 880 ms · 1 ✕");
+  });
+
+  it("hands the river only each new replay page, over 20 pages, and counts them all", async () => {
+    mockHooks();
+    const { rerender } = render(<FlowRiver />);
+    await userEvent.click(screen.getByRole("button", { name: "⏮ Moviola" }));
+    await userEvent.click(screen.getByRole("button", { name: "ultima ora" }));
+    let all: FlowEvent[] = [];
+    for (let p = 0; p < 20; p++) {
+      const page = Array.from({ length: 50 }, (_, i) => ({ ...EVENTS[0], id: `mcp:${p}-${i}`, ts: new Date(Date.now() - 3_000_000 + p * 1000 + i).toISOString() }));
+      all = all.concat(page);
+      hooks.useFlowReplay.mockReturnValue({ events: all, pages: p + 1, done: p === 19, capped: false, error: null });
+      rerender(<FlowRiver />);
+    }
+    const sizes = river().added.filter((a) => a.length).map((a) => a.length);
+    expect(sizes).toEqual(Array(20).fill(50));
+    expect(river().summary.links["pc|mcp"].calls).toBe(1000);
+  });
+
+  it("closes only the top panel with Escape", async () => {
+    mockHooks();
+    render(<FlowRiver />);
+    act(() => river().select({ ...EVENTS[0], id: "mcp:77", hops: ["place_order", "place_order", "place_order"] }));
+    act(() => {
+      river().nodeClick("mcp");
+    });
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Lente su MCP SMTrading" })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Chiamata MCP" })).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("opens the lenses from the keyboard too", async () => {
+    mockHooks();
+    render(<FlowRiver />);
+    await userEvent.click(screen.getByRole("button", { name: "Apri la lente su Prezzi" }));
+    expect(screen.getByRole("dialog", { name: "Lente su Prezzi" })).toBeInTheDocument();
+  });
+
+  it("announces Paperclip down as a status", () => {
+    mockHooks({ agents: DOWN });
+    render(<FlowRiver />);
+    expect(screen.getByRole("status")).toHaveTextContent("Paperclip non raggiungibile: costi non disponibili");
+  });
+
+  it("marks the lens counts as live during a replay", async () => {
+    mockHooks();
+    render(<FlowRiver />);
+    await userEvent.click(screen.getByRole("button", { name: "⏮ Moviola" }));
+    await userEvent.click(screen.getByRole("button", { name: "ultima ora" }));
+    act(() => {
+      river().nodeClick("mcp");
+    });
+    expect(screen.getByRole("dialog", { name: "Lente su MCP SMTrading" })).toHaveTextContent("conteggi in diretta");
   });
 });

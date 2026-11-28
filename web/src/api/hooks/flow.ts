@@ -183,16 +183,19 @@ export interface FlowReplayState {
 }
 
 const IDLE: FlowReplayState = { events: NO_EVENTS, pages: 0, done: false, capped: false, error: null };
+const rangeKey = (from: number | null, to: number | null) => (from === null || to === null ? null : `${from}|${to}`);
 
 /** A closed window (≤ 24 h), page by page with the server's cursor: each page is handed
  * over as it arrives, so the replay starts on the first one. A new range aborts the old. */
 export function useFlowReplay(range: { from: number; to: number } | null): FlowReplayState {
-  const [state, setState] = useState<FlowReplayState>(IDLE);
+  // the state is tagged with its range: a new range never sees the previous one's events
+  const [state, setState] = useState<{ key: string | null; s: FlowReplayState }>({ key: null, s: IDLE });
   const from = range?.from ?? null;
   const to = range?.to ?? null;
+  const key = rangeKey(from, to);
   useEffect(() => {
-    setState(IDLE);
     if (from === null || to === null) return;
+    const mine = rangeKey(from, to);
     const ctl = new AbortController();
     const base = `from=${encodeURIComponent(new Date(from).toISOString())}&to=${encodeURIComponent(new Date(to).toISOString())}&limit=${REPLAY_PAGE}`;
     (async () => {
@@ -209,15 +212,15 @@ export function useFlowReplay(range: { from: number; to: number } | null): FlowR
           pages++;
           const capped = cursor !== null && all.length >= REPLAY_EVENTS_MAX;
           const done = cursor === null || capped;
-          setState({ events: all, pages, done, capped, error: null });
+          setState({ key: mine, s: { events: all, pages, done, capped, error: null } });
           if (capped) return;
         } while (cursor !== null);
       } catch {
         if (ctl.signal.aborted) return;
-        setState({ events: all, pages, done: true, capped: false, error: "intervallo non leggibile, riprova" });
+        setState({ key: mine, s: { events: all, pages, done: true, capped: false, error: "intervallo non leggibile, riprova" } });
       }
     })();
     return () => ctl.abort();
   }, [from, to]);
-  return state;
+  return key !== null && state.key === key ? state.s : IDLE;
 }

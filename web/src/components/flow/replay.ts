@@ -103,15 +103,16 @@ export function windowLabel(w: FlowWindow): string {
   return w === "today" ? "oggi" : `${w} min`;
 }
 
-/** the replay window of a preset; never longer than 24 h */
-export function presetRange(key: PresetKey, now: number): Range {
+/** the replay window of a preset; never longer than 24 h; «ultima seduta USA» from
+ * SMTrading's calendar when given (`session`), else the last weekday's regular hours */
+export function presetRange(key: PresetKey, now: number, session?: Range | null): Range {
   let r: Range;
   if (key === "hour") r = { from: now - HOUR, to: now };
   else if (key === "today") r = { from: romeMidnight(now), to: now };
   else if (key === "yesterday") {
     const today = romeMidnight(now);
     r = { from: romeMidnight(today - 12 * HOUR), to: today };
-  } else r = lastSession(now);
+  } else r = session && session.from < session.to ? session : lastSession(now);
   return { from: r.from, to: Math.min(r.to, r.from + REPLAY_MAX_MS) };
 }
 
@@ -134,60 +135,85 @@ function toolOf(e: FlowEvent): string {
   return e.hops[0] ?? e.kind;
 }
 
-/** a FlowSummary of loaded events over `minutes` (the replayed window): each link once
- * per event, keyed in the map's direction; head: agents' MCP calls per minute, agents'
- * orders accepted, errors, mean MCP time */
+/** The widths of a replayed window, page by page: `add` each new page once, `summary`
+ * gives a FlowSummary over `minutes` — each link once per event, keyed in the map's
+ * direction; head: agents' MCP calls per minute, agents' orders accepted, errors, mean
+ * MCP time. Adding a page costs that page only. */
+export class SummaryTally {
+  private readonly forward: Set<string>;
+  private readonly links = new Map<string, { calls: number; errors: number; tools: Map<string, number> }>();
+  private readonly touches = new Map<string, number>();
+  private mcp = 0;
+  private mcpMs = 0;
+  private errors = 0;
+  private orders = 0;
+
+  constructor(mapLinks: [string, string][]) {
+    this.forward = new Set(mapLinks.map(([a, b]) => `${a}|${b}`));
+  }
+
+  private keyOf(a: string, b: string): string | null {
+    if (this.forward.has(`${a}|${b}`)) return `${a}|${b}`;
+    return this.forward.has(`${b}|${a}`) ? `${b}|${a}` : null;
+  }
+
+  add(events: FlowEvent[]): void {
+    for (const e of events) {
+      const bad = e.outcome === "error";
+      if (bad) this.errors++;
+      if (e.kind === "mcp") {
+        this.mcp++;
+        this.mcpMs += e.latency_ms ?? 0;
+        if (!bad && isOrderEvent(e)) this.orders++;
+      }
+      const keys = new Set<string>();
+      for (let i = 0; i < e.path.length - 1; i++) {
+        const k = this.keyOf(e.path[i], e.path[i + 1]);
+        if (k) keys.add(k);
+      }
+      const tool = toolOf(e);
+      for (const k of keys) {
+        let l = this.links.get(k);
+        if (!l) this.links.set(k, (l = { calls: 0, errors: 0, tools: new Map() }));
+        l.calls++;
+        if (bad) l.errors++;
+        l.tools.set(tool, (l.tools.get(tool) ?? 0) + 1);
+      }
+      for (const n of new Set(e.path)) this.touches.set(n, (this.touches.get(n) ?? 0) + 1);
+    }
+  }
+
+  summary(minutes: number): FlowSummary {
+    const per = (n: number) => n / Math.max(1, minutes);
+    const links: FlowSummary["links"] = {};
+    for (const [k, l] of this.links) {
+      links[k] = {
+        calls: l.calls,
+        errors: l.errors,
+        top_tools: [...l.tools.entries()]
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+          .slice(0, 3)
+          .map(([tool, calls]) => ({ tool, calls })),
+      };
+    }
+    return {
+      links,
+      nodes: Object.fromEntries([...this.touches].map(([k, n]) => [k, per(n)])),
+      head: {
+        calls_per_min: per(this.mcp),
+        orders_today: this.orders,
+        errors_window: this.errors,
+        mcp_latency_ms: this.mcp ? Math.round(this.mcpMs / this.mcp) : null,
+      },
+    };
+  }
+}
+
+/** a FlowSummary of loaded events over `minutes`, all at once (see SummaryTally) */
 export function summarizeEvents(events: FlowEvent[], minutes: number, mapLinks: [string, string][]): FlowSummary {
-  const forward = new Set(mapLinks.map(([a, b]) => `${a}|${b}`));
-  const keyOf = (a: string, b: string) => (forward.has(`${a}|${b}`) ? `${a}|${b}` : forward.has(`${b}|${a}`) ? `${b}|${a}` : null);
-  const links: FlowSummary["links"] = {};
-  const tools = new Map<string, Map<string, number>>();
-  const touches = new Map<string, number>();
-  let mcp = 0;
-  let mcpMs = 0;
-  let errors = 0;
-  let orders = 0;
-  const per = (n: number) => n / Math.max(1, minutes);
-  for (const e of events) {
-    const bad = e.outcome === "error";
-    errors += bad ? 1 : 0;
-    if (e.kind === "mcp") {
-      mcp++;
-      mcpMs += e.latency_ms ?? 0;
-      if (!bad && isOrderEvent(e)) orders++;
-    }
-    const keys = new Set<string>();
-    for (let i = 0; i < e.path.length - 1; i++) {
-      const k = keyOf(e.path[i], e.path[i + 1]);
-      if (k) keys.add(k);
-    }
-    const tool = toolOf(e);
-    for (const k of keys) {
-      const l = (links[k] ??= { calls: 0, errors: 0, top_tools: [] });
-      l.calls++;
-      l.errors += bad ? 1 : 0;
-      const t = tools.get(k) ?? new Map<string, number>();
-      t.set(tool, (t.get(tool) ?? 0) + 1);
-      tools.set(k, t);
-    }
-    for (const n of new Set(e.path)) touches.set(n, (touches.get(n) ?? 0) + 1);
-  }
-  for (const [k, t] of tools) {
-    links[k].top_tools = [...t.entries()]
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .slice(0, 3)
-      .map(([tool, calls]) => ({ tool, calls }));
-  }
-  return {
-    links,
-    nodes: Object.fromEntries([...touches].map(([k, n]) => [k, per(n)])),
-    head: {
-      calls_per_min: per(mcp),
-      orders_today: orders,
-      errors_window: errors,
-      mcp_latency_ms: mcp ? Math.round(mcpMs / mcp) : null,
-    },
-  };
+  const t = new SummaryTally(mapLinks);
+  t.add(events);
+  return t.summary(minutes);
 }
 
 /** the nodes a click opens into a lens */
@@ -196,9 +222,11 @@ export const LENS_NODES: readonly string[] = ["mcp", "px"];
 
 export type StoryTarget = { kind: "order"; id: string } | { kind: "mcp"; id: string };
 
-/** the story an event opens: its order (order sent or refused), or the MCP call of an
- * agent's place_* (refused calls create no order); null for the others */
+/** the story an event opens: its order (order sent or refused, a fill carrying its
+ * order), or the MCP call of an agent's place_* (refused calls create no order); null for
+ * the others */
 export function storyTarget(e: FlowEvent): StoryTarget | null {
+  if (e.order_id) return { kind: "order", id: e.order_id };
   const order = /^order:([0-9a-f-]{36}):/i.exec(e.id);
   if (order) return { kind: "order", id: order[1] };
   const mcp = /^mcp:(\d+)$/.exec(e.id);

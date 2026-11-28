@@ -1,10 +1,12 @@
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
+import { ApiError } from "@/api/client";
 import { useFlowMcpStory, useFlowOrderStory } from "@/api/hooks/flow";
 import type { FlowMcpStory, FlowOrderStory } from "@/api/types";
 import { formatPct, formatQty } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { StoryTarget } from "./replay";
-import { clock, H4, PANEL } from "./styles";
+import { BTN, clock, H4, PANEL } from "./styles";
+import { useDialog } from "./useDialog";
 
 /** «Storia di un ordine»: the side panel opened by a comet or a diary line — the whole
  * journey of an order (GET /api/flow/order/{id}) or, for an agent's place_* call, the call
@@ -74,7 +76,7 @@ function OrderStory({ s }: { s: FlowOrderStory }) {
       <Section title="Chiamata MCP">
         {s.mcp ? (
           <div>
-            <span className="font-mono text-[#cdb8ff]">{s.mcp.tool}</span> · {s.mcp.outcome === "ok" ? "riuscita" : `rifiutata${s.mcp.reason_code ? ` (${s.mcp.reason_code})` : ""}`}
+            <span className="font-mono text-[#cdb8ff]">{s.mcp.tool}</span> · {s.mcp.outcome === "ok" ? "riuscita" : `non riuscita${s.mcp.reason_code ? ` (${s.mcp.reason_code})` : ""}`}
             {s.mcp.latency_ms != null ? ` · ${s.mcp.latency_ms} ms` : ""} · {clock(s.mcp.at)}
           </div>
         ) : (
@@ -108,7 +110,7 @@ function OrderStory({ s }: { s: FlowOrderStory }) {
         ) : (
           s.children.map((c) => (
             <div key={c.id}>
-              {c.role_it} · {TYPE_IT[c.type] ?? c.type}
+              {c.role_it || "ordine collegato"} · {TYPE_IT[c.type] ?? c.type}
               {c.stop_price ? ` ${qty(c.stop_price)}` : ""}
               {c.limit_price ? ` ${qty(c.limit_price)}` : ""} · {c.status_it}
             </div>
@@ -154,7 +156,11 @@ function OrderStory({ s }: { s: FlowOrderStory }) {
   );
 }
 
-function McpStory({ s }: { s: FlowMcpStory }) {
+/** the backend's note for an order tool refused by the checks */
+const REFUSED = "chiamata rifiutata";
+
+function McpStory({ s, onOpen }: { s: FlowMcpStory; onOpen?: (t: StoryTarget) => void }) {
+  const refused = s.note?.startsWith(REFUSED) ?? false;
   return (
     <>
       <div className="text-[15px] font-semibold text-[#e8eeff]">
@@ -166,34 +172,52 @@ function McpStory({ s }: { s: FlowMcpStory }) {
       </div>
       <Section title="Chiamata MCP">
         <div className={s.outcome === "ok" ? undefined : "text-[#ff9fb2]"}>
-          {s.outcome === "ok" ? "riuscita" : "rifiutata"}
+          {s.outcome === "ok" ? "riuscita" : refused ? "rifiutata" : "non riuscita"}
           {s.reason_code ? ` · motivo ${s.reason_code}` : ""}
           {s.latency_ms != null ? ` · ${s.latency_ms} ms` : ""}
         </div>
         {s.note && <Note>{s.note}</Note>}
-        {s.outcome === "ok" && <Note>l&apos;ordine creato si apre dal suo invio al broker o dal suo rifiuto</Note>}
+        {s.order_id ? (
+          <button type="button" className={cn(BTN, "mt-1")} onClick={() => onOpen?.({ kind: "order", id: s.order_id! })}>
+            apri la storia dell&apos;ordine
+          </button>
+        ) : (
+          s.outcome === "ok" && s.order_id === undefined && <Note>l&apos;ordine creato si apre dal suo invio al broker o dal suo rifiuto</Note>
+        )}
       </Section>
     </>
   );
 }
 
-export function StoryPanel({ target, onClose }: { target: StoryTarget; onClose: () => void }) {
+const NOT_FOUND = {
+  order: "storia non disponibile: ordine non trovato o di un portafoglio nascosto",
+  mcp: "storia non disponibile: chiamata non trovata",
+};
+const TITLE = { order: "Storia dell'ordine", mcp: "Chiamata MCP" };
+
+export function StoryPanel({ target, onClose, onOpen }: { target: StoryTarget; onClose: () => void; onOpen?: (t: StoryTarget) => void }) {
   const order = useFlowOrderStory(target.kind === "order" ? target.id : null);
   const mcp = useFlowMcpStory(target.kind === "mcp" ? target.id : null);
+  const dialog = useRef<HTMLDivElement>(null);
+  useDialog(dialog, onClose);
   const q = target.kind === "order" ? order : mcp;
   let body: ReactNode;
-  if (q.isError) body = <Note>storia non disponibile: ordine non trovato o di un portafoglio nascosto</Note>;
-  else if (!q.data) body = <Note>caricamento…</Note>;
-  else body = target.kind === "order" ? <OrderStory s={q.data as FlowOrderStory} /> : <McpStory s={q.data as FlowMcpStory} />;
+  if (q.isError) {
+    const missing = q.error instanceof ApiError && q.error.status === 404;
+    body = <Note>{missing ? NOT_FOUND[target.kind] : "storia non leggibile, riprova"}</Note>;
+  } else if (!q.data) body = <Note>caricamento…</Note>;
+  else body = target.kind === "order" ? <OrderStory s={q.data as FlowOrderStory} /> : <McpStory s={q.data as FlowMcpStory} onOpen={onOpen} />;
   return (
     <div
+      ref={dialog}
+      tabIndex={-1}
       role="dialog"
-      aria-label="Storia dell'ordine"
-      className={cn(PANEL, "absolute bottom-3 right-3 top-3 z-20 flex w-[min(380px,calc(100%-24px))] flex-col overflow-hidden")}
+      aria-label={TITLE[target.kind]}
+      className={cn(PANEL, "absolute bottom-3 right-3 top-3 z-20 flex w-[min(380px,calc(100%-24px))] flex-col overflow-hidden outline-none")}
       onClick={(e) => e.stopPropagation()}
     >
       <div className="flex items-center gap-2 px-4 pb-1 pt-3">
-        <h3 className="m-0 flex-1 text-[13px] font-semibold uppercase tracking-[.14em] text-[#9ff3df]">Storia dell&apos;ordine</h3>
+        <h3 className="m-0 flex-1 text-[13px] font-semibold uppercase tracking-[.14em] text-[#9ff3df]">{TITLE[target.kind]}</h3>
         <button
           type="button"
           aria-label="Chiudi la storia"
