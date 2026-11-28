@@ -12,7 +12,8 @@ Redis e l'app web di amministrazione in italiano, tutto in `docker compose`.
 
 L'API (`127.0.0.1:8000`, anche per l'MCP) resta raggiungibile solo dal PC. La porta `8087`
 (http) è l'ingresso dell'app «SMTrading TV» per la smart TV: solo i dati delle schermate TV,
-solo dalla rete di casa (`docs/readiness/tv-app-installazione.md`).
+da tenere chiusa verso Internet: firewall di Windows solo reti private, nessun inoltro sul router
+(`docs/readiness/tv-app-installazione.md`).
 
 ## Utenti del portale
 
@@ -63,11 +64,11 @@ Dagli altri dispositivi della rete l'app è servita **solo in https**:
   Installa solo il certificato scaricato dal tuo PC: chi possiede la chiave di questa
   autorità (nel volume `web_certs`) può emettere certificati considerati validi dai
   dispositivi che l'hanno installata.
-- **Firewall di Windows.** Consenti in ingresso le porte TCP **80** e **443** solo per le
+- **Firewall di Windows.** Consenti in ingresso le porte TCP **80**, **443** e **8087** (app TV) solo per le
   reti private, ad esempio da PowerShell come amministratore:
 
   ```powershell
-  New-NetFirewallRule -DisplayName "SMTrading web" -Direction Inbound -Protocol TCP -LocalPort 80,443 -Action Allow -Profile Private
+  New-NetFirewallRule -DisplayName "SMTrading web" -Direction Inbound -Protocol TCP -LocalPort 80,443,8087 -Action Allow -Profile Private
   ```
 
   Con Docker in WSL2 potrebbe servire anche l'inoltro delle porte dall'host a WSL

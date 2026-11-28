@@ -122,10 +122,13 @@ altrimenti apre il browser come prima.
 
 L'app parla con SMTrading in **http** sulla porta 8087 perché le app Tizen rifiutano il
 certificato della rete di casa. Su quella porta c'è solo l'API delle schermate TV (sola lettura)
-e l'abbinamento con codice, nient'altro del portale; rispondono solo gli indirizzi della rete di
-casa (10.x, 172.16–31.x, 192.168.x). Il collegamento della TV viaggia in un'intestazione, mai
-nell'indirizzo, e si revoca dal portale. La porta 8087 **non va aperta** sul router verso
-Internet. Controllo della configurazione: `scripts/check-nginx-tv-app.sh` (Docker).
+e l'abbinamento con codice, nient'altro del portale. La configurazione accetta solo indirizzi
+della rete di casa (10.x, 172.16–31.x, 192.168.x), ma con Docker Desktop su Windows ogni
+connessione arriva con l'indirizzo interno di Docker: lì questo filtro non basta e i veri limiti
+sono il **firewall di Windows** (solo reti private) e il **router** (la porta 8087 **non va mai
+aperta** verso Internet). Il collegamento della TV viaggia in un'intestazione, mai
+nell'indirizzo, in chiaro sulla rete di casa: se si sospetta che qualcuno l'abbia letto, revocarlo
+dal portale (Schermo TV → revoca il link) e abbinare di nuovo la TV con il codice. Controllo della configurazione: `scripts/check-nginx-tv-app.sh` (Docker).
 
 ## Problemi comuni
 
