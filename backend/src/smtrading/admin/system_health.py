@@ -96,12 +96,14 @@ JOB_INTERVALS: dict[str, float] = {
     # the intraday job (modes A and B: bar closes, safety close): a pass every
     # intraday.job.TICK_S, also with both switches off everywhere (one query, then idle)
     "intraday": 15,
+    # the nightly export to Neurograph: a pass every neurograph.job.CHECK_S (also when off)
+    "neurograph export": 300,
 }
 SCALPER = "scalper"
 LATE_FACTOR = 3  # a pass later than 3 intervals is late
 GATED_JOBS = ("protection alarm", "goal alerts", "plan closer", "pre-open check",
               "hand-off watchdog", "weekly report", "system sentinel",
-              "broker tradability", "scalper", "intraday")
+              "broker tradability", "scalper", "intraday", "neurograph export")
 GATE_GRACE_S = 15 * 60  # the gated jobs may wait for the startup gate this long
 CONNECTOR_CHECK_LATE_S = 15 * 60
 PAPERCLIP_LATE_S = 15 * 60

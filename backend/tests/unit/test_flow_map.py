@@ -55,3 +55,10 @@ def test_static_nodes():
         assert n["kind"] in kinds and n["label"] and n["description"]
     assert set(DESTS) - {"mcp"} <= set(STATIC_NODES)
     assert ONE_WAY_DESTS == {"eng", "tg"}
+
+
+def test_the_nightly_export_link_database_to_neurograph():
+    from smtrading.flow.map import STATIC_LINKS, link_key
+    assert ("db", "ng") in STATIC_LINKS
+    assert link_key("db", "ng") == "db|ng" and link_key("ng", "db") == "db|ng"
+    assert link_key("mcp", "ng") == "mcp|ng"  # get_forecast keeps its own link

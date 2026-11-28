@@ -9,6 +9,8 @@ Read only: one bounded query per source, nothing written, nothing published.
     auto_trades      an automatic entry   Prezzi → Regole automatiche → Motore (trigger_at)
     telegram_outbox  a system message     Motore → Telegram (sent; agents' messages are
                                           already their `send_telegram` call)
+    neurograph_exports  the nightly export  Database → Neurograph («esportazione <tipo>»,
+                                          the last attempt of each file)
 
 Orders, fills and automatic trades only of the portfolios counted in the totals
 (`total_portfolio_ids`: hidden test and archived portfolios left out); the agents' MCP
@@ -16,7 +18,7 @@ calls always (they are real traffic, also on a test portfolio). Of a call's para
 only the symbol (`symbol`, or the first of `symbols`) leaves the database.
 
 Event ids are stable (`mcp:<id>`, `order:<id>:sent`, `order:<id>:rejected`, `fill:<id>`,
-`tg:<id>`, `auto:<id>`): the page polls with a time cursor and drops the ids it has seen.
+`tg:<id>`, `auto:<id>`, `export:<tipo>:<giorno>:<versione>`): the page polls with a time cursor and drops the ids it has seen.
 
 Known trade-offs: an order re-sent to the broker keeps its id `order:<id>:sent` (the page,
 having seen it, draws the first send only); a rejection's time is `orders.updated_at`
@@ -36,6 +38,7 @@ from smtrading.autorules.tables import AutoTrade
 from smtrading.brokers.models import BrokerLink
 from smtrading.engine.models import Fill, Order, OrderStatus
 from smtrading.flow.map import ONE_WAY_DESTS, agent_key, broker_key, destination
+from smtrading.neurograph.models import NeurographExport
 from smtrading.portfolios.models import total_portfolio_ids
 from smtrading.telegram.models import OutboxStatus, TelegramOutbox
 
@@ -189,7 +192,20 @@ async def _telegram(session, since, until, limit) -> list[dict]:
             for r in (await session.execute(q)).all()]
 
 
-_SOURCES = (_mcp, _orders_sent, _orders_rejected, _fills, _auto, _telegram)
+async def _exports(session, since, until, limit) -> list[dict]:
+    """The nightly export's files to Neurograph: a file sent again (a retry) keeps its id
+    and moves to its last attempt."""
+    q = (select(NeurographExport.kind, NeurographExport.day, NeurographExport.version,
+                NeurographExport.status, NeurographExport.sent_at)
+         .where(NeurographExport.sent_at > since, NeurographExport.sent_at <= until)
+         .order_by(NeurographExport.sent_at, NeurographExport.kind).limit(limit))
+    return [_event(f"export:{r.kind}:{r.day.isoformat()}:{r.version}", r.sent_at, "export",
+                   "db", ["db", "ng"], [f"esportazione {r.kind}"],
+                   "ok" if r.status == "confirmed" else "error")
+            for r in (await session.execute(q)).all()]
+
+
+_SOURCES = (_mcp, _orders_sent, _orders_rejected, _fills, _auto, _telegram, _exports)
 
 
 async def collect_events(session: AsyncSession, *, since: datetime, until: datetime,

@@ -33,7 +33,7 @@ _KIND_LABEL = {"order_sent": "ordine inviato", "order_rejected": "ordine rifiuta
 
 
 def _tool(event: dict) -> str:
-    if event["kind"] in ("mcp", "telegram"):
+    if event["kind"] in ("mcp", "telegram", "export"):
         return event["hops"][0]
     return _KIND_LABEL.get(event["kind"], event["kind"])
 

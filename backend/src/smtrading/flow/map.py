@@ -8,6 +8,7 @@ nodes the `broker_links` kinds that exist (one per kind). `kind` is the colour f
 Destinations of an MCP call: "eng" (Motore ordini), "px" (Prezzi), "ng" (Neurograph),
 "db" (Database), "tg" (Telegram), "mcp" (the call ends at the MCP). Calls to "eng" and
 "tg" are one way (an order, a message); the others answer with data (`… → MCP → Paperclip`).
+Database → Neurograph is the nightly export (not an MCP call).
 """
 
 from sqlalchemy import select
@@ -76,7 +77,8 @@ STATIC_NODES: dict[str, dict] = {
     "rules": {"label": "Regole automatiche", "kind": "core", "column": 2,
               "description": "Scalping: entra ed esce da solo in meno di 1 s"},
     "ng": {"label": "Neurograph", "kind": "ng", "column": 3,
-           "description": "Forchetta di rischio GARCH (get_forecast), sulla VPN"},
+           "description": "Forchetta di rischio GARCH (get_forecast) e ricezione notturna "
+                          "di decisioni, ordini ed esecuzioni, sulla VPN"},
     "eng": {"label": "Motore ordini", "kind": "core", "column": 3,
             "description": "Controlli di rischio, prenotazione cassa, ordini e protezioni"},
     "db": {"label": "Database", "kind": "db", "column": 3,
@@ -112,6 +114,7 @@ STATIC_LINKS: tuple[tuple[str, str], ...] = (
     ("pc", "mcp"),
     *(("mcp", d) for d in DESTS if d != "mcp"),
     ("eng", "sync"), ("eng", "sim"), ("eng", "tg"), ("px", "rules"), ("rules", "eng"),
+    ("db", "ng"),  # the nightly export of decisions, orders and fills (smtrading.neurograph)
 )
 
 

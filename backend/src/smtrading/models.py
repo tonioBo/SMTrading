@@ -18,6 +18,7 @@ import smtrading.instruments.models
 import smtrading.intraday.models
 import smtrading.ledger.models
 import smtrading.marketsportal.models
+import smtrading.neurograph.models
 import smtrading.paperclip.models
 import smtrading.portfolios.models
 import smtrading.positions.models

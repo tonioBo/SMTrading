@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +24,10 @@ class Settings(BaseSettings):
     # Neurograph's «serie» compartment for get_forecast (e.g. http://192.168.4.4:18088/api/serie
     # over the WireGuard VPN); None = the tool answers PROVIDER_UNAVAILABLE
     neurograph_url: str | None = None
+    # Neurograph's ingest API for the nightly export of decisions, orders and fills
+    # (smtrading.neurograph); no key = the export is off. The key is never logged.
+    neurograph_export_url: str = "http://192.168.4.4:18088/api/dati/smtrading"
+    neurograph_export_key: SecretStr | None = None
 
 
 @lru_cache
