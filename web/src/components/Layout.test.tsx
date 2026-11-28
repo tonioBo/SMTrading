@@ -83,6 +83,7 @@ describe("Layout", () => {
       "Notifiche",
       "Decisioni e lezioni",
       "Log MCP",
+      "Fiume dei flussi",
       "Salute del sistema",
       "Broker",
       "Riconciliazione",

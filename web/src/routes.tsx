@@ -18,6 +18,7 @@ import LiveAudit from "@/pages/LiveAudit";
 import Login from "@/pages/Login";
 import Markets from "@/pages/Markets";
 import McpLog from "@/pages/McpLog";
+import FlowRiver from "@/pages/FlowRiver";
 import Decisions from "@/pages/Decisions";
 import Notifications from "@/pages/Notifications";
 import PortfolioDetail from "@/pages/PortfolioDetail";
@@ -69,6 +70,7 @@ export const routes: RouteObject[] = [
           { path: "mercati", element: <Markets /> },
           { path: "regole-automatiche", element: <AutoRules /> },
           { path: "log-mcp", element: <McpLog /> },
+          { path: "fiume-flussi", element: <FlowRiver /> },
           { path: "registro-attivita", element: <ActivityLog /> },
           { path: "impostazioni", element: <Settings /> },
           { path: "salute-sistema", element: <SystemHealth /> },

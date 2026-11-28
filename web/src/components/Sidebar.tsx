@@ -25,6 +25,7 @@ import {
   Target,
   Trophy,
   Wallet,
+  Waves,
   Zap,
   type LucideIcon,
 } from "lucide-react";
@@ -75,6 +76,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/notifiche", label: "Notifiche", icon: Bell },
       { to: "/decisioni", label: "Decisioni e lezioni", icon: Lightbulb },
       { to: "/log-mcp", label: "Log MCP", icon: FileText },
+      { to: "/fiume-flussi", label: "Fiume dei flussi", icon: Waves, adminOnly: true },
     ],
   },
   {
