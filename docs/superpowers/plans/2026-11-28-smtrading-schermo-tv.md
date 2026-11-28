@@ -18,7 +18,7 @@
 - Remote: «Collega la TV» (pairing → the TV asks to allow; store token), «Manda alla TV» (power on if standby when possible, launch browser on the display URL), «cambia schermata», «rotazione» (interval 15–300 s), «spegni lo schermo». The TV page polls the selection every 3–5 s so screen changes don't reopen the browser.
 - Fallback when launch fails: show the display URL and a QR code (generate SVG server-side or in the web without new heavy deps; check what exists).
 - TV screens: 3840×2160 friendly, large type, high contrast, no interaction, auto-refresh; data from existing routes/modules (flow v2 summary/health, campaign/portfolios as in Roadmap/dashboard); no secrets, alert titles only.
-- Admin-only portal section; new admin GETs in `ADMIN_ONLY_READS`; unsafe routes get user-activity actions (route catalog tests); MCP catalog unchanged.
+- Per-user reserved area (spec §«Area riservata per utente»): every portal user (admin and viewer) manages only their own TVs, links and selection (rows keyed by user id); admins additionally list/revoke all TVs; the own-TV actions are allowed to viewers (add them to the viewer-allowed unsafe routes in `tests/integration/test_admin_users.py` and to the user-activity catalog); admin-only list route in `ADMIN_ONLY_READS`; the screens show the same data the user can see; MCP catalog unchanged.
 - Feedback rules: roadmap item updated; the new flow «SMTrading → TV» appears in the Fiume dei flussi map (node `tv`, link from the web/api to it) with events when a screen is sent.
 - Plain Italian on screens and portal.
 
