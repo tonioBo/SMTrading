@@ -49,6 +49,7 @@ errata senza danno diretto · **C** = fastidio, rumore, estetica.
 
 Per ciascun portafoglio e in totale:
 - **Esecuzioni**: ordini, eseguiti, rifiutati (motivi), scarto prezzo atteso → eseguito (media e peggiore), tempo scatto → esecuzione, commissioni registrate vs broker.
+- **Costo del calendario** (dal 28/11): scarto di prezzo e ritardo per ora del giorno e per broker (quando conviene agire).
 - **Allineamento broker**: esiti della riconciliazione (ok / avvisi / disallineamenti), liquidità e posizioni.
 - **Protezione**: posizioni rimaste senza stop (quante, per quanto tempo), allarmi di protezione.
 - **Agenti**: cicli previsti vs svolti, operazioni senza segnale, regole/limiti violati o sfiorati, errori degli strumenti, escalation al CEO, lezioni scritte, costo per agente e per modello.
