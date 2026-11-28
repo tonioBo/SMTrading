@@ -27,6 +27,9 @@ from smtrading.devtools import rotate_master_key as rot
 from smtrading.paperclip import config as paperclip
 from smtrading.risk.models import AppSetting
 from smtrading.telegram import config as telegram
+from smtrading.tv import link as tvlink
+from smtrading.tv import service as tvs
+from smtrading.tv.models import TvDisplay, TvScreen
 
 OLD = "weak-old"  # like production's: short
 NEW = "Zq8vN3xK7pR2mT9wL4sB6yH1cF5gJ0dE-aU_oI"
@@ -38,12 +41,14 @@ SECRETS = {
     "live": "LIVE-BROKER-SECRET-789",
     "telegram": "123456789:AAH-telegram-bot-token-secret-value",
     "paperclip": "pcp_board_SECRET_board_key_value_000",
+    "tv_token": "TV-PAIRING-TOKEN-SECRET-0001",
+    "tv_link": "TV-LINK-SECRET-VALUE-0002",
 }
 TOTP_A, TOTP_B = pyotp.random_base32(), pyotp.random_base32()
 
 # the five fields of the round trip, with the TOTP of two admins
 EXPECTED_COUNTS = {rot.F_CONNECTORS: 1, rot.F_BROKERS: 2, rot.F_TOTP: 2, rot.F_TELEGRAM: 1,
-                   rot.F_PAPERCLIP: 1}
+                   rot.F_PAPERCLIP: 1, rot.F_TV_TOKEN: 1, rot.F_TV_LINK: 1}
 
 
 @pytest.fixture(autouse=True)
@@ -76,7 +81,7 @@ async def _seed(sm, *, bad_field: str | None = None) -> dict[str, uuid.UUID]:
         return OTHER if f == bad_field else OLD
 
     ids = {"paper": uuid.uuid4(), "live": uuid.uuid4(), "admin_a": uuid.uuid4(),
-           "admin_b": uuid.uuid4()}
+           "admin_b": uuid.uuid4(), "tv": uuid.uuid4()}
     async with sm() as s, s.begin():
         s.add(Connector(name="alpaca", enabled=False, config_encrypted=encrypt_json(
             {"key_id": "K", "secret_key": SECRETS["connector"]}, key(rot.F_CONNECTORS))))
@@ -104,6 +109,13 @@ async def _seed(sm, *, bad_field: str | None = None) -> dict[str, uuid.UUID]:
             "base_url": "http://paperclip:3100", "company_id": "c1", "enabled": True,
             "board_key_enc": _b64(encrypt_json({"board_key": SECRETS["paperclip"]},
                                                key(rot.F_PAPERCLIP), aad=paperclip.AAD))}))
+        await s.flush()
+        s.add(TvScreen(id=ids["tv"], user_id=ids["admin_b"], host="192.168.1.50", name="TV",
+                       token_encrypted=encrypt_json({"token": SECRETS["tv_token"]},
+                                                    key(rot.F_TV_TOKEN), aad=tvs.TOKEN_AAD)))
+        s.add(TvScreen(user_id=ids["admin_b"], host="192.168.1.51", name="TV2"))  # unpaired
+        s.add(TvDisplay(user_id=ids["admin_b"], link_id="abcd", link_secret_encrypted=encrypt_json(
+            {"secret": SECRETS["tv_link"]}, key(rot.F_TV_LINK), aad=tvlink.AAD)))
     return ids
 
 
@@ -113,7 +125,9 @@ async def _snapshot(sm) -> dict:
         for sql in ("select name, config_encrypted from connectors",
                     "select id::text, config_encrypted from broker_links",
                     "select id::text, totp_secret_encrypted from admin_users",
-                    "select key, value::text from app_settings"):
+                    "select key, value::text from app_settings",
+                    "select id::text, token_encrypted from tv_screens",
+                    "select user_id::text, link_secret_encrypted from tv_displays"):
             rows[sql] = sorted((await s.execute(text(sql))).all(), key=lambda r: r[0])
         return rows
 
@@ -136,6 +150,9 @@ async def _reads_with_current_key(sm, ids) -> dict:
             "totp": (auth._totp_secret(a), auth._totp_secret(b)),
             "telegram": (await telegram.load_config(s)).bot_token,
             "paperclip": (await paperclip.load_config(s)).board_key,
+            "tv_token": tvs.decrypt_token((await s.get(TvScreen, ids["tv"])).token_encrypted),
+            "tv_link": tvlink.decrypt_secret(
+                (await s.get(TvDisplay, ids["admin_b"])).link_secret_encrypted),
         }
 
 
@@ -145,7 +162,7 @@ async def test_apply_round_trips_every_encrypted_field(sm, monkeypatch):
     assert code == 0, lines
     for name, n in EXPECTED_COUNTS.items():
         assert f"{name}: {n}" in lines
-    assert "totale: 7, verificati con la nuova chiave: 7" in lines
+    assert "totale: 9, verificati con la nuova chiave: 9" in lines
 
     # the application, restarted with the new key, reads every value (2FA included)
     monkeypatch.setenv("SMT_MASTER_KEY", NEW)
@@ -153,7 +170,8 @@ async def test_apply_round_trips_every_encrypted_field(sm, monkeypatch):
     got = await _reads_with_current_key(sm, ids)
     assert got == {"connector": SECRETS["connector"], "paper": SECRETS["paper"],
                    "live": SECRETS["live"], "totp": (TOTP_A, TOTP_B),
-                   "telegram": SECRETS["telegram"], "paperclip": SECRETS["paperclip"]}
+                   "telegram": SECRETS["telegram"], "paperclip": SECRETS["paperclip"],
+                   "tv_token": SECRETS["tv_token"], "tv_link": SECRETS["tv_link"]}
     async with sm() as s:  # a 2FA login with the rotated secret still verifies
         a = await s.get(AdminUser, ids["admin_a"])
         assert auth._totp_ok(auth._totp_secret(a), pyotp.TOTP(TOTP_A).now())
@@ -170,7 +188,7 @@ async def test_apply_round_trips_every_encrypted_field(sm, monkeypatch):
 
     [row] = await _audit_rows(sm)
     assert row.outcome == "ok"
-    assert row.params["counts"] == EXPECTED_COUNTS and row.params["verified"] == 7
+    assert row.params["counts"] == EXPECTED_COUNTS and row.params["verified"] == 9
     assert row.params["failures"] == [] and row.params["by"] == "cli"
 
 
@@ -179,7 +197,7 @@ async def test_dry_run_leaves_database_unchanged(sm):
     before = await _snapshot(sm)
     code, lines = await rot.run(sm, OLD, NEW, apply=False)
     assert code == 0
-    assert "totale: 7, verificati con la nuova chiave: 7" in lines
+    assert "totale: 9, verificati con la nuova chiave: 9" in lines
     assert any("dry-run" in line for line in lines)
     assert await _snapshot(sm) == before
     assert await _audit_rows(sm) == []
@@ -191,10 +209,10 @@ async def test_wrong_old_key_is_refused(sm):
     code, lines = await rot.run(sm, OTHER, NEW, apply=True)
     assert code == 1
     refused = [line for line in lines if line.startswith("non decifrabile")]
-    assert len(refused) == 7  # every value listed, by field and id
+    assert len(refused) == 9  # every value listed, by field and id
     assert await _snapshot(sm) == before
     [row] = await _audit_rows(sm)
-    assert row.outcome == "refused" and len(row.params["failures"]) == 7
+    assert row.outcome == "refused" and len(row.params["failures"]) == 9
 
 
 @pytest.mark.parametrize("bad_field", rot.ENCRYPTED_FIELDS)
@@ -205,10 +223,11 @@ async def test_one_unreadable_value_rolls_everything_back(sm, bad_field):
     assert code == 1
     expected_id = {rot.F_CONNECTORS: "alpaca", rot.F_BROKERS: str(ids["live"]),
                    rot.F_TOTP: str(ids["admin_a"]), rot.F_TELEGRAM: "telegram",
-                   rot.F_PAPERCLIP: "paperclip"}[bad_field]
+                   rot.F_PAPERCLIP: "paperclip", rot.F_TV_TOKEN: str(ids["tv"]),
+                   rot.F_TV_LINK: str(ids["admin_b"])}[bad_field]
     assert f"non decifrabile con la chiave attuale: {bad_field} id={expected_id}" in lines
     assert sum(line.startswith("non decifrabile") for line in lines) == 1
-    assert await _snapshot(sm) == before  # the six good values were not rotated either
+    assert await _snapshot(sm) == before  # the other good values were not rotated either
     [row] = await _audit_rows(sm)
     assert row.outcome == "refused"
     assert row.params["failures"] == [{"field": bad_field, "id": expected_id,

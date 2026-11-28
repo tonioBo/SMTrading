@@ -2,13 +2,14 @@
 
 Columns, left to right: 0 agents · 1 orchestration (Paperclip) · 2 MCP door and automatic
 rules · 3 engine and data (Neurograph, Motore ordini, Database, Prezzi) · 4 outputs
-(BrokerSync, Simulato, Telegram) · 5 brokers. Agent nodes are the `agents` rows, broker
+(BrokerSync, Simulato, Telegram, Schermo TV) · 5 brokers. Agent nodes are the `agents` rows, broker
 nodes the `broker_links` kinds that exist (one per kind). `kind` is the colour family.
 
 Destinations of an MCP call: "eng" (Motore ordini), "px" (Prezzi), "ng" (Neurograph),
 "db" (Database), "tg" (Telegram), "mcp" (the call ends at the MCP). Calls to "eng" and
 "tg" are one way (an order, a message); the others answer with data (`… → MCP → Paperclip`).
-Database → Neurograph is the nightly export (not an MCP call).
+Database → Neurograph is the nightly export (not an MCP call); Database → Schermo TV the
+screens sent to a user's smart TV (`smtrading.tv`, not an MCP call).
 
 The lens (v2): every MCP tool and resource belongs to one family (`TOOL_FAMILY`,
 `RESOURCE_FAMILY`), every market-data provider of the router has a display name
@@ -151,6 +152,9 @@ STATIC_NODES: dict[str, dict] = {
             "description": "Esecuzioni simulate dal motore"},
     "tg": {"label": "Telegram", "kind": "tg", "column": 4,
            "description": "Avvisi, riepiloghi, domande al titolare"},
+    "tv": {"label": "Schermo TV", "kind": "tv", "column": 4,
+           "description": "Le schermate di SMTrading sulle smart TV degli utenti, aperte "
+                          "con il link di visualizzazione"},
 }
 
 # what each known agent role does (by agent name, case and spaces ignored)
@@ -175,6 +179,7 @@ STATIC_LINKS: tuple[tuple[str, str], ...] = (
     *(("mcp", d) for d in DESTS if d != "mcp"),
     ("eng", "sync"), ("eng", "sim"), ("eng", "tg"), ("px", "rules"), ("rules", "eng"),
     ("db", "ng"),  # the nightly export of decisions, orders and fills (smtrading.neurograph)
+    ("db", "tv"),  # the screens sent to a user's smart TV (smtrading.tv)
 )
 
 

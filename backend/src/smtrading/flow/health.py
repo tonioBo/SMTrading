@@ -14,6 +14,7 @@ sconosciuto` with one plain Italian reason, from the health sources SMTrading al
     ng        the last get_forecast that reached Neurograph (or failed reaching it) and
               the last nightly export
     broker:*  the links of that kind: status, ongoing outage, failures counted
+    tv        the paired TVs of every user and their last use (no TV is contacted)
 
 «Salute del sistema» `problema` is `errore` here, `spento` is `sconosciuto`."""
 
@@ -37,6 +38,7 @@ from smtrading.flow.sources import stream_status
 from smtrading.neurograph.models import NeurographExportNight
 from smtrading.paperclip.config import load_config, match_agent, smt_agents
 from smtrading.paperclip.costs import run_time
+from smtrading.tv.models import TvScreen
 
 log = logging.getLogger(__name__)
 
@@ -224,6 +226,23 @@ def _agents(snap: dict, agents, cfg, now: datetime) -> dict[str, dict[str, str]]
     return out
 
 
+async def _tv(session: AsyncSession, tz: str) -> dict[str, str]:
+    """No paired TV: «sconosciuto»; the last use of a paired TV failed: «attenzione»."""
+    rows = (await session.execute(
+        select(TvScreen.last_ok, TvScreen.last_used_at)
+        .where(TvScreen.token_encrypted.is_not(None), TvScreen.revoked_at.is_(None)))).all()
+    if not rows:
+        return _node(UNKNOWN, "nessuna TV collegata")
+    failed = [r for r in rows if r.last_ok is False]
+    if failed:
+        when = max(r.last_used_at for r in failed if r.last_used_at) if any(
+            r.last_used_at for r in failed) else None
+        return _node(WARN, "ultimo invio a una TV non riuscito"
+                     + (f" ({_hm(when, tz)})" if when else ""))
+    n = len(rows)
+    return _node(OK, f"{n} TV collegate" if n > 1 else "1 TV collegata")
+
+
 def _db(backup: dict[str, str]) -> dict[str, str]:
     """The database answers (this read); an old or failed backup is «attenzione»."""
     if backup["state"] in (WARN, BAD):
@@ -242,6 +261,7 @@ async def _build(session: AsyncSession, redis, now: datetime) -> dict[str, Any]:
                BrokerLink.last_error, BrokerLink.health_failures, BrokerLink.outage_since,
                BrokerLink.outage_until))).all()
     ng = await _ng(session, tz, now=now, neurograph_url=get_settings().neurograph_url)
+    tv = await _tv(session, tz)
     await session.rollback()  # no transaction open during the Paperclip read (R9)
     snap = await paperclip_snapshot(cfg)
     try:
@@ -266,6 +286,7 @@ async def _build(session: AsyncSession, redis, now: datetime) -> dict[str, Any]:
         "pc": pc,
         "px": _px(status, sections),
         "ng": ng,
+        "tv": tv,
         **_agents(snap, agents, cfg, now),
     }
     by_kind: dict[str, list] = {}

@@ -25,5 +25,6 @@ import smtrading.positions.models
 import smtrading.reconciliation.models
 import smtrading.risk.models
 import smtrading.telegram.models
+import smtrading.tv.models
 import smtrading.useractivity.models
 import smtrading.watch.models  # noqa: F401

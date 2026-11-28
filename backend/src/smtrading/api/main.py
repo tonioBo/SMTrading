@@ -51,6 +51,9 @@ from smtrading.admin.routes_system import router as system_router
 from smtrading.admin.routes_system_health import router as system_health_router
 from smtrading.admin.routes_telegram import router as telegram_router
 from smtrading.admin.routes_trades import router as trades_router
+from smtrading.admin.routes_tv import router as tv_router
+from smtrading.admin.routes_tv_display import DisplayRefused, refused_response
+from smtrading.admin.routes_tv_display import router as tv_display_router
 from smtrading.admin.routes_users import router as users_router
 from smtrading.admin.routes_watch import router as watch_router
 from smtrading.admin.ws import router as ws_router
@@ -154,6 +157,10 @@ async def _export_agent_docs(sessionmaker) -> None:
         logging.getLogger(__name__).warning("agent docs export at startup failed", exc_info=True)
 
 
+async def _display_refused(_request, exc: DisplayRefused):
+    return refused_response(exc)
+
+
 def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     """`runtime_factory(sessionmaker, redis)` overrides the MCP runtime (tests inject a
     FakeQuoteSource); by default the MarketDataRouter is the MCP quote source."""
@@ -212,6 +219,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.add_middleware(McpAuthMiddleware, get_sessionmaker=lambda: get_runtime().sessionmaker)
     app.add_middleware(_BuildHeader)
     install_error_handlers(app)
+    app.add_exception_handler(DisplayRefused, _display_refused)
     app.include_router(auth_router)
     app.include_router(equity_history_router)  # before /portfolios/{portfolio_id}
     app.include_router(portfolios_router)
@@ -249,6 +257,8 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(roadmap_router)  # «Roadmap»: portal only, every user, never MCP
     app.include_router(telegram_router)
     app.include_router(paperclip_router)
+    app.include_router(tv_router)  # «Schermo TV»: every user's own area, never MCP
+    app.include_router(tv_display_router)  # the TV screens: display link only, never MCP
     app.include_router(users_router)
     app.include_router(activity_log_router)
     app.include_router(ws_router)

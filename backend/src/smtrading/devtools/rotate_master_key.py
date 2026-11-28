@@ -58,6 +58,9 @@ from smtrading.paperclip.config import AAD as PAPERCLIP_AAD
 from smtrading.paperclip.config import SETTINGS_KEY as PAPERCLIP_KEY
 from smtrading.risk.models import AppSetting
 from smtrading.telegram.config import SETTINGS_KEY as TELEGRAM_KEY
+from smtrading.tv.link import AAD as TV_LINK_AAD
+from smtrading.tv.models import TvDisplay, TvScreen
+from smtrading.tv.service import TOKEN_AAD as TV_TOKEN_AAD
 
 NEW_KEY_ENV = "SMT_NEW_MASTER_KEY"
 MIN_KEY_LEN = 32
@@ -69,8 +72,11 @@ F_BROKERS = "broker_links.config_encrypted"
 F_TOTP = "admin_users.totp_secret_encrypted"
 F_TELEGRAM = "app_settings.telegram.token_enc"
 F_PAPERCLIP = "app_settings.paperclip.board_key_enc"
+F_TV_TOKEN = "tv_screens.token_encrypted"
+F_TV_LINK = "tv_displays.link_secret_encrypted"
 # every value encrypted with SMT_MASTER_KEY, in report order
-ENCRYPTED_FIELDS = (F_CONNECTORS, F_BROKERS, F_TOTP, F_TELEGRAM, F_PAPERCLIP)
+ENCRYPTED_FIELDS = (F_CONNECTORS, F_BROKERS, F_TOTP, F_TELEGRAM, F_PAPERCLIP, F_TV_TOKEN,
+                    F_TV_LINK)
 
 
 class UsageError(Exception):
@@ -208,6 +214,36 @@ async def rotate(session: AsyncSession, old_key: str, new_key: str) -> Report:
         checks.append((F_TOTP, str(user.id), col_reader(
             "select totp_secret_encrypted from admin_users where id = :id", user.id),
             None, plain))
+
+    for t in await session.scalars(
+        select(TvScreen).where(TvScreen.token_encrypted.is_not(None))
+        .order_by(TvScreen.id).with_for_update()
+    ):
+        try:
+            t.token_encrypted, plain = _reencrypt(t.token_encrypted, old_key, new_key,
+                                                  TV_TOKEN_AAD)
+        except SMTError:
+            fail(F_TV_TOKEN, str(t.id))
+            continue
+        report.counts[F_TV_TOKEN] += 1
+        checks.append((F_TV_TOKEN, str(t.id), col_reader(
+            "select token_encrypted from tv_screens where id = :id", t.id),
+            TV_TOKEN_AAD, plain))
+
+    for d in await session.scalars(
+        select(TvDisplay).where(TvDisplay.link_secret_encrypted.is_not(None))
+        .order_by(TvDisplay.user_id).with_for_update()
+    ):
+        try:
+            d.link_secret_encrypted, plain = _reencrypt(d.link_secret_encrypted, old_key,
+                                                        new_key, TV_LINK_AAD)
+        except SMTError:
+            fail(F_TV_LINK, str(d.user_id))
+            continue
+        report.counts[F_TV_LINK] += 1
+        checks.append((F_TV_LINK, str(d.user_id), col_reader(
+            "select link_secret_encrypted from tv_displays where user_id = :id", d.user_id),
+            TV_LINK_AAD, plain))
 
     for setting_key, json_key, field_name, aad in (
         (TELEGRAM_KEY, "token_enc", F_TELEGRAM, None),
