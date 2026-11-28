@@ -56,6 +56,7 @@ function shortDate(iso: string, year = false): string {
 }
 
 function stageDates(s: RoadmapStage): string {
+  if (!s.start) return s.end ? `fino al ${shortDate(s.end)}` : "";
   if (!s.end) return `dal ${shortDate(s.start)}`;
   if (s.end === s.start) return shortDate(s.start);
   return `${shortDate(s.start)} → ${shortDate(s.end)}`;
@@ -101,7 +102,7 @@ function LiveNumbers({ live, goalLabel }: { live: RoadmapLive; goalLabel: string
     <section aria-label="Numeri dal vivo" className="mb-6">
       <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 lg:grid-cols-5">
         <Tile label="Campagna" value={campaign} sub={`${shortDate(c.start)} → ${shortDate(c.end)}`} />
-        <Tile label="Valore dei portafogli" value={equity} sub={goalSub} />
+        <Tile label="Valore dei portafogli nel totale" value={equity} sub={goalSub} />
         <Tile
           label="Esercitazioni fatte"
           value={`${d.done} su ${d.planned}`}
@@ -177,7 +178,7 @@ function Stage({ stage, here, last }: { stage: RoadmapStage; here: boolean; last
         {here && <span className="rounded-md bg-warn px-2 py-0.5 text-xs font-semibold text-black">Sei qui</span>}
       </div>
       <div className="mt-0.5 flex flex-wrap gap-x-3 text-xs text-muted">
-        <span className="num">{stageDates(stage)}</span>
+        {stage.start && <span className="num">{stageDates(stage)}</span>}
         <span>{OWNER_LABEL[stage.owner]}</span>
       </div>
       <p className="mt-2 max-w-prose break-words text-sm leading-relaxed">{stage.what}</p>
@@ -198,8 +199,8 @@ function Stage({ stage, here, last }: { stage: RoadmapStage; here: boolean; last
       </button>
       {open && (
         <ul id={id} aria-label={`Voci di ${stage.title}`} className="mt-2 space-y-2">
-          {stage.items.map((item) => (
-            <Item key={item.title} item={item} />
+          {stage.items.map((item, i) => (
+            <Item key={`${i}-${item.title}`} item={item} />
           ))}
         </ul>
       )}

@@ -11,7 +11,7 @@ vi.mock("@/api/hooks/roadmap", async (orig) => ({
 }));
 
 const LIVE: RoadmapLive = {
-  campaign: { start: "2026-11-23", end: "2026-12-23", day: 6, total_days: 30, state: "in_corso" },
+  campaign: { start: "2026-11-23", end: "2026-12-22", day: 6, total_days: 30, state: "in_corso" },
   equity: { current_eur: "30412.5", as_of: "2026-11-28T14:00:00Z", portfolios: 3 },
   goal: {
     label: "Mensile +5%",
@@ -38,7 +38,7 @@ const DATA: RoadmapData = {
   campaign: {
     name: "Campagna di dicembre",
     start: "2026-11-23",
-    end: "2026-12-23",
+    end: "2026-12-22",
     portfolios: [{ code: "AGG", name: "Portafoglio Alpaca", kind: "conto di prova Alpaca" }],
     goal: { label: "Mensile +5%", kind: "min", target_pct: "5", horizon: "month" },
   },
@@ -61,7 +61,7 @@ const DATA: RoadmapData = {
       status: "in_corso",
       owner: "smtrading",
       start: "2026-11-23",
-      end: "2026-12-23",
+      end: "2026-12-22",
       what: "Un mese di lavoro vero.",
       why: "È la prova generale.",
       items: [
@@ -74,7 +74,7 @@ const DATA: RoadmapData = {
       title: "Neurograph: misure per gli agenti",
       status: "in_corso",
       owner: "neurograph",
-      start: "2026-11-28",
+      start: null,
       what: "Il laboratorio di Luca.",
       why: "Misure verificate.",
       items: [{ title: "Test T0", status: "fatto", detail: "GARCH ha battuto.", refs: [], owner: "neurograph", kind: "esperimento" }],
@@ -148,8 +148,10 @@ describe("Roadmap", () => {
     expect(screen.getByText("È la prova generale.")).toBeInTheDocument();
     expect(screen.getByText("Luca · Neurograph")).toBeInTheDocument();
     const campaign = screen.getByRole("heading", { name: "Campagna di dicembre" }).closest("li")!;
-    expect(within(campaign).getByText("23/11 → 23/12")).toBeInTheDocument();
-    expect(screen.getByText("dal 28/11")).toBeInTheDocument();
+    expect(within(campaign).getByText("23/11 → 22/12")).toBeInTheDocument();
+    // a stage whose start is not known shows no dates
+    const ng = screen.getByRole("heading", { name: "Neurograph: misure per gli agenti" }).closest("li")!;
+    expect(within(ng).queryByText(/\d\d\/\d\d/)).not.toBeInTheDocument();
   });
 
   it("shows «—» and the note when the goal and the equity are missing", () => {

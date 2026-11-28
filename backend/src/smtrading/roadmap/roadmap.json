@@ -1,10 +1,10 @@
 {
   "updated": "2026-11-28",
-  "summary": "Siamo nella campagna di dicembre: tre portafogli di prova lavorano con gli agenti fino al 23/12, giorno della decisione «sì/no» sul denaro vero. Intanto si prova il lavoro in giornata e Neurograph dà agli agenti la prima misura del rischio.",
+  "summary": "Siamo nella campagna di dicembre: tre portafogli di prova lavorano con gli agenti fino al 22/12; il 23/12 si decide «sì/no» sul passaggio al denaro vero. Intanto si prova il lavoro in giornata e Neurograph dà agli agenti la prima misura del rischio.",
   "campaign": {
     "name": "Campagna di dicembre",
     "start": "2026-11-23",
-    "end": "2026-12-23",
+    "end": "2026-12-22",
     "portfolios": [
       {
         "code": "AGG",
@@ -183,6 +183,12 @@
           "date": "2026-11-18"
         },
         {
+          "title": "Piani 12 e 15",
+          "status": "fatto",
+          "detail": "Non hanno un documento separato.",
+          "refs": []
+        },
+        {
           "title": "Piano 17 · Chiusura dei piani e lezioni",
           "status": "fatto",
           "detail": "Un obiettivo può diventare un «piano»: a fine periodo le posizioni aperte si chiudono. Gli agenti scrivono lezioni e regole del team. Nascono le pagine «Decisioni e lezioni» e «Risultati agenti» e la «Prova collegamento» dei broker.",
@@ -225,7 +231,7 @@
         {
           "title": "Prezzi più affidabili e ordini eToro più sicuri",
           "status": "fatto",
-          "detail": "Una guardia scarta i prezzi sospetti e conta le quote delle fonti. eToro fa da riserva per i titoli europei. Su eToro stop e obiettivo li tiene SMTrading (ordini «sintetici»): corretti quattro difetti gravi, per esempio una vendita «di troppo» che poteva chiudere la posizione di un altro portafoglio.",
+          "detail": "Una guardia scarta i prezzi sospetti e conta le quote delle fonti. eToro fa da riserva per i titoli europei. Su eToro stop e obiettivo li tiene SMTrading (ordini «sintetici»): corretti quattro difetti, due gravi, per esempio una vendita «di troppo» che poteva chiudere la posizione di un altro portafoglio.",
           "refs": [
             "docs/readiness/2026-12-campagna-prontezza.md"
           ],
@@ -272,7 +278,7 @@
       "status": "in_corso",
       "owner": "smtrading",
       "start": "2026-11-23",
-      "end": "2026-12-23",
+      "end": "2026-12-22",
       "what": "Un mese di lavoro vero degli agenti su tre portafogli: «AGG» sul conto di prova Alpaca, «PRU» sul conto demo eToro e «MOD» simulato da SMTrading. L'obiettivo comune è «Mensile +5%». Ogni problema finisce nel registro delle anomalie, ogni venerdì arriva la pagella e una volta a settimana c'è un'esercitazione.",
       "why": "È la prova generale prima del denaro vero. Si passa al reale solo se tutto regge senza sorprese, dal comportamento degli agenti al portale.",
       "items": [
@@ -313,7 +319,7 @@
         {
           "title": "Broker che non risponde",
           "status": "fatto",
-          "detail": "Collegamento Alpaca di prova sospeso per 10 minuti. L'ordine di prova è rimasto in attesa ed è partito una sola volta al ritorno: nessun doppio invio, riconciliazione senza differenze. Corretti tre difetti: mancava un avviso dedicato, gli errori si ripetevano, un ordine a mercato poteva partire in ritardo.",
+          "detail": "Collegamento Alpaca di prova sospeso per 10 minuti. L'ordine di prova è rimasto in attesa ed è partito una sola volta al ritorno: nessun doppio invio, riconciliazione senza differenze. Corretti tre difetti: mancava un avviso dedicato, gli errori si ripetevano, un ordine a mercato poteva partire in ritardo. Lo stesso giorno è stato corretto anche un messaggio Telegram che, per un ordine eseguito in più parti, riportava solo l'ultima parte.",
           "refs": [
             "docs/readiness/2026-12-campagna-prontezza.md"
           ],
@@ -413,9 +419,9 @@
           "date": "2026-11-27"
         },
         {
-          "title": "Prova a mezza giornata",
+          "title": "Prova a mezza giornata (fatta in parte)",
           "status": "fatto",
-          "detail": "Mezza giornata della borsa USA più cripto: 42 operazioni automatiche su 9 simboli, dallo scatto all'invio circa 0,25 s, esecuzione in 0,3–2 s, risultato netto −12,71 € su 10.000 € finti. Freni, tetto di giornata e rete di fine seduta funzionano. 9 difetti trovati e corretti in serata.",
+          "detail": "Fatta in parte: mezza giornata della borsa USA più cripto: 42 operazioni automatiche su 9 simboli, dallo scatto all'invio circa 0,25 s, esecuzione in 0,3–2 s, risultato netto −12,71 € su 10.000 € finti. Freni, tetto di giornata e rete di fine seduta funzionano. 5 difetti trovati e corretti in serata; il resto si rifà a seduta piena.",
           "refs": [
             "docs/readiness/2026-12-intraday-prova-alpaca.md",
             "docs/readiness/2026-12-campagna-prontezza.md"
@@ -449,7 +455,7 @@
       "title": "Neurograph: misure per gli agenti",
       "status": "in_corso",
       "owner": "neurograph",
-      "start": "2026-11-28",
+      "start": null,
       "what": "Neurograph è il laboratorio di Luca: studia le serie dei prezzi e dà agli agenti misure, mai ordini. Ogni strumento deve prima battere un metodo semplice sui dati successivi al periodo di studio; solo allora diventa uno strumento MCP di SMTrading, in sola lettura. Durante la campagna arriva al massimo uno strumento nuovo.",
       "why": "Gli agenti oggi usano stop in percentuale fissa, che ignorano il rumore normale del titolo, e guardano il rischio una posizione alla volta. Misure verificate aiutano a scegliere stop e dimensioni giuste.",
       "items": [
@@ -487,6 +493,30 @@
           "kind": "strumento"
         },
         {
+          "title": "Eventi in calendario sulle azioni USA",
+          "status": "fatto",
+          "detail": "Esperimento di Luca: nelle finestre delle trimestrali la forchetta che tiene conto degli eventi contiene il prezzo il 75% delle volte, contro il 29% di quella senza eventi. Per questo il rischio attorno alle trimestrali è già coperto da get_forecast con gli eventi.",
+          "refs": [],
+          "owner": "neurograph",
+          "kind": "esperimento"
+        },
+        {
+          "title": "Altri mercati come aiuto",
+          "status": "fatto",
+          "detail": "Esperimento di Luca: aggiungere altri mercati (indice della paura VIX, petrolio, dollaro) non rende più precise le forchette.",
+          "refs": [],
+          "owner": "neurograph",
+          "kind": "esperimento"
+        },
+        {
+          "title": "Notizie dal mondo (GDELT)",
+          "status": "in_corso",
+          "detail": "Esperimento di Luca in corso: capire se le notizie raccolte da GDELT migliorano le misure di rischio.",
+          "refs": [],
+          "owner": "neurograph",
+          "kind": "esperimento"
+        },
+        {
           "title": "Decisioni più ricche",
           "status": "in_corso",
           "detail": "Ogni decisione degli agenti indicherà la fiducia (da 0 a 100) e il risultato atteso (rendimento in % e in quanti giorni); ogni ordine porterà il riferimento della decisione che l'ha generato. Così si potrà misurare quali decisioni portano a risultati buoni.",
@@ -509,29 +539,24 @@
         {
           "title": "get_bracket_odds",
           "status": "prossimo",
-          "detail": "Primo dei prossimi strumenti nell'ordine di Luca. Probabilità di toccare prima lo stop o l'obiettivo entro l'orizzonte, con il risultato atteso al netto dei costi. Per Risk Manager, Portfolio Manager e regole automatiche. Test: dove dice 30%, deve succedere circa il 30% delle volte sui dati successivi.",
-          "refs": [
-            "docs/ideas/2026-11-28-neurograph-strumenti-agenti.md"
-          ],
+          "detail": "Il prossimo strumento nel piano di Luca (pagina «Neurograph contestuale», 28/11); il suo test T0-h è da iniziare. Probabilità di toccare prima lo stop o l'obiettivo entro l'orizzonte, con il risultato atteso al netto dei costi. Per Risk Manager, Portfolio Manager e regole automatiche. Test: dove dice 30%, deve succedere circa il 30% delle volte sui dati successivi.",
+          "refs": [],
           "owner": "neurograph",
           "kind": "strumento"
         },
         {
           "title": "get_regime",
           "status": "futuro",
-          "detail": "Secondo nell'ordine di Luca. Volatilità alta, normale o bassa rispetto alla storia del titolo, e tendenza al trend o al ritorno verso la media. Per Quant e CEO. Test: le strategie scelte in base al regime devono rendere di più, al netto dei costi.",
-          "refs": [
-            "docs/ideas/2026-11-28-neurograph-strumenti-agenti.md"
-          ],
+          "detail": "Dopo get_bracket_odds, nel piano di Luca (pagina «Neurograph contestuale», 28/11). Volatilità alta, normale o bassa rispetto alla storia del titolo, e tendenza al trend o al ritorno verso la media. Per Quant e CEO. Test: le strategie scelte in base al regime devono rendere di più, al netto dei costi.",
+          "refs": [],
           "owner": "neurograph",
           "kind": "strumento"
         },
         {
           "title": "get_portfolio_risk",
           "status": "futuro",
-          "detail": "Terzo nell'ordine di Luca. Correlazioni tra le posizioni e perdita possibile del portafoglio in una giornata storta (VaR ed ES al 95%), con e senza l'ordine proposto. Per il Risk Manager; SMTrading manderà le posizioni a ogni chiamata.",
+          "detail": "Terzo nel piano di Luca (pagina «Neurograph contestuale», 28/11). Correlazioni tra le posizioni e perdita possibile del portafoglio in una giornata storta (VaR ed ES al 95%), con e senza l'ordine proposto. Per il Risk Manager; SMTrading manderà le posizioni a ogni chiamata.",
           "refs": [
-            "docs/ideas/2026-11-28-neurograph-strumenti-agenti.md",
             "docs/superpowers/specs/2026-11-28-smtrading-neurograph-dati-design.md"
           ],
           "owner": "neurograph",
@@ -714,16 +739,6 @@
           "kind": "strumento"
         },
         {
-          "title": "Rischio attorno alle trimestrali",
-          "status": "futuro",
-          "detail": "Una forchetta di rischio più larga nei giorni dei risultati trimestrali, ricavata dai movimenti passati.",
-          "refs": [
-            "docs/ideas/2026-11-28-neurograph-strumenti-agenti.md"
-          ],
-          "owner": "neurograph",
-          "kind": "strumento"
-        },
-        {
           "title": "Opzioni su Alpaca",
           "status": "futuro",
           "detail": "Opzioni su azioni ed ETF, anche fuori dall'orario normale (sul reale dal 4/12/2026). Oggi SMTrading non ha opzioni: catalogo, prezzi, ordini, rischio e strumenti degli agenti sono da costruire. Progetto separato, solo dopo il passaggio al reale sulle azioni.",
@@ -782,7 +797,7 @@
     },
     {
       "term": "Campagna",
-      "meaning": "Un periodo di prova con portafogli e obiettivi propri. Quella di dicembre va dal 23/11 al 23/12."
+      "meaning": "Un periodo di prova con portafogli e obiettivi propri. Quella di dicembre va dal 23/11 al 22/12."
     },
     {
       "term": "Go/no-go (sì/no)",
@@ -875,6 +890,14 @@
     {
       "term": "VaR · ES",
       "meaning": "Due misure della perdita in una giornata storta: VaR è la perdita superata solo nel 5% dei giorni peggiori, ES la media di quei giorni."
+    },
+    {
+      "term": "VIX",
+      "meaning": "L'«indice della paura»: misura quanto il mercato americano si aspetta che i prezzi oscillino."
+    },
+    {
+      "term": "GDELT",
+      "meaning": "Un archivio pubblico che raccoglie e classifica le notizie di tutto il mondo."
     },
     {
       "term": "VPN",

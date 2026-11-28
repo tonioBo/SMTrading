@@ -27,7 +27,8 @@ export interface RoadmapStage {
   title: string;
   status: RoadmapStatus;
   owner: RoadmapOwner;
-  start: string;
+  /** null: the start is not known */
+  start: string | null;
   end?: string | null;
   what: string;
   why: string;

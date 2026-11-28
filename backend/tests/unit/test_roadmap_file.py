@@ -55,7 +55,7 @@ def test_the_file_is_package_data_and_valid():
 def test_campaign_and_decision_dates():
     data = load_roadmap()
     c = data["campaign"]
-    assert (c["start"], c["end"]) == ("2026-11-23", "2026-12-23")
+    assert (c["start"], c["end"]) == ("2026-11-23", "2026-12-22")
     assert data["go_no_go"] == "2026-12-23"
     assert [p["code"] for p in c["portfolios"]] == ["AGG", "PRU", "MOD"]
     assert c["goal"]["label"] == "Mensile +5%"
@@ -121,7 +121,8 @@ def test_validator_catches_bad_content():
     bad["stages"][1]["owner"] = "luca"
     bad["stages"][2]["items"][0]["status"] = "boh"
     bad["stages"][3]["start"] = "28/11/2026"
-    bad["stages"][4]["end"] = "2026-01-01"
+    assert validate_roadmap({**good, "stages": [{**good["stages"][0], "start": None}]}) == []
+    bad["stages"][4].update(start="2026-11-28", end="2026-01-01")
     bad["stages"][5]["id"] = bad["stages"][0]["id"]
     del bad["stages"][6]["why"]
     bad["stages"][0]["items"][0]["refs"] = "docs/x.md"
@@ -185,9 +186,10 @@ def test_no_secrets_ips_or_emails():
 
 
 def test_campaign_day():
-    start, end = date(2026, 11, 23), date(2026, 12, 23)
+    start, end = date(2026, 11, 23), date(2026, 12, 22)
     assert campaign_day(start, end, date(2026, 11, 28)) == (6, 30, "in_corso")
     assert campaign_day(start, end, date(2026, 11, 23)) == (1, 30, "in_corso")
-    assert campaign_day(start, end, date(2026, 12, 23)) == (30, 30, "in_corso")
+    assert campaign_day(start, end, date(2026, 12, 22)) == (30, 30, "in_corso")
+    assert campaign_day(start, end, date(2026, 12, 23)) == (30, 30, "conclusa")
     assert campaign_day(start, end, date(2026, 11, 20)) == (0, 30, "prima")
     assert campaign_day(start, end, date(2026, 12, 30)) == (30, 30, "conclusa")

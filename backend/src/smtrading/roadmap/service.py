@@ -7,7 +7,7 @@ The file (written by hand in every SMTrading work, in plain Italian):
     campaign    {name, start, end, portfolios: [{code, name, kind}],
                  goal: {label, kind, target_pct, horizon}}
     go_no_go    "YYYY-MM-DD", the «sì/no» decision
-    stages      [{id, title, status, owner, start, end?, what, why, items}]
+    stages      [{id, title, status, owner, start (null: not known), end?, what, why, items}]
                 items: [{title, status, detail, refs: [repo paths], owner?, date?, kind?}]
     glossary    [{term, meaning}]
 
@@ -111,7 +111,7 @@ def _check_stage(n: int, stage: Any, ids: set[str], errors: list[str]) -> None:
     if "owner" in stage and stage["owner"] not in OWNERS:
         errors.append(f"{where}: chi {stage['owner']!r} non ammesso")
     start = _date(stage.get("start"))
-    if "start" in stage and start is None:
+    if stage.get("start") is not None and start is None:
         errors.append(f"{where}: inizio {stage['start']!r} non valido (AAAA-MM-GG)")
     if stage.get("end") is not None:
         end = _date(stage["end"])
@@ -202,9 +202,9 @@ def load_roadmap() -> dict:
 
 
 def campaign_day(start: date, end: date, today: date) -> tuple[int, int, str]:
-    """(day, total days, state): day 1 on `start`, total = end − start in days (the
-    23/11 → 23/12 campaign has 30), state prima | in_corso | conclusa."""
-    total = max((end - start).days, 1)
+    """(day, total days, state): day 1 on `start`, both ends included (the 23/11 → 22/12
+    campaign has 30 days), state prima | in_corso | conclusa."""
+    total = (end - start).days + 1
     if today < start:
         return 0, total, "prima"
     if today > end:

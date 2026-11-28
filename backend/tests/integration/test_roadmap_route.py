@@ -68,7 +68,7 @@ async def test_admin_and_viewer_read_the_same_roadmap(env, monkeypatch):
     assert len(body["stages"]) >= 8 and body["glossary"]
     assert all(s["items"] for s in body["stages"])
     live = body["live"]
-    assert live["campaign"] == {"start": "2026-11-23", "end": "2026-12-23", "day": 6,
+    assert live["campaign"] == {"start": "2026-11-23", "end": "2026-12-22", "day": 6,
                                 "total_days": 30, "state": "in_corso"}
     assert live["go_no_go"] == {"date": "2026-12-23", "days_left": 25}
     assert live["neurograph"] == {"tools": ["get_forecast"], "count": 1}
