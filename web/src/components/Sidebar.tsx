@@ -25,6 +25,7 @@ import {
   ShieldAlert,
   Target,
   Trophy,
+  Tv,
   Wallet,
   Waves,
   Zap,
@@ -86,6 +87,7 @@ const NAV_GROUPS: NavGroup[] = [
     startClosed: true,
     items: [
       { to: "/salute-sistema", label: "Salute del sistema", icon: HeartPulse },
+      { to: "/schermo-tv", label: "Schermo TV", icon: Tv },
       { to: "/broker", label: "Broker", icon: Landmark },
       { to: "/riconciliazione", label: "Riconciliazione", icon: Scale },
       { to: "/connettori", label: "Connettori", icon: Cable },
