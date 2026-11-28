@@ -829,7 +829,8 @@ export class RiverCanvas {
       if (n.h > 46) {
         g.font = `11.5px ${FONT}`;
         g.fillStyle = hexA("#8b99c3", al);
-        g.fillText(`${Math.round(this.summary?.nodes[n.key] ?? 0)} / min`, n.x + (left ? -16 : 16), n.y + 17);
+        const pm = this.summary?.nodes[n.key] ?? 0;
+        g.fillText(`${pm > 0 && pm < 1 ? pm.toLocaleString("it-IT", { maximumFractionDigits: 1 }) : Math.round(pm)} / min`, n.x + (left ? -16 : 16), n.y + 17);
       }
     });
     // flash rings
