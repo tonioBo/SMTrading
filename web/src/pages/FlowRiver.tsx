@@ -195,7 +195,9 @@ export default function FlowRiver() {
             </div>
           )}
           {quiet && (
-            <div className={cn(GLASS, "px-3 py-1.5 text-xs text-[#a9b5dc]")}>Nessuna chiamata negli ultimi {win} minuti</div>
+            <div role="status" className={cn(GLASS, "px-3 py-1.5 text-xs text-[#a9b5dc]")}>
+              Nessuna chiamata negli ultimi {win} minuti
+            </div>
           )}
         </div>
         {follow && (
@@ -247,21 +249,22 @@ export default function FlowRiver() {
 
 function Story({ event, label }: { event: FlowEvent | null; label: (k: string) => string }) {
   if (!event) return <>In attesa del prossimo ordine: appena ne parte uno, il suo percorso si illumina passo per passo.</>;
+  // every name from the map, along the event's own path
   const on = event.symbol ? ` su ${event.symbol}` : "";
+  const [p0, p1, p2, p3] = event.path.map(label);
   if (event.kind === "order_sent") {
-    const broker = label(event.path[event.path.length - 1]);
     return (
       <>
         <b className="text-[#9ff3df]">Un ordine verso il broker</b>
-        {on}: il motore lo passa a BrokerSync, che lo manda a {broker}; l&apos;esecuzione tornerà indietro dalla stessa strada.
+        {on}: {p0} lo passa a {p1}, che lo manda a {p2}; l&apos;esecuzione tornerà indietro dalla stessa strada.
       </>
     );
   }
   return (
     <>
       <b className="text-[#9ff3df]">Un ordine</b>
-      {on}: {label(event.who)} chiede a SMTrading di eseguirlo ({event.hops[0]}), Paperclip lo porta alla porta MCP e il motore
-      controlla il rischio e prenota la cassa prima di mandarlo al broker.
+      {on}: {p0} chiede a SMTrading di eseguirlo ({event.hops[0]}): {p1} lo porta a {p2}
+      {p3 ? `, poi ${p3} controlla il rischio e prenota la cassa prima di mandarlo al broker.` : "."}
     </>
   );
 }

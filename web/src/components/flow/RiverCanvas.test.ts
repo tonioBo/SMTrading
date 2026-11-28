@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FlowEvent, FlowMap } from "@/api/types";
-import { RiverCanvas } from "./RiverCanvas";
+import { MAX_PULSES, QUEUE_MAX, REPLAY_DELAY_MS, RiverCanvas } from "./RiverCanvas";
 
 /** jsdom has no 2D context: a stand-in where every call is a no-op */
 function fakeContext(): CanvasRenderingContext2D {
@@ -144,6 +144,134 @@ describe("RiverCanvas", () => {
     river.push([event()], NOW);
     expect(river.scheduledCount()).toBe(0);
     river.setMap(MAP);
+    expect(river.scheduledCount()).toBe(1);
+  });
+
+  describe("on the live clock", () => {
+    const T0 = Date.parse(NOW);
+    let t = 0; // ms since NOW
+    const at = (ms: number) => new Date(T0 + ms).toISOString();
+    const frames = (ms: number, step = 50) => {
+      for (const end = t + ms; t < end; ) {
+        t += step;
+        vi.setSystemTime(new Date(T0 + t));
+        river.drawFrame(1000 + t);
+      }
+    };
+    beforeEach(() => {
+      t = 0;
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date(T0));
+      river.setMap(MAP);
+      river.drawFrame(1000);
+    });
+    afterEach(() => vi.useRealTimers());
+
+    const burst = (n: number, base: number, prefix: string) =>
+      Array.from({ length: n }, (_, i) => event({ id: `${prefix}:${i}`, ts: at(base - (i % 2000)) }));
+
+    it("catches up with the live clock after a 90 s pause, without a comet storm", () => {
+      river.push([event({ id: "a" })], at(0));
+      river.setPaused(true);
+      for (let k = 1; k <= 45; k++) {
+        frames(2000, 500);
+        river.push(burst(20, t, `p${k}`), at(t));
+      }
+      expect(river.scheduledCount()).toBe(1); // only the one pushed before the pause
+      river.setPaused(false);
+      river.push(burst(400, t, "r"), at(t));
+      frames(100);
+      expect(river.replayLagMs()).toBeGreaterThanOrEqual(REPLAY_DELAY_MS - 100);
+      expect(river.replayLagMs()).toBeLessThanOrEqual(REPLAY_DELAY_MS + 200);
+      frames(3000);
+      expect(river.pulseCount()).toBeLessThanOrEqual(MAX_PULSES + 1);
+      river.push([event({ id: "fresh", ts: at(t) })], at(t));
+      frames(2400);
+      expect(river.scheduledCount()).toBe(1); // due 2.5 s after its time, not before
+      frames(300);
+      expect(river.scheduledCount()).toBe(0);
+    });
+
+    it("catches up after 90 s without frames (a hidden tab)", () => {
+      river.push([event({ id: "a" })], at(0));
+      t += 90_000;
+      vi.setSystemTime(new Date(T0 + t));
+      frames(50);
+      expect(river.replayLagMs()).toBeLessThanOrEqual(REPLAY_DELAY_MS + 100);
+      expect(river.scheduledCount()).toBe(0);
+    });
+
+    it("while paused, puts events in the history only and trims it on the live clock", () => {
+      const launched: string[] = [];
+      river.onLaunch((e) => launched.push(e.id));
+      river.setPaused(true);
+      river.push(burst(30, t, "h"), at(t));
+      expect(river.scheduledCount()).toBe(0);
+      expect(launched).toHaveLength(30);
+      expect(river.historySize()).toBe(30);
+      frames(16 * 60_000, 5_000);
+      expect(river.historySize()).toBe(0);
+    });
+
+    it("caps the comet queue", () => {
+      river.push(
+        Array.from({ length: QUEUE_MAX + 300 }, (_, i) => event({ id: `q:${i}`, ts: at(1000 + i) })),
+        at(0),
+      );
+      expect(river.scheduledCount()).toBe(QUEUE_MAX);
+    });
+
+    it("draws no ambient particle on a link without traffic", () => {
+      river.setSummary({
+        links: { "pc|mcp": { calls: 10, errors: 0, top_tools: [] } },
+        nodes: {},
+        head: { calls_per_min: 10, orders_today: 0, errors_window: 0, mcp_latency_ms: null },
+      });
+      frames(100);
+      expect(river.particleCount("pc|mcp")).toBeGreaterThan(0);
+      expect(river.particleCount("mcp|ng")).toBe(0);
+    });
+
+    it("lets go of the followed order when a new map drops its comet", () => {
+      const followed: (string | null)[] = [];
+      river.onFollow((e) => followed.push(e?.id ?? null));
+      river.setFollow(true);
+      const order = event({ id: "o", path: ["agent:a1", "pc", "mcp", "eng"], hops: ["place_order", "place_order", "place_order"] });
+      river.push([order], at(0));
+      frames(2600);
+      expect(followed).toEqual(["o"]);
+      river.setMap({ nodes: MAP.nodes, links: [] });
+      expect(followed).toEqual(["o", null]);
+    });
+  });
+
+  it("caps the events kept before the map arrives", () => {
+    river.push(Array.from({ length: 5000 }, (_, i) => event({ id: `w:${i}` })), NOW);
+    expect(river.waitingCount()).toBeLessThanOrEqual(2000);
+  });
+
+  it("shows events with an unknown node at once and retries them on the next map only", () => {
+    const launched: string[] = [];
+    river.onLaunch((e) => launched.push(e.id));
+    river.setMap(MAP);
+    const newcomer = event({ id: "mcp:new", path: ["agent:zz", "pc", "mcp", "ng"], hops: ["get_forecast", "get_forecast", "get_forecast"] });
+    river.push([newcomer], NOW);
+    expect(launched).toEqual(["mcp:new"]); // in the diary meanwhile
+    expect(river.scheduledCount()).toBe(0);
+    const withZz: FlowMap = {
+      nodes: [...MAP.nodes, { key: "agent:zz", label: "Nuovo", kind: "agent", column: 0, description: "Agente" }],
+      links: [...MAP.links, ["agent:zz", "pc"]],
+    };
+    river.setMap(withZz);
+    expect(river.scheduledCount()).toBe(1);
+
+    const other = event({ id: "mcp:other", path: ["agent:yy", "pc", "mcp", "ng"] });
+    river.push([other], NOW);
+    river.setMap(withZz); // still unknown: dropped
+    river.setMap({
+      nodes: [...withZz.nodes, { key: "agent:yy", label: "Altro", kind: "agent", column: 0, description: "Agente" }],
+      links: [...withZz.links, ["agent:yy", "pc"]],
+    });
     expect(river.scheduledCount()).toBe(1);
   });
 });

@@ -53,11 +53,14 @@ export const REPLAY_DELAY_MS = 2_500;
 const SPREAD_MS = 2_000;
 /** older than this behind the replay clock: history only (diary, timeline), no comet */
 const LATE_MS = 15_000;
-/** the replay never lags the live clock by more (½× speed, a long pause) */
-const MAX_LAG_MS = 60_000;
 const KEEP_MS = 15 * 60_000;
 const TIMELINE_S = 120;
-const MAX_PULSES = 160;
+/** comets drawn at once: beyond, an event joins the diary and the timeline only */
+export const MAX_PULSES = 160;
+/** events waiting for their comet: beyond, the oldest join the history */
+export const QUEUE_MAX = 500;
+/** events kept before the map arrives, and with a node the map does not have yet */
+const WAITING_MAX = 2_000;
 const BW = 14; // node bar width
 const TOP = 54; // below the column heads
 const BOTTOM_PAD = 18;
@@ -107,6 +110,7 @@ interface RLink {
   _pR: Port | null;
 }
 interface Pulse {
+  evId: string;
   link: RLink;
   fwd: boolean;
   t: number;
@@ -163,6 +167,7 @@ export class RiverCanvas {
   private flashes: Flash[] = [];
   private seen = new Set<string>();
   private waiting: FlowEvent[] = []; // pushed before the map arrived
+  private unknown: FlowEvent[] = []; // a node the map does not have yet: retried on the next map
   private queue: Queued[] = [];
   private recent: Seen[] = [];
   private offset = 0; // server clock − local clock, ms
@@ -261,12 +266,17 @@ export class RiverCanvas {
     this.links = links;
     this.pulses = this.pulses.filter((p) => links.get(p.link.key) === p.link);
     this.flashes = this.flashes.filter((f) => nodes.has(f.key));
-    this.applySummary();
-    if (this.waiting.length && nodes.size) {
-      const w = this.waiting;
-      this.waiting = [];
-      this.accept(w);
+    const fr = this.followRun;
+    if (fr && !this.pulses.some((p) => p.evId === fr.id)) {
+      this.followRun = null; // its comet was on a link the new map dropped
+      this.followCb?.(null);
     }
+    this.applySummary();
+    if (!nodes.size) return;
+    const retry = [...this.waiting, ...this.unknown];
+    this.waiting = [];
+    this.unknown = [];
+    if (retry.length) this.accept(retry, false); // still unknown now: dropped
   }
 
   setSummary(s: FlowSummary): void {
@@ -289,6 +299,7 @@ export class RiverCanvas {
     if (this.seen.size > 10_000) this.seen = new Set([...this.seen].slice(-5_000));
     if (!this.nodes.size) {
       this.waiting.push(...fresh);
+      if (this.waiting.length > WAITING_MAX) this.waiting.splice(0, this.waiting.length - WAITING_MAX);
       return;
     }
     this.accept(fresh);
@@ -344,6 +355,28 @@ export class RiverCanvas {
     return this.queue.length;
   }
 
+  waitingCount(): number {
+    return this.waiting.length;
+  }
+
+  pulseCount(): number {
+    return this.pulses.length;
+  }
+
+  /** events kept for the timeline, the directions and the focus (last 15 minutes) */
+  historySize(): number {
+    return this.recent.length;
+  }
+
+  particleCount(key: string): number {
+    return this.links.get(key)?.parts.length ?? 0;
+  }
+
+  /** how far the replay clock is behind the live (server) clock, ms */
+  replayLagMs(): number {
+    return this.playT === null ? 0 : this.liveNow() - this.playT;
+  }
+
   destroy(): void {
     if (this.raf && typeof cancelAnimationFrame !== "undefined") cancelAnimationFrame(this.raf);
     this.raf = 0;
@@ -375,11 +408,19 @@ export class RiverCanvas {
     return true;
   }
 
-  private accept(events: FlowEvent[]): void {
+  /** new events: a comet each when due, history only when too old or while paused; an
+   * event with a node the map does not have is shown at once and, if `keepUnknown`,
+   * retried on the next map */
+  private accept(events: FlowEvent[], keepUnknown = true): void {
     const play = this.playT ?? this.liveNow() - REPLAY_DELAY_MS;
-    const ok = events
-      .filter((e) => this.valid(e) && Number.isFinite(Date.parse(e.ts)))
-      .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+    const dated = events.filter((e) => Number.isFinite(Date.parse(e.ts)));
+    const ok = dated.filter((e) => this.valid(e)).sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+    if (keepUnknown) {
+      const bad = dated.filter((e) => !this.valid(e));
+      bad.forEach((e) => this.launchCb?.(e)); // the diary shows it meanwhile
+      this.unknown.push(...bad);
+      if (this.unknown.length > WAITING_MAX) this.unknown.splice(0, this.unknown.length - WAITING_MAX);
+    }
     const late = ok.filter((e) => {
       const t = Date.parse(e.ts);
       return t < play && t >= play - LATE_MS;
@@ -388,11 +429,15 @@ export class RiverCanvas {
     for (const ev of ok) {
       const t = Date.parse(ev.ts);
       this.recent.push({ t, ev });
-      if (t >= play) this.queue.push({ at: t, ev });
+      if (this.paused) this.launchCb?.(ev); // paused: diary and timeline only
+      else if (t >= play) this.queue.push({ at: t, ev });
       else if (t >= play - LATE_MS) this.queue.push({ at: play + (li++ / Math.max(1, late.length)) * SPREAD_MS, ev });
       else this.launchCb?.(ev); // history: in the diary and the timeline, no comet
     }
     this.queue.sort((a, b) => a.at - b.at);
+    if (this.queue.length > QUEUE_MAX) {
+      this.queue.splice(0, this.queue.length - QUEUE_MAX).forEach((q) => this.launchCb?.(q.ev));
+    }
     this.recent.sort((a, b) => a.t - b.t);
     this.lastStats = -1e9;
   }
@@ -428,6 +473,7 @@ export class RiverCanvas {
       const col = bad ? ERROR_COLOR : A.col;
       const link = h.link;
       this.pulses.push({
+        evId: ev.id,
         link,
         fwd: h.fwd,
         t: 0,
@@ -709,7 +755,7 @@ export class RiverCanvas {
       g.bezierCurveTo(c1, a.y0, c2, b.y0, xb, b.y0);
       g.stroke();
       // ambient particles: count from the rate, direction from the share of real hops
-      const want = Math.min(70, Math.round(3 + l.rate * 1.6));
+      const want = l.rate > 0 ? Math.min(70, Math.round(3 + l.rate * 1.6)) : 0; // no traffic, no trail
       const share = (l.dirF + 1) / (l.dirF + l.dirB + 2);
       while (l.parts.length < want) l.parts.push({ t: Math.random(), lat: 0.12 + Math.random() * 0.76, v: 0.12 + Math.random() * 0.18, f: Math.random() < share });
       if (l.parts.length > want) l.parts.length = want;
@@ -822,28 +868,32 @@ export class RiverCanvas {
     this.drawTimeline();
   }
 
-  /** the replay clock: moves with the speed, never ahead of the replay delay, never more
-   * than MAX_LAG behind; due events start their comets */
+  /** the replay clock: moves with the speed, never ahead of the replay delay; when it
+   * falls behind by more than delay + spread (a pause, a hidden tab, a slow frame) it snaps
+   * back to the delay: what is too old joins the history, what was just behind is spread
+   * over SPREAD_MS (no comet storm); due events start their comets */
   private advanceClock(raw: number): void {
-    if (this.playT === null) return;
+    if (this.playT === null || this.paused) return;
     const live = this.liveNow();
-    if (!this.paused) {
-      this.playT = Math.min(this.playT + raw * 1000 * this.speed, live - REPLAY_DELAY_MS);
-      if (this.playT < live - MAX_LAG_MS) this.playT = live - MAX_LAG_MS;
+    const target = live - REPLAY_DELAY_MS;
+    this.playT = Math.min(this.playT + raw * 1000 * this.speed, target);
+    if (target - this.playT > SPREAD_MS) {
+      this.playT = target;
+      const behind = this.queue.filter((q) => q.at < target);
+      const ahead = this.queue.filter((q) => q.at >= target);
+      const recent = behind.filter((q) => Date.parse(q.ev.ts) >= target - LATE_MS);
+      behind.filter((q) => Date.parse(q.ev.ts) < target - LATE_MS).forEach((q) => this.launchCb?.(q.ev));
+      recent.forEach((q, i) => (q.at = target + (i / recent.length) * SPREAD_MS));
+      this.queue = [...recent, ...ahead].sort((a, b) => a.at - b.at);
     }
-    if (this.paused) return;
-    while (this.queue.length && this.queue[0].at <= this.playT) {
-      const q = this.queue.shift()!;
-      if (q.at < this.playT - LATE_MS) this.launchCb?.(q.ev); // skipped by a jump: history
-      else this.run(q.ev);
-    }
+    while (this.queue.length && this.queue[0].at <= this.playT) this.run(this.queue.shift()!.ev);
   }
 
   /** once a second: drop old history, prevailing directions in the window, focus */
   private stats(now: number): void {
     this.lastStats = now;
     const play = this.playT ?? this.liveNow();
-    const keepFrom = play - KEEP_MS;
+    const keepFrom = this.liveNow() - KEEP_MS; // the live clock: trimmed during a pause too
     let cut = 0;
     while (cut < this.recent.length && this.recent[cut].t < keepFrom) cut++;
     if (cut) this.recent.splice(0, cut);

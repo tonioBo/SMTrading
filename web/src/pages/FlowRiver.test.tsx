@@ -16,18 +16,26 @@ vi.mock("@/components/flow/RiverCanvas", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/components/flow/RiverCanvas")>()),
   RiverCanvas: class {
     launch: ((e: FlowEvent) => void) | null = null;
+    follow: ((e: FlowEvent | null) => void) | null = null;
+    pushed: FlowEvent[] = [];
     setMap() {}
     setSummary() {}
     setWindow() {}
     setPaused() {}
     setSpeed() {}
-    setFollow() {}
+    setFollow(on: boolean) {
+      const order = this.pushed.find((e) => e.hops[0] === "place_order");
+      if (on && order) this.follow?.(order);
+    }
     onHover() {}
-    onFollow() {}
+    onFollow(cb: (e: FlowEvent | null) => void) {
+      this.follow = cb;
+    }
     onLaunch(cb: (e: FlowEvent) => void) {
       this.launch = cb;
     }
     push(events: FlowEvent[]) {
+      this.pushed.push(...events);
       events.forEach((e) => this.launch?.(e));
     }
     destroy() {}
@@ -40,6 +48,7 @@ const MAP: FlowMap = {
     { key: "pc", label: "Paperclip", kind: "agent", column: 1, description: "Orchestratore" },
     { key: "mcp", label: "MCP SMTrading", kind: "core", column: 2, description: "La porta" },
     { key: "ng", label: "Neurograph", kind: "ng", column: 3, description: "Forchetta" },
+    { key: "eng", label: "Motore ordini", kind: "core", column: 3, description: "Controlli" },
   ],
   links: [
     ["agent:a1", "pc"],
@@ -110,7 +119,7 @@ describe("FlowRiver", () => {
   it("says when there was no call in the window", () => {
     mockHooks({ summary: QUIET, events: NONE });
     render(<FlowRiver />);
-    expect(screen.getByText("Nessuna chiamata negli ultimi 1 minuti")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Nessuna chiamata negli ultimi 1 minuti");
     expect(screen.getByText("—")).toBeInTheDocument(); // no mean time
   });
 
@@ -128,5 +137,23 @@ describe("FlowRiver", () => {
     await userEvent.click(screen.getByRole("button", { name: "5 min" }));
     expect(hooks.useFlowSummary).toHaveBeenLastCalledWith(5);
     expect(screen.getByRole("button", { name: "5 min" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("explains the followed order with the names of the map", async () => {
+    const order: FlowEvent = {
+      ...EVENTS[0],
+      id: "mcp:8",
+      path: ["agent:a1", "pc", "mcp", "eng"],
+      hops: ["place_order", "place_order", "place_order"],
+    };
+    mockHooks({ events: [order] });
+    render(<FlowRiver />);
+    await userEvent.click(screen.getByRole("button", { name: "◎ Segui un ordine" }));
+    const story = screen.getByText(/chiede a SMTrading/).closest("div")!;
+    expect(story).toHaveTextContent("Portfolio Manager");
+    expect(story).toHaveTextContent("Paperclip");
+    expect(story).toHaveTextContent("MCP SMTrading");
+    expect(story).toHaveTextContent("Motore ordini");
+    expect(story).toHaveTextContent("SPY");
   });
 });
