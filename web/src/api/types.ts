@@ -2674,3 +2674,59 @@ export interface AutoBacktestBody extends AutoRuleBody {
   fee_rule: "broker" | "zero";
   portfolio_id?: string;
 }
+
+// «Fiume dei flussi» (GET /api/flow/map | events | summary; backend smtrading.flow)
+
+/** a node of the flow map: `kind` is the colour family, `column` 0..5 left to right */
+export interface FlowNode {
+  key: string;
+  label: string;
+  kind: string;
+  column: number;
+  description: string;
+}
+
+/** nodes and links (each link [a, b] in its forward direction, key "a|b") */
+export interface FlowMap {
+  nodes: FlowNode[];
+  links: [string, string][];
+}
+
+export interface FlowEvent {
+  id: string;
+  ts: string;
+  kind: string;
+  who: string;
+  path: string[];
+  hops: string[];
+  outcome: "ok" | "error";
+  latency_ms: number | null;
+  symbol: string | null;
+}
+
+export interface FlowEventsResponse {
+  events: FlowEvent[];
+  cursor: string;
+  now: string;
+}
+
+export interface FlowLinkSummary {
+  calls: number;
+  errors: number;
+  top_tools: { tool: string; calls: number }[];
+}
+
+export type FlowWindow = 1 | 5 | 15;
+
+export interface FlowSummary {
+  /** keyed "a|b" in the link's forward direction */
+  links: Record<string, FlowLinkSummary>;
+  /** events touching the node, per minute */
+  nodes: Record<string, number>;
+  head: {
+    calls_per_min: number;
+    orders_today: number;
+    errors_window: number;
+    mcp_latency_ms: number | null;
+  };
+}

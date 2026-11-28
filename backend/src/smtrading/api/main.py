@@ -28,6 +28,7 @@ from smtrading.admin.routes_dashboard import router as dashboard_router
 from smtrading.admin.routes_equity_history import router as equity_history_router
 from smtrading.admin.routes_explore import router as explore_router
 from smtrading.admin.routes_fees import router as fees_router
+from smtrading.admin.routes_flow import router as flow_router
 from smtrading.admin.routes_goals import router as goals_router
 from smtrading.admin.routes_halts import router as halts_router
 from smtrading.admin.routes_intraday import router as intraday_router
@@ -243,6 +244,7 @@ def create_app(runtime_factory: RuntimeFactory | None = None) -> FastAPI:
     app.include_router(watch_router)
     app.include_router(intraday_router)  # portal only, never MCP
     app.include_router(auto_rules_router)  # portal only, admin only, never MCP
+    app.include_router(flow_router)  # «Fiume dei flussi»: portal only, admin only, never MCP
     app.include_router(telegram_router)
     app.include_router(paperclip_router)
     app.include_router(users_router)
