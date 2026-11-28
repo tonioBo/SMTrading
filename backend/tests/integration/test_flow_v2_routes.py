@@ -167,7 +167,10 @@ async def test_agents_without_paperclip_configured(env):  # noqa: F811
     assert r.json()["available"] is False and "non disponibili" in r.json()["note"]
 
 
-async def test_health_of_every_node(env, redis):  # noqa: F811
+async def test_health_of_every_node(env, redis, monkeypatch):  # noqa: F811
+    from smtrading.common.config import get_settings
+    monkeypatch.setenv("SMT_NEUROGRAPH_URL", "http://ng.example.test/api/serie")
+    get_settings.cache_clear()
     c = await _admin(env)
     agent = await _agent(env)
     async with env.sm() as s:
@@ -332,3 +335,24 @@ async def test_viewer_is_refused_and_mcp_unchanged(env):  # noqa: F811
         assert (await v.get(path)).status_code == 403, path
     assert await catalog_fingerprint(build_mcp()) == (
         "2eebdc17e8c7d2ea9e12e8e5c7fa08bdc6b20837d4725921f3bfab263d5d7bf7")
+
+
+async def test_today_window_is_cached(env):  # noqa: F811
+    c = await _admin(env)
+    agent = await _agent(env)
+
+    async def add_call():
+        async with env.sm() as s:
+            s.add(McpAuditLog(agent_id=agent.id, method="get_quote", params={},
+                              outcome="ok", latency_ms=0))
+            await s.commit()
+
+    await add_call()
+    first = (await c.get("/api/flow/summary", params={"window": "today"})).json()
+    tools = (await c.get("/api/flow/tools", params={"window": "today"})).json()
+    await add_call()
+    again = (await c.get("/api/flow/summary", params={"window": "today"})).json()
+    assert again == first  # cached ~15 s
+    assert (await c.get("/api/flow/tools", params={"window": "today"})).json() == tools
+    five = (await c.get("/api/flow/summary", params={"window": 5})).json()
+    assert five["links"]["mcp|px"]["calls"] == first["links"]["mcp|px"]["calls"] + 1

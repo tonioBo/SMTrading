@@ -15,6 +15,7 @@
                                             null when the window is done
     GET /api/flow/summary?window=1|5|15|today   per link, per node and head counters
     GET /api/flow/tools?window=1|5|15|today     the lens: tools per family and per link
+                                            (`today` cached 15 s)
     GET /api/flow/order/{order_id}          the story of an order (404: unknown or hidden)
     GET /api/flow/mcp/{audit_id}            one agent's MCP call (404: unknown, admin row)
     GET /api/flow/agents                    Paperclip runs and costs (cached 30 s;
@@ -34,6 +35,7 @@ from fastapi.responses import JSONResponse
 from smtrading.admin.auth import DbSession, RedisClient, require_admin
 from smtrading.common.errors import ErrorCode
 from smtrading.flow.agents import flow_agents
+from smtrading.flow.cache import TtlCache
 from smtrading.flow.events import (
     LIMIT_DEFAULT,
     LIMIT_MAX,
@@ -54,6 +56,8 @@ from smtrading.mcp.dto import to_jsonable
 router = APIRouter(prefix="/api", tags=["flow"], dependencies=[Depends(require_admin)])
 
 DEFAULT_WINDOW = 5
+TODAY_TTL_S = 15
+_today = TtlCache(TODAY_TTL_S)
 AUDIT_ID_MAX = 2**63 - 1
 
 
@@ -158,22 +162,26 @@ async def get_flow_events(session: DbSession, after: str | None = None,
     return {"events": events, "cursor": latest or now, "now": now}
 
 
-@router.get("/flow/summary")
-async def get_flow_summary(session: DbSession, window: str | None = None):
+async def _windowed(session, window: str | None, build):
+    """`build` of the window; `today` (a whole day of events) cached TODAY_TTL_S."""
     try:
         w = _window(window)
     except _BadParam as e:
         return _unprocessable(e)
-    return await flow_summary(session, window=w, now=datetime.now(UTC))
+    if w == TODAY:
+        return await _today.get(build.__name__, lambda: build(session, window=w,
+                                                                now=datetime.now(UTC)))
+    return await build(session, window=w, now=datetime.now(UTC))
+
+
+@router.get("/flow/summary")
+async def get_flow_summary(session: DbSession, window: str | None = None):
+    return await _windowed(session, window, flow_summary)
 
 
 @router.get("/flow/tools")
 async def get_flow_tools(session: DbSession, window: str | None = None):
-    try:
-        w = _window(window)
-    except _BadParam as e:
-        return _unprocessable(e)
-    return await flow_tools(session, window=w, now=datetime.now(UTC))
+    return await _windowed(session, window, flow_tools)
 
 
 @router.get("/flow/order/{order_id}")

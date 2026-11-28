@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import smtrading.marketdata.providers  # noqa: F401  (registration)
 from smtrading.autorules.feed import read_stream_status
+from smtrading.common.logsetup import redact_log_text
 from smtrading.connectors.models import Connector
 from smtrading.flow.map import price_source_label
 from smtrading.marketdata import quota
@@ -104,7 +105,8 @@ async def price_sources(session: AsyncSession, redis, *, now: datetime | None = 
             "reads_minute": u.minute if u else None, "reads_hour": u.hour if u else None,
             "note": "; ".join(notes) or None,
             "health": c.health_status if c else None,
-            "last_error": c.last_error if c and c.health_status == "error" else None,
+            "last_error": (redact_log_text(c.last_error) if c and c.last_error
+                           and c.health_status == "error" else None),
             "streams": [{"asset_class": s["asset_class"], "state": s["state"],
                          "symbols": len(s["symbols"]), "note": s["note"]} for s in mine],
         })

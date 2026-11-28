@@ -2,7 +2,8 @@
 
 The same access as SMTrading's Paperclip reader (`PaperclipClient`: GET only, the board
 key server side, never in an answer), cached CACHE_TTL_S per configuration so an open page
-never weighs on Paperclip; a failed or slow read (PAPERCLIP_TIMEOUT_S) is cached too and
+never weighs on Paperclip; a failed or slow read (PAPERCLIP_TIMEOUT_S per request,
+FETCH_TIMEOUT_S for the whole read) is cached too and
 answers «costi non disponibili» (the page keeps working). No transaction is open during
 the request (R9).
 
@@ -18,6 +19,7 @@ the request (R9).
             the monthly cap (`budgetMonthlyCents` > 0), the last runs
 """
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -39,7 +41,8 @@ from smtrading.paperclip.models import AgentCostDay
 log = logging.getLogger(__name__)
 
 CACHE_TTL_S = 30
-PAPERCLIP_TIMEOUT_S = 5.0
+PAPERCLIP_TIMEOUT_S = 5.0  # each request
+FETCH_TIMEOUT_S = 5.0  # the whole read (both requests)
 RUNS_LIMIT = 500
 LAST_RUNS = 10
 UNAVAILABLE = "costi non disponibili"
@@ -73,12 +76,18 @@ def _off_reason(cfg: PaperclipConfig) -> str | None:
     return None
 
 
+async def _read(cfg: PaperclipConfig) -> tuple[list[dict], list[dict]]:
+    async with _client(cfg) as client:
+        return await client.agents(), await client.heartbeat_runs(RUNS_LIMIT)
+
+
 async def _fetch(cfg: PaperclipConfig) -> dict[str, Any]:
     now = datetime.now(UTC)
     try:
-        async with _client(cfg) as client:
-            agents = await client.agents()
-            runs = await client.heartbeat_runs(RUNS_LIMIT)
+        agents, runs = await asyncio.wait_for(_read(cfg), FETCH_TIMEOUT_S)
+    except TimeoutError:
+        return {"ok": False, "error": "Paperclip non ha risposto in tempo", "agents": [],
+                "runs": [], "read_at": now}
     except PaperclipError as e:
         return {"ok": False, "error": f"Paperclip {e.message}", "agents": [], "runs": [],
                 "read_at": now}

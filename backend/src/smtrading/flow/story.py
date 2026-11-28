@@ -40,6 +40,7 @@ NO_MCP_AGENT = "chiamata MCP non trovata"
 NO_MCP_OTHER = "ordine non nato da una chiamata MCP di un agente"
 REFUSED_NOTE = "chiamata rifiutata: nessun ordine creato"
 MESSAGE_MAX = 300
+TELEGRAM_AFTER = timedelta(days=1)  # an order's messages: until a day after its last change
 CALL_SLACK = timedelta(seconds=1)  # clock skew between the call's row and the order's
 
 # the MCP tools that create orders
@@ -168,6 +169,7 @@ async def _telegram(session: AsyncSession, o: Order) -> list[dict]:
         .outerjoin(TelegramOutbox, TelegramOutbox.id == Activity.outbox_id)
         .where(Activity.portfolio_id == o.portfolio_id,
                Activity.ts >= o.created_at - timedelta(minutes=1),
+               Activity.ts <= max(o.created_at, o.updated_at) + TELEGRAM_AFTER,
                Activity.data["order_id"].astext == str(o.id),
                or_(Activity.outbox_id.is_not(None), Activity.telegram == "digest"))
         .order_by(Activity.ts, Activity.id))).all()

@@ -18,7 +18,7 @@ sconosciuto` with one plain Italian reason, from the health sources SMTrading al
 «Salute del sistema» `problema` is `errore` here, `spento` is `sconosciuto`."""
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -29,6 +29,7 @@ from smtrading.admin.system_health import system_health
 from smtrading.agents.models import McpAuditLog
 from smtrading.brokers.models import BrokerLink
 from smtrading.common.config import get_settings
+from smtrading.common.logsetup import redact_log_text
 from smtrading.flow.agents import AGENT_STATUS_IT, RUN_ERRORS, paperclip_snapshot
 from smtrading.flow.cache import TtlCache
 from smtrading.flow.map import agent_key, broker_key, broker_label, flow_map, price_source_label
@@ -45,13 +46,15 @@ _RANK = {OK: 0, UNKNOWN: 1, WARN: 2, BAD: 3}
 _FROM_SYSTEM = {"ok": OK, "attenzione": WARN, "problema": BAD, "spento": UNKNOWN}
 # get_forecast outcomes that say something about Neurograph (others are the agent's)
 FORECAST_OUTCOMES = ("ok", "PROVIDER_UNAVAILABLE", "INTERNAL")
+NG_WINDOW = timedelta(days=7)  # the forecast lookup stays on recent rows (index 0051)
+NG_ERRORS_IN_A_ROW = 2
 REASON_MAX = 160
 
 _cache = TtlCache(HEALTH_TTL_S)
 
 
 def _node(state: str, reason: str) -> dict[str, str]:
-    reason = " ".join(str(reason).split())
+    reason = " ".join(redact_log_text(str(reason)).split())  # stored error texts: masked
     return {"state": state, "reason": reason[:REASON_MAX - 1] + "…"
             if len(reason) > REASON_MAX else reason}
 
@@ -108,33 +111,60 @@ def _px(status: dict | None, sections: dict) -> dict[str, str]:
     return _worst(node, providers) if providers["state"] in (BAD, WARN) else node
 
 
-async def _ng(session: AsyncSession, tz: str) -> dict[str, str]:
-    call = (await session.execute(
+async def _ng(session: AsyncSession, tz: str, *, now: datetime,
+              neurograph_url: str | None) -> dict[str, str]:
+    """Not configured (`SMT_NEUROGRAPH_URL` empty): «sconosciuto». Of the get_forecast
+    calls of the last NG_WINDOW that say something about Neurograph, the latest: ok, or
+    one refusal («attenzione»: PROVIDER_UNAVAILABLE also means too few bars), or
+    NG_ERRORS_IN_A_ROW in a row («errore»); a failed nightly export is «errore» too."""
+    if not neurograph_url:
+        return _node(UNKNOWN, "Neurograph non configurato")
+    since = now - NG_WINDOW
+    calls = (await session.execute(
         select(McpAuditLog.outcome, McpAuditLog.created_at)
-        .where(McpAuditLog.method == "get_forecast",
-               McpAuditLog.outcome.in_(FORECAST_OUTCOMES))
-        .order_by(McpAuditLog.created_at.desc()).limit(1))).first()
+        .where(McpAuditLog.method == "get_forecast", McpAuditLog.created_at > since,
+               McpAuditLog.created_at <= now, McpAuditLog.outcome.in_(FORECAST_OUTCOMES))
+        .order_by(McpAuditLog.created_at.desc()).limit(NG_ERRORS_IN_A_ROW))).all()
     night = (await session.execute(
         select(NeurographExportNight.outcome, NeurographExportNight.night)
+        .where(NeurographExportNight.night >= since.date())
         .order_by(NeurographExportNight.night.desc()).limit(1))).first()
     nodes = []
-    if call is not None:
-        nodes.append(_node(OK, f"ultima previsione riuscita il {_hm(call.created_at, tz)}")
-                     if call.outcome == "ok" else
-                     _node(BAD, f"ultima previsione non riuscita il {_hm(call.created_at, tz)}"))
+    if calls:
+        last = calls[0]
+        failed = 0
+        for c in calls:
+            if c.outcome == "ok":
+                break
+            failed += 1
+        when = _hm(last.created_at, tz)
+        if failed == 0:
+            nodes.append(_node(OK, f"ultima previsione riuscita il {when}"))
+        elif failed >= NG_ERRORS_IN_A_ROW:
+            nodes.append(_node(BAD, f"ultime {failed} previsioni non riuscite (l'ultima il "
+                                    f"{when})"))
+        else:
+            nodes.append(_node(WARN, f"ultima previsione non riuscita il {when}: può dipendere "
+                                     "da barre insufficienti"))
     if night is not None:
         day = night.night.strftime("%d/%m")
         nodes.append({"ok": _node(OK, f"invio notturno riuscito ({day})"),
-                      "outage": _node(WARN, f"invio notturno: Neurograph non raggiungibile "
-                                            f"({day})"),
-                      "unauthorized": _node(BAD, f"invio notturno: chiave rifiutata ({day})")
+                      "outage": _node(BAD, f"invio notturno non riuscito: Neurograph non "
+                                           f"raggiungibile ({day})"),
+                      "unauthorized": _node(BAD, f"invio notturno non riuscito: chiave "
+                                                 f"rifiutata ({day})")
                       }.get(night.outcome, _node(UNKNOWN, f"invio notturno: {night.outcome}")))
     if not nodes:
-        return _node(UNKNOWN, "nessuna previsione né invio notturno registrati")
+        return _node(UNKNOWN, "nessuna previsione né invio notturno negli ultimi 7 giorni")
     worst = _worst(*nodes)
     if worst["state"] == OK and len(nodes) == 2:
         return _node(OK, f"{nodes[0]['reason']}; {nodes[1]['reason']}")
     return worst
+
+
+def _safe(text: str | None) -> str | None:
+    """An error text stored by a connector or a broker link, with secrets masked."""
+    return redact_log_text(text) if text else text
 
 
 def _broker(links: list, now: datetime) -> dict[str, str]:
@@ -147,7 +177,7 @@ def _broker(links: list, now: datetime) -> dict[str, str]:
             minutes = max(int((now - b.outage_since).total_seconds() // 60), 0)
             nodes.append(_node(BAD, f"«{b.name}» non risponde da {minutes} min"))
         elif b.status == "error":
-            nodes.append(_node(BAD, f"«{b.name}»: {b.last_error or 'in errore'}"))
+            nodes.append(_node(BAD, f"«{b.name}»: {_safe(b.last_error) or 'in errore'}"))
         elif b.health_failures:
             nodes.append(_node(WARN, f"«{b.name}»: {b.health_failures} chiamate senza "
                                      "risposta"))
@@ -211,7 +241,7 @@ async def _build(session: AsyncSession, redis, now: datetime) -> dict[str, Any]:
         select(BrokerLink.name, BrokerLink.kind, BrokerLink.enabled, BrokerLink.status,
                BrokerLink.last_error, BrokerLink.health_failures, BrokerLink.outage_since,
                BrokerLink.outage_until))).all()
-    ng = await _ng(session, tz)
+    ng = await _ng(session, tz, now=now, neurograph_url=get_settings().neurograph_url)
     await session.rollback()  # no transaction open during the Paperclip read (R9)
     snap = await paperclip_snapshot(cfg)
     try:
