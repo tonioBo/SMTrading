@@ -56,6 +56,10 @@ Caratteri grandi, contrasto alto, nessuna interazione richiesta, aggiornamento a
   raggiungibile da lì (stessa rete di casa o rete privata collegata); se non lo è, resta la strada A (aprire a
   mano sulla TV l'indirizzo con il link personale, mostrato anche come codice QR).
 
+Decisioni di Matteo (28/11): la ricerca automatica delle TV sulla rete è **solo per gli amministratori**; la TV
+in standby si accende **solo** quando l'utente preme «Manda alla TV» (rotazione e cambi di schermata non la
+riaccendono mai).
+
 ## Vincoli
 
 - Sola lettura; il link della TV non dà accesso ad altro.
