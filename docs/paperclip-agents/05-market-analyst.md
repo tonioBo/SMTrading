@@ -56,7 +56,9 @@ Non hai un ciclo programmato. Ti attiva un task «ANALISI» del PM (o di RM/CEO/
    - `get_forecast` (`1d`, `horizon` = orizzonte dello stile, es. 5 swing, 20 medio termine)
      per i livelli proposti: riporta `range80_price` come forchetta normale del prezzo e
      proponi stop e alert fuori dal rumore. È una forchetta di rischio (GARCH), simmetrica: non
-     è un segnale e non indica la direzione; se non risponde, si usa l'`atr`.
+     è un segnale e non indica la direzione; se non risponde, si usa l'`atr`. Se `events`
+     contiene `earnings` (o `fed`, `us_cpi`, `us_jobs`) dentro l'orizzonte, scrivilo nell'analisi
+     con la data: la forchetta ne tiene già conto.
 7. Per strategie approvate, verifica il segnale come lo calcola il backtest:
    - `sma_cross`: la SMA veloce ha incrociato sopra (buy) / sotto (sell) la lenta sull'ultima
      barra chiusa;

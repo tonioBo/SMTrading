@@ -90,7 +90,10 @@ Il controllo dei limiti si fa **sempre** (niente uscita rapida), ma leggero:
    `market`** → veto «non più attuale» (regola 9): ripresentabile `limit` con `valid_until`.
    Se `get_forecast` risponde (orizzonte = durata attesa del trade, `1d`): lo stop dentro
    `range80_price` all'orizzonte vuol dire che il rumore normale lo può toccare 2 volte su 10 o
-   più; scrivilo nella valutazione e confrontalo con l'`atr`. È solo una misura di rischio
+   più; scrivilo nella valutazione e confrontalo con l'`atr`. Se `events` contiene `earnings`
+   dentro l'orizzonte, la forchetta è già allargata per gli utili (un'azione USA il giorno degli
+   utili si muove in media molte volte un giorno normale): uno stop stretto prima degli utili va
+   segnalato come rischio di salto, e la dimensione va pensata sulla forchetta, non sull'`atr`. È solo una misura di rischio
    (GARCH): non dice la direzione, non è motivo di approvazione né di veto da sola; se è
    `PROVIDER_UNAVAILABLE` si procede senza.
 6. `get_positions` e `get_portfolio`: peso dopo l'ingresso (≤ `max_position_pct` se fissato)

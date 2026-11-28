@@ -45,8 +45,12 @@ def _fake_neurograph(good: bool):
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             seen.append({"path": self.path, **body})
-            h, last = body["h"], body["chiusure"][-1]
-            out = {} if not good else {"modello": "garch", "h": h, "quantili": Q, "ultimo": last, "barre_usate": len(body["chiusure"]),
+            daily = body["timeframe"] == "1d"  # daily bars: HAR + scheduled events; otherwise GARCH
+            closes = [b["c"] for b in body["barre"]]
+            h, last = body["h"], closes[-1]
+            out = {} if not good else {"modello": "har_eventi" if daily else "garch", "h": h, "quantili": Q, "ultimo": last,
+                   "barre_usate": len(closes),
+                   "eventi": [{"tipo": "utili", "data": "2030-01-02", "fra_barre": 2}] if daily else [],
                    "prezzi": [[last * (1 + (lv - 0.5) * 0.1 * (k + 1)) for lv in Q] for k in range(h)],
                    "sigma_h": 0.031, "forchetta80": [-0.04, 0.04]}
             b = json.dumps(out).encode()
@@ -101,12 +105,28 @@ async def test_forecast(env, neurograph, monkeypatch):
     err, out = await env["call"]("get_forecast", {"symbol": SYM, "timeframe": "1d", "horizon": 3})
     assert not err, out
     assert seen[-1]["path"] == "/api/serie/rischio" and seen[-1]["h"] == 3
-    assert len(seen[-1]["chiusure"]) == 300 and seen[-1]["chiusure"][-1] == 399.0  # oldest first
-    assert out["symbol"] == SYM and out["model"] == "garch" and out["horizon"] == 3
+    sent = seen[-1]  # symbol, asset class, timeframe and OHLC, oldest first
+    assert sent["simbolo"] == SYM and sent["classe"] == "crypto" and sent["timeframe"] == "1d"
+    assert len(sent["barre"]) == 300 and sent["barre"][-1]["c"] == 399.0 and sent["barre"][-1]["h"] == 400.0
+    assert sent["barre"][-1]["t"][:10] == _bars(300)[-1].ts.date().isoformat()
+    assert out["symbol"] == SYM and out["model"] == "har_eventi" and out["horizon"] == 3
+    assert out["events"] == [{"type": "earnings", "date": "2030-01-02", "in_bars": 2}]
+    assert "Scheduled events" in out["note"]
     assert out["range80_pct"] == ["-4.00", "4.00"] and out["sigma_pct"] == "3.10"
     assert len(out["steps"]) == 3 and set(out["steps"][0]["price"]) == {f"q{k}" for k in range(10, 100, 10)}
     assert out["range80_price"] == [out["steps"][-1]["price"]["q10"], out["steps"][-1]["price"]["q90"]]
     assert "never" in out["note"]
+
+
+async def test_forecast_intraday(env, neurograph, monkeypatch):
+    url, seen = neurograph
+    _configure(monkeypatch, url)
+    env["qs"].set_bars(SYM, [Bar(NOW - timedelta(hours=300 - i), D(100 + i), D(101 + i), D(99 + i), D(100 + i), D(10))
+                             for i in range(300)])
+    err, out = await env["call"]("get_forecast", {"symbol": SYM, "timeframe": "1h", "horizon": 2})
+    assert not err, out
+    assert seen[-1]["timeframe"] == "1h" and len(seen[-1]["barre"]) == 300
+    assert out["model"] == "garch" and out["events"] == [] and "Scheduled events" not in out["note"]
 
 
 async def test_bad_input_and_short_history(env, neurograph, monkeypatch):
