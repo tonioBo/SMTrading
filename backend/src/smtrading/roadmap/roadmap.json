@@ -605,11 +605,21 @@
         },
         {
           "title": "Schermo TV",
-          "status": "in_corso",
-          "detail": "In linea dal 28/11 alle 19:50: dal portale ogni utente, nella sua area, collega la propria TV e sceglie cosa mostrare (Fiume dei flussi per gli amministratori, campagna e portafogli, salute e avvisi, rotazione); SMTrading la manda alla TV da solo; suoni facoltativi per esecuzioni, stop/obiettivi e problemi. Primo collegamento della TV di casa da fare.",
+          "status": "fatto",
+          "detail": "In linea dal 28/11: ogni utente, nella sua area, abbina la propria TV con un codice di 6 cifre (sulla TV si apre 192.168.30.7/tv) e sceglie dal portale cosa mostrare (Fiume dei flussi per gli amministratori, campagna e portafogli, salute e avvisi, rotazione); suoni facoltativi. TV di casa abbinata e funzionante.",
           "refs": [
             "docs/superpowers/specs/2026-11-28-smtrading-schermo-tv-design.md",
             "docs/superpowers/plans/2026-11-28-smtrading-schermo-tv.md"
+          ],
+          "date": "2026-11-28"
+        },
+        {
+          "title": "App «SMTrading TV» per la Samsung",
+          "status": "in_corso",
+          "detail": "Un'app da installare sulla TV (modalità sviluppatore) con icona nel menu: si apre direttamente sulle schermate, senza browser né indirizzo né certificato, e si comanda col telecomando (frecce, OK, tasti colorati).",
+          "refs": [
+            "docs/superpowers/specs/2026-11-28-smtrading-app-tv-design.md",
+            "docs/superpowers/plans/2026-11-28-smtrading-app-tv.md"
           ],
           "date": "2026-11-28"
         }
