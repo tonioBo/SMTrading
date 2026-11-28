@@ -167,7 +167,7 @@ const AGENTS: FlowAgents = {
   ],
   runs: [],
 };
-const DOWN: FlowAgents = { available: false, note: "Paperclip non raggiungibile: costi non disponibili", read_at: null, currency: "USD", agents: [{ ...AGENTS.agents[0], today_usd: null, month_usd: null, cap_usd: null, runs: [] }], runs: [] };
+const DOWN: FlowAgents = { available: false, note: "Paperclip non raggiungibile: dati di Paperclip non disponibili", read_at: null, currency: "USD", agents: [{ ...AGENTS.agents[0], today_usd: null, month_usd: null, cap_usd: null, runs: [] }], runs: [] };
 const HEALTH: FlowHealth = {
   checked_at: "2026-11-28T10:00:00Z",
   nodes: { ng: { state: "errore", reason: "ultima get_forecast fallita alle 10:58" }, mcp: { state: "ok", reason: "risponde" } },
@@ -344,22 +344,22 @@ describe("FlowRiver", () => {
     expect(screen.getByText("Neurograph").closest("div[class*=absolute]")).toHaveTextContent("errore · ultima get_forecast fallita alle 10:58");
   });
 
-  it("badges the agents with today's and the month's spend and the cap, and lists the last runs", () => {
+  it("shows no spend on the agents (owner: not wanted) but lists the last runs", () => {
     mockHooks();
     render(<FlowRiver />);
-    expect(river().badges).toEqual({ "agent:a1": "oggi 1,20 $ · mese 12,00 $ / 50,00 $" });
+    expect(river().badges).toEqual({});
     act(() => river().hover({ node: "agent:a1", x: 10, y: 10 }));
     const card = screen.getAllByText("Portfolio Manager").map((e) => e.closest("div[class*=absolute]")).find(Boolean)!;
-    expect(card).toHaveTextContent("spesa oggi1,20 $");
-    expect(card).toHaveTextContent("tetto mensile50,00 $");
+    expect(card).not.toHaveTextContent("spesa");
+    expect(card).not.toHaveTextContent("tetto");
     expect(card).toHaveTextContent("programmata · riuscita");
   });
 
   it("says when Paperclip is down: costs not available, the river keeps working", () => {
     mockHooks({ agents: DOWN });
     render(<FlowRiver />);
-    expect(screen.getByText("Paperclip non raggiungibile: costi non disponibili")).toBeInTheDocument();
-    expect(river().badges).toEqual({ "agent:a1": "costi non disponibili" });
+    expect(screen.getByText("Paperclip non raggiungibile: dati di Paperclip non disponibili")).toBeInTheDocument();
+    expect(river().badges).toEqual({});
     expect(screen.getByRole("img", { name: /25 chiamate al minuto/ })).toBeInTheDocument();
   });
 
@@ -436,7 +436,7 @@ describe("FlowRiver", () => {
   it("announces Paperclip down as a status", () => {
     mockHooks({ agents: DOWN });
     render(<FlowRiver />);
-    expect(screen.getByRole("status")).toHaveTextContent("Paperclip non raggiungibile: costi non disponibili");
+    expect(screen.getByRole("status")).toHaveTextContent("Paperclip non raggiungibile: dati di Paperclip non disponibili");
   });
 
   it("marks the lens counts as live during a replay", async () => {
