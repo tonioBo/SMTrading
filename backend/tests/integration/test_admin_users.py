@@ -61,6 +61,12 @@ ADMIN_ONLY_READS = {
     ("GET", "/api/flow/map"),
     ("GET", "/api/flow/events"),
     ("GET", "/api/flow/summary"),
+    ("GET", "/api/flow/order/{order_id}"),
+    ("GET", "/api/flow/mcp/{audit_id}"),
+    ("GET", "/api/flow/agents"),
+    ("GET", "/api/flow/health"),
+    ("GET", "/api/flow/tools"),
+    ("GET", "/api/flow/sources"),
 }
 SKIPPED_PATHS = {"/health", "/mcp", "/mcp/"}
 

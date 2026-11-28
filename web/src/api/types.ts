@@ -2690,6 +2690,11 @@ export interface FlowNode {
 export interface FlowMap {
   nodes: FlowNode[];
   links: [string, string][];
+  /** v2: the MCP tool families (the lens) and the price sources' names */
+  families?: { key: string; label: string; tools: string[] }[];
+  price_sources?: { key: string; label: string }[];
+  /** the last regular US session (holidays and half days known to SMTrading) */
+  last_session?: { from: string; to: string } | null;
 }
 
 export interface FlowEvent {
@@ -2702,6 +2707,8 @@ export interface FlowEvent {
   outcome: "ok" | "error";
   latency_ms: number | null;
   symbol: string | null;
+  /** a fill's order (its story opens from the fill) */
+  order_id?: string | null;
 }
 
 export interface FlowEventsResponse {
@@ -2716,7 +2723,8 @@ export interface FlowLinkSummary {
   top_tools: { tool: string; calls: number }[];
 }
 
-export type FlowWindow = 1 | 5 | 15;
+/** the width window: minutes, or "today" (since 00:00 Europe/Rome) */
+export type FlowWindow = 1 | 5 | 15 | "today";
 
 export interface FlowSummary {
   /** keyed "a|b" in the link's forward direction */
@@ -2728,5 +2736,178 @@ export interface FlowSummary {
     orders_today: number;
     errors_window: number;
     mcp_latency_ms: number | null;
+    /** the read hit its limit: the figures are a lower bound */
+    truncated?: boolean;
   };
+}
+
+/** GET /api/flow/events?from=&to=: one page of a closed window; `cursor` null = done */
+export interface FlowReplayPage {
+  events: FlowEvent[];
+  cursor: string | null;
+  from: string;
+  to: string;
+  now: string;
+}
+
+export interface FlowToolStat {
+  tool: string;
+  calls: number;
+  errors: number;
+  avg_ms: number | null;
+}
+
+/** GET /api/flow/tools?window=: every tool by family (the lens), and per link */
+export interface FlowTools {
+  window: FlowWindow;
+  families: { key: string; label: string; tools: (FlowToolStat & { dest: string })[] }[];
+  other: (FlowToolStat & { dest: string })[];
+  links: Record<string, FlowToolStat[]>;
+  truncated: boolean;
+}
+
+/** GET /api/flow/order/{id}: an order's journey */
+export interface FlowOrderStory {
+  order: {
+    id: string;
+    symbol: string;
+    side: string;
+    type: string;
+    qty: string | null;
+    notional: string | null;
+    limit_price: string | null;
+    stop_price: string | null;
+    status: string;
+    status_it: string;
+    role: string | null;
+    source: string | null;
+    parent_id: string | null;
+    created_at: string;
+    broker: { kind: string; label: string; node: string } | null;
+  };
+  agent: { key: string; name: string } | null;
+  decision: {
+    id: string;
+    kind: string;
+    summary: string | null;
+    reason: string | null;
+    confidence: number | null;
+    expected: unknown;
+    at: string;
+  } | null;
+  decision_note: string | null;
+  mcp: {
+    audit_id: number;
+    tool: string;
+    outcome: "ok" | "error";
+    reason_code: string | null;
+    latency_ms: number | null;
+    symbol: string | null;
+    at: string;
+  } | null;
+  mcp_note: string | null;
+  sent: { at: string; broker: string | null } | null;
+  rejected: { at: string; code: string | null; message: string | null } | null;
+  children: {
+    id: string;
+    role: string;
+    role_it: string;
+    type: string;
+    side: string;
+    status: string;
+    status_it: string;
+    stop_price: string | null;
+    limit_price: string | null;
+    at: string;
+  }[];
+  fills: {
+    id: string;
+    at: string;
+    qty: string;
+    price: string;
+    expected_price: string | null;
+    expected_from: string | null;
+    slippage_pct: string | null;
+    source: string;
+  }[];
+  telegram: { category: string; category_it: string; status: string; at: string }[];
+  outcome: { status: string; status_it: string; filled_qty: string | null; avg_fill_price: string | null; at: string | null };
+  steps: { at: string; step: string; label: string; node: string | null }[];
+}
+
+/** GET /api/flow/mcp/{audit_id}: an agent's MCP call (a refused order: no order) */
+export interface FlowMcpStory {
+  audit_id: number;
+  at: string;
+  tool: string;
+  agent: { key: string; name: string };
+  outcome: "ok" | "error";
+  reason_code: string | null;
+  latency_ms: number | null;
+  symbol: string | null;
+  path: string[];
+  note: string | null;
+  /** the order the call created, when there is one */
+  order_id?: string | null;
+}
+
+/** a Paperclip run as an impulse Paperclip → agent */
+export interface FlowRunEvent extends FlowEvent {
+  reason: string;
+  run_outcome: string;
+}
+
+/** GET /api/flow/agents: Paperclip runs and costs (always 200; `available` false = down) */
+export interface FlowAgents {
+  available: boolean;
+  note: string | null;
+  read_at: string | null;
+  currency: string;
+  agents: {
+    key: string;
+    name: string;
+    paperclip_id: string | null;
+    status: string | null;
+    status_it: string | null;
+    today_usd: string | null;
+    month_usd: string | null;
+    cap_usd: string | null;
+    runs: { id: string; ts: string; reason: string; reason_it: string; outcome: string; latency_ms: number | null }[];
+  }[];
+  runs: FlowRunEvent[];
+}
+
+export type FlowHealthState = "ok" | "attenzione" | "errore" | "sconosciuto";
+
+/** GET /api/flow/health: per node state and one Italian line */
+export interface FlowHealth {
+  checked_at: string;
+  nodes: Record<string, { state: FlowHealthState; reason: string }>;
+}
+
+/** GET /api/flow/sources: the market-data router's providers */
+export interface FlowPriceSource {
+  key: string;
+  label: string;
+  mode: "stream" | "request";
+  state: "live" | "connecting" | "refused" | "on_demand" | "unknown";
+  state_it: string;
+  symbols: number;
+  symbol_list: string[];
+  /** no counter exists yet: null = no rate shown */
+  updates_per_min: number | null;
+  reads_minute: number | null;
+  reads_hour: number | null;
+  note: string | null;
+  health: string | null;
+  last_error: string | null;
+  streams: { asset_class: string; state: string; symbols: number; note: string | null }[];
+}
+
+export interface FlowSources {
+  checked_at: string;
+  stream_status: boolean;
+  polling: string[];
+  sources: FlowPriceSource[];
+  disabled: string[];
 }

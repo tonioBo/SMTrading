@@ -51,7 +51,11 @@ class AgentPortfolio(Base):
 
 class McpAuditLog(Base):
     __tablename__ = "mcp_audit_log"
-    __table_args__ = (Index("ix_mcp_audit_log_agent_created", "agent_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_mcp_audit_log_agent_created", "agent_id", "created_at"),
+        # 0051: one tool's latest calls (the «Fiume dei flussi» Neurograph health)
+        Index("ix_mcp_audit_log_method_created", "method", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     agent_id: Mapped[uuid.UUID | None] = mapped_column(

@@ -21,6 +21,9 @@ only the symbol (`symbol`, or the first of `symbols`) leaves the database.
 Event ids are stable (`mcp:<id>`, `order:<id>:sent`, `order:<id>:rejected`, `fill:<id>`,
 `tg:<id>`, `auto:<id>`, `export:<tipo>:<giorno>:<versione>`): the page polls with a time cursor and drops the ids it has seen.
 
+Replay («moviola», `replay_events`): a closed window `from <= ts <= to` (an MCP call by
+its start), paged by an opaque cursor, the (ts, id) of a page's last event.
+
 Known trade-offs: an order re-sent to the broker keeps its id `order:<id>:sent` (the page,
 having seen it, draws the first send only); a rejection's time is `orders.updated_at`
 (a later touch of a rejected order moves it). Telegram rows carry no portfolio reference
@@ -85,7 +88,8 @@ def mcp_path(agent: str, method: str) -> tuple[list[str], list[str]]:
     return path, hops
 
 
-async def _mcp(session: AsyncSession, since: datetime, until: datetime, limit: int) -> list[dict]:
+async def _mcp(session: AsyncSession, since: datetime, until: datetime, limit: int, *,
+               strict: bool = False) -> list[dict]:
     ts = (McpAuditLog.created_at - McpAuditLog.latency_ms * _MS).label("ts")
     symbols = McpAuditLog.params["symbols"]
     symbol = func.coalesce(
@@ -95,11 +99,14 @@ async def _mcp(session: AsyncSession, since: datetime, until: datetime, limit: i
     ).label("symbol")
     # filtered on the row's write time: a long call (its row is written at the end) is
     # never lost behind the cursor; the page drops the ids it has already seen
+    # (`strict`, the replay: on the call's start, a closed window)
     q = (select(McpAuditLog.id, McpAuditLog.agent_id, McpAuditLog.method,
                 McpAuditLog.outcome, McpAuditLog.latency_ms, ts, symbol)
          .where(McpAuditLog.agent_id.is_not(None), ~McpAuditLog.method.like("admin:%"),
                 McpAuditLog.created_at > since, ts <= until)
          .order_by(ts, McpAuditLog.id).limit(limit))
+    if strict:
+        q = q.where(ts > since)
     out = []
     for r in (await session.execute(q)).all():
         path, hops = mcp_path(agent_key(r.agent_id), r.method)
@@ -153,7 +160,8 @@ async def _orders_rejected(session, since, until, limit) -> list[dict]:
 
 
 async def _fills(session, since, until, limit) -> list[dict]:
-    q = (select(Fill.id, Fill.symbol, Fill.created_at, Fill.source, BrokerLink.kind)
+    q = (select(Fill.id, Fill.order_id, Fill.symbol, Fill.created_at, Fill.source,
+                BrokerLink.kind)
          .join(Order, Order.id == Fill.order_id)
          .outerjoin(BrokerLink, BrokerLink.id == Order.broker_link_id)
          .where(Fill.created_at > since, Fill.created_at <= until,
@@ -166,8 +174,9 @@ async def _fills(session, since, until, limit) -> list[dict]:
             hops = [f"eseguito {r.symbol}", "registrazione"]
         else:
             path, hops = ["eng", "sim"], [f"esecuzione simulata {r.symbol}"]
-        out.append(_event(f"fill:{r.id}", r.created_at, "fill", "eng", path, hops,
-                          symbol=r.symbol))
+        # the order it fills, so a simulated order (no send event) opens its story
+        out.append({**_event(f"fill:{r.id}", r.created_at, "fill", "eng", path, hops,
+                             symbol=r.symbol), "order_id": str(r.order_id)})
     return out
 
 
@@ -210,12 +219,15 @@ _SOURCES = (_mcp, _orders_sent, _orders_rejected, _fills, _auto, _telegram, _exp
 
 
 async def collect_events(session: AsyncSession, *, since: datetime, until: datetime,
-                         limit: int) -> list[dict]:
-    """The events with `since < ts <= until` (MCP calls: also those written after `since`),
-    the `limit` oldest, sorted by (ts, id)."""
+                         limit: int, strict: bool = False) -> list[dict]:
+    """The events with `since < ts <= until` (MCP calls: also those written after `since`,
+    unless `strict`), the `limit` oldest, sorted by (ts, id)."""
     events: list[dict] = []
     for source in _SOURCES:
-        events += await source(session, since, until, limit)
+        if source is _mcp:
+            events += await _mcp(session, since, until, limit, strict=strict)
+        else:
+            events += await source(session, since, until, limit)
     events.sort(key=lambda e: (e["ts"], e["id"]))
     return events[:limit]
 
@@ -226,3 +238,43 @@ async def flow_events(session: AsyncSession, *, after: datetime | None, limit: i
     last FIRST_WINDOW without a cursor; at most `limit`, oldest first."""
     since = after - OVERLAP if after is not None else now - FIRST_WINDOW
     return await collect_events(session, since=since, until=now, limit=limit)
+
+
+# -- replay («moviola») -------------------------------------------------------------------
+
+REPLAY_MAX = timedelta(hours=24)
+_TICK = timedelta(microseconds=1)
+# events at the cursor's own time already returned, re-read with each page: a margin so
+# a page is never filled by them alone
+REPLAY_SLACK = 100
+
+
+def encode_cursor(ts: datetime, event_id: str) -> str:
+    """The opaque cursor of a replay page: the (ts, id) of its last event."""
+    return f"{ts.isoformat()}|{event_id}"
+
+
+def decode_cursor(raw: str) -> tuple[datetime, str]:
+    ts_raw, sep, event_id = (raw or "").partition("|")
+    if not sep or not event_id:
+        raise ValueError("bad cursor")
+    ts = datetime.fromisoformat(ts_raw.replace(" ", "+"))
+    if ts.tzinfo is None:
+        raise ValueError("bad cursor")
+    return ts, event_id
+
+
+async def replay_events(session: AsyncSession, *, since: datetime, until: datetime,
+                        limit: int, cursor: tuple[datetime, str] | None
+                        ) -> tuple[list[dict], tuple[datetime, str] | None]:
+    """One page of the closed window `since <= ts <= until` (the call's start for MCP
+    calls), oldest first, after `cursor` (the (ts, id) of the previous page's last event).
+    Returns the page and the next cursor (None: the window is done)."""
+    lo = cursor[0] if cursor is not None else since
+    events = await collect_events(session, since=max(lo, since) - _TICK, until=until,
+                                  limit=limit + 1 + REPLAY_SLACK, strict=True)
+    if cursor is not None:
+        events = [e for e in events if (e["ts"], e["id"]) > cursor]
+    page = events[:limit]
+    more = len(events) > limit
+    return page, ((page[-1]["ts"], page[-1]["id"]) if more and page else None)

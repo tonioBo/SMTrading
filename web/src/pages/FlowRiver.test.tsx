@@ -1,14 +1,23 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { FlowEvent, FlowMap, FlowSummary } from "@/api/types";
+import type { FlowAgents, FlowEvent, FlowHealth, FlowMap, FlowSummary, FlowTools } from "@/api/types";
 import FlowRiver from "./FlowRiver";
 
 const hooks = vi.hoisted(() => ({
   useFlowMap: vi.fn(),
   useFlowEvents: vi.fn(),
   useFlowSummary: vi.fn(),
+  useFlowTools: vi.fn(),
+  useFlowAgents: vi.fn(),
+  useFlowHealth: vi.fn(),
+  useFlowSources: vi.fn(),
+  useFlowReplay: vi.fn(),
+  useFlowOrderStory: vi.fn(),
+  useFlowMcpStory: vi.fn(),
 }));
+/** the stand-in renderer of the page under test */
+const canvas = vi.hoisted(() => ({ current: null as null | Record<string, unknown> }));
 vi.mock("@/api/hooks/flow", () => hooks);
 
 // the renderer needs a real canvas: a stand-in that replays every pushed event at once
@@ -17,17 +26,71 @@ vi.mock("@/components/flow/RiverCanvas", async (importOriginal) => ({
   RiverCanvas: class {
     launch: ((e: FlowEvent) => void) | null = null;
     follow: ((e: FlowEvent | null) => void) | null = null;
+    hover: ((h: unknown) => void) | null = null;
+    select: ((e: FlowEvent) => void) | null = null;
+    nodeClick: ((k: string) => boolean) | null = null;
     pushed: FlowEvent[] = [];
+    replayed: FlowEvent[] = [];
+    added: string[][] = [];
+    summary: unknown = null;
+    badges: Record<string, string> = {};
+    health: Record<string, unknown> = {};
+    windowMin = 0;
+    replaying: [number, number] | null = null;
+    constructor() {
+      canvas.current = this as unknown as Record<string, unknown>;
+    }
     setMap() {}
-    setSummary() {}
-    setWindow() {}
+    setSummary(s: unknown) {
+      this.summary = s;
+    }
+    setWindow(m: number) {
+      this.windowMin = m;
+    }
     setPaused() {}
     setSpeed() {}
+    setHealth(h: Record<string, unknown>) {
+      this.health = h;
+    }
+    setBadges(b: Record<string, string>) {
+      this.badges = b;
+    }
+    onSelect(cb: (e: FlowEvent) => void) {
+      this.select = cb;
+    }
+    onNodeClick(cb: (k: string) => boolean) {
+      this.nodeClick = cb;
+    }
+    startReplay(from: number, to: number) {
+      this.replaying = [from, to];
+      this.replayed = [];
+    }
+    addReplay(events: FlowEvent[]) {
+      this.added.push(events.map((e) => e.id));
+      this.replayed = [...this.replayed, ...events];
+    }
+    setReplaySpeed() {}
+    setReplayHorizon() {}
+    seek() {}
+    stopReplay() {
+      this.replaying = null;
+    }
+    replayClock() {
+      return this.replaying ? this.replaying[0] : null;
+    }
+    replayEnded() {
+      return false;
+    }
+    linkDirection(): [string, string] | null {
+      return ["pc", "mcp"];
+    }
     setFollow(on: boolean) {
       const order = this.pushed.find((e) => e.hops[0] === "place_order");
       if (on && order) this.follow?.(order);
     }
-    onHover() {}
+    onHover(cb: (h: unknown) => void) {
+      this.hover = cb;
+    }
     onFollow(cb: (e: FlowEvent | null) => void) {
       this.follow = cb;
     }
@@ -49,6 +112,7 @@ const MAP: FlowMap = {
     { key: "mcp", label: "MCP SMTrading", kind: "core", column: 2, description: "La porta" },
     { key: "ng", label: "Neurograph", kind: "ng", column: 3, description: "Forchetta" },
     { key: "eng", label: "Motore ordini", kind: "core", column: 3, description: "Controlli" },
+    { key: "px", label: "Prezzi", kind: "data", column: 3, description: "Prezzi" },
   ],
   links: [
     ["agent:a1", "pc"],
@@ -83,11 +147,65 @@ const EVENTS: FlowEvent[] = [
 ];
 const NONE: FlowEvent[] = [];
 
-function mockHooks({ summary = BUSY, events = EVENTS, stale = false } = {}) {
+const AGENTS: FlowAgents = {
+  available: true,
+  note: null,
+  read_at: "2026-11-28T10:00:00Z",
+  currency: "USD",
+  agents: [
+    {
+      key: "agent:a1",
+      name: "Portfolio Manager",
+      paperclip_id: "p1",
+      status: "idle",
+      status_it: "in attesa",
+      today_usd: "1.2",
+      month_usd: "12",
+      cap_usd: "50",
+      runs: [{ id: "r1", ts: "2026-11-28T09:58:00Z", reason: "timer", reason_it: "programmata", outcome: "riuscita", latency_ms: 60_000 }],
+    },
+  ],
+  runs: [],
+};
+const DOWN: FlowAgents = { available: false, note: "Paperclip non raggiungibile: costi non disponibili", read_at: null, currency: "USD", agents: [{ ...AGENTS.agents[0], today_usd: null, month_usd: null, cap_usd: null, runs: [] }], runs: [] };
+const HEALTH: FlowHealth = {
+  checked_at: "2026-11-28T10:00:00Z",
+  nodes: { ng: { state: "errore", reason: "ultima get_forecast fallita alle 10:58" }, mcp: { state: "ok", reason: "risponde" } },
+};
+const TOOLS: FlowTools = {
+  window: 1,
+  families: [{ key: "orders", label: "ordini", tools: [{ tool: "place_order", dest: "eng", calls: 2, errors: 0, avg_ms: 150 }] }],
+  other: [],
+  links: { "pc|mcp": [{ tool: "get_forecast", calls: 25, errors: 1, avg_ms: 880 }] },
+  truncated: false,
+};
+const IDLE_REPLAY = { events: [], pages: 0, done: false, capped: false, error: null };
+
+function mockHooks({ summary = BUSY, events = EVENTS, stale = false, agents = AGENTS } = {}) {
   hooks.useFlowMap.mockReturnValue({ data: MAP });
   hooks.useFlowSummary.mockReturnValue({ data: summary });
   hooks.useFlowEvents.mockReturnValue({ events, now: "2026-11-28T10:00:01Z", stale });
+  hooks.useFlowTools.mockReturnValue({ data: TOOLS });
+  hooks.useFlowAgents.mockReturnValue({ data: agents });
+  hooks.useFlowHealth.mockReturnValue({ data: HEALTH });
+  hooks.useFlowSources.mockReturnValue({ data: undefined });
+  hooks.useFlowReplay.mockReturnValue(IDLE_REPLAY);
+  hooks.useFlowOrderStory.mockReturnValue({ data: undefined, isError: false });
+  hooks.useFlowMcpStory.mockReturnValue({ data: undefined, isError: false });
 }
+const river = () => canvas.current as unknown as {
+  hover: (h: unknown) => void;
+  select: (e: FlowEvent) => void;
+  nodeClick: (k: string) => boolean;
+  badges: Record<string, string>;
+  health: Record<string, unknown>;
+  replayed: FlowEvent[];
+  added: string[][];
+  summary: FlowSummary;
+  replaying: [number, number] | null;
+  pushed: FlowEvent[];
+  windowMin: number;
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -155,5 +273,195 @@ describe("FlowRiver", () => {
     expect(story).toHaveTextContent("MCP SMTrading");
     expect(story).toHaveTextContent("Motore ordini");
     expect(story).toHaveTextContent("SPY");
+  });
+
+  it("keeps the general view as v1 when nothing is opened", () => {
+    mockHooks();
+    render(<FlowRiver />);
+    expect(screen.queryByRole("region", { name: "Moviola" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "⏸ Pausa" })).toBeInTheDocument();
+  });
+
+  it("widens the bands on the whole day with «oggi»", async () => {
+    mockHooks();
+    render(<FlowRiver />);
+    await userEvent.click(within(screen.getByRole("group", { name: "Larghezza su" })).getByRole("button", { name: "oggi" }));
+    expect(hooks.useFlowSummary).toHaveBeenLastCalledWith("today");
+    expect(screen.getByRole("group", { name: "Contatori" })).toHaveTextContent("errori oggi");
+    expect(river().windowMin).toBeGreaterThanOrEqual(1);
+  });
+
+  it("opens the replay bar, loads a preset and goes back to live", async () => {
+    const replayed = [{ ...EVENTS[0], id: "mcp:100", ts: "2026-11-28T09:30:00Z" }];
+    mockHooks();
+    render(<FlowRiver />);
+    await userEvent.click(screen.getByRole("button", { name: "⏮ Moviola" }));
+    expect(screen.getByRole("region", { name: "Moviola" })).toHaveTextContent("moviola · scegli un intervallo");
+    hooks.useFlowReplay.mockReturnValue({ events: replayed, pages: 1, done: true, capped: false, error: null });
+    await userEvent.click(screen.getByRole("button", { name: "ultima ora" }));
+    const [range] = hooks.useFlowReplay.mock.lastCall!;
+    expect(range.to - range.from).toBe(3_600_000);
+    expect(river().replaying).toEqual([range.from, range.to]);
+    expect(river().replayed.map((e) => e.id)).toEqual(["mcp:100"]);
+    expect(screen.getByRole("region", { name: "Moviola" })).toHaveTextContent("moviola · ora mostrata");
+    expect(screen.getByRole("log", { name: "Chiamate in moviola" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Contatori" })).toHaveTextContent("errori nell'intervallo");
+    await userEvent.click(screen.getByRole("button", { name: "Torna al vivo" }));
+    expect(river().replaying).toBeNull();
+    expect(screen.queryByRole("region", { name: "Moviola" })).not.toBeInTheDocument();
+    expect(hooks.useFlowReplay).toHaveBeenLastCalledWith(null);
+  });
+
+  it("opens an order's story from the diary and from a comet", async () => {
+    const sent: FlowEvent = {
+      id: "order:9b1c6c2e-1111-4111-8111-111111111111:sent",
+      ts: "2026-11-28T10:00:00Z",
+      kind: "order_sent",
+      who: "eng",
+      path: ["eng", "mcp"],
+      hops: ["invio", "ordine AAPL"],
+      outcome: "ok",
+      latency_ms: null,
+      symbol: "AAPL",
+    };
+    mockHooks({ events: [sent] });
+    render(<FlowRiver />);
+    await userEvent.click(screen.getByRole("button", { name: /storia/ }));
+    expect(screen.getByRole("dialog", { name: "Storia dell'ordine" })).toBeInTheDocument();
+    expect(hooks.useFlowOrderStory).toHaveBeenLastCalledWith("9b1c6c2e-1111-4111-8111-111111111111");
+    await userEvent.click(screen.getByRole("button", { name: "Chiudi la storia" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    act(() => river().select({ ...EVENTS[0], id: "mcp:77", hops: ["place_order", "place_order", "place_order"] }));
+    expect(hooks.useFlowMcpStory).toHaveBeenLastCalledWith("77");
+  });
+
+  it("rings the nodes with their health and explains it in the card", () => {
+    mockHooks();
+    render(<FlowRiver />);
+    expect(river().health).toEqual(HEALTH.nodes);
+    act(() => river().hover({ node: "ng", x: 10, y: 10 }));
+    expect(screen.getByText("Neurograph").closest("div[class*=absolute]")).toHaveTextContent("errore · ultima get_forecast fallita alle 10:58");
+  });
+
+  it("badges the agents with today's and the month's spend and the cap, and lists the last runs", () => {
+    mockHooks();
+    render(<FlowRiver />);
+    expect(river().badges).toEqual({ "agent:a1": "oggi 1,20 $ · mese 12,00 $ / 50,00 $" });
+    act(() => river().hover({ node: "agent:a1", x: 10, y: 10 }));
+    const card = screen.getAllByText("Portfolio Manager").map((e) => e.closest("div[class*=absolute]")).find(Boolean)!;
+    expect(card).toHaveTextContent("spesa oggi1,20 $");
+    expect(card).toHaveTextContent("tetto mensile50,00 $");
+    expect(card).toHaveTextContent("programmata · riuscita");
+  });
+
+  it("says when Paperclip is down: costs not available, the river keeps working", () => {
+    mockHooks({ agents: DOWN });
+    render(<FlowRiver />);
+    expect(screen.getByText("Paperclip non raggiungibile: costi non disponibili")).toBeInTheDocument();
+    expect(river().badges).toEqual({ "agent:a1": "costi non disponibili" });
+    expect(screen.getByRole("img", { name: /25 chiamate al minuto/ })).toBeInTheDocument();
+  });
+
+  it("merges the recent Paperclip runs into the live river", () => {
+    const run = { ...EVENTS[0], id: "run:r9", ts: new Date(Date.now() - 60_000).toISOString(), kind: "run", who: "pc", path: ["pc", "agent:a1"], hops: ["programmata"], reason: "timer", run_outcome: "riuscita" };
+    const old = { ...run, id: "run:r1", ts: new Date(Date.now() - 3_600_000).toISOString() };
+    mockHooks({ agents: { ...AGENTS, runs: [old, run] } });
+    render(<FlowRiver />);
+    expect(river().pushed.map((e) => e.id)).toContain("run:r9");
+    expect(river().pushed.map((e) => e.id)).not.toContain("run:r1");
+  });
+
+  it("opens the lens on MCP SMTrading and closes it with a click outside", async () => {
+    mockHooks();
+    render(<FlowRiver />);
+    let taken = false;
+    act(() => {
+      taken = river().nodeClick("mcp");
+    });
+    expect(taken).toBe(true);
+    expect(river().nodeClick("ng")).toBe(false);
+    const lens = screen.getByRole("dialog", { name: "Lente su MCP SMTrading" });
+    expect(within(lens).getByRole("listitem", { name: "ordini" })).toHaveTextContent("place_order");
+    expect(hooks.useFlowTools).toHaveBeenLastCalledWith(1, true);
+    await userEvent.click(screen.getByTestId("lens-backdrop"));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("lists every tool of a link with its mean time in the link card", () => {
+    mockHooks();
+    render(<FlowRiver />);
+    act(() => river().hover({ link: "pc|mcp", x: 10, y: 10 }));
+    expect(screen.getByText(/Paperclip ↔ MCP SMTrading/).closest("div[class*=absolute]")).toHaveTextContent("get_forecast25 · 880 ms · 1 ✕");
+  });
+
+  it("hands the river only each new replay page, over 20 pages, and counts them all", async () => {
+    mockHooks();
+    const { rerender } = render(<FlowRiver />);
+    await userEvent.click(screen.getByRole("button", { name: "⏮ Moviola" }));
+    await userEvent.click(screen.getByRole("button", { name: "ultima ora" }));
+    let all: FlowEvent[] = [];
+    for (let p = 0; p < 20; p++) {
+      const page = Array.from({ length: 50 }, (_, i) => ({ ...EVENTS[0], id: `mcp:${p}-${i}`, ts: new Date(Date.now() - 3_000_000 + p * 1000 + i).toISOString() }));
+      all = all.concat(page);
+      hooks.useFlowReplay.mockReturnValue({ events: all, pages: p + 1, done: p === 19, capped: false, error: null });
+      rerender(<FlowRiver />);
+    }
+    const sizes = river().added.filter((a) => a.length).map((a) => a.length);
+    expect(sizes).toEqual(Array(20).fill(50));
+    expect(river().summary.links["pc|mcp"].calls).toBe(1000);
+  });
+
+  it("closes only the top panel with Escape", async () => {
+    mockHooks();
+    render(<FlowRiver />);
+    act(() => river().select({ ...EVENTS[0], id: "mcp:77", hops: ["place_order", "place_order", "place_order"] }));
+    act(() => {
+      river().nodeClick("mcp");
+    });
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Lente su MCP SMTrading" })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Chiamata MCP" })).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("opens the lenses from the keyboard too", async () => {
+    mockHooks();
+    render(<FlowRiver />);
+    await userEvent.click(screen.getByRole("button", { name: "Apri la lente su Prezzi" }));
+    expect(screen.getByRole("dialog", { name: "Lente su Prezzi" })).toBeInTheDocument();
+  });
+
+  it("announces Paperclip down as a status", () => {
+    mockHooks({ agents: DOWN });
+    render(<FlowRiver />);
+    expect(screen.getByRole("status")).toHaveTextContent("Paperclip non raggiungibile: costi non disponibili");
+  });
+
+  it("marks the lens counts as live during a replay", async () => {
+    mockHooks();
+    render(<FlowRiver />);
+    await userEvent.click(screen.getByRole("button", { name: "⏮ Moviola" }));
+    await userEvent.click(screen.getByRole("button", { name: "ultima ora" }));
+    act(() => {
+      river().nodeClick("mcp");
+    });
+    expect(screen.getByRole("dialog", { name: "Lente su MCP SMTrading" })).toHaveTextContent("conteggi in diretta");
+  });
+
+  it("rebuilds the replay widths when the map arrives after the first page", async () => {
+    mockHooks();
+    hooks.useFlowMap.mockReturnValue({ data: undefined });
+    const { rerender } = render(<FlowRiver />);
+    await userEvent.click(screen.getByRole("button", { name: "⏮ Moviola" }));
+    await userEvent.click(screen.getByRole("button", { name: "ultima ora" }));
+    const page = [{ ...EVENTS[0], id: "mcp:200", ts: new Date(Date.now() - 600_000).toISOString() }];
+    hooks.useFlowReplay.mockReturnValue({ events: page, pages: 1, done: true, capped: false, error: null });
+    rerender(<FlowRiver />);
+    expect(river().summary.links).toEqual({}); // no map: no link known yet
+    hooks.useFlowMap.mockReturnValue({ data: { ...MAP } });
+    rerender(<FlowRiver />);
+    expect(river().summary.links["pc|mcp"].calls).toBe(1);
   });
 });
