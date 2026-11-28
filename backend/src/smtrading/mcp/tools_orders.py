@@ -6,6 +6,9 @@ Mutating tools need `trade` on the portfolio, get_order/list_orders/preview_orde
 `read`; an order_id tool checks the permission on the order's own portfolio (a missing
 order is NOT_FOUND). Orders are placed with source="agent" and the calling agent's id.
 The placing tools commit on error too, so rejected orders are stored (run_tool).
+The order-creating tools take an optional `decision_id`: one of the calling agent's own
+decisions (log_decision), stored in `orders.decision_id`; any other id is INVALID_ORDER
+(field decision_id) and nothing is stored.
 """
 
 from typing import Any, Literal
@@ -15,6 +18,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import CallToolResult
 from sqlalchemy import select
 
+from smtrading.activity.models import Decision
 from smtrading.agents.service import require_permission
 from smtrading.common.errors import ErrorCode, SMTError
 from smtrading.engine import service as engine
@@ -70,11 +74,24 @@ async def _order(ctx: ToolCtx, order_id: Any, needed: Literal["read", "trade"]) 
     return order
 
 
+async def _decision(ctx: ToolCtx, decision_id: Any) -> int | None:
+    """None, or the id of one of the calling agent's own decisions (INVALID_ORDER, field
+    decision_id, otherwise: an unknown id and another agent's answer alike)."""
+    did = parse_int(decision_id, "decision_id", 1)
+    if did is None:
+        return None
+    owner = await ctx.session.scalar(select(Decision.agent_id).where(Decision.id == did))
+    if owner is None or owner != ctx.agent_id:
+        raise _invalid("decision_id", "decision_id must be one of your own decisions "
+                       "(the decision_id returned by log_decision)")
+    return did
+
+
 def _request(
     ctx: ToolCtx, pid: UUID, symbol: Any, side: Any, type: Any, *, qty: Num = None,
     notional: Num = None, limit_price: Num = None, stop_price: Num = None,
     trail_pct: Num = None, trail_amount: Num = None, tif: Any = "gtc",
-    client_order_id: Any = None, valid_until: Any = None,
+    client_order_id: Any = None, valid_until: Any = None, decision_id: int | None = None,
 ) -> PlaceOrderRequest:
     return PlaceOrderRequest(
         portfolio_id=pid,
@@ -92,11 +109,13 @@ def _request(
         agent_id=str(ctx.agent_id),
         source=SOURCE,
         valid_until=valid_until,  # checked by the engine (INVALID_ORDER, field valid_until)
+        decision_id=decision_id,  # checked by _decision
     )
 
 
 def _oco_leg(
-    ctx: ToolCtx, pid: UUID, field: str, leg: Any, symbol: Any, side: Any, qty: Num, tif: Any
+    ctx: ToolCtx, pid: UUID, field: str, leg: Any, symbol: Any, side: Any, qty: Num, tif: Any,
+    decision_id: int | None,
 ) -> PlaceOrderRequest:
     if not isinstance(leg, dict):
         raise _invalid(field, f"{field} must be an object {{type, limit_price?, stop_price?}}")
@@ -106,6 +125,7 @@ def _oco_leg(
     return _request(
         ctx, pid, symbol, side, leg.get("type"), qty=_required(qty, "qty"),
         limit_price=leg.get("limit_price"), stop_price=leg.get("stop_price"), tif=tif,
+        decision_id=decision_id,
     )
 
 
@@ -219,6 +239,7 @@ def register(mcp: MCPServer) -> None:
         notional: Num = None, limit_price: Num = None, stop_price: Num = None,
         trail_pct: Num = None, trail_amount: Num = None, tif: str = "gtc",
         client_order_id: str | None = None, valid_until: str | None = None,
+        decision_id: int | None = None,
     ) -> CallToolResult:
         """Place an order; returns the order. side: buy|sell; type: market|limit|stop|
         stop_limit|trailing_stop; tif: gtc|day. Give qty, or notional for a market order;
@@ -229,12 +250,14 @@ def register(mcp: MCPServer) -> None:
         valid_until (optional): an ISO 8601 datetime with an offset (e.g.
         2026-11-18T21:55:00+01:00) or "close" (today's regular session close of the
         market; not for crypto or FX). Still unfilled then, the order is canceled and becomes
-        expired; a part already filled stands."""
+        expired; a part already filled stands. decision_id (optional): the decision_id
+        log_decision returned for the decision behind this order (yours only)."""
         params = {
             "portfolio_id": portfolio_id, "symbol": symbol, "side": side, "type": type,
             "qty": qty, "notional": notional, "limit_price": limit_price,
             "stop_price": stop_price, "trail_pct": trail_pct, "trail_amount": trail_amount,
             "tif": tif, "client_order_id": client_order_id, "valid_until": valid_until,
+            "decision_id": decision_id,
         }
 
         async def fn(ctx: ToolCtx) -> Any:
@@ -243,7 +266,7 @@ def register(mcp: MCPServer) -> None:
                 ctx, pid, symbol, side, type, qty=qty, notional=notional,
                 limit_price=limit_price, stop_price=stop_price, trail_pct=trail_pct,
                 trail_amount=trail_amount, tif=tif, client_order_id=client_order_id,
-                valid_until=valid_until,
+                valid_until=valid_until, decision_id=await _decision(ctx, decision_id),
             )
             await ensure_instrument(ctx, req.symbol)
             order = await engine.place_order(ctx.session, ctx.qs, req, redis=ctx.redis)
@@ -256,6 +279,7 @@ def register(mcp: MCPServer) -> None:
         portfolio_id: str, symbol: str, side: str, qty: Num = None, take_profit: Num = None,
         stop_loss: Num = None, type: str = "market", limit_price: Num = None, tif: str = "gtc",
         client_order_id: str | None = None, valid_until: str | None = None,
+        decision_id: int | None = None,
     ) -> CallToolResult:
         """Entry (market or limit) plus a take_profit limit and a stop_loss stop exit, in one
         OCO group, both reduce_only and held until the entry fills. Returns
@@ -263,12 +287,13 @@ def register(mcp: MCPServer) -> None:
         Needs trade. valid_until (optional, the entry only): an ISO 8601 datetime with an
         offset or "close" (today's regular session close of the market; not for crypto or FX).
         An entry still unfilled then is canceled and becomes expired, with its exits; if
-        part of it filled, the exits keep protecting that part with their own tif."""
+        part of it filled, the exits keep protecting that part with their own tif.
+        decision_id (optional): your decision behind it (log_decision), on all three."""
         params = {
             "portfolio_id": portfolio_id, "symbol": symbol, "side": side, "qty": qty,
             "take_profit": take_profit, "stop_loss": stop_loss, "type": type,
             "limit_price": limit_price, "tif": tif, "client_order_id": client_order_id,
-            "valid_until": valid_until,
+            "valid_until": valid_until, "decision_id": decision_id,
         }
 
         async def fn(ctx: ToolCtx) -> Any:
@@ -276,7 +301,7 @@ def register(mcp: MCPServer) -> None:
             req = _request(
                 ctx, pid, symbol, side, type, qty=_required(qty, "qty"),
                 limit_price=limit_price, tif=tif, client_order_id=client_order_id,
-                valid_until=valid_until,
+                valid_until=valid_until, decision_id=await _decision(ctx, decision_id),
             )
             tp = _required(parse_decimal(take_profit, "take_profit"), "take_profit")
             sl = _required(parse_decimal(stop_loss, "stop_loss"), "stop_loss")
@@ -291,21 +316,23 @@ def register(mcp: MCPServer) -> None:
     @mcp.tool(structured_output=False)
     async def place_oco_order(
         portfolio_id: str, symbol: str, side: str, qty: Num = None, a: dict | None = None,
-        b: dict | None = None, tif: str = "gtc",
+        b: dict | None = None, tif: str = "gtc", decision_id: int | None = None,
     ) -> CallToolResult:
         """Two resting orders (same symbol, side, qty) in one OCO group: when one fills the
         other is canceled. a and b: {type: limit|stop|stop_limit, limit_price?,
         stop_price?}; market legs are not allowed. If either leg is refused both are
-        stored as rejected. Returns [a, b]. Needs trade."""
+        stored as rejected. Returns [a, b]. Needs trade. decision_id (optional): your
+        decision behind it (log_decision), on both legs."""
         params = {
             "portfolio_id": portfolio_id, "symbol": symbol, "side": side, "qty": qty,
-            "a": a, "b": b, "tif": tif,
+            "a": a, "b": b, "tif": tif, "decision_id": decision_id,
         }
 
         async def fn(ctx: ToolCtx) -> Any:
             pid = await _portfolio(ctx, portfolio_id, "trade")
-            leg_a = _oco_leg(ctx, pid, "a", a, symbol, side, qty, tif)
-            leg_b = _oco_leg(ctx, pid, "b", b, symbol, side, qty, tif)
+            did = await _decision(ctx, decision_id)
+            leg_a = _oco_leg(ctx, pid, "a", a, symbol, side, qty, tif, did)
+            leg_b = _oco_leg(ctx, pid, "b", b, symbol, side, qty, tif, did)
             await ensure_instrument(ctx, leg_a.symbol)
             orders = await engine.place_oco_order(
                 ctx.session, ctx.qs, leg_a, leg_b, redis=ctx.redis
@@ -400,38 +427,45 @@ def register(mcp: MCPServer) -> None:
 
     @mcp.tool(structured_output=False)
     async def close_position(
-        portfolio_id: str, symbol: str, qty: Num = None
+        portfolio_id: str, symbol: str, qty: Num = None, decision_id: int | None = None,
     ) -> CallToolResult:
         """Close a position (or `qty` of it) with a reduce_only market order on the
         opposite side; the symbol's open bracket exits are canceled, and its exits that
         are not reduce_only (an OCO, a stop placed alone): all of them on a full close,
         those larger than the quantity left on a partial one (activity
-        order.exits_canceled). Returns the order. Needs trade."""
-        params = {"portfolio_id": portfolio_id, "symbol": symbol, "qty": qty}
+        order.exits_canceled). Returns the order. Needs trade. decision_id (optional):
+        your decision behind it (log_decision)."""
+        params = {"portfolio_id": portfolio_id, "symbol": symbol, "qty": qty,
+                  "decision_id": decision_id}
 
         async def fn(ctx: ToolCtx) -> Any:
             pid = await _portfolio(ctx, portfolio_id, "trade")
             sym = _str(symbol, "symbol", required=True)
+            did = await _decision(ctx, decision_id)
             order = await engine.close_position(
                 ctx.session, ctx.qs, pid, sym, parse_decimal(qty, "qty"),  # type: ignore[arg-type]
-                source=SOURCE, agent_id=str(ctx.agent_id), redis=ctx.redis,
+                source=SOURCE, agent_id=str(ctx.agent_id), redis=ctx.redis, decision_id=did,
             )
             return await _loaded(ctx, order)
 
         return await run_tool("close_position", params, fn, commit_on_error=True)
 
     @mcp.tool(structured_output=False)
-    async def close_all_positions(portfolio_id: str) -> CallToolResult:
+    async def close_all_positions(
+        portfolio_id: str, decision_id: int | None = None,
+    ) -> CallToolResult:
         """Close every open position with reduce_only market orders; returns the orders
-        (a refused close is returned with status rejected, not raised). Needs trade."""
+        (a refused close is returned with status rejected, not raised). Needs trade.
+        decision_id (optional): your decision behind it (log_decision), on every order."""
 
         async def fn(ctx: ToolCtx) -> Any:
             pid = await _portfolio(ctx, portfolio_id, "trade")
+            did = await _decision(ctx, decision_id)
             orders = await engine.close_all_positions(
                 ctx.session, ctx.qs, pid, source=SOURCE, agent_id=str(ctx.agent_id),
-                redis=ctx.redis,
+                redis=ctx.redis, decision_id=did,
             )
             return await _loaded(ctx, orders)
 
-        params = {"portfolio_id": portfolio_id}
+        params = {"portfolio_id": portfolio_id, "decision_id": decision_id}
         return await run_tool("close_all_positions", params, fn, commit_on_error=True)

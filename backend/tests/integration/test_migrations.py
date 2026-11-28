@@ -891,3 +891,35 @@ async def test_0045_portfolio_code(fresh_db):
             " where table_name = 'portfolios' and column_name = 'code'")) == 0
     await engine.dispose()
     await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+
+
+async def test_0049_decision_confidence_and_order_link_up_down(fresh_db):
+    """0049: decisions.confidence/expected and orders.decision_id (FK, ON DELETE SET NULL)
+    exist at head; the downgrade drops them; upgrade restores them."""
+    import asyncio
+
+    from smtrading.common.db import make_engine
+
+    cols = text(
+        "select table_name || '.' || column_name from information_schema.columns"
+        " where (table_name = 'decisions' and column_name in ('confidence', 'expected'))"
+        " or (table_name = 'orders' and column_name = 'decision_id')")
+    want = {"decisions.confidence", "decisions.expected", "orders.decision_id"}
+
+    async def present() -> tuple[set[str], str | None]:
+        engine = make_engine(fresh_db)
+        async with engine.connect() as conn:
+            got = set((await conn.execute(cols)).scalars())
+            rule = await conn.scalar(text(
+                "select confdeltype::text from pg_constraint where conname = 'fk_orders_decision_id'"))
+        await engine.dispose()
+        return got, rule
+
+    got, rule = await present()
+    assert got == want and rule == "n"  # n = SET NULL
+    await asyncio.to_thread(_alembic, fresh_db, "downgrade", "0048")
+    got, rule = await present()
+    assert got == set() and rule is None
+    await asyncio.to_thread(_alembic, fresh_db, "upgrade", "head")
+    got, _ = await present()
+    assert got == want

@@ -46,6 +46,7 @@ MAX_SYMBOL_LEN = 32
 MAX_DETAILS_BYTES = 8192
 MAX_REASON = 300
 MAX_SUBJECT = 200
+MAX_HORIZON_DAYS = 365
 MAX_TYPE = 64
 MAX_LEVEL = 16
 # direct events (telegram not NULL) are SMTrading's job: sent, queued, in the night digest or
@@ -163,6 +164,35 @@ def _clean_symbols(symbols: Any) -> list[str]:
     return out
 
 
+def _is_int(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) or (
+        isinstance(v, float) and math.isfinite(v) and v.is_integer())
+
+
+def _clean_confidence(value: Any) -> int | None:
+    """Optional: an integer 0..100 (how sure the agent is)."""
+    if value is None:
+        return None
+    if not _is_int(value) or not 0 <= value <= 100:
+        raise _invalid("confidence", "confidence must be an integer between 0 and 100")
+    return int(value)
+
+
+def _clean_expected(value: Any) -> dict | None:
+    """Optional: {return_pct: number, horizon_days: integer 1..365}, no other keys."""
+    if value is None:
+        return None
+    msg = ("expected must be {return_pct: a number (expected return in %), "
+           f"horizon_days: an integer between 1 and {MAX_HORIZON_DAYS}}}")
+    if not isinstance(value, dict) or set(value) != {"return_pct", "horizon_days"}:
+        raise _invalid("expected", msg)
+    ret, days = value["return_pct"], value["horizon_days"]
+    if (isinstance(ret, bool) or not isinstance(ret, int | float) or not math.isfinite(ret)
+            or not _is_int(days) or not 1 <= days <= MAX_HORIZON_DAYS):
+        raise _invalid("expected", msg)
+    return {"return_pct": ret, "horizon_days": int(days)}
+
+
 def _clean_text(value: Any, field: str, limit: int) -> str | None:
     """An optional text: stripped, empty -> None, at most `limit` characters."""
     if value is None:
@@ -187,9 +217,11 @@ async def log_decision(
     outcome: str | None = None,
     reason: str | None = None,
     subject: str | None = None,
+    confidence: int | None = None,
+    expected: dict | None = None,
 ) -> Decision:
-    """Store an agent's decision (append-only) and its activity row. outcome, reason and
-    subject are optional: in the activity data only when set."""
+    """Store an agent's decision (append-only) and its activity row. outcome, reason,
+    subject, confidence and expected are optional: in the activity data only when set."""
     from smtrading.events import json_safe
 
     if kind not in {k.value for k in DecisionKind}:
@@ -213,6 +245,8 @@ async def log_decision(
         "outcome": outcome_,
         "reason": _clean_text(reason, "reason", MAX_REASON),
         "subject": _clean_text(subject, "subject", MAX_SUBJECT),
+        "confidence": _clean_confidence(confidence),
+        "expected": _clean_expected(expected),
     }
     if portfolio_id is not None:
         await require_permission(session, agent_id, portfolio_id, "read")

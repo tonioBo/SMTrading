@@ -81,6 +81,6 @@ async def test_mcp_unchanged_with_the_flow_router():
     assert {("GET", "/api/flow/map"), ("GET", "/api/flow/events"),
             ("GET", "/api/flow/summary")} <= set(_app_routes())
     assert await catalog_fingerprint(build_mcp()) == (
-        "668d1432822dc806bbd87a5ed6f5cf9c89130d988d5fa56723789575b88237b9")
+        "2eebdc17e8c7d2ea9e12e8e5c7fa08bdc6b20837d4725921f3bfab263d5d7bf7")
     names = [t.name for t in await build_mcp().list_tools()]
     assert not [n for n in names if "flow" in n]

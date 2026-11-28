@@ -194,6 +194,8 @@ class PlaceOrderRequest:
     valid_until: datetime | str | None = None
     # mode B: the automatic rule an order belongs to (set by the scalper, never by tools)
     auto_rule_id: UUID | None = None
+    # 0049: the agent's decision that sends it (checked by the MCP tools to be its own)
+    decision_id: int | None = None
 
 
 VALID_UNTIL_CLOSE = "close"
@@ -496,7 +498,7 @@ async def _persist(session: AsyncSession, adm: _Admission, **extra) -> Order:
         trail_amount=req.trail_amount, filled_qty=Decimal(0), status=OrderStatus.new,
         source=req.source, reduce_only=req.reduce_only, day_trade=req.day_trade,
         live_flatten=req.live_flatten, valid_until=req.valid_until,
-        auto_rule_id=req.auto_rule_id, **extra,
+        auto_rule_id=req.auto_rule_id, decision_id=req.decision_id, **extra,
     )
     if check is not None and not check.ok:
         _reject(order, check.code, check.message)
@@ -899,6 +901,7 @@ async def place_bracket_order(
             # the exits keep their own tif: the entry's valid_until is not theirs
             expires_at=_tif_expiry(adm), source=entry.source, reduce_only=True,
             auto_rule_id=entry.auto_rule_id,  # an automatic entry's exits are its rule's
+            decision_id=entry.decision_id,  # and an agent's entry's exits its decision's
         )
         for role, type, limit, stop in (
             ("take_profit", OrderType.limit, take_profit, None),
@@ -1388,7 +1391,7 @@ async def _close(
     session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, symbol: str,
     held: Decimal, qty: Decimal | None, *, source: str, agent_id: str | None,
     now: datetime | None, redis=None, limit_price: Decimal | None = None,
-    client_order_id: str | None = None,
+    client_order_id: str | None = None, decision_id: int | None = None,
 ) -> tuple[Order, bool]:
     """A reduce_only market order against `held` (Ruling R22), or with `limit_price` a
     reduce_only DAY limit (it expires at the session end, never rests overnight); unless
@@ -1406,7 +1409,7 @@ async def _close(
     req = PlaceOrderRequest(
         portfolio_id=portfolio_id, symbol=symbol, side=side, type=OrderType.market,
         qty=qty, source=source, agent_id=agent_id, reduce_only=True,
-        client_order_id=client_order_id,
+        client_order_id=client_order_id, decision_id=decision_id,
     )
     if limit_price is not None:
         req = dataclasses.replace(req, type=OrderType.limit, limit_price=limit_price,
@@ -1423,7 +1426,7 @@ async def close_position(
     session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, symbol: str,
     qty: Decimal | None = None, *, source: str = "agent", agent_id: str | None = None,
     now: datetime | None = None, redis=None, limit_price: Decimal | None = None,
-    client_order_id: str | None = None,
+    client_order_id: str | None = None, decision_id: int | None = None,
 ) -> Order:
     """Reduce-only market order on the opposite side for |position| floored to the lot
     (or `qty` <= |position|); a position below one lot is flat. With `limit_price` a
@@ -1440,6 +1443,7 @@ async def close_position(
     order, _ = await _close(
         session, qs, portfolio_id, symbol, held, qty, source=source, agent_id=agent_id,
         now=now, redis=redis, limit_price=limit_price, client_order_id=client_order_id,
+        decision_id=decision_id,
     )
     _raise_if_rejected(order)
     return order
@@ -1448,7 +1452,7 @@ async def close_position(
 async def close_all_positions(
     session: AsyncSession, qs: QuoteSource, portfolio_id: UUID, *,
     source: str = "agent", agent_id: str | None = None, now: datetime | None = None,
-    redis=None,
+    redis=None, decision_id: int | None = None,
 ) -> list[Order]:
     """One closing order per open position (one below its lot is flat: skipped);
     rejections are returned, not raised.
@@ -1466,7 +1470,7 @@ async def close_all_positions(
     for symbol, held in positions.items():
         order, _ = await _close(
             session, qs, portfolio_id, symbol, held, None, source=source,
-            agent_id=agent_id, now=now, redis=redis,
+            agent_id=agent_id, now=now, redis=redis, decision_id=decision_id,
         )
         orders.append(order)
     return orders

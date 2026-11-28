@@ -81,7 +81,8 @@ async def test_log_decision_and_get_decisions(env):
         "id": d1["decision_id"], "agent": "test-agent", "agent_id": str(env["server"].agent_id),
         "portfolio": "Demo", "portfolio_id": demo, "kind": "strategy",
         "summary": "Riduco crypto", "symbols": ["BTC-USD"], "details": {"weight": "0.1"},
-        "outcome": None, "reason": None, "subject": None, "created_at": d1["created_at"],
+        "outcome": None, "reason": None, "subject": None, "confidence": None,
+        "expected": None, "created_at": d1["created_at"],
     }
 
     err, res = await call("get_decisions", {"kind": "veto"})
