@@ -15,6 +15,8 @@ from smtrading.common.db import make_engine
 
 LOGIN_PATH = "/api/auth/login"
 PUBLIC_API_PATHS = {LOGIN_PATH, "/api/auth/logout"}  # logout is best effort
+# the TV screens authenticate with the display link cookie, not a portal login (tested in test_admin_tv)
+DISPLAY_LINK_PREFIX = "/api/tv-display"
 NON_API_ROUTE_ALLOWLIST: set[str] = set()  # non-APIRoute routes allowed under /api/
 PASSWORD = "correct-horse-battery"
 
@@ -34,6 +36,7 @@ def _protected_routes() -> list[tuple[str, str]]:
         (method, ctx.path)
         for ctx in _api_route_contexts()
         if isinstance(ctx.original_route, APIRoute) and ctx.path not in PUBLIC_API_PATHS
+        and not ctx.path.startswith(DISPLAY_LINK_PREFIX)
         for method in ctx.methods
     )
 
