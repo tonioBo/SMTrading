@@ -135,9 +135,9 @@ async def test_place_order_without_decision_unchanged(env):
     assert row.decision_id is None
 
 
-@pytest.mark.parametrize("which", ["theirs", "unknown", "garbage"])
+@pytest.mark.parametrize("which", ["theirs", "unknown", "garbage", "huge"])
 async def test_foreign_or_unknown_decision_refused_and_nothing_stored(env, which):
-    did = {"theirs": env["theirs"], "unknown": 999999999, "garbage": "abc"}[which]
+    did = {"theirs": env["theirs"], "unknown": 999999999, "garbage": "abc", "huge": 2**63}[which]
     base = {"portfolio_id": env["pid"], "symbol": SYM, "side": "buy", "decision_id": did}
     calls = [
         ("place_order", {**base, "type": "market", "qty": "0.1"}),

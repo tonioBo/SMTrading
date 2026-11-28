@@ -77,7 +77,7 @@ async def _order(ctx: ToolCtx, order_id: Any, needed: Literal["read", "trade"]) 
 async def _decision(ctx: ToolCtx, decision_id: Any) -> int | None:
     """None, or the id of one of the calling agent's own decisions (INVALID_ORDER, field
     decision_id, otherwise: an unknown id and another agent's answer alike)."""
-    did = parse_int(decision_id, "decision_id", 1)
+    did = parse_int(decision_id, "decision_id", 1, 2**63 - 1)
     if did is None:
         return None
     owner = await ctx.session.scalar(select(Decision.agent_id).where(Decision.id == did))
