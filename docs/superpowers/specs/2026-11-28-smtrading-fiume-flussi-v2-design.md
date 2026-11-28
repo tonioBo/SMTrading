@@ -52,6 +52,12 @@ la vista generale resta pulita (stesse colonne e nodi); pagina solo amministrato
   di strumenti (ordini · dati di mercato · rischio e previsioni · ricerca · decisioni e attività · messaggi) come
   piccole correnti, ognuna con i suoi strumenti; comete vere anche nella lente; clic fuori per chiudere.
 - Le famiglie vengono dal modulo della mappa (una sola fonte, con guardia: ogni strumento ha una famiglia).
+- **Fonti dei prezzi** (Matteo, 28/11: «dove vedo prezzi forse potremo collegarci le fonti»): la lente su
+  «Prezzi» mostra le fonti vere (flussi in tempo reale Alpaca e Kraken, letture a richiesta da Yahoo, eToro,
+  Binance, Finnhub e le altre del router), ognuna con stato (in diretta · in collegamento · rifiutata · a
+  richiesta), quanti titoli segue, aggiornamenti al minuto e quali titoli sono passati a lettura periodica;
+  dati dallo stato dei flussi già pubblicato (`md:stream_status`) e dalla salute dei fornitori. Guardia: ogni
+  fornitore del router ha un nome nella mappa.
 
 ## Fuori
 

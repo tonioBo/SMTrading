@@ -575,11 +575,20 @@
       "items": [
         {
           "title": "Fiume dei flussi",
-          "status": "in_corso",
-          "detail": "Costruito il 28/11, in messa in linea. Solo dati veri, letti ogni 2 secondi dai registri esistenti; visibile agli amministratori.",
+          "status": "fatto",
+          "detail": "In linea dal 28/11 alle 14:20. Solo dati veri, letti ogni 2 secondi dai registri esistenti; visibile agli amministratori.",
           "refs": [
             "docs/superpowers/specs/2026-11-28-smtrading-fiume-flussi-design.md",
             "docs/superpowers/plans/2026-11-28-smtrading-fiume-flussi.md"
+          ],
+          "date": "2026-11-28"
+        },
+        {
+          "title": "Fiume dei flussi, seconda versione",
+          "status": "prossimo",
+          "detail": "Moviola per rivedere un periodo passato, storia completa di un ordine (dalla decisione dell'agente all'avviso), risvegli e costi degli agenti, stato di salute su ogni nodo, lente sui metodi e sulle fonti dei prezzi: il dettaglio compare solo quando lo chiedi.",
+          "refs": [
+            "docs/superpowers/specs/2026-11-28-smtrading-fiume-flussi-v2-design.md"
           ],
           "date": "2026-11-28"
         },
