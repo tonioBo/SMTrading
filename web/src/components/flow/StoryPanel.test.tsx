@@ -174,4 +174,10 @@ describe("StoryPanel", () => {
     render(<StoryPanel target={{ kind: "mcp", id: "77" }} onClose={() => {}} />);
     expect(screen.getByRole("dialog")).toHaveTextContent("storia non leggibile, riprova");
   });
+
+  it("says when an accepted order call has no order found", () => {
+    hooks.useFlowMcpStory.mockReturnValue({ data: { ...REFUSED, outcome: "ok", reason_code: null, note: null, order_id: null }, isLoading: false, isError: false });
+    render(<StoryPanel target={{ kind: "mcp", id: "77" }} onClose={() => {}} />);
+    expect(screen.getByRole("dialog", { name: "Chiamata MCP" })).toHaveTextContent("ordine non trovato per questa chiamata");
+  });
 });

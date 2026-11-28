@@ -156,8 +156,13 @@ function OrderStory({ s }: { s: FlowOrderStory }) {
   );
 }
 
-/** the backend's note for an order tool refused by the checks */
+/** The backend's note for an order tool refused by the checks. The MCP story has no
+ * structured «refused» field (only outcome "error" + reason_code), so the refusal is read
+ * from this note, which the backend sets for order tools only. */
 const REFUSED = "chiamata rifiutata";
+/** the backend's order tools (flow/story.py ORDER_TOOLS): an accepted one should have
+ * created an order */
+const ORDER_TOOLS = new Set(["place_order", "place_bracket_order", "place_oco_order", "close_position", "close_all_positions", "modify_order"]);
 
 function McpStory({ s, onOpen }: { s: FlowMcpStory; onOpen?: (t: StoryTarget) => void }) {
   const refused = s.note?.startsWith(REFUSED) ?? false;
@@ -182,7 +187,7 @@ function McpStory({ s, onOpen }: { s: FlowMcpStory; onOpen?: (t: StoryTarget) =>
             apri la storia dell&apos;ordine
           </button>
         ) : (
-          s.outcome === "ok" && s.order_id === undefined && <Note>l&apos;ordine creato si apre dal suo invio al broker o dal suo rifiuto</Note>
+          s.outcome === "ok" && ORDER_TOOLS.has(s.tool) && <Note>ordine non trovato per questa chiamata</Note>
         )}
       </Section>
     </>

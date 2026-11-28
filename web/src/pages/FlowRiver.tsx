@@ -102,7 +102,13 @@ export default function FlowRiver() {
   const [lens, setLens] = useState<LensKind | null>(null);
   /** the replayed window's widths and event count, tallied page by page */
   const [replayed, setReplayed] = useState<{ summary: FlowSummary; count: number } | null>(null);
-  const fed = useRef<{ events: number; runs: Set<string>; tally: SummaryTally | null }>({ events: 0, runs: new Set(), tally: null });
+  const fed = useRef<{ events: number; runs: Set<string>; all: FlowEvent[]; tally: SummaryTally | null; links: [string, string][] | undefined }>({
+    events: 0,
+    runs: new Set(),
+    all: [],
+    tally: null,
+    links: undefined,
+  });
   const inReplay = range !== null;
 
   const map = useFlowMap();
@@ -181,7 +187,7 @@ export default function FlowRiver() {
   useEffect(() => {
     setDiary([]);
     setStory(null);
-    fed.current = { events: 0, runs: new Set(), tally: null };
+    fed.current = { events: 0, runs: new Set(), all: [], tally: null, links: undefined };
     setReplayed(null);
     if (!range) {
       river.current?.stopReplay();
@@ -208,12 +214,16 @@ export default function FlowRiver() {
       f.runs.add(e.id);
       fresh.push(e);
     }
-    if (fresh.length) {
-      river.current?.addReplay(fresh);
-      f.tally ??= new SummaryTally(mapLinks ?? []);
-      f.tally.add(fresh);
-      setReplayed((r) => ({ summary: f.tally!.summary((range.to - range.from) / 60_000), count: (r?.count ?? 0) + fresh.length }));
-    }
+    if (fresh.length) river.current?.addReplay(fresh);
+    f.all = f.all.concat(fresh);
+    // a new map (or the first, after the first page): the tally starts again on it
+    const rebuild = f.tally !== null && f.links !== mapLinks;
+    if (!f.tally || rebuild) {
+      f.tally = new SummaryTally(mapLinks ?? []);
+      f.links = mapLinks;
+      f.tally.add(f.all);
+    } else f.tally.add(fresh);
+    if (fresh.length || rebuild) setReplayed({ summary: f.tally.summary((range.to - range.from) / 60_000), count: f.all.length });
     // the pages come in time order: the clock waits at the last one loaded
     const last = replay.events.length ? Date.parse(replay.events[replay.events.length - 1].ts) : range.from;
     river.current?.setReplayHorizon(replay.done ? range.to : last);

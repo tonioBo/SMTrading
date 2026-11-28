@@ -449,4 +449,19 @@ describe("FlowRiver", () => {
     });
     expect(screen.getByRole("dialog", { name: "Lente su MCP SMTrading" })).toHaveTextContent("conteggi in diretta");
   });
+
+  it("rebuilds the replay widths when the map arrives after the first page", async () => {
+    mockHooks();
+    hooks.useFlowMap.mockReturnValue({ data: undefined });
+    const { rerender } = render(<FlowRiver />);
+    await userEvent.click(screen.getByRole("button", { name: "⏮ Moviola" }));
+    await userEvent.click(screen.getByRole("button", { name: "ultima ora" }));
+    const page = [{ ...EVENTS[0], id: "mcp:200", ts: new Date(Date.now() - 600_000).toISOString() }];
+    hooks.useFlowReplay.mockReturnValue({ events: page, pages: 1, done: true, capped: false, error: null });
+    rerender(<FlowRiver />);
+    expect(river().summary.links).toEqual({}); // no map: no link known yet
+    hooks.useFlowMap.mockReturnValue({ data: { ...MAP } });
+    rerender(<FlowRiver />);
+    expect(river().summary.links["pc|mcp"].calls).toBe(1);
+  });
 });
