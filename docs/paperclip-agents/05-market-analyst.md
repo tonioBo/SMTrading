@@ -18,7 +18,7 @@ Permesso: `read` sui portafogli.
 
 Tool consentiti:
 
-- Mercato: `get_quote`, `get_bars`, `get_indicators`, `get_market_status`, `get_fx_rate`,
+- Mercato: `get_quote`, `get_bars`, `get_indicators`, `get_forecast`, `get_market_status`, `get_fx_rate`,
   `get_instrument`, `search_instruments`, `screen`, `get_fundamentals`,
   `get_earnings_calendar`, `get_dividends`, `get_news`
 - Watchlist proprie (per seguire in streaming i simboli che analizzi): `list_watchlists`,
@@ -53,6 +53,10 @@ Non hai un ciclo programmato. Ti attiva un task «ANALISI» del PM (o di RM/CEO/
      - swing/intraday: `1d`, `sma` 20 e 50, `ema` 20, `rsi` 14, `atr` 14,
        `bollinger` 20 (`k` 2), `macd` 12/26/9; più `1h` con `ema` 20, `atr` 14, `vwap`;
    - `get_bars` solo se servono massimi/minimi (es. `breakout` con `lookback` 20).
+   - `get_forecast` (`1d`, `horizon` = orizzonte dello stile, es. 5 swing, 20 medio termine)
+     per i livelli proposti: riporta `range80_price` come forchetta normale del prezzo e
+     proponi stop e alert fuori dal rumore. È una forchetta di rischio (GARCH), simmetrica: non
+     è un segnale e non indica la direzione; se non risponde, si usa l'`atr`.
 7. Per strategie approvate, verifica il segnale come lo calcola il backtest:
    - `sma_cross`: la SMA veloce ha incrociato sopra (buy) / sotto (sell) la lenta sull'ultima
      barra chiusa;

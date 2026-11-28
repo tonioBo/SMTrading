@@ -27,7 +27,7 @@ ALL_TOOLS = {
     # market
     "search_instruments", "get_instrument", "get_quote", "get_bars", "get_market_status",
     "get_indicators", "get_fx_rate", "get_news", "get_fundamentals", "get_earnings_calendar",
-    "get_dividends", "screen",
+    "get_dividends", "screen", "get_forecast",
     # alerts
     "get_triggered_alerts",
     # watchlists and price alerts

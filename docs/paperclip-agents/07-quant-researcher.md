@@ -21,7 +21,7 @@ Tool consentiti:
 - Backtest: `run_backtest`, `get_backtest`, `list_backtests`
 - Ricerca: `run_walk_forward`, `run_param_sweep`, `run_portfolio_backtest`, `get_research`,
   `list_research`
-- Dati: `get_bars`, `get_indicators`, `get_quote`, `get_instrument`, `search_instruments`,
+- Dati: `get_bars`, `get_indicators`, `get_forecast`, `get_quote`, `get_instrument`, `search_instruments`,
   `screen`, `get_fundamentals`, `get_dividends`, `get_market_status`
 - Contesto: `list_portfolios`, `get_risk_limits`, `get_performance`, `check_tradable`
 - Storico: `get_activity_feed`, `get_decisions`, `log_decision`

@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     agent_docs_export_dir: str = "/agent-instructions"
     # the api health endpoint the worker waits for before its alerting jobs start
     api_health_url: str = "http://api:8000/health"
+    # Neurograph's «serie» compartment for get_forecast (e.g. http://192.168.4.4:18088/api/serie
+    # over the WireGuard VPN); None = the tool answers PROVIDER_UNAVAILABLE
+    neurograph_url: str | None = None
 
 
 @lru_cache
