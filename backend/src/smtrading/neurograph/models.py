@@ -32,3 +32,22 @@ class NeurographExport(Base):
     message: Mapped[str | None] = mapped_column(String(500))
     attempts: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+NIGHT_OUTCOMES = ("ok", "outage", "unauthorized")
+_OUTCOMES = ",".join(f"'{s}'" for s in NIGHT_OUTCOMES)
+
+
+class NeurographExportNight(Base):
+    """The outcome of one night's run (sender.run_nightly): `outage` (Neurograph
+    unreachable, 503 or a 5xx on a file), `unauthorized` (key refused) or `ok`; the
+    consecutive outage / unauthorized nights decide the «once per streak» alerts."""
+
+    __tablename__ = "neurograph_export_nights"
+    __table_args__ = (
+        CheckConstraint(f"outcome in ({_OUTCOMES})", name="ck_neurograph_export_nights_outcome"),
+    )
+
+    night: Mapped[date] = mapped_column(Date, primary_key=True)
+    outcome: Mapped[str] = mapped_column(String(16))
+    ran_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -20,10 +20,10 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 from pydantic import SecretStr
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from smtrading.activity.models import Decision
-from smtrading.agents.models import Agent
+from smtrading.agents.models import Agent, AgentPortfolio
 from smtrading.brokers.models import BrokerLink
 from smtrading.engine.models import Fill, Order, OrderSide, OrderStatus, OrderType
 from smtrading.flow.events import flow_events
@@ -135,14 +135,32 @@ async def world(db_session):
     camp = Portfolio(name=f"C-{uuid.uuid4().hex[:8]}", code=_code(), broker_link_id=link.id)
     hidden = Portfolio(name=f"H-{uuid.uuid4().hex[:8]}", in_totals=False)
     archived = Portfolio(name=f"A-{uuid.uuid4().hex[:8]}", status=PortfolioStatus.archived)
-    db_session.add_all([camp, hidden, archived])
+    flagged = Portfolio(name=f"I-{uuid.uuid4().hex[:8]}", in_totals=False,
+                        neurograph_export=True)
+    flagged_archived = Portfolio(name=f"IA-{uuid.uuid4().hex[:8]}", in_totals=False,
+                                 neurograph_export=True, status=PortfolioStatus.archived)
+    db_session.add_all([camp, hidden, archived, flagged, flagged_archived])
+    await db_session.flush()
+    db_session.add(AgentPortfolio(agent_id=agent.id, portfolio_id=camp.id, permission="trade"))
     await db_session.flush()
     return SimpleNamespace(sym=sym, link=link, agent=agent, camp=camp, hidden=hidden,
-                           archived=archived)
+                           archived=archived, flagged=flagged,
+                           flagged_archived=flagged_archived)
 
 
-async def _decision(db_session, w, portfolio, *, at=IN_DAY, **kw):
-    d = Decision(agent_id=w.agent.id, portfolio_id=portfolio.id if portfolio else None,
+async def _agent(db_session, *portfolios):
+    a = Agent(name=f"AG {uuid.uuid4().hex[:8]}", token_prefix=uuid.uuid4().hex[:8],
+              token_hash="x")
+    db_session.add(a)
+    await db_session.flush()
+    for p in portfolios:
+        db_session.add(AgentPortfolio(agent_id=a.id, portfolio_id=p.id, permission="trade"))
+    await db_session.flush()
+    return a
+
+
+async def _decision(db_session, w, portfolio, *, at=IN_DAY, agent=None, **kw):
+    d = Decision(agent_id=(agent or w.agent).id, portfolio_id=portfolio.id if portfolio else None,
                  kind="strategy", summary="Compro su rottura", details={"livello": 101},
                  symbols=[w.sym], created_at=at, **kw)
     db_session.add(d)
@@ -191,14 +209,39 @@ async def test_decision_rows_campaign_and_general_only(db_session, world):
     rows = await export.build_rows(db_session, "decisioni", DAY)
     assert [r["id"] for r in rows] == [mine.id, general.id]
     assert rows[0] == {
-        "schema": 1, "id": mine.id, "ts": "2034-06-09T22:30:00+00:00",
+        "schema": 1, "ambito": "campagna", "id": mine.id, "ts": "2034-06-09T22:30:00+00:00",
         "agente": w.agent.name, "portafoglio": w.camp.code, "tipo": "strategy",
         "sintesi": "Compro su rottura", "dettagli": {"livello": 101}, "simboli": [w.sym],
         "esito": "approvata", "motivo": "trend", "fiducia": 70,
         "risultato_atteso": {"rendimento_pct": 2.5, "orizzonte_giorni": 5},
     }
     assert rows[1]["portafoglio"] is None and rows[1]["fiducia"] is None
-    assert rows[1]["risultato_atteso"] is None
+    assert rows[1]["risultato_atteso"] is None and rows[1]["ambito"] == "campagna"
+
+
+async def test_general_decisions_only_of_exported_agents(db_session, world):
+    w = world
+    drill = await _agent(db_session, w.hidden)  # a drill-only agent
+    tester = await _agent(db_session, w.flagged)  # only on the intraday test portfolio
+    await _decision(db_session, w, None, agent=drill)
+    mine = await _decision(db_session, w, None, agent=tester)
+    rows = await export.build_rows(db_session, "decisioni", DAY)
+    assert [(r["id"], r["ambito"]) for r in rows] == [(mine.id, "prova_intraday")]
+
+
+async def test_the_flagged_test_portfolio_is_exported_tagged(db_session, world):
+    w = world
+    d = await _decision(db_session, w, w.flagged)
+    o = await _order(db_session, w, w.flagged)
+    f = await _fill(db_session, o)
+    await _decision(db_session, w, w.flagged_archived)
+    await _fill(db_session, await _order(db_session, w, w.flagged_archived))
+    for kind, want in (("decisioni", d.id), ("ordini", str(o.id)), ("esecuzioni", str(f.id))):
+        rows = await export.build_rows(db_session, kind, DAY)
+        assert [(r["id"], r["ambito"]) for r in rows] == [(want, "prova_intraday")], kind
+    events = await flow_events(db_session, after=None, limit=500,
+                               now=IN_DAY + timedelta(minutes=2))
+    assert f"fill:{f.id}" in {e["id"] for e in events}
 
 
 async def test_order_rows_carry_the_decision(db_session, world):
@@ -213,7 +256,7 @@ async def test_order_rows_carry_the_decision(db_session, world):
     rows = await export.build_rows(db_session, "ordini", DAY)
     assert [r["id"] for r in rows] == [str(o.id), str(plain.id)]
     assert rows[0] == {
-        "schema": 1, "id": str(o.id), "ts": "2034-06-09T22:30:00+00:00",
+        "schema": 1, "ambito": "campagna", "id": str(o.id), "ts": "2034-06-09T22:30:00+00:00",
         "aggiornato": "2034-06-09T22:35:00+00:00", "portafoglio": w.camp.code,
         "broker": "alpaca_paper", "origine": w.agent.name, "simbolo": w.sym, "lato": "buy",
         "tipo": "limit", "durata": "day", "quantita": "3.5", "controvalore": None,
@@ -234,7 +277,7 @@ async def test_fill_rows_campaign_only(db_session, world):
     await _fill(db_session, await _order(db_session, w, w.archived))
     rows = await export.build_rows(db_session, "esecuzioni", DAY)
     assert rows == [{
-        "schema": 1, "id": str(f.id), "ordine": str(o.id), "ts": "2034-06-09T22:31:00+00:00",
+        "schema": 1, "ambito": "campagna", "id": str(f.id), "ordine": str(o.id), "ts": "2034-06-09T22:31:00+00:00",
         "portafoglio": w.camp.code, "simbolo": w.sym, "lato": "buy", "quantita": "3.5",
         "prezzo": "101.2", "bid": "101.1", "ask": "101.3", "ultimo": "101.2",
         "ts_quotazione": "2034-06-09T22:30:59+00:00", "commissione": "0.35",
@@ -390,6 +433,97 @@ async def test_the_key_never_leaves_the_request(db_session, ng, http, caplog):
         assert KEY not in t
     for k in await db_session.scalars(select(JobRun.key).where(JobRun.job == sender.JOB)):
         assert KEY not in k
+
+
+async def test_a_changed_day_in_the_window_goes_at_the_next_version(db_session, world, ng,
+                                                                    http, monkeypatch):
+    monkeypatch.setattr(sender, "BACKFILL_DAYS", 5)
+    w = world
+    oid = (await _order(db_session, w, w.camp, at=datetime(2034, 6, 8, 12, tzinfo=UTC))).id
+    await _nightly(db_session, http, night(DAY), ng.url)
+    sent_at = await db_session.scalar(select(NeurographExport.sent_at).where(
+        NeurographExport.kind == "ordini", NeurographExport.day == date(2034, 6, 8)))
+    await db_session.execute(update(Order).where(Order.id == oid).values(
+        status=OrderStatus.filled, updated_at=sent_at + timedelta(microseconds=1)))
+    ng.requests.clear()
+    ng.answer = lambda kind, day: (200, {"esito": "sostituito"})
+    await _nightly(db_session, http, night(DAY + timedelta(days=2)), ng.url)
+    ids = [{k.lower(): v for k, v in r["headers"].items()}["x-smt-export-id"]
+           for r in ng.requests]
+    assert ids == ["smtrading:ordini:2034-06-08:2", *(
+        f"smtrading:{k}:{d}:1" for d in ("2034-06-10", "2034-06-11")
+        for k in ("decisioni", "ordini", "esecuzioni"))]
+    body = json.loads(ng.requests[0]["body"])
+    assert body["stato"] == "filled"
+    row = await db_session.get(NeurographExport, ("ordini", date(2034, 6, 8), 2))
+    assert row.status == "confirmed"
+    ng.requests.clear()
+    await _nightly(db_session, http, night(DAY + timedelta(days=3)), ng.url)
+    assert _sent(ng) == _all("2034-06-12")  # not sent a third time
+
+
+async def test_a_failed_higher_version_is_retried(db_session, ng, http):
+    await _nightly(db_session, http, night(DAY), ng.url)
+    ng.answer = lambda kind, day: (500, {"errore": "interno"})
+    await sender.send_day(db_session, http, "ordini", date(2034, 6, 9), version=2,
+                          settings=_settings(ng.url))
+    ng.requests.clear()
+    ng.answer = lambda kind, day: (201, {"esito": "ricevuto"})
+    await _nightly(db_session, http, night(DAY + timedelta(days=1)), ng.url)
+    ids = [{k.lower(): v for k, v in r["headers"].items()}["x-smt-export-id"]
+           for r in ng.requests]
+    assert ids[0] == "smtrading:ordini:2034-06-09:2"
+
+
+async def test_an_error_on_one_file_does_not_stop_the_others(db_session, ng, http,
+                                                             monkeypatch, caplog):
+    real = sender.build_rows
+
+    async def broken(session, kind, day, **kw):
+        if kind == "ordini":
+            raise RuntimeError("boom")
+        return await real(session, kind, day, **kw)
+
+    monkeypatch.setattr(sender, "build_rows", broken)
+    counts = await _nightly(db_session, http, night(DAY), ng.url)
+    assert _sent(ng) == [(d, k) for d in ("2034-06-08", "2034-06-09")
+                         for k in ("decisioni", "esecuzioni")]
+    assert counts["failed"] == 2 and "neurograph export of smtrading:ordini" in caplog.text
+
+
+async def test_outage_alert_on_the_third_night_once_per_streak(db_session, ng, http,
+                                                              monkeypatch):
+    monkeypatch.setattr(sender, "BACKFILL_DAYS", 5)
+    down = "http://127.0.0.1:9/api/dati/smtrading"
+    nights = [DAY + timedelta(days=n) for n in range(10)]
+    for n in nights[:2]:
+        await _nightly(db_session, http, night(n), down)
+    assert await _alerts(db_session) == []
+    await _nightly(db_session, http, night(nights[2]), down)
+    [alert] = await _alerts(db_session)
+    assert "da 3 notti" in alert and "Da fare: verificare la ricezione di Neurograph" in alert
+    # night 06-12 covers 06-07..06-11: 15 files, the oldest leaves on 06-13
+    assert "15 file in attesa" in alert and "esce dal recupero il 13/06" in alert
+    await _nightly(db_session, http, night(nights[3]), down)
+    assert len(await _alerts(db_session)) == 1  # once per streak
+    await _nightly(db_session, http, night(nights[4]), ng.url)  # back: streak reset
+    ng.answer = lambda kind, day: (503, {"errore": "ricezione non configurata"})
+    for n in nights[5:8]:
+        await _nightly(db_session, http, night(n), ng.url)
+    alerts = await _alerts(db_session)
+    assert len(alerts) == 2 and "ricezione non configurata" in alerts[1]
+
+
+async def test_a_refused_key_alerts_once_per_streak(db_session, ng, http):
+    ng.answer = lambda kind, day: (401, {"errore": "chiave errata"})
+    for n in range(3):
+        await _nightly(db_session, http, night(DAY + timedelta(days=n)), ng.url)
+    assert len(await _alerts(db_session)) == 1
+    ng.answer = lambda kind, day: (201, {"esito": "ricevuto"})
+    await _nightly(db_session, http, night(DAY + timedelta(days=3)), ng.url)
+    ng.answer = lambda kind, day: (401, {"errore": "chiave errata"})
+    await _nightly(db_session, http, night(DAY + timedelta(days=4)), ng.url)
+    assert len(await _alerts(db_session)) == 2
 
 
 # --- flow ----------------------------------------------------------------------------

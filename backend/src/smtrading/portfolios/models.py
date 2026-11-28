@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     false,
     func,
+    or_,
     select,
     text,
     true,
@@ -85,6 +86,10 @@ class Portfolio(Base):
     # false: left out of the total (the goals on the total, the dashboard totals); its own
     # goals work as usual (a time-boxed experiment beside the team's portfolios)
     in_totals: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    # (0050) a portfolio outside the totals whose data still goes to Neurograph's nightly
+    # export, tagged `ambito: prova_intraday` (e.g. the intraday test portfolio)
+    neurograph_export: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false())
     # intraday, mode A (agent wake on a signal) and mode B (automatic rules): two independent
     # switches, both off by default (intraday.models.day_scope is true if either is on)
     intraday_enabled: Mapped[bool] = mapped_column(
@@ -118,6 +123,13 @@ def live_portfolio_ids() -> Select:
 def total_portfolio_ids() -> Select:
     """The ids of the portfolios counted in the total: not archived and `in_totals`."""
     return live_portfolio_ids().where(Portfolio.in_totals.is_(True))
+
+
+def neurograph_portfolio_ids() -> Select:
+    """The ids of the portfolios exported to Neurograph (and drawn in the «Fiume dei
+    flussi»): not archived, and counted in the total or flagged `neurograph_export`."""
+    return live_portfolio_ids().where(
+        or_(Portfolio.in_totals.is_(True), Portfolio.neurograph_export.is_(True)))
 
 
 def ensure_not_archived(portfolio: Portfolio) -> Portfolio:
