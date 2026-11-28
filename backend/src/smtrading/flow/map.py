@@ -106,6 +106,26 @@ AGENT_DESCRIPTIONS: dict[str, str] = {
 AGENT_DEFAULT_DESCRIPTION = "Agente"
 
 
+# the links between static nodes, in their forward direction (plus agent -> pc and
+# sync -> broker for each agent and broker node)
+STATIC_LINKS: tuple[tuple[str, str], ...] = (
+    ("pc", "mcp"),
+    *(("mcp", d) for d in DESTS if d != "mcp"),
+    ("eng", "sync"), ("eng", "sim"), ("eng", "tg"), ("px", "rules"), ("rules", "eng"),
+)
+
+
+def _forward(a: str, b: str) -> bool:
+    return ((a.startswith("agent:") and b == "pc") or (a == "sync" and b.startswith("broker:"))
+            or (a, b) in STATIC_LINKS)
+
+
+def link_key(a: str, b: str) -> str:
+    """The key "a|b" of the link a hop travels, in the link's forward direction (a return
+    hop MCP -> Paperclip travels the link "pc|mcp")."""
+    return f"{b}|{a}" if not _forward(a, b) and _forward(b, a) else f"{a}|{b}"
+
+
 def agent_key(agent_id) -> str:
     return f"agent:{agent_id}"
 
@@ -143,9 +163,6 @@ async def flow_map(session: AsyncSession) -> dict:
                "description": f"Collegamento broker: {broker_label(k)}"} for k in kinds]
 
     links = [[agent_key(a.id), "pc"] for a in agents]
-    links.append(["pc", "mcp"])
-    links += [["mcp", d] for d in DESTS if d != "mcp"]
-    links += [["eng", "sync"], ["eng", "sim"], ["eng", "tg"], ["px", "rules"],
-              ["rules", "eng"]]
+    links += [list(p) for p in STATIC_LINKS]
     links += [["sync", broker_key(k)] for k in kinds]
     return {"nodes": nodes, "links": links}

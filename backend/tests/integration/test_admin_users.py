@@ -57,6 +57,10 @@ ADMIN_ONLY_READS = {
     ("GET", "/api/auto-rules/models"),
     ("GET", "/api/auto-rules/results"),
     ("GET", "/api/auto-rules/{rule_id}/trades"),
+    # the «Fiume dei flussi» router is admin-only
+    ("GET", "/api/flow/map"),
+    ("GET", "/api/flow/events"),
+    ("GET", "/api/flow/summary"),
 }
 SKIPPED_PATHS = {"/health", "/mcp", "/mcp/"}
 
