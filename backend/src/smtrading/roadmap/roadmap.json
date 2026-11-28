@@ -528,8 +528,8 @@
         },
         {
           "title": "Invio notturno dei dati a Neurograph",
-          "status": "in_corso",
-          "detail": "In linea dal 28/11 alle 16:25 ma spento finché non arriva la chiave di Neurograph: poi prova con un giorno solo e accensione con lo storico dal 23/11. Ogni notte alle 00:30 manda decisioni, ordini ed esecuzioni; rimanda le giornate cambiate; avvisa dopo 3 notti senza risposta.",
+          "status": "fatto",
+          "detail": "Acceso il 28/11: prova con un giorno solo riuscita (anche un file vuoto) e storico inviato dal 23/11. Ogni notte alle 00:30 manda decisioni, ordini ed esecuzioni della campagna; rimanda le giornate cambiate; avvisa dopo 3 notti senza risposta.",
           "refs": [
             "docs/superpowers/specs/2026-11-28-smtrading-neurograph-dati-design.md",
             "docs/superpowers/plans/2026-11-28-smtrading-neurograph-dati.md"
@@ -586,7 +586,7 @@
         {
           "title": "Fiume dei flussi, seconda versione",
           "status": "fatto",
-          "detail": "In linea dal 28/11 alle 18:00: moviola per rivedere un periodo passato, storia completa di un ordine (dalla decisione dell'agente all'avviso), risvegli e costi degli agenti, stato di salute su ogni nodo, lente sui metodi e sulle fonti dei prezzi, larghezza «oggi».",
+          "detail": "In linea dal 28/11 alle 18:00: moviola per rivedere un periodo passato, storia completa di un ordine (dalla decisione dell'agente all'avviso), risvegli degli agenti, stato di salute su ogni nodo, lente sui metodi e sulle fonti dei prezzi, larghezza «oggi».",
           "refs": [
             "docs/superpowers/specs/2026-11-28-smtrading-fiume-flussi-v2-design.md",
             "docs/superpowers/plans/2026-11-28-smtrading-fiume-flussi-v2.md"
