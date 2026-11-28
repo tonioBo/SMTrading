@@ -933,6 +933,10 @@
     {
       "term": "Telegram",
       "meaning": "L'app di messaggi dove arrivano avvisi, riepiloghi e pagelle."
+    },
+    {
+      "term": "TV",
+      "meaning": "Il televisore di casa (una smart TV Samsung collegata alla stessa rete), usato come schermo per guardare le pagine di SMTrading da lontano."
     }
   ]
 }
