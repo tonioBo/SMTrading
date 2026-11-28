@@ -9,6 +9,10 @@ Destinations of an MCP call: "eng" (Motore ordini), "px" (Prezzi), "ng" (Neurogr
 "db" (Database), "tg" (Telegram), "mcp" (the call ends at the MCP). Calls to "eng" and
 "tg" are one way (an order, a message); the others answer with data (`… → MCP → Paperclip`).
 Database → Neurograph is the nightly export (not an MCP call).
+
+The lens (v2): every MCP tool and resource belongs to one family (`TOOL_FAMILY`,
+`RESOURCE_FAMILY`), every market-data provider of the router has a display name
+(`PRICE_SOURCE_LABELS`); guards in `tests/unit/test_flow_families.py`.
 """
 
 from sqlalchemy import select
@@ -58,6 +62,59 @@ TOOL_DEST: dict[str, str] = {
 
 # MCP resources (audited as `resource:<uri>`): URI scheme -> destination
 RESOURCE_DEST: dict[str, str] = {"portfolio": _DB, "fees": _DB, "markets": _PX}
+
+# the lens (spec v2 §5): the families an MCP node opens into, in their order on the page
+FAMILIES: tuple[dict[str, str], ...] = (
+    {"key": "orders", "label": "ordini"},
+    {"key": "market", "label": "dati di mercato"},
+    {"key": "risk", "label": "rischio e previsioni"},
+    {"key": "research", "label": "ricerca"},
+    {"key": "decisions", "label": "decisioni e attività"},
+    {"key": "messages", "label": "messaggi"},
+)
+_ORD, _MKT, _RSK, _RES, _DEC, _MSG = (f["key"] for f in FAMILIES)
+
+# MCP tool name -> family (guard: tests/unit/test_flow_families.py)
+TOOL_FAMILY: dict[str, str] = {
+    # portfolios and orders
+    "list_portfolios": _ORD, "get_portfolio": _ORD, "get_positions": _ORD,
+    "get_transactions": _ORD, "get_performance": _ORD,
+    "check_tradable": _ORD, "preview_order": _ORD, "place_order": _ORD,
+    "place_bracket_order": _ORD, "place_oco_order": _ORD, "modify_order": _ORD,
+    "cancel_order": _ORD, "cancel_all_orders": _ORD, "close_position": _ORD,
+    "close_all_positions": _ORD, "get_order": _ORD, "list_orders": _ORD,
+    # market data, news, instruments, watchlists and alerts
+    "search_instruments": _MKT, "get_instrument": _MKT, "get_quote": _MKT, "get_bars": _MKT,
+    "get_market_status": _MKT, "get_indicators": _MKT, "get_fx_rate": _MKT, "get_news": _MKT,
+    "get_fundamentals": _MKT, "get_earnings_calendar": _MKT, "get_dividends": _MKT,
+    "screen": _MKT, "get_triggered_alerts": _MKT, "list_watchlists": _MKT,
+    "create_watchlist": _MKT, "add_to_watchlist": _MKT, "remove_from_watchlist": _MKT,
+    "delete_watchlist": _MKT, "create_alert": _MKT, "list_alerts": _MKT, "delete_alert": _MKT,
+    # risk limits, the trading halt, Neurograph's risk range
+    "get_risk_limits": _RSK, "set_trading_halt": _RSK, "get_trading_halt": _RSK,
+    "get_forecast": _RSK,
+    # backtests and research
+    "run_backtest": _RES, "get_backtest": _RES, "list_backtests": _RES,
+    "run_walk_forward": _RES, "run_param_sweep": _RES, "run_portfolio_backtest": _RES,
+    "get_research": _RES, "list_research": _RES,
+    # decisions, activity, goals, the instructions appendix
+    "log_decision": _DEC, "get_decisions": _DEC, "get_activity_feed": _DEC,
+    "get_goals": _DEC, "get_instructions_appendix": _DEC,
+    # messages
+    "send_telegram": _MSG,
+}
+
+# MCP resources: URI scheme -> family
+RESOURCE_FAMILY: dict[str, str] = {"portfolio": _ORD, "fees": _ORD, "markets": _MKT}
+
+# the market-data router's providers (`marketdata.registry.PROVIDERS`) -> display name
+# (guard: tests/unit/test_flow_families.py)
+PRICE_SOURCE_LABELS: dict[str, str] = {
+    "alpaca": "Alpaca", "kraken": "Kraken", "yahoo": "Yahoo", "etoro": "eToro",
+    "binance": "Binance", "finnhub": "Finnhub", "twelvedata": "Twelve Data",
+    "coingecko": "CoinGecko", "revolutx": "Revolut X", "frankfurter": "Frankfurter (cambi)",
+    "rssnews": "Notizie RSS",
+}
 
 BROKER_LABELS: dict[str, str] = {
     "alpaca_paper": "Alpaca (prova)",
@@ -149,13 +206,31 @@ def destination(method: str) -> str:
     return TOOL_DEST.get(method, "mcp")
 
 
+def family(method: str) -> str | None:
+    """The lens family of an audited MCP method (None: unknown)."""
+    if method.startswith("resource:"):
+        return RESOURCE_FAMILY.get(method.removeprefix("resource:").split("://", 1)[0])
+    return TOOL_FAMILY.get(method)
+
+
+def price_source_label(name: str) -> str:
+    return PRICE_SOURCE_LABELS.get(name, name)
+
+
+def families() -> list[dict]:
+    """[{key, label, tools: [tool, ...]}] in page order, tools in catalog order."""
+    return [{**f, "tools": [t for t, k in TOOL_FAMILY.items() if k == f["key"]]}
+            for f in FAMILIES]
+
+
 def _agent_description(name: str) -> str:
     return AGENT_DESCRIPTIONS.get(" ".join(name.split()).casefold(), AGENT_DEFAULT_DESCRIPTION)
 
 
 async def flow_map(session: AsyncSession) -> dict:
-    """{nodes: [{key, label, kind, column, description}], links: [[a, b], ...]}: every node
-    and every pair that an event can produce (forward direction)."""
+    """{nodes: [{key, label, kind, column, description}], links: [[a, b], ...], families:
+    [{key, label, tools}], price_sources: [{key, label}]}: every node and every pair that
+    an event can produce (forward direction), the lens families and the price sources."""
     agents = (await session.execute(select(Agent.id, Agent.name).order_by(Agent.name))).all()
     kinds = sorted((await session.scalars(select(BrokerLink.kind).distinct())).all())
 
@@ -168,4 +243,5 @@ async def flow_map(session: AsyncSession) -> dict:
     links = [[agent_key(a.id), "pc"] for a in agents]
     links += [list(p) for p in STATIC_LINKS]
     links += [["sync", broker_key(k)] for k in kinds]
-    return {"nodes": nodes, "links": links}
+    return {"nodes": nodes, "links": links, "families": families(),
+            "price_sources": [{"key": k, "label": v} for k, v in PRICE_SOURCE_LABELS.items()]}
