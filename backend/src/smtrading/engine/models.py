@@ -4,6 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -88,6 +89,7 @@ class Order(Base):
         Index("ix_orders_open_valid_until", "valid_until", postgresql_where=_OPEN_WHERE),
         Index("ix_orders_broker_link_id", "broker_link_id"),
         Index("ix_orders_auto_rule_id", "auto_rule_id"),
+        Index("ix_orders_decision_id", "decision_id"),
         # one local order per broker order (C1: never adopt another order's fill)
         Index(
             "uq_orders_broker_link_order", "broker_link_id", "broker_order_id", unique=True,
@@ -135,6 +137,9 @@ class Order(Base):
     # mode B: the automatic rule that sent it (portal/internal only, never in MCP answers)
     auto_rule_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("auto_rules.id", ondelete="SET NULL"))
+    # 0049: the calling agent's decision that sent it (MCP decision_id, checked to be its own)
+    decision_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("decisions.id", ondelete="SET NULL"))
     # R8.2: reduce-only market order of "Chiudi tutte le posizioni reali" (passes the kill switch)
     live_flatten: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false")

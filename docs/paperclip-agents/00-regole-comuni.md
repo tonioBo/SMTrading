@@ -169,17 +169,14 @@ secondi (per un ordine appena inviato usa `get_order`). Cursore perso o rifiutat
 
 ## 9. `log_decision` e lezioni
 
-- `kind` (`proposal`, `approval`, `veto`, `allocation`, `strategy`, `risk_rule`, `other`,
-  `lesson`, `team_rule`), `summary` (1-500 caratteri, una frase), `portfolio_id` (ometti se
-  globale), `symbols` (max 50), `details` (max 8 KB) con sempre `ref`, `by` (il tuo ruolo) e
-  i dati con `ts`. Compila **sempre**, come parametri a parte (non in `details`), `outcome`
-  (`approvata` | `respinta` | `sospesa` | `modificata` | `informativa`), `subject` (cosa si
-  decide, in chiaro, max 200 caratteri; l'id convenzionale resta in `details.ref`) e `reason`
-  (il perché in una frase, max 300): finiscono nel riepilogo delle 18:00 (per una persona,
-  senza id interni).
+- `kind`, `summary` (una frase), `portfolio_id` (ometti se globale), `symbols`, `details`
+  con sempre `ref`, `by` (il tuo ruolo) e i dati con `ts`. Compila **sempre**, come parametri
+  a parte (non in `details`), `outcome`, `subject` (cosa si decide, in chiaro; l'id
+  convenzionale resta in `details.ref`) e `reason` (il perché in una frase): finiscono nel
+  riepilogo delle 18:00 (per una persona, senza id interni). Valori e limiti → §C13.
+- In ogni `log_decision` indica `confidence` (da 0 a 100, quanto sei sicuro) e, quando la decisione riguarda un risultato di mercato, `expected` con `return_pct` (rendimento atteso in %) e `horizon_days` (in quanti giorni). Prima di ogni ordine registra la decisione e passa il suo `decision_id` all'ordine.
 - La registra **chi decide**. Non avvisa nessuno: per gli umani task «NOTIFICA» al Notifier,
-  per un agente il task del passaggio. `INVALID_ORDER` → correggi `details.field`, una volta.
-  Testo completo → §C13.
+  per un agente il task del passaggio.
 - **Lezione**: chi trova un errore suo o del team o una perdita evitabile registra nello
   stesso ciclo una `lesson`; se ripete una lezione o una regola, task urgente «LEZIONE
   RIPETUTA · <codice|ALL> · <LEZ-id>» al CEO. Campi → §C14. Solo il CEO crea e ritira le regole

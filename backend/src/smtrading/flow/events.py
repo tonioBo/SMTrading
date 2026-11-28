@@ -9,14 +9,17 @@ Read only: one bounded query per source, nothing written, nothing published.
     auto_trades      an automatic entry   Prezzi → Regole automatiche → Motore (trigger_at)
     telegram_outbox  a system message     Motore → Telegram (sent; agents' messages are
                                           already their `send_telegram` call)
+    neurograph_exports  the nightly export  Database → Neurograph («esportazione <tipo>»,
+                                          the last attempt of each file)
 
-Orders, fills and automatic trades only of the portfolios counted in the totals
-(`total_portfolio_ids`: hidden test and archived portfolios left out); the agents' MCP
+Orders, fills and automatic trades only of the portfolios counted in the totals or flagged
+`neurograph_export` (`neurograph_portfolio_ids`, the same as the Neurograph export: hidden
+test and archived portfolios left out); the agents' MCP
 calls always (they are real traffic, also on a test portfolio). Of a call's parameters
 only the symbol (`symbol`, or the first of `symbols`) leaves the database.
 
 Event ids are stable (`mcp:<id>`, `order:<id>:sent`, `order:<id>:rejected`, `fill:<id>`,
-`tg:<id>`, `auto:<id>`): the page polls with a time cursor and drops the ids it has seen.
+`tg:<id>`, `auto:<id>`, `export:<tipo>:<giorno>:<versione>`): the page polls with a time cursor and drops the ids it has seen.
 
 Known trade-offs: an order re-sent to the broker keeps its id `order:<id>:sent` (the page,
 having seen it, draws the first send only); a rejection's time is `orders.updated_at`
@@ -36,7 +39,8 @@ from smtrading.autorules.tables import AutoTrade
 from smtrading.brokers.models import BrokerLink
 from smtrading.engine.models import Fill, Order, OrderStatus
 from smtrading.flow.map import ONE_WAY_DESTS, agent_key, broker_key, destination
-from smtrading.portfolios.models import total_portfolio_ids
+from smtrading.neurograph.models import NeurographExport
+from smtrading.portfolios.models import neurograph_portfolio_ids
 from smtrading.telegram.models import OutboxStatus, TelegramOutbox
 
 OVERLAP = timedelta(seconds=10)  # a poll re-reads this much before its cursor
@@ -108,7 +112,7 @@ async def _orders_sent(session, since, until, limit) -> list[dict]:
     q = (select(Order.id, Order.symbol, Order.broker_sent_at, BrokerLink.kind)
          .join(BrokerLink, BrokerLink.id == Order.broker_link_id)
          .where(Order.broker_sent_at > since, Order.broker_sent_at <= until,
-                Order.portfolio_id.in_(total_portfolio_ids()))
+                Order.portfolio_id.in_(neurograph_portfolio_ids()))
          .order_by(Order.broker_sent_at, Order.id).limit(limit))
     return [_event(f"order:{r.id}:sent", r.broker_sent_at, "order_sent", "eng",
                    ["eng", "sync", broker_key(r.kind)], ["invio", f"ordine {r.symbol}"],
@@ -127,7 +131,7 @@ async def _orders_rejected(session, since, until, limit) -> list[dict]:
          .outerjoin(BrokerLink, BrokerLink.id == Order.broker_link_id)
          .where(Order.status == OrderStatus.rejected,
                 Order.updated_at > since, Order.updated_at <= until,
-                Order.portfolio_id.in_(total_portfolio_ids()))
+                Order.portfolio_id.in_(neurograph_portfolio_ids()))
          .order_by(Order.updated_at, Order.id).limit(limit))
     out = []
     for r in (await session.execute(q)).all():
@@ -153,7 +157,7 @@ async def _fills(session, since, until, limit) -> list[dict]:
          .join(Order, Order.id == Fill.order_id)
          .outerjoin(BrokerLink, BrokerLink.id == Order.broker_link_id)
          .where(Fill.created_at > since, Fill.created_at <= until,
-                Fill.portfolio_id.in_(total_portfolio_ids()))
+                Fill.portfolio_id.in_(neurograph_portfolio_ids()))
          .order_by(Fill.created_at, Fill.id).limit(limit))
     out = []
     for r in (await session.execute(q)).all():
@@ -170,7 +174,7 @@ async def _fills(session, since, until, limit) -> list[dict]:
 async def _auto(session, since, until, limit) -> list[dict]:
     q = (select(AutoTrade.id, AutoTrade.symbol, AutoTrade.trigger_at, AutoTrade.status)
          .where(AutoTrade.trigger_at > since, AutoTrade.trigger_at <= until,
-                AutoTrade.portfolio_id.in_(total_portfolio_ids()))
+                AutoTrade.portfolio_id.in_(neurograph_portfolio_ids()))
          .order_by(AutoTrade.trigger_at, AutoTrade.id).limit(limit))
     return [_event(f"auto:{r.id}", r.trigger_at, "auto", "rules", ["px", "rules", "eng"],
                    [f"scatto {r.symbol}", "entrata"],
@@ -189,7 +193,20 @@ async def _telegram(session, since, until, limit) -> list[dict]:
             for r in (await session.execute(q)).all()]
 
 
-_SOURCES = (_mcp, _orders_sent, _orders_rejected, _fills, _auto, _telegram)
+async def _exports(session, since, until, limit) -> list[dict]:
+    """The nightly export's files to Neurograph: a file sent again (a retry) keeps its id
+    and moves to its last attempt."""
+    q = (select(NeurographExport.kind, NeurographExport.day, NeurographExport.version,
+                NeurographExport.status, NeurographExport.sent_at)
+         .where(NeurographExport.sent_at > since, NeurographExport.sent_at <= until)
+         .order_by(NeurographExport.sent_at, NeurographExport.kind).limit(limit))
+    return [_event(f"export:{r.kind}:{r.day.isoformat()}:{r.version}", r.sent_at, "export",
+                   "db", ["db", "ng"], [f"esportazione {r.kind}"],
+                   "ok" if r.status == "confirmed" else "error")
+            for r in (await session.execute(q)).all()]
+
+
+_SOURCES = (_mcp, _orders_sent, _orders_rejected, _fills, _auto, _telegram, _exports)
 
 
 async def collect_events(session: AsyncSession, *, since: datetime, until: datetime,

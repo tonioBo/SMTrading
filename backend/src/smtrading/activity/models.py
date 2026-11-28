@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Identity,
     Index,
+    SmallInteger,
     String,
     func,
     text,
@@ -99,6 +100,9 @@ class Decision(Base):
         CheckConstraint(
             f"outcome IS NULL OR outcome in ({_DECISION_OUTCOMES})", name="ck_decisions_outcome"
         ),
+        CheckConstraint(
+            "confidence IS NULL OR confidence BETWEEN 0 AND 100", name="ck_decisions_confidence"
+        ),
         Index("ix_decisions_portfolio_id", "portfolio_id", "id"),
         Index("ix_decisions_agent_id", "agent_id", "id"),
         Index("ix_decisions_kind", "kind", "id"),
@@ -117,4 +121,8 @@ class Decision(Base):
     outcome: Mapped[str | None] = mapped_column(String(16))
     reason: Mapped[str | None] = mapped_column(String(300))
     subject: Mapped[str | None] = mapped_column(String(200))
+    # optional (0049): how sure the agent is (0..100) and the market result it expects
+    # ({return_pct, horizon_days}); exported to Neurograph
+    confidence: Mapped[int | None] = mapped_column(SmallInteger)
+    expected: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

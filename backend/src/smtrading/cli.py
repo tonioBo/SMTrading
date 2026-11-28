@@ -48,6 +48,12 @@
                              and trades of a test portfolio without agents, no active rule
                              and no open trade; the same as DELETE
                              /api/portfolios/{id}/auto-rules, audited)
+    neurograph-export --day AAAA-MM-GG [--type decisioni|ordini|esecuzioni] [--version N]
+                             (sends that Rome day to Neurograph now, all three types or
+                             one, version N (default 1; higher = an explicit correction
+                             that replaces the day there); one JSON line per file with
+                             its result; exit 1 unless every file is confirmed or without
+                             SMT_NEUROGRAPH_EXPORT_KEY. The key is never printed)
 
 A temporary password is printed only by `users create` / `users reset-password`, once.
 A token is printed only by `agent create` / `agent rotate`, once: it is never stored in
@@ -65,6 +71,7 @@ import dataclasses
 import json
 import re
 import sys
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
@@ -95,6 +102,9 @@ from smtrading.engine.service import (
 )
 from smtrading.events import discard_post_commit, dispatch_post_commit, json_safe
 from smtrading.marketdata.router import MarketDataRouter
+from smtrading.neurograph.export import KINDS as NEUROGRAPH_KINDS
+from smtrading.neurograph.sender import CONFIRMED as NEUROGRAPH_CONFIRMED
+from smtrading.neurograph.sender import send_day as neurograph_send_day
 from smtrading.portfolios.models import Portfolio, PortfolioStatus
 from smtrading.positions.service import get_positions
 from smtrading.risk.models import RiskProfile
@@ -116,6 +126,23 @@ def _decimal(text: str) -> Decimal:
         return Decimal(text)
     except InvalidOperation:
         raise argparse.ArgumentTypeError(f"invalid decimal: {text!r}") from None
+
+
+def _day(text: str) -> date:
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid day (AAAA-MM-GG): {text!r}") from None
+
+
+def _version(text: str) -> int:
+    try:
+        v = int(text)
+    except ValueError:
+        v = 0
+    if v < 1:
+        raise argparse.ArgumentTypeError(f"invalid version (1 or more): {text!r}")
+    return v
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -226,6 +253,11 @@ def build_parser() -> argparse.ArgumentParser:
     autorules_sub.add_parser(
         "purge", help="delete the rules and trades of a test portfolio without agents"
     ).add_argument("--portfolio", required=True)
+    ng = sub.add_parser("neurograph-export",
+                        help="send one Rome day to Neurograph (one-day test or correction)")
+    ng.add_argument("--day", required=True, type=_day)
+    ng.add_argument("--type", dest="kind", choices=NEUROGRAPH_KINDS)
+    ng.add_argument("--version", type=_version, default=1)
     return parser
 
 
@@ -698,7 +730,38 @@ async def run_command(
     return code, out
 
 
+async def run_neurograph_export(
+    args: argparse.Namespace, sessionmaker: async_sessionmaker[AsyncSession],
+    http: httpx.AsyncClient, settings=None,
+) -> tuple[int, str]:
+    """(exit code, one JSON line per file sent): each file in its own committed transaction;
+    a refused key or an unreachable Neurograph stops the remaining types."""
+    settings = settings or get_settings()
+    secret = settings.neurograph_export_key
+    if secret is None or not secret.get_secret_value():
+        return 1, json.dumps({"error": "invio spento: SMT_NEUROGRAPH_EXPORT_KEY non impostata"})
+    lines, code = [], 0
+    for kind in [args.kind] if args.kind else NEUROGRAPH_KINDS:
+        async with sessionmaker() as session:
+            r = await neurograph_send_day(session, http, kind, args.day, args.version,
+                                          settings=settings)
+            await session.commit()
+        lines.append(json.dumps({"tipo": kind, "giorno": args.day.isoformat(),
+                                 "versione": args.version, "esito": r.status,
+                                 "http": r.http_status, "righe": r.rows,
+                                 "messaggio": r.message}, ensure_ascii=False))
+        code = code if r.status == NEUROGRAPH_CONFIRMED else 1
+        if r.stop:
+            break
+    return code, "\n".join(lines)
+
+
 async def run(args: argparse.Namespace) -> int:
+    if args.command == "neurograph-export":
+        async with httpx.AsyncClient() as http:
+            code, out = await run_neurograph_export(args, get_sessionmaker(), http)
+        print(out)
+        return code
     settings = get_settings()
     redis = Redis.from_url(settings.redis_url)
     try:

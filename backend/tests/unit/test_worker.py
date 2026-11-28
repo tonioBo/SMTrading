@@ -115,6 +115,7 @@ def _idle_telegram_loops(monkeypatch):
     monkeypatch.setattr(worker, "ReconciliationJob", _IdleProcessor)
     monkeypatch.setattr(worker, "SystemSentinel", _IdleProcessor)
     monkeypatch.setattr(worker, "IntradayJob", _IdleProcessor)
+    monkeypatch.setattr(worker, "NeurographExportJob", _IdleProcessor)
     monkeypatch.setattr(worker, "StartupGate", _OpenGate)
 
 
@@ -588,8 +589,8 @@ async def test_startup_gate_waiters_share_one_wait():
 async def test_run_holds_the_alerting_jobs_behind_the_gate(monkeypatch):
     """Protection alarm, goal alerts, plan closer, pre-open check, hand-off watchdog,
     broker reconciliation, the broker tradability refresh, the weekly PDF report, the
-    market screener, the personal price alerts, the system sentinel and the intraday job
-    start only once the
+    market screener, the personal price alerts, the system sentinel, the intraday job and
+    the nightly export to Neurograph start only once the
     startup gate opens; the other jobs start at once."""
     waits: list[int] = []
     before: list = []
@@ -643,12 +644,12 @@ async def test_run_holds_the_alerting_jobs_behind_the_gate(monkeypatch):
     for name in ("ProtectionAlarm", "GoalAlerts", "PlanCloser", "PreopenCheck",
                  "HandoffWatchdog", "ReconciliationJob", "WeeklyReport", "ScreenerJob",
                  "PersonalAlerts", "SystemSentinel",
-                 "TradabilityRefresher", "IntradayJob"):
+                 "TradabilityRefresher", "IntradayJob", "NeurographExportJob"):
         monkeypatch.setattr(worker, name, job(name))
     await asyncio.wait_for(worker.run(), 2)
-    assert before == [[], 12]
+    assert before == [[], 13]
     assert sorted(started) == ["GoalAlerts", "HandoffWatchdog", "IntradayJob",
-                               "PersonalAlerts", "PlanCloser",
+                               "NeurographExportJob", "PersonalAlerts", "PlanCloser",
                                "PreopenCheck", "ProtectionAlarm", "ReconciliationJob",
                                "ScreenerJob", "SystemSentinel", "TradabilityRefresher",
                                "WeeklyReport"]
@@ -693,7 +694,7 @@ async def test_worker_registers_intraday_behind_gate(monkeypatch):
     for name in ("StreamManager", "OrderProcessor", "AlertEvaluator", "JobScheduler",
                  "PaperclipReader", "ClosureRefresher", "BacktestRunner", "BrokerSync",
                  "PreopenCheck", "WeeklyReport", "ScreenerJob", "PersonalAlerts",
-                 "TradabilityRefresher", "ResearchRunner"):
+                 "TradabilityRefresher", "ResearchRunner", "NeurographExportJob"):
         monkeypatch.setattr(worker, name, _IdleProcessor)
     monkeypatch.setattr(worker, "health_checks", lambda router: asyncio.sleep(3600))
     monkeypatch.setattr(worker, "supervise", recording_supervise)
@@ -706,3 +707,51 @@ async def test_worker_registers_intraday_behind_gate(monkeypatch):
     assert seen["sessionmaker"] is not None and seen["router"] is not None
     assert seen["http"] is not None and seen["redis"] is not None
     assert seen["kwargs"] == {"exclude_provider": worker.owned_symbols}
+
+
+async def test_worker_registers_the_neurograph_export_behind_gate(monkeypatch):
+    """`neurograph export` is a supervised job behind the startup gate, built with the
+    worker's sessionmaker and HTTP client."""
+    names: list[str] = []
+    seen = {}
+    real_supervise = worker.supervise
+    gate_waits: list[int] = []
+
+    class CountingGate:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def wait(self):
+            gate_waits.append(1)
+
+    async def recording_supervise(name, factory, recorder=None):
+        names.append(name)
+        await real_supervise(name, factory, recorder)
+
+    class FakeExport:
+        def __init__(self, sessionmaker, http, **kwargs):
+            seen.update(sessionmaker=sessionmaker, http=http, kwargs=kwargs)
+
+        async def run(self):
+            signal.raise_signal(signal.SIGTERM)
+            await asyncio.sleep(3600)
+
+    monkeypatch.setattr(
+        worker, "get_settings",
+        lambda: SimpleNamespace(redis_url="redis://unused:6379/0", database_url="x"),
+    )
+    monkeypatch.setattr(worker.Redis, "from_url", staticmethod(lambda url: _FlakyRedis()))
+    monkeypatch.setattr(worker, "make_engine", lambda url: _FakeEngine())
+    for name in ("StreamManager", "OrderProcessor", "AlertEvaluator", "JobScheduler",
+                 "PaperclipReader", "ClosureRefresher", "BacktestRunner", "BrokerSync",
+                 "PreopenCheck", "WeeklyReport", "ScreenerJob", "PersonalAlerts",
+                 "TradabilityRefresher", "ResearchRunner", "IntradayJob"):
+        monkeypatch.setattr(worker, name, _IdleProcessor)
+    monkeypatch.setattr(worker, "health_checks", lambda router: asyncio.sleep(3600))
+    monkeypatch.setattr(worker, "supervise", recording_supervise)
+    monkeypatch.setattr(worker, "StartupGate", CountingGate)
+    monkeypatch.setattr(worker, "NeurographExportJob", FakeExport)
+    await asyncio.wait_for(worker.run(), 2)
+    assert "neurograph export" in names and gate_waits
+    assert seen["sessionmaker"] is not None and seen["http"] is not None
+    assert seen["kwargs"] == {}

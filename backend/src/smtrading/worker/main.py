@@ -36,6 +36,7 @@ from smtrading.marketsportal.alerts import PersonalAlerts
 from smtrading.marketsportal.overview import OverviewService
 from smtrading.marketsportal.screener import ScreenerJob
 from smtrading.marketsportal.yahoo import PortalYahoo
+from smtrading.neurograph.job import NeurographExportJob
 from smtrading.paperclip.reader import PaperclipReader
 from smtrading.paperclip.watchdog import HandoffWatchdog
 from smtrading.positions.protection import ProtectionAlarm
@@ -57,7 +58,8 @@ RESTART_DELAY_S = 5
 HEALTH_FIRST_DELAY_S = 30
 HEALTH_INTERVAL_S = 300
 # the alerting jobs (protection alarm, goal alerts, plan closer, pre-open check, hand-off
-# watchdog, broker reconciliation, weekly PDF report, system sentinel, intraday) wait
+# watchdog, broker reconciliation, weekly PDF report, system sentinel, intraday, the
+# nightly export to Neurograph) wait
 # STARTUP_DELAY_S after the worker start and until the api health endpoint answers, so a
 # deploy restart fires nothing; after STARTUP_MAX_WAIT_S they start anyway (fail open)
 STARTUP_DELAY_S = 180
@@ -290,6 +292,8 @@ async def run() -> None:
                         gate, lambda: IntradayJob(
                             sessionmaker, router, redis, http,
                             exclude_provider=owned_symbols).run()))),
+                    tg.create_task(supervise("neurograph export", lambda: gated(
+                        gate, lambda: NeurographExportJob(sessionmaker, http).run()))),
                     tg.create_task(supervise("broker reconciliation", lambda: gated(
                         gate, lambda: ReconciliationJob(
                             sessionmaker, router, http,
