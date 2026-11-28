@@ -52,6 +52,10 @@ vi.mock("@/components/flow/RiverCanvas", async (importOriginal) => ({
     setHealth(h: Record<string, unknown>) {
       this.health = h;
     }
+    states: Record<string, string> = {};
+    setAgentStates(s: Record<string, string>) {
+      this.states = s;
+    }
     setBadges(b: Record<string, string>) {
       this.badges = b;
     }
@@ -198,6 +202,7 @@ const river = () => canvas.current as unknown as {
   select: (e: FlowEvent) => void;
   nodeClick: (k: string) => boolean;
   badges: Record<string, string>;
+  states: Record<string, string>;
   health: Record<string, unknown>;
   replayed: FlowEvent[];
   added: string[][];
@@ -353,6 +358,16 @@ describe("FlowRiver", () => {
     expect(card).not.toHaveTextContent("spesa");
     expect(card).not.toHaveTextContent("tetto");
     expect(card).toHaveTextContent("programmata · riuscita");
+  });
+
+  it("tells the river which agents sleep, and the card says «stato: dorme»", () => {
+    mockHooks();
+    render(<FlowRiver />);
+    expect(river().states).toEqual({ "agent:a1": "dorme" });
+    expect(screen.getByText(/lavora · .* dorme · .* in pausa/)).toBeInTheDocument();
+    act(() => river().hover({ node: "agent:a1", x: 10, y: 10 }));
+    const card = screen.getAllByText("Portfolio Manager").map((e) => e.closest("div[class*=absolute]")).find(Boolean)!;
+    expect(card).toHaveTextContent("statodorme");
   });
 
   it("says when Paperclip is down: costs not available, the river keeps working", () => {

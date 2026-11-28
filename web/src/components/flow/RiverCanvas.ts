@@ -30,6 +30,8 @@ export const HEALTH_COLORS: Record<FlowHealthState, string> = {
   errore: "#ff4d6d",
   sconosciuto: "rgba(139,153,195,.45)",
 };
+/** what an agent is doing in Paperclip (running / idle / paused / error) */
+export type AgentState = "lavora" | "dorme" | "in pausa" | "errore";
 export const kindColor = (kind: string): string => KIND_COLORS[kind] ?? KIND_COLORS.core;
 
 /** the six columns, left to right (FlowNode.column) */
@@ -179,6 +181,7 @@ export class RiverCanvas {
   private replay: { from: number; to: number; speed: number; next: number; horizon: number } | null = null;
   private health: Record<string, { state: FlowHealthState }> = {};
   private badges: Record<string, string> = {};
+  private agentStates: Record<string, AgentState> = {};
   private heads: { id: string; x: number; y: number; ev: FlowEvent }[] = [];
   private selectCb: ((e: FlowEvent) => void) | null = null;
   private nodeClickCb: ((key: string) => boolean) | null = null;
@@ -431,6 +434,11 @@ export class RiverCanvas {
 
   setHealth(h: Record<string, { state: FlowHealthState; reason?: string }>): void {
     this.health = h;
+  }
+
+  /** which agents work, sleep or are paused («agent:<id>» → state); unknown: unchanged look */
+  setAgentStates(states: Record<string, AgentState>): void {
+    this.agentStates = states;
   }
 
   /** a short text under a node (the agents' spend) */
@@ -1014,9 +1022,15 @@ export class RiverCanvas {
       n.heat *= Math.pow(0.1, dt);
       const inFocus = fr ? fr.set.has(n.key) : focus ? [...focus].some((k) => k.split("|").includes(n.key)) : true;
       const al = inFocus ? 1 : 0.25;
-      g.shadowColor = n.col;
-      g.shadowBlur = 18 + n.heat * 30;
-      g.fillStyle = hexA(n.col, al);
+      const st = this.agentStates[n.key];
+      const calm = typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+      // sleeping: dimmed bar; paused: grey; working: full colour and a soft breathing glow
+      const barCol = st === "in pausa" ? "#8b99c3" : n.col;
+      const barAl = st === "dorme" ? al * 0.4 : st === "in pausa" ? al * 0.5 : al;
+      const breath = st === "lavora" ? (calm ? 8 : 8 + 7 * Math.sin(this.last / 450)) : 0;
+      g.shadowColor = barCol;
+      g.shadowBlur = (st === "dorme" || st === "in pausa" ? 4 : 18) + n.heat * 30 + breath;
+      g.fillStyle = hexA(barCol, barAl);
       this.roundRect(g, n.x - BW / 2, n.y - n.h / 2, BW, n.h, 6);
       g.fill();
       g.shadowBlur = 0;
@@ -1029,6 +1043,11 @@ export class RiverCanvas {
       g.textBaseline = "middle";
       g.fillStyle = hexA("#e8eeff", al);
       g.fillText(n.label, n.x + (left ? -16 : 16), n.y);
+      if (st === "dorme" || st === "in pausa") {
+        const w = g.measureText(n.label).width + 8;
+        g.fillStyle = hexA("#b9c6f2", al * 0.8);
+        g.fillText(st === "dorme" ? "z" : "⏸", n.x + (left ? -16 - w : 16 + w), n.y);
+      }
       const badge = this.badges[n.key];
       if (badge) {
         g.font = `600 10.5px ${MONO}`;

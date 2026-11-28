@@ -433,6 +433,56 @@ describe("RiverCanvas v2", () => {
     expect(texts).toContain("oggi 1,20 $ · mese 12,00 $ / 50,00 $");
   });
 
+  it("draws sleeping agents dimmed with a z, paused ones with a pause sign, working ones with a glow", () => {
+    const texts: string[] = [];
+    const fills: string[] = [];
+    const blurs: number[] = [];
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => {
+      const ctx = fakeContext() as unknown as Record<string, unknown>;
+      return new Proxy(ctx, {
+        get: (t, p: string) => {
+          if (p === "fillText") return (s: string) => texts.push(s);
+          if (p === "fill")
+            return () => {
+              fills.push(String(t.fillStyle));
+              blurs.push(Number(t.shadowBlur));
+            };
+          return t[p];
+        },
+        set: (t, p: string, v) => {
+          t[p] = v;
+          return true;
+        },
+      }) as never;
+    });
+    const host = document.createElement("div");
+    Object.defineProperty(host, "clientWidth", { value: 1200 });
+    Object.defineProperty(host, "clientHeight", { value: 560 });
+    const c = document.createElement("canvas");
+    host.appendChild(c);
+    river.destroy();
+    river = new RiverCanvas(c, document.createElement("canvas"));
+    river.setMap(MAP);
+    river.drawFrame(1000);
+    expect(texts).not.toContain("z");
+    const base = Math.max(...blurs.filter(Number.isFinite));
+    fills.length = 0;
+    river.setAgentStates({ "agent:a1": "dorme" });
+    river.drawFrame(1100);
+    expect(texts).toContain("z");
+    expect(fills.some((f) => f.endsWith(",0.4)"))).toBe(true);
+    texts.length = 0;
+    river.setAgentStates({ "agent:a1": "in pausa" });
+    river.drawFrame(1200);
+    expect(texts).toContain("⏸");
+    blurs.length = 0;
+    texts.length = 0;
+    river.setAgentStates({ "agent:a1": "lavora" });
+    river.drawFrame(1300);
+    expect(Math.max(...blurs.filter(Number.isFinite))).toBeGreaterThan(base);
+    expect(texts).not.toContain("z");
+  });
+
   it("takes the width window in minutes («oggi»: since midnight)", () => {
     river.setSummary({
       links: { "pc|mcp": { calls: 600, errors: 0, top_tools: [] } },

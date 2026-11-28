@@ -12,7 +12,7 @@ import {
 import type { FlowAgents, FlowEvent, FlowHealth, FlowNode, FlowSummary, FlowTools, FlowWindow } from "@/api/types";
 import { Lens } from "@/components/flow/Lens";
 import { ReplayBar } from "@/components/flow/ReplayBar";
-import { HEALTH_COLORS, kindColor, ORIGINS, RiverCanvas, type HoverTarget } from "@/components/flow/RiverCanvas";
+import { type AgentState, HEALTH_COLORS, kindColor, ORIGINS, RiverCanvas, type HoverTarget } from "@/components/flow/RiverCanvas";
 import { LENS_NODES, storyTarget, SummaryTally, type LensKind, windowLabel, windowMinutes, type Range, type ReplaySpeed, type StoryTarget } from "@/components/flow/replay";
 import { StoryPanel } from "@/components/flow/StoryPanel";
 import { BTN, BTN_ON, clock, GLASS, H4, num } from "@/components/flow/styles";
@@ -258,6 +258,11 @@ export default function FlowRiver() {
   }, [runs, inReplay]);
 
   useEffect(() => {
+    const d = agents.data;
+    river.current?.setAgentStates(d?.available ? agentStates(d.agents) : {});
+  }, [agents.data]);
+
+  useEffect(() => {
     if (health.data) river.current?.setHealth(health.data.nodes);
   }, [health.data]);
 
@@ -458,6 +463,7 @@ export default function FlowRiver() {
                 {o.label}
               </span>
             ))}
+            <span title="Stato degli agenti in Paperclip">● lavora · ◐ dorme · ⏸ in pausa</span>
           </div>
         </div>
         <div className="hidden w-[400px] shrink-0 sm:block">
@@ -539,6 +545,16 @@ interface HoverProps {
   tools: FlowTools | undefined;
 }
 
+const STATE_OF: Record<string, AgentState> = { running: "lavora", idle: "dorme", active: "dorme", paused: "in pausa", error: "errore" };
+function agentStates(list: FlowAgents["agents"]): Record<string, AgentState> {
+  const out: Record<string, AgentState> = {};
+  for (const a of list) {
+    const st = a.status ? STATE_OF[a.status] : undefined;
+    if (st) out[a.key] = st;
+  }
+  return out;
+}
+
 function HoverCard({ hover, host, nodes, label, win, summary, river, lastPass, mapLinks, health, agents, tools }: HoverProps) {
   const minutes = win === null ? null : windowMinutes(win, Date.now());
   const inWin = win === null ? "nell'intervallo" : win === "today" ? "oggi" : `in ${win} min`;
@@ -568,6 +584,12 @@ function HoverCard({ hover, host, nodes, label, win, summary, river, lastPass, m
           <dd className="font-semibold text-[#e8eeff]">{pass ? `${pass.time} · ${pass.tool}` : "—"}</dd>
           {agent && agents?.available && (
             <>
+              {agent.status && STATE_OF[agent.status] && (
+                <>
+                  <dt>stato</dt>
+                  <dd className="font-semibold text-[#e8eeff]">{STATE_OF[agent.status]}</dd>
+                </>
+              )}
               {agent.status_it && (
                 <>
                   <dt>in Paperclip</dt>
