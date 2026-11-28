@@ -236,7 +236,10 @@ def last_session(now: datetime) -> dict | None:
     USA»."""
     day = local_date(US_MARKET, now)
     for _ in range(_SESSION_LOOKBACK_DAYS):
-        s = session_on(US_MARKET, day)
+        try:
+            s = session_on(US_MARKET, day)
+        except ValueError:  # outside the calendar's range: no preset, never a failed map
+            return None
         if s is not None and s[1] <= now:
             return {"from": s[0], "to": s[1]}
         day -= timedelta(days=1)
