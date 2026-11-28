@@ -89,7 +89,8 @@ async def test_every_unsafe_route_records_one_activity_row(env):
         assert row.action == catalog.action_for(method, path, row.outcome, row.error_code)
         for name in re.findall(r"\{([^}]+)\}", path):
             assert row.target[name] in url, (path, name)
-        if path != "/api/auth/login":  # the login is not a session request
+        # the login and the TV page's link (anonymous by design) are not session requests
+        if path not in ("/api/auth/login", "/api/tv-display/session"):
             assert (row.user_id, row.email, row.role) == (user_id, email, "viewer"), path
         assert row.ip == "127.0.0.1"
 

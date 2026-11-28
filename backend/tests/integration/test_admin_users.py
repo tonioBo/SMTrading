@@ -42,6 +42,17 @@ VIEWER_UNSAFE_EXCEPTIONS = {
     ("PUT", "/api/markets/favorites"),
     ("PUT", "/api/markets/favorites/{symbol}"),
     ("DELETE", "/api/markets/favorites/{symbol}"),
+    # «Schermo TV»: each user's own TVs, link and selection (never trading)
+    ("POST", "/api/tv/screens"),
+    ("DELETE", "/api/tv/screens/{tv_id}"),
+    ("POST", "/api/tv/screens/{tv_id}/pair"),
+    ("POST", "/api/tv/screens/{tv_id}/send"),
+    ("POST", "/api/tv/screens/{tv_id}/power-off"),
+    ("PUT", "/api/tv/display"),
+    ("POST", "/api/tv/link/rotate"),
+    ("POST", "/api/tv/link/revoke"),
+    # the TV page turns its display link into a cookie: no portal session at all
+    ("POST", "/api/tv-display/session"),
 }
 # reads only an admin may make
 ADMIN_ONLY_READS = {
@@ -67,6 +78,15 @@ ADMIN_ONLY_READS = {
     ("GET", "/api/flow/health"),
     ("GET", "/api/flow/tools"),
     ("GET", "/api/flow/sources"),
+    # «Schermo TV»: every user's TVs, for admins
+    ("GET", "/api/tv/admin/screens"),
+}
+# the TV screens: opened by a display link only, never by a portal session (401)
+DISPLAY_LINK_READS = {
+    ("GET", "/api/tv-display/selection"),
+    ("GET", "/api/tv-display/flow"),
+    ("GET", "/api/tv-display/campaign"),
+    ("GET", "/api/tv-display/health"),
 }
 SKIPPED_PATHS = {"/health", "/mcp", "/mcp/"}
 
@@ -246,6 +266,7 @@ def test_exceptions_are_real_routes():
     routes = set(_app_routes())
     assert VIEWER_UNSAFE_EXCEPTIONS <= routes
     assert ADMIN_ONLY_READS <= routes
+    assert DISPLAY_LINK_READS <= routes
 
 
 async def test_every_unsafe_route_refuses_the_viewer(env):
@@ -268,13 +289,16 @@ async def test_every_read_accepts_the_viewer(env):
     email, _ = await env.add_user("viewer")
     c = await env.client(email)
     for method, path in _app_routes():
-        if method != "GET" or (method, path) in ADMIN_ONLY_READS:
+        if method != "GET" or (method, path) in ADMIN_ONLY_READS | DISPLAY_LINK_READS:
             continue
         r = await c.get(_fill(path))
         assert r.status_code not in (401, 403), (path, r.status_code, r.text)
     for method, path in ADMIN_ONLY_READS:
         r = await c.request(method, _fill(path))
         assert r.status_code == 403, path
+    for method, path in DISPLAY_LINK_READS:  # a portal session opens no TV screen
+        r = await c.request(method, _fill(path))
+        assert r.status_code == 401, path
 
 
 async def test_viewer_emergency_actions(env):

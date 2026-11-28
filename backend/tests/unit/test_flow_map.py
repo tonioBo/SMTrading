@@ -46,11 +46,12 @@ def test_every_broker_kind_has_a_label():
 
 
 def test_static_nodes():
-    assert set(STATIC_NODES) == {"pc", "mcp", "rules", "ng", "eng", "db", "px", "sync", "sim", "tg"}
+    assert set(STATIC_NODES) == {"pc", "mcp", "rules", "ng", "eng", "db", "px", "sync", "sim", "tg",
+                                 "tv"}
     columns = {k: n["column"] for k, n in STATIC_NODES.items()}
     assert columns == {"pc": 1, "mcp": 2, "rules": 2, "ng": 3, "eng": 3, "db": 3, "px": 3,
-                       "sync": 4, "sim": 4, "tg": 4}
-    kinds = {"agent", "core", "db", "data", "ng", "tg", "broker"}
+                       "sync": 4, "sim": 4, "tg": 4, "tv": 4}
+    kinds = {"agent", "core", "db", "data", "ng", "tg", "tv", "broker"}
     for n in STATIC_NODES.values():
         assert n["kind"] in kinds and n["label"] and n["description"]
     assert set(DESTS) - {"mcp"} <= set(STATIC_NODES)
@@ -62,3 +63,13 @@ def test_the_nightly_export_link_database_to_neurograph():
     assert ("db", "ng") in STATIC_LINKS
     assert link_key("db", "ng") == "db|ng" and link_key("ng", "db") == "db|ng"
     assert link_key("mcp", "ng") == "mcp|ng"  # get_forecast keeps its own link
+
+
+def test_the_tv_link_database_to_the_tv_screen():
+    from smtrading.flow.events import tv_label
+    from smtrading.flow.map import STATIC_LINKS, STATIC_NODES, link_key
+    assert ("db", "tv") in STATIC_LINKS and STATIC_NODES["tv"]["label"] == "Schermo TV"
+    assert link_key("tv", "db") == "db|tv"
+    assert tv_label("send", "campaign", False) == "schermata Campagna e portafogli"
+    assert tv_label("display", "flow", True) == "rotazione"
+    assert tv_label("power_off", None, False) == "spegnimento"

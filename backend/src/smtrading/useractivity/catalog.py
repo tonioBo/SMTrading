@@ -19,6 +19,7 @@ CATEGORIES: dict[str, str] = {
     "auto_rules": "Regole automatiche",
     "telegram": "Notifiche",
     "paperclip": "Paperclip",
+    "tv": "Schermo TV",
     "system": "Sistema",
     "other": "Altro",
 }
@@ -143,6 +144,18 @@ LABELS: dict[str, str] = {
     "telegram.paused": "Pausa notifiche Telegram",
     "telegram.retry_failed": "Nuovo invio dei messaggi falliti",
     "telegram.retry": "Nuovo invio di un messaggio",
+    # tv («Schermo TV»: each user's own area; discovery and revocation by admins)
+    "tv.add": "Aggiunta di una TV",
+    "tv.delete": "Rimozione di una TV",
+    "tv.pair": "Collegamento della TV",
+    "tv.send": "Invio di una schermata alla TV",
+    "tv.power_off": "Spegnimento dello schermo TV",
+    "tv.display": "Schermata, rotazione o suoni della TV",
+    "tv.link_rotate": "Nuovo link della TV",
+    "tv.link_revoke": "Revoca del link della TV",
+    "tv.discover": "Ricerca delle TV in rete",
+    "tv.admin_revoke": "Revoca di una TV di un utente",
+    "tv.display_session": "Apertura delle schermate sulla TV",
     # paperclip
     "paperclip.config": "Configurazione Paperclip",
     "paperclip.verify": "Verifica lettura Paperclip",
@@ -263,6 +276,17 @@ ROUTE_ACTIONS: dict[tuple[str, str], str] = {
     ("PUT", "/api/paperclip/config"): "paperclip.config",
     ("POST", "/api/paperclip/verify"): "paperclip.verify",
     ("POST", "/api/paperclip/baseline"): "paperclip.baseline",
+    ("POST", "/api/tv/screens"): "tv.add",
+    ("DELETE", "/api/tv/screens/{tv_id}"): "tv.delete",
+    ("POST", "/api/tv/screens/{tv_id}/pair"): "tv.pair",
+    ("POST", "/api/tv/screens/{tv_id}/send"): "tv.send",
+    ("POST", "/api/tv/screens/{tv_id}/power-off"): "tv.power_off",
+    ("PUT", "/api/tv/display"): "tv.display",
+    ("POST", "/api/tv/link/rotate"): "tv.link_rotate",
+    ("POST", "/api/tv/link/revoke"): "tv.link_revoke",
+    ("POST", "/api/tv/discover"): "tv.discover",
+    ("POST", "/api/tv/admin/screens/{tv_id}/revoke"): "tv.admin_revoke",
+    ("POST", "/api/tv-display/session"): "tv.display_session",
 }
 
 LOGIN = ("POST", "/api/auth/login")

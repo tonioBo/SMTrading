@@ -86,6 +86,7 @@ describe("Layout", () => {
       "Log MCP",
       "Fiume dei flussi",
       "Salute del sistema",
+      "Schermo TV",
       "Broker",
       "Riconciliazione",
       "Connettori",
@@ -117,6 +118,7 @@ describe("Layout", () => {
     for (const name of ["Agenti", "Sistema"]) await user.click(within(nav).getByRole("button", { name }));
     const links = within(nav).getAllByRole("link").map((a) => a.textContent);
     expect(links).toContain("Roadmap");
+    expect(links).toContain("Schermo TV"); // every user has their own TV area
     for (const hidden of ["Regole automatiche", "Fiume dei flussi", "Registro attività"]) expect(links).not.toContain(hidden);
   });
 

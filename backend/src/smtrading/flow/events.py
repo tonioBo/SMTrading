@@ -11,6 +11,8 @@ Read only: one bounded query per source, nothing written, nothing published.
                                           already their `send_telegram` call)
     neurograph_exports  the nightly export  Database → Neurograph («esportazione <tipo>»,
                                           the last attempt of each file)
+    tv_events        a screen sent to a TV  Database → Schermo TV («schermata <nome>»,
+                                          «rotazione», «spegnimento»)
 
 Orders, fills and automatic trades only of the portfolios counted in the totals or flagged
 `neurograph_export` (`neurograph_portfolio_ids`, the same as the Neurograph export: hidden
@@ -19,7 +21,7 @@ calls always (they are real traffic, also on a test portfolio). Of a call's para
 only the symbol (`symbol`, or the first of `symbols`) leaves the database.
 
 Event ids are stable (`mcp:<id>`, `order:<id>:sent`, `order:<id>:rejected`, `fill:<id>`,
-`tg:<id>`, `auto:<id>`, `export:<tipo>:<giorno>:<versione>`): the page polls with a time cursor and drops the ids it has seen.
+`tg:<id>`, `auto:<id>`, `export:<tipo>:<giorno>:<versione>`, `tv:<id>`): the page polls with a time cursor and drops the ids it has seen.
 
 Replay («moviola», `replay_events`): a closed window `from <= ts <= to` (an MCP call by
 its start), paged by an opaque cursor, the (ts, id) of a page's last event.
@@ -45,6 +47,7 @@ from smtrading.flow.map import ONE_WAY_DESTS, agent_key, broker_key, destination
 from smtrading.neurograph.models import NeurographExport
 from smtrading.portfolios.models import neurograph_portfolio_ids
 from smtrading.telegram.models import OutboxStatus, TelegramOutbox
+from smtrading.tv.models import TvEvent
 
 OVERLAP = timedelta(seconds=10)  # a poll re-reads this much before its cursor
 FIRST_WINDOW = timedelta(minutes=15)  # the first poll (no cursor)
@@ -215,7 +218,31 @@ async def _exports(session, since, until, limit) -> list[dict]:
             for r in (await session.execute(q)).all()]
 
 
-_SOURCES = (_mcp, _orders_sent, _orders_rejected, _fills, _auto, _telegram, _exports)
+# the screens of the TV (smtrading.tv.service.SCREENS), in plain Italian
+TV_SCREEN_IT = {"flow": "Fiume dei flussi", "campaign": "Campagna e portafogli",
+                "health": "Salute e avvisi"}
+
+
+def tv_label(kind: str, screen: str | None, rotation: bool) -> str:
+    if kind == "power_off":
+        return "spegnimento"
+    if rotation:
+        return "rotazione"
+    return f"schermata {TV_SCREEN_IT.get(screen or '', screen or '')}".strip()
+
+
+async def _tv(session, since, until, limit) -> list[dict]:
+    """What was sent to a TV: no user, no address (one label per event)."""
+    q = (select(TvEvent.id, TvEvent.kind, TvEvent.screen, TvEvent.rotation, TvEvent.ok,
+                TvEvent.created_at)
+         .where(TvEvent.created_at > since, TvEvent.created_at <= until)
+         .order_by(TvEvent.created_at, TvEvent.id).limit(limit))
+    return [_event(f"tv:{r.id}", r.created_at, "tv", "db", ["db", "tv"],
+                   [tv_label(r.kind, r.screen, r.rotation)], "ok" if r.ok else "error")
+            for r in (await session.execute(q)).all()]
+
+
+_SOURCES = (_mcp, _orders_sent, _orders_rejected, _fills, _auto, _telegram, _exports, _tv)
 
 
 async def collect_events(session: AsyncSession, *, since: datetime, until: datetime,

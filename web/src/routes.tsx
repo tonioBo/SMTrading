@@ -33,9 +33,13 @@ import Strategies from "@/pages/Strategies";
 import SystemHealth from "@/pages/SystemHealth";
 import TradeDetail from "@/pages/TradeDetail";
 import TradeJournal from "@/pages/TradeJournal";
+import TvDisplay from "@/pages/TvDisplay";
+import TvScreens from "@/pages/TvScreens";
 
 export const routes: RouteObject[] = [
   { path: "/login", element: <Login />, errorElement: <RouteError /> },
+  // the TV pages: no portal chrome and no login (the display link only)
+  { path: "/tv", element: <TvDisplay /> },
   {
     path: "/",
     element: <Layout />,
@@ -76,6 +80,7 @@ export const routes: RouteObject[] = [
           { path: "registro-attivita", element: <ActivityLog /> },
           { path: "impostazioni", element: <Settings /> },
           { path: "salute-sistema", element: <SystemHealth /> },
+          { path: "schermo-tv", element: <TvScreens /> },
           { path: "*", element: <Navigate to="/" replace /> },
         ],
       },
