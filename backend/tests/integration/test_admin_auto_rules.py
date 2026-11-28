@@ -704,6 +704,6 @@ async def test_mcp_unchanged_after_routes():
 
     mcp = build_mcp()
     assert await catalog_fingerprint(mcp) == (
-        "fa77dcbd98f5c075a88b8cc8e1f902fb2677674ce2bbfc931a19d393593b71b0")
+        "668d1432822dc806bbd87a5ed6f5cf9c89130d988d5fa56723789575b88237b9")
     names = [t.name for t in await mcp.list_tools()]
     assert not [n for n in names if "auto" in n or "rule" in n]

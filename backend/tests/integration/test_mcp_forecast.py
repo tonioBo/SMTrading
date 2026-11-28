@@ -27,6 +27,15 @@ def _bars(n: int) -> list[Bar]:
 
 @pytest.fixture
 def neurograph():
+    yield from _fake_neurograph(good=True)
+
+
+@pytest.fixture
+def neurograph_odd():
+    yield from _fake_neurograph(good=False)
+
+
+def _fake_neurograph(good: bool):
     seen: list[dict] = []
 
     class Fake(BaseHTTPRequestHandler):
@@ -37,7 +46,7 @@ def neurograph():
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             seen.append({"path": self.path, **body})
             h, last = body["h"], body["chiusure"][-1]
-            out = {"modello": "garch", "h": h, "quantili": Q, "ultimo": last, "barre_usate": len(body["chiusure"]),
+            out = {} if not good else {"modello": "garch", "h": h, "quantili": Q, "ultimo": last, "barre_usate": len(body["chiusure"]),
                    "prezzi": [[last * (1 + (lv - 0.5) * 0.1 * (k + 1)) for lv in Q] for k in range(h)],
                    "sigma_h": 0.031, "forchetta80": [-0.04, 0.04]}
             b = json.dumps(out).encode()
@@ -116,3 +125,11 @@ async def test_neurograph_down(env, monkeypatch):
     env["qs"].set_bars(SYM, _bars(300))
     err, out = await env["call"]("get_forecast", {"symbol": SYM})
     assert err and out["code"] == "PROVIDER_UNAVAILABLE"
+
+
+async def test_neurograph_unexpected_answer(env, neurograph_odd, monkeypatch):
+    url, seen = neurograph_odd
+    _configure(monkeypatch, url)
+    env["qs"].set_bars(SYM, _bars(300))
+    err, out = await env["call"]("get_forecast", {"symbol": SYM})
+    assert seen and err and out["code"] == "PROVIDER_UNAVAILABLE"

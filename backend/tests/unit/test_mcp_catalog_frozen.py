@@ -6,7 +6,7 @@ accepts the stale-catalog handling (see `smtrading.paperclip.sessions`)."""
 from smtrading.mcp.catalog import catalog_fingerprint
 from smtrading.mcp.server import build_mcp
 
-FROZEN_FINGERPRINT = "fa77dcbd98f5c075a88b8cc8e1f902fb2677674ce2bbfc931a19d393593b71b0"
+FROZEN_FINGERPRINT = "668d1432822dc806bbd87a5ed6f5cf9c89130d988d5fa56723789575b88237b9"
 
 
 async def test_tool_catalog_unchanged_by_intraday():

@@ -54,19 +54,27 @@ async def _get_forecast(ctx: ToolCtx, symbol: Any, timeframe: Any, horizon: Any)
         out = r.json()
     except (httpx.HTTPError, ValueError) as exc:
         raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE, f"Neurograph did not answer: {type(exc).__name__}") from exc
-    q = out["quantili"]
-    last = out["ultimo"]
-    steps = [
-        {"step": i + 1, "price": {f"q{round(100 * lv)}": f"{p:.6g}" for lv, p in zip(q, row, strict=True)}}
-        for i, row in enumerate(out["prezzi"])
-    ]
-    lo, hi = out["forchetta80"]
+    try:
+        q = out["quantili"]
+        last = float(out["ultimo"])
+        steps = [
+            {"step": i + 1,
+             "price": {f"q{round(100 * lv)}": f"{float(p):.6g}" for lv, p in zip(q, row, strict=True)}}
+            for i, row in enumerate(out["prezzi"])
+        ]
+        lo, hi = out["forchetta80"]
+        model, bars_used, sigma = out["modello"], out["barre_usate"], float(out["sigma_h"])
+        range_price = [steps[-1]["price"]["q10"], steps[-1]["price"]["q90"]]
+        lo, hi = float(lo), float(hi)
+    except (KeyError, TypeError, ValueError, IndexError) as exc:  # an answer of an unexpected shape
+        raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE,
+                       f"Neurograph answered in an unexpected shape: {type(exc).__name__}") from exc
     return {
-        "symbol": sym, "timeframe": tf.value, "horizon": h, "model": out["modello"],
-        "as_of": bars[-1].ts, "last_close": f"{last:.6g}", "bars_used": out["barre_usate"],
-        "sigma_pct": _pct(out["sigma_h"]),
+        "symbol": sym, "timeframe": tf.value, "horizon": h, "model": model,
+        "as_of": bars[-1].ts, "last_close": f"{last:.6g}", "bars_used": bars_used,
+        "sigma_pct": _pct(sigma),
         "range80_pct": [_pct(lo), _pct(hi)],
-        "range80_price": [steps[-1]["price"]["q10"], steps[-1]["price"]["q90"]],
+        "range80_price": range_price,
         "steps": steps,
         "note": ("Risk range, not a direction: 8 times out of 10 the price at `horizon` bars should "
                  "fall inside range80. Use it for sizing, stops and alert levels; it never "
