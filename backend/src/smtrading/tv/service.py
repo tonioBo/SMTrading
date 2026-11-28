@@ -10,7 +10,10 @@ own rows: `own_tv` / `get_display` filter on the user id).
   without someone accepting with its remote.
 - «Manda alla TV» (`send`): the only action that wakes a TV in standby (KEY_POWER, then a
   Wake-on-LAN packet when the TV gives its MAC), then the TV browser opens the user's
-  display link; everything within SEND_TIMEOUT_S. The browser is found by REST
+  display link; everything within SEND_TIMEOUT_S. When the «SMTrading TV» app (`tv-app/`,
+  Tizen id `samsung.TV_APP_ID`) is installed (REST answers for its id, asked at every send:
+  a developer-mode app can expire or be removed), it is opened by REST instead and the
+  browser is left alone. Otherwise the browser is found by REST
   (`samsung.find_browser`, once per TV) and opened by REST; models that ignore any URL
   (UE85DU7190, 2024) open it on its own last page, so the message says to open
   `<portal host>/tv` there once and pair it with a code (`tv.codes`); the WebSocket launch
@@ -376,6 +379,18 @@ async def _browser_by_rest(host: str) -> str | None:
     return None
 
 
+TV_APP_OPENED = "app SMTrading TV aperta sulla TV"
+
+
+async def _tv_app_by_rest(host: str) -> bool:
+    """Open the «SMTrading TV» app when installed: True when the TV opened it."""
+    try:
+        return (await samsung.app_installed(host, samsung.TV_APP_ID)
+                and await samsung.open_app_rest(host, samsung.TV_APP_ID))
+    except samsung.TvError:
+        return False
+
+
 def _empty_result() -> dict[str, Any]:
     return {"ok": False, "message": "", "powered_on": False, "app_id": None,
             "confirmed": False, "last_page": False}
@@ -403,6 +418,10 @@ async def _drive_send(host: str, token: str, mac: str | None, url: str, short: s
             result["message"] = NOT_ON
             return
         result["powered_on"] = True
+    if await _tv_app_by_rest(host):
+        result.update(ok=True, app_id=samsung.TV_APP_ID, confirmed=True,
+                      message=TV_APP_OPENED)
+        return
     try:
         rest_app = await _browser_by_rest(host)
     except samsung.TvError:

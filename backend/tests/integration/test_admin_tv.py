@@ -573,7 +573,8 @@ async def test_send_to_a_tv_ignoring_urls_opens_its_browser_by_rest(env, tv):
     assert body["app_id"] == "3202010022079" and body["last_page"] is True
     assert body["confirmed"] is False and LAST_PAGE in body["message"]
     assert body["short_url"] == "192.168.30.7/tv"
-    assert tv.app_probes == ["3202010022079"]  # detection: the first id answers
+    # the SMTrading TV app first (not installed), then the browser: the first id answers
+    assert tv.app_probes == [samsung.TV_APP_ID, "3202010022079"]
     assert tv.rest_launches == [{"appId": "3202010022079", "body": None}]
     # the WebSocket launch with the URL stays, as a second attempt, on the found id only
     assert [x["appId"] for x in tv.launches] == ["3202010022079"]
@@ -583,7 +584,8 @@ async def test_send_to_a_tv_ignoring_urls_opens_its_browser_by_rest(env, tv):
     tv.launch_replies = {}
     body = (await c.post(f"/api/tv/screens/{t['id']}/send", json={})).json()
     assert body["ok"] is True and body["last_page"] is True, body
-    assert tv.app_probes == ["3202010022079"] and len(tv.rest_launches) == 2
+    assert tv.app_probes == [samsung.TV_APP_ID, "3202010022079", samsung.TV_APP_ID]
+    assert len(tv.rest_launches) == 2
     # the portal address configured: its host in the message
     await c.put("/api/tv/display", json={"portal_url": "https://smt.lan:8443"})
     body = (await c.post(f"/api/tv/screens/{t['id']}/send", json={})).json()
@@ -600,7 +602,7 @@ async def test_send_detects_the_browser_among_the_known_ids(env, tv):
     t = await _paired(c, tv)
     body = (await c.post(f"/api/tv/screens/{t['id']}/send", json={})).json()
     assert body["ok"] is True and body["app_id"] == "org.tizen.browser", body
-    assert tv.app_probes == ["3202010022079", "org.tizen.browser"]
+    assert tv.app_probes == [samsung.TV_APP_ID, "3202010022079", "org.tizen.browser"]
     assert tv.rest_launches[-1]["appId"] == "org.tizen.browser"
     # nothing by REST at all: the WebSocket launch alone, as before
     tv.installed = set()
@@ -728,3 +730,118 @@ async def test_code_rate_limits(env, redis):
     # another user is not locked out by it
     admin, _, _ = await _client(env)
     assert (await admin.post("/api/tv/claim", json={"code": good})).status_code == 200
+
+
+# -- the «SMTrading TV» app (tv-app/): header token, http entry, opened by REST ----------
+
+
+def _app(env, entry: str | None = "tv-app") -> httpx.AsyncClient:
+    """The Tizen app on the plain-http LAN entry: nginx tags it `X-SMT-Entry: tv-app`."""
+    page = httpx.AsyncClient(transport=env.transport, base_url="http://192.168.30.7:8087")
+    page.headers["X-SMT-TV-App"] = "1"
+    if entry is not None:
+        page.headers["X-SMT-Entry"] = entry
+    env.clients.append(page)
+    return page
+
+
+async def test_display_token_in_the_header_same_checks_as_the_cookie(env, tv):
+    c, _, _ = await _client(env)
+    token = _token((await c.post("/api/tv/link/rotate")).json()["link"]["url"])
+    app = _app(env)
+    for path in ("selection", "campaign", "health", "flow"):
+        assert (await app.get(f"/api/tv-display/{path}")).status_code == 401, path
+        r = await app.get(f"/api/tv-display/{path}", headers={"X-SMT-TV-Token": token})
+        assert r.status_code == 200, (path, r.text)
+    assert "set-cookie" not in r.headers
+    # the query string still opens nothing
+    assert (await app.get(f"/api/tv-display/selection?token={token}")).status_code == 401
+    # wrong scope, a forged signature, junk: 401
+    bad_sig = token[:-2] + ("AA" if not token.endswith("AA") else "BB")
+    for bad in (token.replace("tv-display.", "tv-other.", 1), bad_sig, "x" * 300, "junk"):
+        r = await app.get("/api/tv-display/selection", headers={"X-SMT-TV-Token": bad})
+        assert r.status_code == 401, bad
+    # the header wins over a cookie (a stale cookie never hides a valid header)
+    r = await app.get("/api/tv-display/selection", headers={
+        "X-SMT-TV-Token": token, "Cookie": "smt_tv=tv-display.dead.beef"})
+    assert r.status_code == 200
+    # a viewer's token: the viewer's scope (no river)
+    v, _, _ = await _client(env, "viewer")
+    vtoken = _token((await v.post("/api/tv/link/rotate")).json()["link"]["url"])
+    r = await app.get("/api/tv-display/flow", headers={"X-SMT-TV-Token": vtoken})
+    assert r.status_code == 403
+    r = await app.get("/api/tv-display/selection", headers={"X-SMT-TV-Token": vtoken})
+    assert r.json()["screens"] == ["campaign", "health"]
+    # rotated, then revoked: the old header is refused at once
+    new = _token((await c.post("/api/tv/link/rotate")).json()["link"]["url"])
+    r = await app.get("/api/tv-display/selection", headers={"X-SMT-TV-Token": token})
+    assert r.status_code == 401
+    r = await app.get("/api/tv-display/selection", headers={"X-SMT-TV-Token": new})
+    assert r.status_code == 200
+    assert (await c.post("/api/tv/link/revoke")).status_code == 200
+    r = await app.get("/api/tv-display/selection", headers={"X-SMT-TV-Token": new})
+    assert r.status_code == 401
+    # a disabled user: refused too
+    v, _, viewer_id = await _client(env, "viewer")
+    vtoken = _token((await v.post("/api/tv/link/rotate")).json()["link"]["url"])
+    r = await app.get("/api/tv-display/selection", headers={"X-SMT-TV-Token": vtoken})
+    assert r.status_code == 200
+    from smtrading.admin.models import AdminUser
+    async with env.sm() as s:
+        (await s.get(AdminUser, viewer_id)).disabled_at = datetime.now(UTC)
+        await s.commit()
+    r = await app.get("/api/tv-display/selection", headers={"X-SMT-TV-Token": vtoken})
+    assert r.status_code == 401
+
+
+async def _claimed_poll(env, viewer, page) -> httpx.Response:
+    got = (await page.post("/api/tv-display/code")).json()
+    r = await viewer.post("/api/tv/claim", json={"code": got["code"]})
+    assert r.status_code == 200, r.text
+    return await page.get(f"/api/tv-display/code/{got['poll_id']}")
+
+
+async def test_code_poll_gives_the_app_its_token_only_on_the_app_entry(env, redis):
+    viewer, _, viewer_id = await _client(env, "viewer")
+    # the app on its entry: the token in the body, no cookie; it opens the screens
+    app = _app(env)
+    r = await _claimed_poll(env, viewer, app)
+    body = r.json()
+    assert set(body) == {"state", "token"} and body["state"] == "claimed"
+    assert "set-cookie" not in r.headers
+    async with env.sm() as s:
+        vd = await s.get(TvDisplay, viewer_id)
+        assert body["token"] == link.token_for(vd.link_id, vd.link_secret_encrypted)
+    sel = await app.get("/api/tv-display/selection", headers={"X-SMT-TV-Token": body["token"]})
+    assert sel.status_code == 200 and sel.json()["screens"] == ["campaign", "health"]
+
+    # the app header alone (any other entry), or the entry alone: the cookie as before
+    for page in (_app(env, entry=None), _app(env, entry="lan"), _app(env, entry="local")):
+        r = await _claimed_poll(env, viewer, page)
+        assert r.json() == {"state": "claimed"}, r.text
+        assert "smt_tv=" in r.headers["set-cookie"]
+    entry_only = _bare(env)
+    entry_only.headers["X-SMT-Entry"] = "tv-app"
+    for value in ("0", "true", ""):
+        entry_only.headers["X-SMT-TV-App"] = value
+        r = await _claimed_poll(env, viewer, entry_only)
+        assert r.json() == {"state": "claimed"} and "smt_tv=" in r.headers["set-cookie"]
+
+
+async def test_send_opens_the_installed_tv_app_instead_of_the_browser(env, tv):
+    tv.installed = {samsung.TV_APP_ID, "3202010022079"}
+    c, _, _ = await _client(env)
+    t = await _paired(c, tv)
+    tv.power = "standby"
+    body = (await c.post(f"/api/tv/screens/{t['id']}/send", json={})).json()
+    assert body["ok"] is True and body["powered_on"] is True, body
+    assert body["app_id"] == samsung.TV_APP_ID and body["confirmed"] is True
+    assert body["last_page"] is False and body["message"] == tvs.TV_APP_OPENED
+    assert tv.app_probes == [samsung.TV_APP_ID]
+    assert tv.rest_launches == [{"appId": samsung.TV_APP_ID, "body": None}]
+    assert tv.launches == []  # no browser, no URL sent
+    # the app removed (or expired): the browser as before, asked again at the next send
+    tv.installed = {"3202010022079"}
+    body = (await c.post(f"/api/tv/screens/{t['id']}/send", json={})).json()
+    assert body["ok"] is True and body["app_id"] == "3202010022079", body
+    assert tv.app_probes[-2:] == [samsung.TV_APP_ID, "3202010022079"]

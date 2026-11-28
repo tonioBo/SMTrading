@@ -2,7 +2,9 @@
 password). The TV page is `/tv#token=<link>`: the fragment never reaches a server (nor
 its access logs); the page posts it once to `/session`, which checks it and sets the
 `smt_tv` cookie (HttpOnly, Secure, SameSite=Strict, path /api/tv-display). Every other
-route accepts only that cookie (a `?token=` query is ignored). Read only; the data that
+route accepts that cookie or the `X-SMT-TV-Token` header (the «SMTrading TV» app, on the
+plain-http LAN entry `tv-app` of nginx: no cookie there); a `?token=` query is ignored. The
+header wins over the cookie and is checked the same way. Read only; the data that
 user sees in the portal, nothing else. A missing, revoked or foreign link is 401 at once
 (each request checks the stored link, also behind a cookie set before).
 
@@ -11,7 +13,9 @@ user sees in the portal, nothing else. A missing, revoked or foreign link is 401
                                            code to show (no login; CREATE_LIMIT per
                                            client address, `tv.codes`)
     GET  /api/tv-display/code/{poll_id}    {state: pending | claimed | expired}; claimed
-                                           (once): the cookie of the claiming user's link
+                                           (once): the cookie of the claiming user's link;
+                                           for the app (`X-SMT-TV-App: 1` on the nginx
+                                           entry `tv-app` only): {state, token}, no cookie
 
     GET /api/tv-display/selection?after=   {screen, rotation, interval_s, version,
                                            screens, updated_at, poll_s, now, sound,
@@ -29,7 +33,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from smtrading.admin.auth import DbSession, RedisClient
+from smtrading.admin.auth import ENTRY_HEADER, DbSession, RedisClient
 from smtrading.admin.models import AdminUser
 from smtrading.common.errors import ErrorCode
 from smtrading.flow.health import flow_health
@@ -41,6 +45,11 @@ from smtrading.tv.models import TvDisplay
 router = APIRouter(prefix="/api/tv-display", tags=["tv-display"])
 
 COOKIE = "smt_tv"
+TOKEN_HEADER = "X-SMT-TV-Token"
+APP_HEADER = "X-SMT-TV-App"
+# set by nginx on its plain-http LAN entry for the TV app only (every other entry
+# overwrites a client-sent X-SMT-Entry with its own name: proxy-common.conf)
+ENTRY_TV_APP = "tv-app"
 COOKIE_MAX_AGE_S = 400 * 24 * 3600
 OVERLAP_S = 10
 INVALID_LINK = "link della TV non valido o revocato: apri di nuovo l'indirizzo dal portale"
@@ -62,7 +71,8 @@ class SessionIn(BaseModel):
 
 
 async def _owner(request: Request, session: DbSession) -> tuple[TvDisplay, AdminUser]:
-    owner = await tv.display_owner(session, request.cookies.get(COOKIE))
+    token = request.headers.get(TOKEN_HEADER) or request.cookies.get(COOKIE)
+    owner = await tv.display_owner(session, token)
     if owner is None:
         raise DisplayRefused(401, INVALID_LINK)
     return owner
@@ -121,9 +131,15 @@ async def new_code(request: Request, redis: RedisClient) -> dict:
     return await codes.create(redis, request.client.host if request.client else None)
 
 
+def _is_tv_app(request: Request) -> bool:
+    """The app asks for the token in the body: only on the nginx `tv-app` entry."""
+    return (request.headers.get(APP_HEADER) == "1"
+            and request.headers.get(ENTRY_HEADER) == ENTRY_TV_APP)
+
+
 @router.get("/code/{poll_id}")
-async def code_state(poll_id: str, response: Response, session: DbSession,
-                     redis: RedisClient) -> dict:
+async def code_state(poll_id: str, request: Request, response: Response,
+                     session: DbSession, redis: RedisClient) -> dict:
     state, user_id = await codes.poll(redis, poll_id)
     if state != "claimed":
         return {"state": state}
@@ -134,6 +150,8 @@ async def code_state(poll_id: str, response: Response, session: DbSession,
     tv.ensure_link(d)  # the claim made it; revoked since: a new one
     token = link.token_for(d.link_id, d.link_secret_encrypted)
     await session.commit()
+    if _is_tv_app(request):
+        return {"state": "claimed", "token": token}
     _set_cookie(response, token)
     return {"state": "claimed"}
 

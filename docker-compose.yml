@@ -95,6 +95,7 @@ services:
       - "80:80"
       - "443:443"
       - "127.0.0.1:3000:8080"
+      - "8087:8087"  # «SMTrading TV» app: http, /api/tv-display only, home network only
     volumes:
       - web_certs:/etc/nginx/certs
     depends_on:

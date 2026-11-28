@@ -50,6 +50,9 @@ WS_SCHEME = "wss"
 APP_NAME = "SMTrading"
 # «Browser» of the 2024 models first (3202010022079), then the older Tizen ids
 BROWSER_APPS = ("3202010022079", "org.tizen.browser", "com.samsung.tv.browser")
+# the «SMTrading TV» app (tv-app/config.xml: package id + "." + name), opened by REST when
+# installed instead of the browser
+TV_APP_ID = "SMTrTV0001.SMTradingTV"
 APP_PROBE_TIMEOUT_S = 1.5
 SAMSUNG_TYPE = "Samsung SmartTV"
 
