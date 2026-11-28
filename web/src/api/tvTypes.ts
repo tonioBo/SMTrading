@@ -62,7 +62,21 @@ export interface TvSendResult {
   powered_on: boolean;
   app_id: string | null;
   confirmed: boolean;
+  /** the TV opened its browser on its own last page (a model that ignores the URL) */
+  last_page?: boolean;
+  /** `<portal host>/tv`: what to type in the TV browser (then «Abbina con codice») */
+  short_url?: string | null;
 }
+
+/** POST /api/tv-display/code: the code the TV page shows, and its own poll id */
+export interface TvPairCode {
+  poll_id: string;
+  code: string;
+  expires_in_s: number;
+  poll_s: number;
+}
+
+export type TvPairState = "pending" | "claimed" | "expired";
 
 export interface TvDisplayPatch {
   screen?: TvScreenKey;

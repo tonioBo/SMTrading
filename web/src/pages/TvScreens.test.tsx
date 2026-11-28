@@ -101,6 +101,13 @@ const server = setupServer(
     area = { ...area, link: { active: false, created_at: null, url: null } };
     return HttpResponse.json(area);
   }),
+  http.post("*/api/tv/claim", async ({ request }) => {
+    await record(request);
+    const { code } = calls.at(-1)!.body as { code: string };
+    if (code !== "123456") return HttpResponse.json({ code: "INVALID_ORDER", message: "codice non valido o scaduto", details: { field: "code" } }, { status: 400 });
+    area = { ...area, link: { active: true, created_at: "2026-11-28T10:00:00Z", url: LINK } };
+    return HttpResponse.json({ ok: true, message: "TV abbinata: tra pochi secondi mostra le schermate" });
+  }),
   http.post("*/api/tv/discover", async ({ request }) => {
     await record(request);
     return HttpResponse.json({
@@ -323,6 +330,61 @@ describe("Schermo TV (portal)", () => {
     expect(dialog).toHaveTextContent("Revocare «Camera» di luca@example.com?");
     await user.click(within(dialog).getByRole("button", { name: "Revoca" }));
     await waitFor(() => expect(last("/api/tv/admin/screens/t9/revoke")).toBeTruthy());
+  });
+
+  it("«Abbina con codice»: the short address big, the how-to, a wrong then a right code", async () => {
+    const user = userEvent.setup();
+    role = "viewer";
+    area = baseArea({ can_discover: false, suggested_subnet: null });
+    renderApp("/schermo-tv");
+    expect(await screen.findByText("Abbina con codice")).toBeInTheDocument();
+    expect(screen.getByTestId("tv-short-url")).toHaveTextContent("192.168.30.7/tv");
+    expect(screen.getByText(/Sulla TV apri il Browser e vai a/)).toHaveTextContent(
+      "Sulla TV apri il Browser e vai a 192.168.30.7/tv (la prima volta accetta l'avviso del certificato); poi scrivi qui il codice.",
+    );
+    const input = screen.getByLabelText("Codice della TV");
+    const button = screen.getByRole("button", { name: "Abbina" });
+    await user.type(input, "12a34");
+    expect(input).toHaveValue("1234");
+    expect(button).toBeDisabled();
+    await user.type(input, "57");
+    await user.click(button);
+    expect(await screen.findByText("codice non valido o scaduto")).toBeInTheDocument();
+    expect(last("/api/tv/claim")?.body).toEqual({ code: "123457" });
+    await user.clear(input);
+    expect(screen.queryByText("codice non valido o scaduto")).not.toBeInTheDocument();
+    await user.type(input, "123 456");
+    await user.click(button);
+    expect(await screen.findByText("TV abbinata: tra pochi secondi mostra le schermate")).toBeInTheDocument();
+    expect(last("/api/tv/claim")?.body).toEqual({ code: "123456" });
+    expect(input).toHaveValue("");
+  });
+
+  it("the portal address configured: the short address follows it", async () => {
+    area = baseArea({ display: { ...baseArea().display, portal_url: "https://smt.lan:8443" } });
+    renderApp("/schermo-tv");
+    expect(await screen.findByTestId("tv-short-url")).toHaveTextContent("smt.lan:8443/tv");
+  });
+
+  it("a TV that reopens the browser's last page: the message and the short address, not the long link", async () => {
+    const user = userEvent.setup();
+    sendResult = {
+      ok: true,
+      message: "browser aperto sulla TV — la TV riapre l'ultima pagina del browser: se non vedi la schermata, apri 192.168.30.7/tv sulla TV",
+      url: LINK,
+      short_url: "192.168.30.7/tv",
+      powered_on: false,
+      app_id: "3202010022079",
+      confirmed: false,
+      last_page: true,
+    };
+    area = baseArea({ tvs: [tv({ paired: true })] });
+    renderApp("/schermo-tv");
+    await user.click(await screen.findByRole("button", { name: "Manda alla TV" }));
+    const row = screen.getByRole("listitem", { name: "Salotto" });
+    expect(await within(row).findByText(/la TV riapre l'ultima pagina del browser/)).toBeInTheDocument();
+    expect(within(row).getByRole("region", { name: "Indirizzo da aprire sulla TV" })).toHaveTextContent("192.168.30.7/tv");
+    expect(within(row).queryByTestId("tv-link-url")).not.toBeInTheDocument();
   });
 
   it("removing a TV asks first", async () => {

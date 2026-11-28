@@ -3,9 +3,12 @@
  * The display link arrives as `/tv#token=<link>`; the page trades it once for an HttpOnly
  * cookie (POST /api/tv-display/session, scoped to /api/tv-display) and then calls the
  * display routes with that cookie only.
+ * Without a link (a TV that cannot be sent a URL, or a revoked link) the page asks for a
+ * pairing code (POST /api/tv-display/code), shows it, and polls its own opaque id until a
+ * user writes the code in the portal: that answer sets the same cookie.
  */
 import { BUILD_HEADER } from "@/lib/buildVersion";
-import type { TvScreenKey, TvSelection } from "@/api/tvTypes";
+import type { TvPairCode, TvPairState, TvScreenKey, TvSelection } from "@/api/tvTypes";
 
 export class TvFetchError extends Error {
   readonly status: number;
@@ -57,6 +60,26 @@ export function openSession(token: string, signal?: AbortSignal): Promise<unknow
   });
 }
 
+/** a new pairing code to show (no session needed) */
+export function requestCode(signal?: AbortSignal): Promise<TvPairCode> {
+  return request<TvPairCode>("/api/tv-display/code", { method: "POST", signal });
+}
+
+/** whether the code was written in the portal; `claimed` comes with the display cookie */
+export function codeState(pollId: string, signal?: AbortSignal): Promise<{ state: TvPairState }> {
+  return request(`/api/tv-display/code/${encodeURIComponent(pollId)}`, { signal });
+}
+
+/** how often the page asks about its code: the server's poll_s, kept within 1–5 s */
+export const codePollMs = (c: Pick<TvPairCode, "poll_s"> | null) => Math.min(5, Math.max(1, c?.poll_s ?? 2)) * 1000;
+/** too many codes asked from this address: wait this long before the next one */
+export const CODE_LIMITED_MS = 60_000;
+
+export const CODE_TEXT = "Apri il portale → Schermo TV → Abbina con codice e scrivi questo codice";
+
+/** «123 456»: the code as shown */
+export const spacedCode = (code: string) => (code.length === 6 ? `${code.slice(0, 3)} ${code.slice(3)}` : code);
+
 /** the token of a `#token=…` fragment, or null */
 export function tokenFromHash(hash: string): string | null {
   const params = new URLSearchParams(hash.replace(/^#/, ""));
@@ -72,8 +95,6 @@ export const pollMs = (s: TvSelection | null) => Math.min(5, Math.max(3, s?.poll
 /** after failures (an api restart): 5, 10, 20, then every 30 s */
 export const retryMs = (failures: number) => Math.min(30_000, 5_000 * 2 ** Math.max(0, failures - 1));
 
-/** a revoked link is checked again this rarely (a new link means a new address anyway) */
-export const REVOKED_RETRY_MS = 60_000;
 /** the page reloads itself once a day (only right after a good poll) */
 export const DAILY_RELOAD_MS = 24 * 3600_000;
 

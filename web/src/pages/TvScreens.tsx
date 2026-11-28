@@ -6,6 +6,7 @@ import {
   useAddTv,
   useAdminRevokeTv,
   useAllTvs,
+  useClaimTvCode,
   useDiscoverTvs,
   usePairTv,
   usePowerOffTv,
@@ -34,6 +35,16 @@ import { formatDateTime } from "@/lib/format";
 
 export const PAIR_HINT = "Sulla TV comparirà una richiesta: accettala con il telecomando.";
 export const NEED_HTTPS = "Serve l'indirizzo https del portale: la TV apre le schermate solo in modo sicuro. Scrivilo qui sotto (per esempio https://192.168.1.10).";
+
+/** `<host>/tv`: the short address to type in the TV browser (no scheme, no link) */
+function shortTvUrl(base: string | null | undefined): string | null {
+  if (!base) return null;
+  try {
+    return `${new URL(base).host}/tv`;
+  } catch {
+    return null;
+  }
+}
 
 /** the TV page needs https (its session cookie is Secure): an http address is never shown */
 const isHttps = (url: string | null | undefined): url is string => !!url && url.startsWith("https://");
@@ -78,6 +89,15 @@ export function LinkFallback({ url }: { url: string }) {
         <p className="text-xs text-muted">Il link apre solo le schermate TV, non il resto del portale. Non condividerlo.</p>
       </div>
     </div>
+  );
+}
+
+/** the short address, big: typed by hand in the TV browser */
+function ShortAddress({ url }: { url: string }) {
+  return (
+    <p className="break-all font-mono text-3xl font-bold tracking-wide" data-testid="tv-short-url">
+      {url}
+    </p>
   );
 }
 
@@ -143,7 +163,8 @@ function TvRow({ tv, choice, linkUrl }: { tv: Tv; choice: Choice; linkUrl: strin
   const waiting = tv.pairing.state === "waiting";
   const power = useTvPower(tv.id, !revoked && !waiting);
   const outcome = waiting ? null : pairingOutcome(tv);
-  const candidate = sent && (!sent.ok || !sent.confirmed) ? sent.url || linkUrl : null;
+  const lastPage = !!(sent?.ok && sent.last_page);
+  const candidate = sent && !lastPage && (!sent.ok || !sent.confirmed) ? sent.url || linkUrl : null;
   const fallbackUrl = isHttps(candidate) ? candidate : null;
 
   return (
@@ -197,6 +218,13 @@ function TvRow({ tv, choice, linkUrl }: { tv: Tv; choice: Choice; linkUrl: strin
       {send.error != null && <Message tone="bad">{errorMessage(send.error)}</Message>}
       {sent && <Message tone={sent.ok && sent.confirmed ? "ok" : "warn"}>{sent.message}</Message>}
       {fallbackUrl && <LinkFallback url={fallbackUrl} />}
+      {lastPage && sent?.short_url && (
+        <div className="space-y-1 rounded-md border border-border p-3" aria-label="Indirizzo da aprire sulla TV" role="region">
+          <p className="text-sm text-muted">Se la TV non mostra la schermata, apri nel suo browser:</p>
+          <ShortAddress url={sent.short_url} />
+          <p className="text-sm text-muted">e, se compare un codice, scrivilo in «Abbina con codice» qui sotto.</p>
+        </div>
+      )}
       {offMsg && <Message tone={offMsg.ok ? "ok" : "warn"}>{offMsg.message}</Message>}
       {off.error != null && <Message tone="bad">{errorMessage(off.error)}</Message>}
       <ConfirmDialog
@@ -211,6 +239,57 @@ function TvRow({ tv, choice, linkUrl }: { tv: Tv; choice: Choice; linkUrl: strin
         onConfirm={() => remove.mutate(tv.id, { onSuccess: () => setConfirmRemove(false) })}
       />
     </li>
+  );
+}
+
+export const CODE_INVALID = "codice non valido o scaduto";
+
+/** «Abbina con codice»: the TV page at <host>/tv shows 6 digits; written here, that TV shows
+ * this user's screens (their own link only) */
+function PairWithCode({ area }: { area: TvArea }) {
+  const claim = useClaimTvCode();
+  const [code, setCode] = useState("");
+  const [done, setDone] = useState<string | null>(null);
+  const short = shortTvUrl(area.display.portal_url || area.portal_url_detected);
+  const digits = code.replace(/\D/g, "");
+  function submit(e: FormEvent) {
+    e.preventDefault();
+    if (digits.length !== 6) return;
+    setDone(null);
+    claim.mutate(digits, { onSuccess: (r) => (setDone(r.message), setCode("")) });
+  }
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Abbina con codice</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        <p>
+          Sulla TV apri il Browser e vai a <strong className="font-mono">{short ?? "l'indirizzo del portale seguito da /tv"}</strong> (la prima volta accetta
+          l&apos;avviso del certificato); poi scrivi qui il codice.
+        </p>
+        {short && <ShortAddress url={short} />}
+        <form onSubmit={submit} className="flex flex-wrap items-end gap-3" noValidate>
+          <div className="w-48">
+            <FormField label="Codice della TV" hint="6 cifre">
+              <Input
+                value={code}
+                onChange={(e) => (setDone(null), claim.reset(), setCode(e.target.value.replace(/[^\d ]/g, "").slice(0, 7)))}
+                inputMode="numeric"
+                autoComplete="off"
+                placeholder="123456"
+                className="font-mono text-xl tracking-widest"
+              />
+            </FormField>
+          </div>
+          <Button type="submit" disabled={claim.isPending || digits.length !== 6}>
+            {claim.isPending ? "Abbinamento…" : "Abbina"}
+          </Button>
+        </form>
+        {done && <Message tone="ok">{done}</Message>}
+        {claim.error != null && <Message tone="bad">{errorMessage(claim.error) || CODE_INVALID}</Message>}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -599,6 +678,7 @@ function Area({ area }: { area: TvArea }) {
           )}
         </CardContent>
       </Card>
+      <PairWithCode area={area} />
       <AddTv area={area} />
       <ScreenChoice area={area} choice={choice} setChoice={setChoice} />
       <Sounds area={area} />

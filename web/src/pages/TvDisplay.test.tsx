@@ -121,6 +121,10 @@ const FLOW: TvFlowData = {
 
 let selection: TvSelection = sel();
 let selectionStatus = 200;
+/** the pairing code: what the next POST gives, and the state its poll answers */
+let codeSeq = 0;
+let codeStatus = 200;
+let codeAnswer: "pending" | "claimed" | "expired" = "pending";
 const seen: { method: string; url: string; body?: unknown }[] = [];
 const server = setupServer(
   http.post("*/api/tv-display/session", async ({ request }) => {
@@ -136,6 +140,23 @@ const server = setupServer(
     selection = { ...selection, sound_events: [] };
     return HttpResponse.json(s);
   }),
+  http.post("*/api/tv-display/code", ({ request }) => {
+    seen.push({ method: "POST", url: request.url });
+    if (codeStatus !== 200) return HttpResponse.json({ code: "RATE_LIMITED", message: "troppi" }, { status: codeStatus });
+    codeSeq++;
+    return HttpResponse.json({ poll_id: `poll-${codeSeq}`, code: `12345${codeSeq}`, expires_in_s: 600, poll_s: 2 });
+  }),
+  http.get("*/api/tv-display/code/:poll", ({ request, params }) => {
+    seen.push({ method: "GET", url: request.url });
+    const state = codeAnswer;
+    if (state === "claimed") {
+      // the cookie is set by this answer: from now on the selection opens
+      selectionStatus = 200;
+      codeAnswer = "pending";
+    }
+    if (state === "expired") codeAnswer = "pending";
+    return HttpResponse.json({ state, poll: params.poll });
+  }),
   http.get("*/api/tv-display/campaign", () => HttpResponse.json(CAMPAIGN)),
   http.get("*/api/tv-display/health", () => HttpResponse.json(HEALTH)),
   http.get("*/api/tv-display/flow", ({ request }) => {
@@ -147,6 +168,9 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 beforeEach(() => {
   selection = sel();
   selectionStatus = 200;
+  codeSeq = 0;
+  codeStatus = 200;
+  codeAnswer = "pending";
   seen.length = 0;
   audio.calls = [];
   audio.blocked = false;
@@ -237,9 +261,54 @@ describe("TvDisplay", () => {
     expect(screen.getByRole("log", { name: "Chiamate in diretta" })).toHaveTextContent("Portfolio Manager get_quote");
   });
 
-  it("a link refused at the start: the revoked message", async () => {
+  it("a link refused at the start: the revoked message, and a code to pair again", async () => {
     renderApp("/tv#token=bad");
     expect(await screen.findByRole("alert")).toHaveTextContent("Collegamento revocato: apri di nuovo il link dal portale");
+    expect(await screen.findByRole("status", { name: "Codice di abbinamento" })).toHaveTextContent("123 451");
+  });
+
+  it("no session at all (a TV that cannot be sent a URL): a big code, the instruction, no revoked message", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    selectionStatus = 401;
+    renderApp("/tv");
+    const code = await screen.findByRole("status", { name: "Codice di abbinamento" });
+    expect(code).toHaveTextContent("123 451");
+    expect(screen.getByText("Apri il portale → Schermo TV → Abbina con codice e scrivi questo codice")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    // polled with its own id (never the code), every poll_s
+    await tick(2_000);
+    const polls = seen.filter((r) => r.url.includes("/api/tv-display/code/"));
+    expect(polls.length).toBeGreaterThan(0);
+    for (const p of polls) {
+      expect(p.url).toContain("/code/poll-1");
+      expect(p.url).not.toContain("123451");
+    }
+    // written in the portal: the cookie arrives, the screens start
+    codeAnswer = "claimed";
+    await tick(2_000);
+    expect(await screen.findByRole("heading", { name: "Campagna e portafogli" })).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "Codice di abbinamento" })).not.toBeInTheDocument();
+  });
+
+  it("an expired code is replaced by a new one on its own", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    selectionStatus = 401;
+    renderApp("/tv");
+    expect(await screen.findByRole("status", { name: "Codice di abbinamento" })).toHaveTextContent("123 451");
+    codeAnswer = "expired";
+    await tick(2_000);
+    await vi.waitFor(() => expect(screen.getByRole("status", { name: "Codice di abbinamento" })).toHaveTextContent("123 452"));
+  });
+
+  it("too many codes asked: says it and tries again later", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    selectionStatus = 401;
+    codeStatus = 429;
+    renderApp("/tv");
+    expect(await screen.findByText("Server non raggiungibile, nuovo tentativo…")).toBeInTheDocument();
+    codeStatus = 200;
+    await tick(60_000);
+    expect(await screen.findByRole("status", { name: "Codice di abbinamento" })).toHaveTextContent("123 451");
   });
 
   it("a refused link is cleared from the address bar too", async () => {
@@ -255,7 +324,7 @@ describe("TvDisplay", () => {
       await router.navigate("/tv#token=good");
     });
     expect(await screen.findByRole("heading", { name: "Campagna e portafogli" })).toBeInTheDocument();
-    expect(seen.filter((r) => r.method === "POST").map((r) => r.body)).toEqual([{ token: "bad" }, { token: "good" }]);
+    expect(seen.filter((r) => r.url.includes("/session")).map((r) => r.body)).toEqual([{ token: "bad" }, { token: "good" }]);
     expect(router.state.location.hash).toBe("");
   });
 
@@ -266,11 +335,11 @@ describe("TvDisplay", () => {
       window.location.hash = "#token=good";
     });
     expect(await screen.findByRole("heading", { name: "Campagna e portafogli" })).toBeInTheDocument();
-    expect(seen.filter((r) => r.method === "POST").at(-1)?.body).toEqual({ token: "good" });
+    expect(seen.filter((r) => r.url.includes("/session")).at(-1)?.body).toEqual({ token: "good" });
     window.location.hash = "";
   });
 
-  it("a link revoked while shown: the revoked message, the screen goes away", async () => {
+  it("a link revoked while shown: the revoked message, the screen goes away, a code to pair again", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     renderApp("/tv");
     expect(await screen.findByRole("heading", { name: "Campagna e portafogli" })).toBeInTheDocument();
@@ -278,6 +347,7 @@ describe("TvDisplay", () => {
     await tick(5_000);
     expect(await screen.findByRole("alert")).toHaveTextContent("Collegamento revocato");
     expect(screen.queryByRole("heading", { name: "Campagna e portafogli" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("status", { name: "Codice di abbinamento" })).toBeInTheDocument();
   });
 
   it("follows the selection made in the portal on the next read (no reopening)", async () => {

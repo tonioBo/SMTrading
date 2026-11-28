@@ -56,6 +56,15 @@ export const useSaveTvDisplay = () => useAreaWrite((patch: TvDisplayPatch) => ap
 export const useRotateTvLink = () => useAreaWrite<void>(() => apiFetch<TvArea>("/api/tv/link/rotate", { method: "POST" }));
 export const useRevokeTvLink = () => useAreaWrite<void>(() => apiFetch<TvArea>("/api/tv/link/revoke", { method: "POST" }));
 
+/** «Abbina con codice»: the code shown by a TV page opens the caller's own link there */
+export function useClaimTvCode() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (code: string) => apiFetch<{ ok: boolean; message: string }>("/api/tv/claim", { method: "POST", body: { code } }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: tvKey }),
+  });
+}
+
 /** «Manda alla TV»: the only action that turns a TV on */
 export function useSendToTv() {
   const qc = useQueryClient();
