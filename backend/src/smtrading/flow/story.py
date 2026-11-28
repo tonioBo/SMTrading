@@ -17,7 +17,9 @@ Order story (portfolios of the river only: `neurograph_portfolio_ids`, as `flow.
     outcome    status, filled quantity, average price
 
 `steps` is the same journey as one time-ordered list for the side panel. The MCP story is
-the call alone: tool, agent, outcome, reason code (the outcome when not ok), symbol."""
+the call alone: tool, agent, outcome, reason code (the outcome when not ok), symbol, and
+the order it created (the same match reversed: an order of the same agent and symbol
+created while the call ran), if any."""
 
 import uuid
 from datetime import datetime, timedelta
@@ -260,6 +262,18 @@ async def mcp_story(session: AsyncSession, audit_id: int) -> dict | None:
         return None
     ok = row.outcome == "ok"
     key = agent_key(row.agent_id)
+    order_id = None
+    if ok and row.method in ORDER_TOOLS:
+        conds = [Order.agent_id == str(row.agent_id), Order.source == "agent",
+                 Order.created_at >= row.ts - CALL_SLACK,
+                 Order.created_at <= row.ts + timedelta(milliseconds=row.latency_ms or 0)
+                 + CALL_SLACK,
+                 Order.portfolio_id.in_(neurograph_portfolio_ids())]
+        if row.symbol:
+            conds.append(Order.symbol == row.symbol)
+        order_id = await session.scalar(  # the entry before its legs
+            select(Order.id).where(*conds)
+            .order_by(Order.parent_id.is_not(None), Order.created_at, Order.id).limit(1))
     path, _ = mcp_path(key, row.method)
     return {"audit_id": row.id, "at": row.ts, "tool": row.method,
             "agent": {"key": key, "name": row.name},
@@ -267,4 +281,5 @@ async def mcp_story(session: AsyncSession, audit_id: int) -> dict | None:
             "latency_ms": row.latency_ms, "symbol": _cap(row.symbol),
             "path": path,
             "note": None if ok else (REFUSED_NOTE if row.method in ORDER_TOOLS
-                                     else "chiamata non riuscita")}
+                                     else "chiamata non riuscita"),
+            "order_id": str(order_id) if order_id else None}

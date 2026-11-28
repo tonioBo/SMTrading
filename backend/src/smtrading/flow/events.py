@@ -160,7 +160,8 @@ async def _orders_rejected(session, since, until, limit) -> list[dict]:
 
 
 async def _fills(session, since, until, limit) -> list[dict]:
-    q = (select(Fill.id, Fill.symbol, Fill.created_at, Fill.source, BrokerLink.kind)
+    q = (select(Fill.id, Fill.order_id, Fill.symbol, Fill.created_at, Fill.source,
+                BrokerLink.kind)
          .join(Order, Order.id == Fill.order_id)
          .outerjoin(BrokerLink, BrokerLink.id == Order.broker_link_id)
          .where(Fill.created_at > since, Fill.created_at <= until,
@@ -173,8 +174,9 @@ async def _fills(session, since, until, limit) -> list[dict]:
             hops = [f"eseguito {r.symbol}", "registrazione"]
         else:
             path, hops = ["eng", "sim"], [f"esecuzione simulata {r.symbol}"]
-        out.append(_event(f"fill:{r.id}", r.created_at, "fill", "eng", path, hops,
-                          symbol=r.symbol))
+        # the order it fills, so a simulated order (no send event) opens its story
+        out.append({**_event(f"fill:{r.id}", r.created_at, "fill", "eng", path, hops,
+                             symbol=r.symbol), "order_id": str(r.order_id)})
     return out
 
 

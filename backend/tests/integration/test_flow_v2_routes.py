@@ -300,6 +300,9 @@ async def test_map_serves_families_and_price_sources(env):  # noqa: F811
     fam = {f["key"]: f for f in body["families"]}
     assert fam["messages"]["label"] == "messaggi" and "send_telegram" in fam["messages"]["tools"]
     assert {"key": "alpaca", "label": "Alpaca"} in body["price_sources"]
+    last = body["last_session"]
+    frm, to = datetime.fromisoformat(last["from"]), datetime.fromisoformat(last["to"])
+    assert frm < to <= datetime.now(UTC) and to - frm <= timedelta(hours=7)
 
 
 async def test_stories_routes(env):  # noqa: F811

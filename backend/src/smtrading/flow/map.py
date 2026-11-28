@@ -15,11 +15,14 @@ The lens (v2): every MCP tool and resource belongs to one family (`TOOL_FAMILY`,
 (`PRICE_SOURCE_LABELS`); guards in `tests/unit/test_flow_families.py`.
 """
 
+from datetime import UTC, datetime, timedelta
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smtrading.agents.models import Agent
 from smtrading.brokers.models import BrokerLink
+from smtrading.instruments.market_hours import local_date, session_on
 
 DESTS = ("eng", "px", "ng", "db", "tg", "mcp")
 ONE_WAY_DESTS = frozenset({"eng", "tg"})
@@ -223,6 +226,23 @@ def families() -> list[dict]:
             for f in FAMILIES]
 
 
+US_MARKET = "NYSE"
+_SESSION_LOOKBACK_DAYS = 15
+
+
+def last_session(now: datetime) -> dict | None:
+    """{from, to} (UTC) of the last completed regular US equities session before `now`
+    (NYSE calendar, holidays and early closes applied): the replay preset «ultima seduta
+    USA»."""
+    day = local_date(US_MARKET, now)
+    for _ in range(_SESSION_LOOKBACK_DAYS):
+        s = session_on(US_MARKET, day)
+        if s is not None and s[1] <= now:
+            return {"from": s[0], "to": s[1]}
+        day -= timedelta(days=1)
+    return None
+
+
 def _agent_description(name: str) -> str:
     return AGENT_DESCRIPTIONS.get(" ".join(name.split()).casefold(), AGENT_DEFAULT_DESCRIPTION)
 
@@ -230,7 +250,8 @@ def _agent_description(name: str) -> str:
 async def flow_map(session: AsyncSession) -> dict:
     """{nodes: [{key, label, kind, column, description}], links: [[a, b], ...], families:
     [{key, label, tools}], price_sources: [{key, label}]}: every node and every pair that
-    an event can produce (forward direction), the lens families and the price sources."""
+    an event can produce (forward direction), the lens families and the price sources,
+    last_session: {from, to} | null (the «ultima seduta USA» preset)."""
     agents = (await session.execute(select(Agent.id, Agent.name).order_by(Agent.name))).all()
     kinds = sorted((await session.scalars(select(BrokerLink.kind).distinct())).all())
 
@@ -244,4 +265,5 @@ async def flow_map(session: AsyncSession) -> dict:
     links += [list(p) for p in STATIC_LINKS]
     links += [["sync", broker_key(k)] for k in kinds]
     return {"nodes": nodes, "links": links, "families": families(),
+            "last_session": last_session(datetime.now(UTC)),
             "price_sources": [{"key": k, "label": v} for k, v in PRICE_SOURCE_LABELS.items()]}

@@ -138,7 +138,7 @@ async def test_story_of_a_refused_mcp_call(db_session, agent):
                  "tool": "place_order", "agent": {"key": f"agent:{agent.id}", "name": agent.name},
                  "outcome": "error", "reason_code": "INVALID_ORDER", "latency_ms": 40,
                  "symbol": "AAPL", "path": [f"agent:{agent.id}", "pc", "mcp", "eng"],
-                 "note": "chiamata rifiutata: nessun ordine creato"}
+                 "note": "chiamata rifiutata: nessun ordine creato", "order_id": None}
     assert "segreto" not in repr(s) and "qty" not in repr(s)
     ok = await _mcp(db_session, agent, "get_quote", params={"symbols": ["MSFT"]})
     s = await mcp_story(db_session, ok.id)
@@ -146,3 +146,32 @@ async def test_story_of_a_refused_mcp_call(db_session, agent):
     admin = await _mcp(db_session, agent, "admin:order.place")
     assert await mcp_story(db_session, admin.id) is None
     assert await mcp_story(db_session, 2**62) is None
+
+
+async def test_mcp_story_links_its_order(db_session, agent, symbol):
+    p = await _portfolio(db_session, agent)
+    o = await _order(db_session, p, symbol)
+    o.agent_id, o.created_at = str(agent.id), T
+    await db_session.flush()
+    call = await _mcp(db_session, agent, "place_order", at=T + S // 2, latency=800,
+                      params={"symbol": symbol})
+    other = await _mcp(db_session, agent, "place_order", at=T + 60 * S, latency=100,
+                       params={"symbol": symbol})
+    refused = await _mcp(db_session, agent, "place_order", at=T + S // 2, latency=800,
+                         outcome="INVALID_ORDER", params={"symbol": symbol})
+    assert (await mcp_story(db_session, call.id))["order_id"] == str(o.id)
+    assert (await mcp_story(db_session, other.id))["order_id"] is None
+    assert (await mcp_story(db_session, refused.id))["order_id"] is None
+    quote = await _mcp(db_session, agent, "get_quote", at=T + S // 2, latency=800,
+                       params={"symbol": symbol})
+    assert (await mcp_story(db_session, quote.id))["order_id"] is None
+
+
+async def test_fill_events_carry_their_order(db_session, agent, symbol):
+    from smtrading.flow.events import flow_events
+    p = await _portfolio(db_session, agent)
+    o = await _order(db_session, p, symbol)
+    f = await _fill(db_session, o, at=T)
+    [e] = [x for x in await flow_events(db_session, after=None, limit=500, now=T + S)
+           if x["id"] == f"fill:{f.id}"]
+    assert e["order_id"] == str(o.id) and e["path"] == ["eng", "sim"]
