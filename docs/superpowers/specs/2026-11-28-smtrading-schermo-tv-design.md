@@ -60,6 +60,21 @@ Decisioni di Matteo (28/11): la ricerca automatica delle TV sulla rete è **solo
 in standby si accende **solo** quando l'utente preme «Manda alla TV» (rotazione e cambi di schermata non la
 riaccendono mai).
 
+## Suoni (Matteo, 28/11: «la tv ha anche gli altoparlanti… fai tu e decidi tu») — scelte di Claude
+
+- **Pochi suoni, solo per fatti veri che contano**, mai per ogni chiamata (sarebbe rumore continuo):
+  - ordine eseguito: un rintocco breve e morbido (tono diverso per acquisto e vendita);
+  - stop o obiettivo scattato: due note (discendenti per lo stop, ascendenti per l'obiettivo);
+  - qualcosa diventa rosso nella salute (servizio, broker, prezzi, Neurograph, agente): un avviso basso e chiaro,
+    una volta sola finché non torna a posto; un suono di «tutto a posto» quando rientra;
+  - nessun suono per chiamate degli agenti, prezzi, rotazione o cambi di schermata.
+- Suoni generati nella pagina (Web Audio, nessun file da scaricare), volume moderato, al massimo un suono ogni
+  pochi secondi (quelli in più si accorpano).
+- **Spenti di default**; ognuno li accende nella sua area con volume e **ore di silenzio** (predefinite 22:00–08:00
+  ora di Roma, in cui non suona nulla).
+- Il browser della TV può bloccare l'audio finché non si preme un tasto: la schermata mostra in piccolo «premi OK
+  sul telecomando per attivare i suoni» quando i suoni sono accesi ma bloccati.
+
 ## Vincoli
 
 - Sola lettura; il link della TV non dà accesso ad altro.
