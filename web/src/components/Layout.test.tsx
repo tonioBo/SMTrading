@@ -53,7 +53,7 @@ describe("Layout", () => {
     const nav = await screen.findByRole("navigation", { name: "Navigazione principale" });
     // «Agenti» and «Sistema» start closed; their headings open them
     expect(within(nav).getAllByRole("link").map((a) => a.textContent)).toEqual([
-      "Dashboard", "Portafogli", "Segnali", "Posizioni", "Diario operazioni", "Strategie", "Obiettivi", "Campagne", "Mercati", "Regole automatiche",
+      "Dashboard", "Roadmap", "Portafogli", "Segnali", "Posizioni", "Diario operazioni", "Strategie", "Obiettivi", "Campagne", "Mercati", "Regole automatiche",
     ]);
     for (const name of ["Agenti", "Sistema"]) {
       const heading = within(nav).getByRole("button", { name });
@@ -67,6 +67,7 @@ describe("Layout", () => {
     }
     expect(within(nav).getAllByRole("link").map((a) => a.textContent)).toEqual([
       "Dashboard",
+      "Roadmap",
       "Portafogli",
       "Segnali",
       "Posizioni",
@@ -103,6 +104,20 @@ describe("Layout", () => {
     expect(logo).toHaveAttribute("aria-hidden", "true");
     expect(logo.parentElement).toHaveTextContent("SMTrading");
     expect(await screen.findByText("Trading attivo")).toBeInTheDocument();
+  });
+
+  it("a «Sola lettura» user sees «Roadmap» but not the admin-only pages", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("*/api/auth/me", () => HttpResponse.json({ email: "luca@example.com", role: "viewer", totp_enabled: false })),
+    );
+    renderApp("/");
+    const nav = await screen.findByRole("navigation", { name: "Navigazione principale" });
+    expect(await within(nav).findByRole("link", { name: "Roadmap" })).toHaveAttribute("href", "/roadmap");
+    for (const name of ["Agenti", "Sistema"]) await user.click(within(nav).getByRole("button", { name }));
+    const links = within(nav).getAllByRole("link").map((a) => a.textContent);
+    expect(links).toContain("Roadmap");
+    for (const hidden of ["Regole automatiche", "Fiume dei flussi", "Registro attività"]) expect(links).not.toContain(hidden);
   });
 
   it("opens by itself the closed group of the current page", async () => {

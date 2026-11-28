@@ -1,0 +1,928 @@
+{
+  "updated": "2026-11-28",
+  "summary": "Siamo nella campagna di dicembre: tre portafogli di prova lavorano con gli agenti fino al 22/12; il 23/12 si decide «sì/no» sul passaggio al denaro vero. Intanto si prova il lavoro in giornata e Neurograph dà agli agenti la prima misura del rischio.",
+  "campaign": {
+    "name": "Campagna di dicembre",
+    "start": "2026-11-23",
+    "end": "2026-12-22",
+    "portfolios": [
+      {
+        "code": "AGG",
+        "name": "Portafoglio Alpaca",
+        "kind": "conto di prova Alpaca"
+      },
+      {
+        "code": "PRU",
+        "name": "Portafoglio eToro",
+        "kind": "conto demo eToro"
+      },
+      {
+        "code": "MOD",
+        "name": "Portafoglio Moderato",
+        "kind": "simulato"
+      }
+    ],
+    "goal": {
+      "label": "Mensile +5%",
+      "kind": "min",
+      "target_pct": "5",
+      "horizon": "month"
+    }
+  },
+  "go_no_go": "2026-12-23",
+  "stages": [
+    {
+      "id": "fondamenta",
+      "title": "Le fondamenta",
+      "status": "fatto",
+      "owner": "smtrading",
+      "start": "2026-11-12",
+      "end": "2026-11-19",
+      "what": "In una settimana SMTrading è nato da zero: portafogli con un registro contabile che non si può alterare, prezzi da fonti gratuite, un motore che esegue gli ordini con i controlli di rischio, la porta MCP per gli agenti e il portale in italiano. Sono i piani da 1 a 17.",
+      "why": "Senza queste basi gli agenti non potrebbero operare in modo controllato e misurabile. Ogni euro, ordine e decisione resta registrato.",
+      "items": [
+        {
+          "title": "Piano 1 · Registro, portafogli e commissioni",
+          "status": "fatto",
+          "detail": "Registro a partita doppia con una catena di controllo: ogni riga è legata alla precedente, nessuna modifica nascosta. Anagrafica degli strumenti, depositi e prelievi, calcolo delle commissioni.",
+          "refs": [
+            "docs/superpowers/plans/2026-11-12-smtrading-01-foundation-ledger.md",
+            "docs/superpowers/specs/2026-11-12-smtrading-design.md"
+          ],
+          "date": "2026-11-12"
+        },
+        {
+          "title": "Piano 2 · Dati di mercato",
+          "status": "fatto",
+          "detail": "Quotazioni, storici, notizie, cambi, orari dei mercati e indicatori tecnici da fonti gratuite, con riserva automatica tra un fornitore e l'altro. Prezzi delle cripto in tempo reale.",
+          "refs": [
+            "docs/superpowers/plans/2026-11-12-smtrading-02-market-data.md"
+          ],
+          "date": "2026-11-12"
+        },
+        {
+          "title": "Piano 3 · Motore degli ordini e rischio",
+          "status": "fatto",
+          "detail": "Tutti i tipi di ordine sui portafogli simulati, con i controlli di rischio prima di ogni ordine. Vendite allo scoperto e leva con margine, perdita giornaliera massima, blocco totale (kill switch), interessi, dividendi e frazionamenti.",
+          "refs": [
+            "docs/superpowers/plans/2026-11-12-smtrading-03-engine-risk.md"
+          ],
+          "date": "2026-11-12"
+        },
+        {
+          "title": "Piano 4 · La porta MCP per gli agenti",
+          "status": "fatto",
+          "detail": "Gli agenti lavorano dentro Paperclip e usano SMTrading dalla porta MCP. Ognuno ha la sua chiave e vede solo i portafogli che gli sono assegnati. Ogni chiamata è registrata.",
+          "refs": [
+            "docs/superpowers/plans/2026-11-12-smtrading-04-mcp.md"
+          ],
+          "date": "2026-11-12"
+        },
+        {
+          "title": "Piano 5 · Il portale in italiano",
+          "status": "fatto",
+          "detail": "Accesso protetto, con codice a tempo facoltativo. Tema chiaro e scuro, aggiornamenti in tempo reale, tutte le pagine dei portafogli e degli ordini.",
+          "refs": [
+            "docs/superpowers/plans/2026-11-12-smtrading-05-admin-webapp.md"
+          ],
+          "date": "2026-11-12"
+        },
+        {
+          "title": "Piano 6 · Broker di prova, avvisi e backtest",
+          "status": "fatto",
+          "detail": "Gli ordini vengono replicati sui conti di prova di Alpaca e Trading 212. Fonti di dati con chiave, liste e avvisi di prezzo per gli agenti, backtest con strategie predefinite.",
+          "refs": [
+            "docs/superpowers/plans/2026-11-12-smtrading-06-connectors-brokers-extras.md"
+          ],
+          "date": "2026-11-12"
+        },
+        {
+          "title": "Piano 7 · Notifiche su Telegram",
+          "status": "fatto",
+          "detail": "Il gruppo Telegram riceve gli eventi critici, gli ordini eseguiti o rifiutati e i riepiloghi del mattino, della sera e del venerdì, anche con Paperclip fermo. L'agente Notifier manda decisioni e commenti.",
+          "refs": [
+            "docs/superpowers/plans/2026-11-13-smtrading-07-telegram.md",
+            "docs/superpowers/specs/2026-11-13-telegram-notifications-design.md"
+          ],
+          "date": "2026-11-13"
+        },
+        {
+          "title": "Piano 8 · Denaro vero: costruito e spento",
+          "status": "fatto",
+          "detail": "Collegamenti reali per Alpaca e Trading 212 con attivazione a passi: chiavi, prova in sola lettura, prova a secco, conferma con codice a tempo. Protezioni automatiche e un avviso Telegram per ogni ordine vero. Nessun collegamento reale è attivo.",
+          "refs": [
+            "docs/superpowers/plans/2026-11-14-smtrading-08-real-trading.md",
+            "docs/superpowers/specs/2026-11-14-real-trading-design.md"
+          ],
+          "date": "2026-11-14"
+        },
+        {
+          "title": "Piano 9 · eToro e miglioramenti",
+          "status": "fatto",
+          "detail": "eToro diventa il terzo broker (conto demo; il reale è costruito e spento) e una fonte di prezzi. Arrivano il controllo prima dell'apertura alle 08:45, l'obiettivo settimanale e gli ordini manuali completi dal portale.",
+          "refs": [
+            "docs/superpowers/plans/2026-11-15-smtrading-09-etoro-and-improvements.md",
+            "docs/superpowers/specs/2026-11-15-smtrading-09-etoro-and-improvements-design.md",
+            "docs/superpowers/specs/2026-11-15-smtrading-09-preopen-and-weekly-goal.md"
+          ],
+          "date": "2026-11-15"
+        },
+        {
+          "title": "Utenti del portale e registro attività",
+          "status": "fatto",
+          "detail": "Più persone nel portale: amministratori e utenti «Sola lettura», come Luca. Il registro attività dice chi ha fatto cosa e quando, anche quando l'azione è fallita o è stata negata.",
+          "refs": [
+            "docs/superpowers/specs/2026-11-15-smtrading-admin-users-design.md",
+            "docs/superpowers/specs/2026-11-15-smtrading-user-activity-log-design.md"
+          ],
+          "date": "2026-11-15"
+        },
+        {
+          "title": "Piano 10 · Rifiniture",
+          "status": "fatto",
+          "detail": "Le correzioni dopo il primo giorno di trading: riserva quando uno storico arriva incompleto, notizie sulle cripto da fonti pubbliche, piccoli difetti chiusi.",
+          "refs": [
+            "docs/superpowers/plans/2026-11-16-smtrading-10-refinements.md"
+          ],
+          "date": "2026-11-16"
+        },
+        {
+          "title": "Piano 11 · Segnali vicini",
+          "status": "fatto",
+          "detail": "Si vede quanto ogni strategia approvata è vicina a un ingresso. Gli indicatori «se chiudesse ora» permettono agli agenti di agire prima della chiusura, non un giorno dopo. L'obiettivo compare in prima pagina.",
+          "refs": [
+            "docs/superpowers/plans/2026-11-16-smtrading-11-signals.md"
+          ],
+          "date": "2026-11-16"
+        },
+        {
+          "title": "Piano 13 · Composizione, sessioni e allarme protezione",
+          "status": "fatto",
+          "detail": "Composizione dei portafogli, posizioni aperte in prima pagina, sessioni degli agenti rinnovate da sole e un allarme per le posizioni rimaste senza stop.",
+          "refs": [
+            "docs/superpowers/plans/2026-11-16-smtrading-13-night.md"
+          ],
+          "date": "2026-11-16"
+        },
+        {
+          "title": "Piano 14 · Obiettivi",
+          "status": "fatto",
+          "detail": "Obiettivi per settimana, mese, trimestre, anno o date libere, sul totale o per portafoglio. Anche tetti di perdita e confronto con un indice di borsa. Gli obiettivi guidano gli agenti: se si è indietro, si cercano strategie nuove, ma il rischio viene sempre prima.",
+          "refs": [
+            "docs/superpowers/plans/2026-11-17-smtrading-14-goals.md"
+          ],
+          "date": "2026-11-17"
+        },
+        {
+          "title": "Piano 16 · Ingressi a scadenza, più strategie, costi degli agenti",
+          "status": "fatto",
+          "detail": "Ordini d'ingresso «valido fino a», strategie momentum e donchian, budget mensile dei costi degli agenti con avvisi, sorveglianza dei passaggi di consegna tra un agente e l'altro.",
+          "refs": [
+            "docs/superpowers/plans/2026-11-18-smtrading-16.md"
+          ],
+          "date": "2026-11-18"
+        },
+        {
+          "title": "Piani 12 e 15",
+          "status": "fatto",
+          "detail": "Non hanno un documento separato.",
+          "refs": []
+        },
+        {
+          "title": "Piano 17 · Chiusura dei piani e lezioni",
+          "status": "fatto",
+          "detail": "Un obiettivo può diventare un «piano»: a fine periodo le posizioni aperte si chiudono. Gli agenti scrivono lezioni e regole del team. Nascono le pagine «Decisioni e lezioni» e «Risultati agenti» e la «Prova collegamento» dei broker.",
+          "refs": [],
+          "date": "2026-11-18"
+        }
+      ]
+    },
+    {
+      "id": "prove-reali",
+      "title": "Prove reali e sorveglianza",
+      "status": "fatto",
+      "owner": "smtrading",
+      "start": "2026-11-19",
+      "end": "2026-11-23",
+      "what": "Prima della campagna il sistema impara a controllarsi da solo e viene messo alla prova con ordini veri sui conti di prova dei broker.",
+      "why": "Gli errori trovati qui, come commissioni lette male o vendite che non si chiudevano, avrebbero falsato i numeri della campagna.",
+      "items": [
+        {
+          "title": "Salute del sistema, riconciliazione e campagne",
+          "status": "fatto",
+          "detail": "Pagina «Salute del sistema». La riconciliazione confronta ogni portafoglio collegato con il conto del broker. Una procedura guidata apre e chiude una campagna, con il suo resoconto stampabile.",
+          "refs": [],
+          "date": "2026-11-19"
+        },
+        {
+          "title": "Backup notturno",
+          "status": "fatto",
+          "detail": "Copia del database ogni notte, in locale e su OneDrive, con una prova di ripristino ogni settimana.",
+          "refs": [],
+          "date": "2026-11-20"
+        },
+        {
+          "title": "Ricerca delle strategie",
+          "status": "fatto",
+          "detail": "Per il Quant: prove su periodi successivi a quello di studio (walk-forward), ricerca dei parametri migliori e backtest di un intero portafoglio.",
+          "refs": [],
+          "date": "2026-11-20"
+        },
+        {
+          "title": "Prezzi più affidabili e ordini eToro più sicuri",
+          "status": "fatto",
+          "detail": "Una guardia scarta i prezzi sospetti e conta le quote delle fonti. eToro fa da riserva per i titoli europei. Su eToro stop e obiettivo li tiene SMTrading (ordini «sintetici»): corretti quattro difetti, due gravi, per esempio una vendita «di troppo» che poteva chiudere la posizione di un altro portafoglio.",
+          "refs": [
+            "docs/readiness/2026-12-campagna-prontezza.md"
+          ],
+          "date": "2026-11-21"
+        },
+        {
+          "title": "Prova reale cripto su Alpaca",
+          "status": "fatto",
+          "detail": "Portafoglio temporaneo invisibile agli agenti. Limite a riposo e annullo corretti, acquisto eseguito in 3,5 s, uscita e pulizia riuscite, conto vuoto alla fine. Trovati due difetti gravi (commissione cripto trattenuta in moneta, stop semplice non accettato sulle cripto), corretti e verificati la sera stessa.",
+          "refs": [
+            "docs/readiness/2026-12-campagna-prontezza.md"
+          ],
+          "date": "2026-11-21",
+          "kind": "esercitazione"
+        },
+        {
+          "title": "Il piano della prontezza",
+          "status": "fatto",
+          "detail": "Un documento guida la campagna: registro delle anomalie, pagella settimanale, esercitazioni e lista finale «sì/no».",
+          "refs": [
+            "docs/readiness/2026-12-campagna-prontezza.md"
+          ],
+          "date": "2026-11-21"
+        },
+        {
+          "title": "Sentinella e strumenti accettati dal broker",
+          "status": "fatto",
+          "detail": "La «Sentinella di sistema» sorveglia SMTrading e avvisa su Telegram. Prima di proporre un titolo, gli agenti verificano che il broker lo accetti davvero.",
+          "refs": [],
+          "date": "2026-11-23"
+        },
+        {
+          "title": "Istruzioni generiche per gli agenti",
+          "status": "fatto",
+          "detail": "Le istruzioni non contengono valori fissi: portafogli, profili di rischio e obiettivi si leggono sempre da SMTrading. Così il sistema funziona anche con portafogli nuovi, senza riscrivere nulla.",
+          "refs": [],
+          "date": "2026-11-23"
+        }
+      ]
+    },
+    {
+      "id": "campagna-dicembre",
+      "title": "Campagna di dicembre",
+      "status": "in_corso",
+      "owner": "smtrading",
+      "start": "2026-11-23",
+      "end": "2026-12-22",
+      "what": "Un mese di lavoro vero degli agenti su tre portafogli: «AGG» sul conto di prova Alpaca, «PRU» sul conto demo eToro e «MOD» simulato da SMTrading. L'obiettivo comune è «Mensile +5%». Ogni problema finisce nel registro delle anomalie, ogni venerdì arriva la pagella e una volta a settimana c'è un'esercitazione.",
+      "why": "È la prova generale prima del denaro vero. Si passa al reale solo se tutto regge senza sorprese, dal comportamento degli agenti al portale.",
+      "items": [
+        {
+          "title": "Avvio della campagna",
+          "status": "fatto",
+          "detail": "I tre portafogli e i loro obiettivi creati con la procedura guidata; gli agenti hanno approvato le prime strategie. All'avvio alcuni passaggi di consegna sono stati creati due volte: annotato nel registro.",
+          "refs": [
+            "docs/readiness/2026-12-campagna-prontezza.md"
+          ],
+          "date": "2026-11-23"
+        },
+        {
+          "title": "Registro delle anomalie",
+          "status": "in_corso",
+          "detail": "30 righe al 28/11, divise per gravità (A = poteva perdere denaro o dare dati sbagliati, B = funzione che non va, C = fastidio). Esempi: uno stop su un'azione Microsoft (MSFT) scattato all'apertura su una quotazione con forbice del 10%, costo circa 55 $, corretto il 24/11; prezzi con forbice anomala dal flusso gratuito di Alpaca, corretti il 27/11.",
+          "refs": [
+            "docs/readiness/2026-12-campagna-prontezza.md"
+          ]
+        },
+        {
+          "title": "Pagella settimanale",
+          "status": "in_corso",
+          "detail": "Ogni venerdì sera su Telegram, per portafoglio e in totale: esecuzioni, allineamento con i broker, protezione, agenti, sistema, obiettivo e anomalie nuove. La prima è uscita venerdì 27/11. Dal 28/11 misura anche il costo del calendario: scarto di prezzo e ritardo per ora del giorno e per broker.",
+          "refs": [
+            "docs/readiness/2026-12-campagna-prontezza.md",
+            "docs/superpowers/specs/2026-11-28-smtrading-neurograph-dati-design.md"
+          ]
+        },
+        {
+          "title": "Costi degli agenti",
+          "status": "in_corso",
+          "detail": "Budget di Paperclip: 200 $ al mese per tutta la società. Al 27/11 spesi 157,30 $; Portfolio Manager 52,52 $ e Risk Manager 45,07 $, oltre i 30 $ a testa previsti. Decisione di Matteo: nessun tetto per singolo agente, solo un avviso su Telegram quando si superano o ci si avvicina ai 200 $.",
+          "refs": [
+            "docs/readiness/2026-12-campagna-prontezza.md"
+          ]
+        },
+        {
+          "title": "Broker che non risponde",
+          "status": "fatto",
+          "detail": "Collegamento Alpaca di prova sospeso per 10 minuti. L'ordine di prova è rimasto in attesa ed è partito una sola volta al ritorno: nessun doppio invio, riconciliazione senza differenze. Corretti tre difetti: mancava un avviso dedicato, gli errori si ripetevano, un ordine a mercato poteva partire in ritardo. Lo stesso giorno è stato corretto anche un messaggio Telegram che, per un ordine eseguito in più parti, riportava solo l'ultima parte.",
+          "refs": [
+            "docs/readiness/2026-12-campagna-prontezza.md"
+          ],
+          "date": "2026-11-27",
+          "kind": "esercitazione"
+        },
+        {
+          "title": "Ripristino del backup e della chiave",
+          "status": "prossimo",
+          "detail": "Il backup di sabato viene ripristinato in un database usa e getta: i dati e i segreti cifrati devono risultare leggibili.",
+          "refs": [
+            "docs/readiness/2026-12-campagna-prontezza.md"
+          ],
+          "date": "2026-11-29",
+          "kind": "esercitazione"
+        },
+        {
+          "title": "Prova reale azioni su Alpaca",
+          "status": "prossimo",
+          "detail": "Portafoglio temporaneo invisibile, una sola azione: stop e obiettivo, modifica, vendita, orari di mercato.",
+          "refs": [
+            "docs/readiness/2026-12-campagna-prontezza.md"
+          ],
+          "date": "2026-12-02",
+          "kind": "esercitazione"
+        },
+        {
+          "title": "Blocco totale e ripresa",
+          "status": "prossimo",
+          "detail": "A mercati chiusi si accende il blocco totale (kill switch): nuovi ingressi rifiutati, uscite consentite, poi ripresa. Si guarda anche come si comportano gli agenti al ciclo successivo.",
+          "refs": [
+            "docs/readiness/2026-12-campagna-prontezza.md"
+          ],
+          "date": "2026-12-05",
+          "kind": "esercitazione"
+        },
+        {
+          "title": "Prezzi sospetti",
+          "status": "prossimo",
+          "detail": "Un prezzo anomalo inserito apposta sul portafoglio simulato: la guardia deve scartarlo e nessun ordine deve scattare a torto.",
+          "refs": [
+            "docs/readiness/2026-12-campagna-prontezza.md"
+          ],
+          "date": "2026-12-09",
+          "kind": "esercitazione"
+        },
+        {
+          "title": "Prova reale eToro con stop e obiettivo",
+          "status": "prossimo",
+          "detail": "Verifica della protezione del 21/11: l'altra uscita si annulla solo dopo che la prima è stata eseguita, mai prima.",
+          "refs": [
+            "docs/readiness/2026-12-campagna-prontezza.md"
+          ],
+          "date": "2026-12-12",
+          "kind": "esercitazione"
+        },
+        {
+          "title": "Chiusura di fine piano",
+          "status": "prossimo",
+          "detail": "Alla fine della campagna gli agenti chiudono tutte le posizioni; i residui li chiude SMTrading alla prima seduta valida.",
+          "refs": [
+            "docs/readiness/2026-12-campagna-prontezza.md"
+          ],
+          "date": "2026-12-23",
+          "kind": "esercitazione"
+        }
+      ]
+    },
+    {
+      "id": "lavoro-in-giornata",
+      "title": "Lavoro in giornata e regole automatiche",
+      "status": "in_corso",
+      "owner": "smtrading",
+      "start": "2026-11-26",
+      "end": "2026-12-23",
+      "what": "Due modi per lavorare dentro la stessa giornata, ognuno con il suo interruttore per portafoglio, spenti ovunque tranne nelle prove. Modo A: SMTrading sorveglia i segnali su barre brevi (per esempio 15 minuti) e sveglia l'agente solo quando un segnale scatta. Modo B: regole automatiche (scalping) che SMTrading esegue da solo in meno di un secondo, con freni e uscite a tempo.",
+      "why": "Oggi i segnali sono quasi tutti su barre giornaliere e gli agenti guardano i portafogli circa ogni ora: molte occasioni arrivano tardi. Svegliare l'agente solo quando serve costa meno di cicli più frequenti.",
+      "items": [
+        {
+          "title": "Progetto e piano",
+          "status": "fatto",
+          "detail": "Chiesto da Matteo il 26/11, approvato in due modi la sera stessa. La regola americana PDT è stata abolita il 4/6/2026: al suo posto c'è un tetto proprio di operazioni in giornata per portafoglio e la leva di giornata, fino a 2 solo sui conti di prova.",
+          "refs": [
+            "docs/superpowers/specs/2026-11-26-smtrading-intraday-design.md",
+            "docs/superpowers/specs/2026-11-26-smtrading-scalping-design.md",
+            "docs/superpowers/plans/2026-11-26-smtrading-intraday.md"
+          ],
+          "date": "2026-11-26"
+        },
+        {
+          "title": "Costruito e spento",
+          "status": "fatto",
+          "detail": "Posizioni «di giornata» e una rete di fine seduta che le chiude prima della fine; sveglia dell'agente; servizio delle regole automatiche con prova sullo storico a minuti, freni per regola e per portafoglio; pagina «Regole automatiche», solo per gli amministratori.",
+          "refs": [
+            "docs/superpowers/plans/2026-11-26-smtrading-intraday.md"
+          ],
+          "date": "2026-11-27"
+        },
+        {
+          "title": "Prova a mezza giornata (fatta in parte)",
+          "status": "fatto",
+          "detail": "Fatta in parte: mezza giornata della borsa USA più cripto: 42 operazioni automatiche su 9 simboli, dallo scatto all'invio circa 0,25 s, esecuzione in 0,3–2 s, risultato netto −12,71 € su 10.000 € finti. Freni, tetto di giornata e rete di fine seduta funzionano. 5 difetti trovati e corretti in serata; il resto si rifà a seduta piena.",
+          "refs": [
+            "docs/readiness/2026-12-intraday-prova-alpaca.md",
+            "docs/readiness/2026-12-campagna-prontezza.md"
+          ],
+          "date": "2026-11-27",
+          "kind": "esercitazione"
+        },
+        {
+          "title": "Prova a seduta piena",
+          "status": "prossimo",
+          "detail": "Sul conto di prova Alpaca da 30.000 $, con due portafogli di prova nascosti, uno per modo. Da rifare in seduta piena: uscite di fine seduta delle regole, leva 2 come limite che scatta, sveglia dell'agente. Si segue un manuale passo per passo e alla fine il conto resta vuoto.",
+          "refs": [
+            "docs/readiness/2026-12-intraday-prova-alpaca.md"
+          ],
+          "date": "2026-11-30",
+          "kind": "esercitazione"
+        },
+        {
+          "title": "Gli agenti in giornata su 3.000 $",
+          "status": "prossimo",
+          "detail": "Dopo la prova a seduta piena: un portafoglio da 3.000 $ con accesso agli agenti, sullo stesso conto di prova, in modo A, mentre la campagna continua. Stessi agenti, un modo per portafoglio, istruzioni generiche già autorizzate da Matteo.",
+          "refs": [
+            "docs/readiness/2026-12-intraday-prova-alpaca.md"
+          ],
+          "kind": "prova"
+        }
+      ]
+    },
+    {
+      "id": "neurograph",
+      "title": "Neurograph: misure per gli agenti",
+      "status": "in_corso",
+      "owner": "neurograph",
+      "start": null,
+      "what": "Neurograph è il laboratorio di Luca: studia le serie dei prezzi e dà agli agenti misure, mai ordini. Ogni strumento deve prima battere un metodo semplice sui dati successivi al periodo di studio; solo allora diventa uno strumento MCP di SMTrading, in sola lettura. Durante la campagna arriva al massimo uno strumento nuovo.",
+      "why": "Gli agenti oggi usano stop in percentuale fissa, che ignorano il rumore normale del titolo, e guardano il rischio una posizione alla volta. Misure verificate aiutano a scegliere stop e dimensioni giuste.",
+      "items": [
+        {
+          "title": "Test T0",
+          "status": "fatto",
+          "detail": "Su 209 simboli un modello classico della volatilità, GARCH(1,1)-t, ha battuto i grandi modelli di previsione pre-addestrati (foundation models). Conclusione: niente previsioni di direzione, solo misure di rischio.",
+          "refs": [
+            "docs/ideas/2026-11-28-neurograph-strumenti-agenti.md"
+          ],
+          "owner": "neurograph",
+          "kind": "esperimento"
+        },
+        {
+          "title": "get_forecast in linea",
+          "status": "fatto",
+          "detail": "La forchetta di rischio: quanto può muoversi un titolo nei prossimi giorni. La usano Risk Manager, Market Analyst e Quant per stop, dimensioni e livelli di allarme, non come segnale di acquisto o vendita. SMTrading chiama Neurograph sulla rete privata (VPN); se Neurograph non risponde, lo strumento dice «non disponibile» senza bloccare nulla.",
+          "refs": [
+            "docs/ideas/2026-11-28-neurograph-strumenti-agenti.md"
+          ],
+          "owner": "entrambi",
+          "date": "2026-11-28",
+          "kind": "strumento"
+        },
+        {
+          "title": "get_forecast con gli eventi in calendario",
+          "status": "in_corso",
+          "detail": "Ramo di Luca, già unito, in messa in linea: nei giorni con eventi in calendario Neurograph sceglie tra un modello HAR che tiene conto degli eventi e il GARCH.",
+          "refs": [
+            "docs/superpowers/specs/2026-11-28-smtrading-neurograph-dati-design.md",
+            "docs/superpowers/plans/2026-11-28-smtrading-neurograph-dati.md"
+          ],
+          "owner": "entrambi",
+          "date": "2026-11-28",
+          "kind": "strumento"
+        },
+        {
+          "title": "Eventi in calendario sulle azioni USA",
+          "status": "fatto",
+          "detail": "Esperimento di Luca: nelle finestre delle trimestrali la forchetta che tiene conto degli eventi contiene il prezzo il 75% delle volte, contro il 29% di quella senza eventi. Per questo il rischio attorno alle trimestrali è già coperto da get_forecast con gli eventi.",
+          "refs": [],
+          "owner": "neurograph",
+          "kind": "esperimento"
+        },
+        {
+          "title": "Altri mercati come aiuto",
+          "status": "fatto",
+          "detail": "Esperimento di Luca: aggiungere altri mercati (indice della paura VIX, petrolio, dollaro) non rende più precise le forchette.",
+          "refs": [],
+          "owner": "neurograph",
+          "kind": "esperimento"
+        },
+        {
+          "title": "Notizie dal mondo (GDELT)",
+          "status": "in_corso",
+          "detail": "Esperimento di Luca in corso: capire se le notizie raccolte da GDELT migliorano le misure di rischio.",
+          "refs": [],
+          "owner": "neurograph",
+          "kind": "esperimento"
+        },
+        {
+          "title": "Decisioni più ricche",
+          "status": "in_corso",
+          "detail": "Ogni decisione degli agenti indicherà la fiducia (da 0 a 100) e il risultato atteso (rendimento in % e in quanti giorni); ogni ordine porterà il riferimento della decisione che l'ha generato. Così si potrà misurare quali decisioni portano a risultati buoni.",
+          "refs": [
+            "docs/superpowers/specs/2026-11-28-smtrading-neurograph-dati-design.md",
+            "docs/superpowers/plans/2026-11-28-smtrading-neurograph-dati.md"
+          ],
+          "owner": "smtrading"
+        },
+        {
+          "title": "Invio notturno dei dati a Neurograph",
+          "status": "in_corso",
+          "detail": "Ogni notte dopo la mezzanotte SMTrading manderà a Neurograph le decisioni, gli ordini e le esecuzioni del giorno: solo i portafogli della campagna, nessun segreto, a partire dal 23/11. Recupera fino a 30 giorni mancanti, ogni giorno una volta sola, e compare nel Fiume dei flussi.",
+          "refs": [
+            "docs/superpowers/specs/2026-11-28-smtrading-neurograph-dati-design.md",
+            "docs/superpowers/plans/2026-11-28-smtrading-neurograph-dati.md"
+          ],
+          "owner": "smtrading"
+        },
+        {
+          "title": "get_bracket_odds",
+          "status": "prossimo",
+          "detail": "Il prossimo strumento nel piano di Luca (pagina «Neurograph contestuale», 28/11); il suo test T0-h è da iniziare. Probabilità di toccare prima lo stop o l'obiettivo entro l'orizzonte, con il risultato atteso al netto dei costi. Per Risk Manager, Portfolio Manager e regole automatiche. Test: dove dice 30%, deve succedere circa il 30% delle volte sui dati successivi.",
+          "refs": [],
+          "owner": "neurograph",
+          "kind": "strumento"
+        },
+        {
+          "title": "get_regime",
+          "status": "futuro",
+          "detail": "Dopo get_bracket_odds, nel piano di Luca (pagina «Neurograph contestuale», 28/11). Volatilità alta, normale o bassa rispetto alla storia del titolo, e tendenza al trend o al ritorno verso la media. Per Quant e CEO. Test: le strategie scelte in base al regime devono rendere di più, al netto dei costi.",
+          "refs": [],
+          "owner": "neurograph",
+          "kind": "strumento"
+        },
+        {
+          "title": "get_portfolio_risk",
+          "status": "futuro",
+          "detail": "Terzo nel piano di Luca (pagina «Neurograph contestuale», 28/11). Correlazioni tra le posizioni e perdita possibile del portafoglio in una giornata storta (VaR ed ES al 95%), con e senza l'ordine proposto. Per il Risk Manager; SMTrading manderà le posizioni a ogni chiamata.",
+          "refs": [
+            "docs/superpowers/specs/2026-11-28-smtrading-neurograph-dati-design.md"
+          ],
+          "owner": "neurograph",
+          "kind": "strumento"
+        }
+      ]
+    },
+    {
+      "id": "pagine-per-capire",
+      "title": "Pagine per capire: Fiume dei flussi e Roadmap",
+      "status": "in_corso",
+      "owner": "smtrading",
+      "start": "2026-11-28",
+      "what": "Due pagine del portale per vedere il sistema senza leggere documenti tecnici. Il Fiume dei flussi disegna dal vivo il percorso reale di chiamate e ordini: agenti, Paperclip, porta MCP, motore, dati, Neurograph, broker e Telegram. La Roadmap, questa pagina, racconta la strada, dove siamo e come si sta andando.",
+      "why": "Matteo e Luca devono capire in un colpo d'occhio cosa succede e cosa viene dopo. Entrambe le pagine restano vere: ogni lavoro le aggiorna.",
+      "items": [
+        {
+          "title": "Fiume dei flussi",
+          "status": "fatto",
+          "detail": "In linea dal 28/11 alle 14:20. Solo dati veri, letti ogni 2 secondi dai registri esistenti; visibile agli amministratori.",
+          "refs": [
+            "docs/superpowers/specs/2026-11-28-smtrading-fiume-flussi-design.md",
+            "docs/superpowers/plans/2026-11-28-smtrading-fiume-flussi.md"
+          ],
+          "date": "2026-11-28"
+        },
+        {
+          "title": "Fiume dei flussi, seconda versione",
+          "status": "prossimo",
+          "detail": "Moviola per rivedere un periodo passato, storia completa di un ordine (dalla decisione dell'agente all'avviso), risvegli e costi degli agenti, stato di salute su ogni nodo, lente sui metodi e sulle fonti dei prezzi: il dettaglio compare solo quando lo chiedi.",
+          "refs": [
+            "docs/superpowers/specs/2026-11-28-smtrading-fiume-flussi-v2-design.md"
+          ],
+          "date": "2026-11-28"
+        },
+        {
+          "title": "Roadmap",
+          "status": "in_corso",
+          "detail": "Leggibile da tutti gli utenti del portale. Le tappe stanno in un file curato, i numeri in testa sono letti dal vivo e un controllo automatico fallisce se un progetto o un piano non è citato qui.",
+          "refs": [
+            "docs/superpowers/specs/2026-11-28-smtrading-roadmap-design.md",
+            "docs/superpowers/plans/2026-11-28-smtrading-roadmap.md"
+          ],
+          "date": "2026-11-28"
+        }
+      ]
+    },
+    {
+      "id": "decisione",
+      "title": "Decisione «sì/no» del 23/12",
+      "status": "prossimo",
+      "owner": "matteo",
+      "start": "2026-12-23",
+      "end": "2026-12-23",
+      "what": "A fine campagna si misura ogni criterio della lista finale. Si passa al denaro vero solo con tutti «sì», oppure con una deroga scritta di Matteo.",
+      "why": "Con il denaro vero un errore costa. Questa lista trasforma un mese di prove in una decisione chiara.",
+      "items": [
+        {
+          "title": "Anomalie gravi",
+          "status": "prossimo",
+          "detail": "Anomalie di gravità A aperte: 0. Comparse nelle ultime 2 settimane: 0.",
+          "refs": [
+            "docs/readiness/2026-12-campagna-prontezza.md"
+          ],
+          "date": "2026-12-23",
+          "kind": "criterio",
+          "owner": "matteo"
+        },
+        {
+          "title": "Protezione",
+          "status": "prossimo",
+          "detail": "Posizioni rimaste senza stop per più di 5 minuti: 0.",
+          "refs": [],
+          "date": "2026-12-23",
+          "kind": "criterio",
+          "owner": "matteo"
+        },
+        {
+          "title": "Riconciliazione",
+          "status": "prossimo",
+          "detail": "Nessun disallineamento non spiegato con i broker; gli avvisi chiariti entro il giorno.",
+          "refs": [],
+          "date": "2026-12-23",
+          "kind": "criterio",
+          "owner": "matteo"
+        },
+        {
+          "title": "Ordini rifiutati per colpa di SMTrading",
+          "status": "prossimo",
+          "detail": "Rifiuti dovuti a un errore di SMTrading, non del mercato: 0 nelle ultime 2 settimane.",
+          "refs": [],
+          "date": "2026-12-23",
+          "kind": "criterio",
+          "owner": "matteo"
+        },
+        {
+          "title": "Commissioni",
+          "status": "prossimo",
+          "detail": "Commissioni registrate contro quelle del broker: scarto sotto l'1%.",
+          "refs": [],
+          "date": "2026-12-23",
+          "kind": "criterio",
+          "owner": "matteo"
+        },
+        {
+          "title": "Prezzi di esecuzione",
+          "status": "prossimo",
+          "detail": "Scarto medio tra prezzo atteso ed eseguito entro la forbice tipica; nessun caso oltre l'1% su titoli molto scambiati.",
+          "refs": [],
+          "date": "2026-12-23",
+          "kind": "criterio",
+          "owner": "matteo"
+        },
+        {
+          "title": "Agenti",
+          "status": "prossimo",
+          "detail": "Cicli degli agenti svolti: almeno il 98%. Operazioni senza segnale o limiti del profilo violati: 0. Costi entro il budget mensile.",
+          "refs": [],
+          "date": "2026-12-23",
+          "kind": "criterio",
+          "owner": "matteo"
+        },
+        {
+          "title": "Esercitazioni e backup",
+          "status": "prossimo",
+          "detail": "Tutte le esercitazioni superate; ripristino del backup provato e riuscito.",
+          "refs": [],
+          "date": "2026-12-23",
+          "kind": "criterio",
+          "owner": "matteo"
+        },
+        {
+          "title": "Servizi e dati",
+          "status": "prossimo",
+          "detail": "Nessun fermo oltre 15 minuti in orario di mercato senza avviso.",
+          "refs": [],
+          "date": "2026-12-23",
+          "kind": "criterio",
+          "owner": "matteo"
+        },
+        {
+          "title": "Obiettivo",
+          "status": "prossimo",
+          "detail": "Non è un criterio di sicurezza: si riporta il risultato di «Mensile +5%».",
+          "refs": [],
+          "date": "2026-12-23",
+          "kind": "criterio",
+          "owner": "matteo"
+        }
+      ]
+    },
+    {
+      "id": "dopo",
+      "title": "Dopo la campagna",
+      "status": "futuro",
+      "owner": "entrambi",
+      "start": "2026-12-24",
+      "what": "Se la decisione è «sì»: prima il lavoro in giornata con prezzi davvero in tempo reale, poi il passaggio al denaro vero, più avanti le opzioni come progetto separato. Neurograph continua con strumenti nuovi, uno alla volta.",
+      "why": "Ogni passo aggiunge rischio. Si va avanti solo dopo aver dimostrato che il passo precedente regge.",
+      "items": [
+        {
+          "title": "Lavoro in giornata con prezzi in tempo reale",
+          "status": "futuro",
+          "detail": "Il flusso gratuito di Alpaca vede una sola borsa (IEX) e al massimo 30 titoli; i titoli europei possono arrivare in ritardo. Serve una fonte a pagamento per i mercati trattati in giornata, segnali sorvegliati da SMTrading, strategie su barre brevi con storico sufficiente e costi veri, regole di giornata e uno stile «in giornata» nei profili. Si parte con un solo portafoglio sul conto di prova Alpaca.",
+          "refs": [
+            "docs/readiness/2026-12-campagna-prontezza.md",
+            "docs/superpowers/specs/2026-11-26-smtrading-intraday-design.md"
+          ],
+          "owner": "smtrading"
+        },
+        {
+          "title": "Passaggio al denaro vero",
+          "status": "futuro",
+          "detail": "I collegamenti reali sono costruiti e spenti. L'attivazione è a passi, con prova in sola lettura e conferma con codice a tempo. Si accende solo dopo il «sì» del 23/12.",
+          "refs": [
+            "docs/superpowers/specs/2026-11-14-real-trading-design.md",
+            "docs/readiness/2026-12-campagna-prontezza.md"
+          ],
+          "owner": "matteo"
+        },
+        {
+          "title": "Regole automatiche tarate sulla volatilità",
+          "status": "futuro",
+          "detail": "Stop e obiettivo delle regole come multipli del movimento tipico al minuto, invece di percentuali fisse: le regole di prova del 27/11 si sono fermate tutte dopo 3 perdite. Serve la volatilità su barre da 1 minuto.",
+          "refs": [
+            "docs/ideas/2026-11-28-neurograph-strumenti-agenti.md"
+          ],
+          "owner": "neurograph",
+          "kind": "strumento"
+        },
+        {
+          "title": "Opzioni su Alpaca",
+          "status": "futuro",
+          "detail": "Opzioni su azioni ed ETF, anche fuori dall'orario normale (sul reale dal 4/12/2026). Oggi SMTrading non ha opzioni: catalogo, prezzi, ordini, rischio e strumenti degli agenti sono da costruire. Progetto separato, solo dopo il passaggio al reale sulle azioni.",
+          "refs": [
+            "docs/readiness/2026-12-campagna-prontezza.md"
+          ],
+          "owner": "entrambi"
+        }
+      ]
+    }
+  ],
+  "glossary": [
+    {
+      "term": "Agenti",
+      "meaning": "Programmi di intelligenza artificiale, ognuno con un ruolo (CEO, Portfolio Manager, Risk Manager, Quant, Market Analyst, Notifier…), che studiano i mercati, decidono e operano sui portafogli."
+    },
+    {
+      "term": "CEO",
+      "meaning": "L'agente capo: approva strategie e allocazioni, guida il piano verso l'obiettivo e riceve i problemi che gli altri non risolvono."
+    },
+    {
+      "term": "Quant",
+      "meaning": "L'agente che cerca e prova le strategie sullo storico."
+    },
+    {
+      "term": "Paperclip",
+      "meaning": "La piattaforma dove vivono e lavorano gli agenti: compiti, turni e costi (budget 200 $ al mese)."
+    },
+    {
+      "term": "MCP",
+      "meaning": "«Model Context Protocol»: la porta standard da cui gli agenti usano gli strumenti di SMTrading. Ogni chiamata è registrata."
+    },
+    {
+      "term": "Broker",
+      "meaning": "L'intermediario che porta davvero gli ordini sul mercato: Alpaca, eToro, Trading 212."
+    },
+    {
+      "term": "Conto di prova (paper)",
+      "meaning": "Conto del broker con denaro finto ma prezzi ed esecuzioni di mercato veri (Alpaca)."
+    },
+    {
+      "term": "Conto demo",
+      "meaning": "Lo stesso, presso eToro."
+    },
+    {
+      "term": "Conto reale",
+      "meaning": "Denaro vero. In SMTrading è costruito ma spento fino alla decisione del 23/12."
+    },
+    {
+      "term": "Simulato",
+      "meaning": "Portafoglio i cui ordini li esegue SMTrading stesso, senza broker."
+    },
+    {
+      "term": "AGG · PRU · MOD",
+      "meaning": "I codici dei tre portafogli della campagna: Alpaca (conto di prova), eToro (conto demo), Moderato (simulato)."
+    },
+    {
+      "term": "Campagna",
+      "meaning": "Un periodo di prova con portafogli e obiettivi propri. Quella di dicembre va dal 23/11 al 22/12."
+    },
+    {
+      "term": "Go/no-go (sì/no)",
+      "meaning": "La decisione di fine campagna: passare o no al denaro vero, criterio per criterio."
+    },
+    {
+      "term": "Esercitazione",
+      "meaning": "Una prova programmata di un guasto o di una situazione rara, per vedere se il sistema reagisce bene."
+    },
+    {
+      "term": "Pagella",
+      "meaning": "Il resoconto del venerdì sera su Telegram con i numeri della settimana."
+    },
+    {
+      "term": "Registro delle anomalie",
+      "meaning": "L'elenco di ogni problema trovato: data, causa, correzione, gravità A, B o C."
+    },
+    {
+      "term": "Riconciliazione",
+      "meaning": "Il confronto tra quello che SMTrading registra e quello che dice il broker."
+    },
+    {
+      "term": "Backtest",
+      "meaning": "La prova di una strategia sui prezzi del passato."
+    },
+    {
+      "term": "Walk-forward",
+      "meaning": "Backtest che studia un periodo e verifica sul periodo successivo, per non ingannarsi."
+    },
+    {
+      "term": "Stop e obiettivo",
+      "meaning": "Lo stop vende se il prezzo scende fino a un livello (limita la perdita); l'obiettivo vende quando sale fino al guadagno voluto."
+    },
+    {
+      "term": "Forbice (spread)",
+      "meaning": "La differenza tra il prezzo a cui si compra e quello a cui si vende in quel momento."
+    },
+    {
+      "term": "Kill switch (blocco totale)",
+      "meaning": "L'interruttore che ferma tutti i nuovi ingressi; le uscite restano possibili."
+    },
+    {
+      "term": "Piano",
+      "meaning": "Un obiettivo che a fine periodo chiude le posizioni ancora aperte."
+    },
+    {
+      "term": "Leva",
+      "meaning": "Operare con più denaro di quello del conto, prestato dal broker. Nel lavoro in giornata al massimo 2, e solo sui conti di prova."
+    },
+    {
+      "term": "Intraday (lavoro in giornata)",
+      "meaning": "Operazioni aperte e chiuse nella stessa seduta di borsa."
+    },
+    {
+      "term": "Scalping",
+      "meaning": "Operazioni brevissime, da secondi a minuti, eseguite in automatico da regole."
+    },
+    {
+      "term": "PDT",
+      "meaning": "«Pattern Day Trader»: una vecchia regola americana che limitava le operazioni in giornata sui conti sotto 25.000 $. Abolita il 4/6/2026."
+    },
+    {
+      "term": "IEX",
+      "meaning": "Una borsa americana: il flusso gratuito di Alpaca mostra solo i suoi prezzi."
+    },
+    {
+      "term": "ETF",
+      "meaning": "Un fondo quotato in borsa che replica un indice o un paniere di titoli."
+    },
+    {
+      "term": "Neurograph",
+      "meaning": "Il laboratorio di ricerca di Luca: modelli statistici che danno agli agenti misure di rischio, mai ordini."
+    },
+    {
+      "term": "T0",
+      "meaning": "Il primo test di Neurograph: modelli confrontati sullo storico di 209 simboli."
+    },
+    {
+      "term": "Foundation models",
+      "meaning": "Grandi modelli di previsione pre-addestrati su moltissime serie di dati."
+    },
+    {
+      "term": "GARCH · HAR",
+      "meaning": "Modelli statistici classici della volatilità. GARCH guarda gli ultimi movimenti; HAR unisce la volatilità di giorni, settimane e mesi."
+    },
+    {
+      "term": "Forchetta di rischio",
+      "meaning": "L'intervallo in cui il prezzo dovrebbe restare nei prossimi giorni con una certa probabilità: serve per stop e dimensioni, non per decidere se comprare."
+    },
+    {
+      "term": "VaR · ES",
+      "meaning": "Due misure della perdita in una giornata storta: VaR è la perdita superata solo nel 5% dei giorni peggiori, ES la media di quei giorni."
+    },
+    {
+      "term": "VIX",
+      "meaning": "L'«indice della paura»: misura quanto il mercato americano si aspetta che i prezzi oscillino."
+    },
+    {
+      "term": "GDELT",
+      "meaning": "Un archivio pubblico che raccoglie e classifica le notizie di tutto il mondo."
+    },
+    {
+      "term": "VPN",
+      "meaning": "Una rete privata cifrata: collega SMTrading a Neurograph senza passare da internet aperto."
+    },
+    {
+      "term": "Sentinella",
+      "meaning": "Il controllo automatico che sorveglia SMTrading e avvisa su Telegram se qualcosa non va."
+    },
+    {
+      "term": "Fiume dei flussi",
+      "meaning": "La pagina che disegna dal vivo chi chiama chi dentro SMTrading."
+    },
+    {
+      "term": "Telegram",
+      "meaning": "L'app di messaggi dove arrivano avvisi, riepiloghi e pagelle."
+    }
+  ]
+}
