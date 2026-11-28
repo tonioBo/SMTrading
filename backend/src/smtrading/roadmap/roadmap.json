@@ -606,7 +606,7 @@
         {
           "title": "Schermo TV",
           "status": "in_corso",
-          "detail": "Dal portale si sceglie cosa mostrare sulla smart TV di casa (Fiume dei flussi, campagna e portafogli, salute e avvisi, oppure una rotazione) e SMTrading lo manda alla TV da solo; schermate grandi, leggibili da lontano, solo lettura.",
+          "detail": "In linea dal 28/11 alle 19:50: dal portale ogni utente, nella sua area, collega la propria TV e sceglie cosa mostrare (Fiume dei flussi per gli amministratori, campagna e portafogli, salute e avvisi, rotazione); SMTrading la manda alla TV da solo; suoni facoltativi per esecuzioni, stop/obiettivi e problemi. Primo collegamento della TV di casa da fare.",
           "refs": [
             "docs/superpowers/specs/2026-11-28-smtrading-schermo-tv-design.md",
             "docs/superpowers/plans/2026-11-28-smtrading-schermo-tv.md"
