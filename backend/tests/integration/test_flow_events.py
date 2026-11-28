@@ -79,10 +79,11 @@ async def _mcp(db_session, agent, method="get_forecast", *, at=T, outcome="ok",
 
 
 async def _order(db_session, p, symbol, *, link=None, sent_at=None,
-                 status=OrderStatus.new, updated_at=None):
+                 status=OrderStatus.new, updated_at=None, source="agent",
+                 client_order_id=None):
     o = Order(portfolio_id=p.id, symbol=symbol, side=OrderSide.buy, type=OrderType.market,
               qty=D(1), status=status, broker_link_id=link.id if link else None,
-              broker_sent_at=sent_at)
+              broker_sent_at=sent_at, source=source, client_order_id=client_order_id)
     if updated_at is not None:
         o.updated_at = updated_at
     db_session.add(o)
@@ -332,3 +333,28 @@ async def test_summary_empty(db_session):
     assert out["links"] == {} and out["nodes"] == {}
     assert out["head"]["calls_per_min"] == 0 and out["head"]["errors_window"] == 0
     assert out["head"]["mcp_latency_ms"] is None
+
+
+async def test_rejection_origins(db_session, agent, symbol):
+    link = await _link(db_session)
+    p = await _portfolio(db_session, agent, link=link)
+    auto = await _order(db_session, p, symbol, status=OrderStatus.rejected, updated_at=T,
+                        source="system", client_order_id="smt-auto-0123456789ab-x")
+    admin_linked = await _order(db_session, p, symbol, link=link, status=OrderStatus.rejected,
+                                updated_at=T + S, source="admin")
+    p2 = await _portfolio(db_session, agent)
+    admin_local = await _order(db_session, p2, symbol, status=OrderStatus.rejected,
+                               updated_at=T + 2 * S, source="admin")
+    events = {e["id"]: e for e in await flow_events(db_session, after=None, limit=500,
+                                                    now=T + 5 * S)}
+    assert events[f"order:{auto.id}:rejected"]["path"] == ["rules", "eng"]
+    assert events[f"order:{auto.id}:rejected"]["who"] == "rules"
+    assert events[f"order:{admin_linked.id}:rejected"]["path"] == ["eng", "sync"]
+    # no agent, no link: no true path to draw
+    assert f"order:{admin_local.id}:rejected" not in events
+
+
+async def test_symbol_is_capped(db_session, agent):
+    await _mcp(db_session, agent, "get_quote", params={"symbol": "X" * 500})
+    [e] = await flow_events(db_session, after=None, limit=500, now=T + 5 * S)
+    assert e["symbol"] == "X" * 32

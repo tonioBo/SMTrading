@@ -17,6 +17,12 @@ only the symbol (`symbol`, or the first of `symbols`) leaves the database.
 
 Event ids are stable (`mcp:<id>`, `order:<id>:sent`, `order:<id>:rejected`, `fill:<id>`,
 `tg:<id>`, `auto:<id>`): the page polls with a time cursor and drops the ids it has seen.
+
+Known trade-offs: an order re-sent to the broker keeps its id `order:<id>:sent` (the page,
+having seen it, draws the first send only); a rejection's time is `orders.updated_at`
+(a later touch of a rejected order moves it). Telegram rows carry no portfolio reference
+(no column; `entities` is text formatting), so a system message about a hidden test
+portfolio is not filtered out (the summaries already leave those portfolios out).
 """
 
 from datetime import datetime, timedelta
@@ -37,6 +43,12 @@ OVERLAP = timedelta(seconds=10)  # a poll re-reads this much before its cursor
 FIRST_WINDOW = timedelta(minutes=15)  # the first poll (no cursor)
 LIMIT_MIN, LIMIT_MAX, LIMIT_DEFAULT = 1, 2000, 500
 RETURN_HOP = "risposta"
+SYMBOL_MAX = 32  # a symbol longer than any real one is cut (an agent's argument)
+AUTO_PREFIX = "smt-auto"  # client_order_id of an automatic rule's orders (entry and exits)
+
+
+def _cap(symbol: str | None) -> str | None:
+    return symbol[:SYMBOL_MAX] if symbol else symbol
 
 # the category of a system message, in plain Italian (unknown: the category itself)
 TELEGRAM_CATEGORY_IT = {
@@ -88,7 +100,7 @@ async def _mcp(session: AsyncSession, since: datetime, until: datetime, limit: i
     for r in (await session.execute(q)).all():
         path, hops = mcp_path(agent_key(r.agent_id), r.method)
         out.append(_event(f"mcp:{r.id}", r.ts, "mcp", path[0], path, hops,
-                          "ok" if r.outcome == "ok" else "error", r.latency_ms, r.symbol))
+                          "ok" if r.outcome == "ok" else "error", r.latency_ms, _cap(r.symbol)))
     return out
 
 
@@ -105,8 +117,13 @@ async def _orders_sent(session, since, until, limit) -> list[dict]:
 
 
 async def _orders_rejected(session, since, until, limit) -> list[dict]:
+    """Where a rejection is drawn, by the order's true origin: refused by the broker (it
+    was sent) → Motore → BrokerSync → <broker>; an automatic rule's order → Regole → Motore;
+    an agent's order → MCP → Motore; an admin/system order with a link → Motore →
+    BrokerSync; an admin/system order without a link has no path to draw (no event)."""
     q = (select(Order.id, Order.symbol, Order.updated_at, Order.broker_sent_at,
-                BrokerLink.kind)
+                Order.broker_link_id, Order.source, Order.auto_rule_id,
+                Order.client_order_id, BrokerLink.kind)
          .outerjoin(BrokerLink, BrokerLink.id == Order.broker_link_id)
          .where(Order.status == OrderStatus.rejected,
                 Order.updated_at > since, Order.updated_at <= until,
@@ -114,13 +131,20 @@ async def _orders_rejected(session, since, until, limit) -> list[dict]:
          .order_by(Order.updated_at, Order.id).limit(limit))
     out = []
     for r in (await session.execute(q)).all():
+        who = "eng"
         if r.kind is not None and r.broker_sent_at is not None:  # refused by the broker
             path = ["eng", "sync", broker_key(r.kind)]
             hops = ["invio", f"rifiutato {r.symbol}"]
-        else:  # refused by the engine
+        elif r.auto_rule_id is not None or (r.client_order_id or "").startswith(AUTO_PREFIX):
+            path, hops, who = ["rules", "eng"], ["rifiutato"], "rules"
+        elif r.source == "agent":
             path, hops = ["mcp", "eng"], ["rifiutato"]
-        out.append(_event(f"order:{r.id}:rejected", r.updated_at, "order_rejected", "eng",
-                          path, hops, "error", symbol=r.symbol))
+        elif r.broker_link_id is not None:
+            path, hops = ["eng", "sync"], ["rifiutato"]
+        else:
+            continue
+        out.append(_event(f"order:{r.id}:rejected", r.updated_at, "order_rejected", who,
+                          path, hops, "error", symbol=_cap(r.symbol)))
     return out
 
 
