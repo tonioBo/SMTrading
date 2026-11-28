@@ -10,7 +10,9 @@ Redis e l'app web di amministrazione in italiano, tutto in `docker compose`.
 2. `docker compose up -d --build`
 3. Dal PC stesso: <http://127.0.0.1:3000/> (ingresso locale, http).
 
-L'API (`127.0.0.1:8000`, anche per l'MCP) resta raggiungibile solo dal PC.
+L'API (`127.0.0.1:8000`, anche per l'MCP) resta raggiungibile solo dal PC. La porta `8087`
+(http) è l'ingresso dell'app «SMTrading TV» per la smart TV: solo i dati delle schermate TV,
+solo dalla rete di casa (`docs/readiness/tv-app-installazione.md`).
 
 ## Utenti del portale
 

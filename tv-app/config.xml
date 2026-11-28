@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- «SMTrading TV»: Tizen web app for the Samsung TV (developer mode install,
+     scripts/tv-app.sh). The app id is package id (10 characters) + "." + name: it must
+     stay equal to samsung.TV_APP_ID in the backend («Manda alla TV» opens it by REST). -->
+<widget xmlns="http://www.w3.org/ns/widgets" xmlns:tizen="http://tizen.org/ns/widgets"
+        id="http://smtrading.local/tv-app" version="1.0.0" viewmodes="maximized">
+    <tizen:application id="SMTrTV0001.SMTradingTV" package="SMTrTV0001" required_version="3.0"/>
+    <tizen:profile name="tv-samsung"/>
+    <name>SMTrading TV</name>
+    <description>Le schermate TV di SMTrading a tutto schermo, guidate dal telecomando.</description>
+    <author>SMTrading</author>
+    <icon src="icon.png"/>
+    <content src="index.html"/>
+    <feature name="http://tizen.org/feature/screen.size.all"/>
+    <!-- the server address is chosen at the first start (an http address of the home
+         network): network access to any origin, the server allows only its LAN -->
+    <access origin="*" subdomains="true"/>
+    <tizen:privilege name="http://tizen.org/privilege/internet"/>
+    <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
+    <tizen:setting screen-orientation="landscape" context-menu="disable"
+                   background-support="disable" encryption="disable"
+                   install-location="auto" hwkey-event="enable"/>
+</widget>

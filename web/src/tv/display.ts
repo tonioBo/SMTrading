@@ -6,6 +6,9 @@
  * Without a link (a TV that cannot be sent a URL, or a revoked link) the page asks for a
  * pairing code (POST /api/tv-display/code), shows it, and polls its own opaque id until a
  * user writes the code in the portal: that answer sets the same cookie.
+ * The «SMTrading TV» app (src/tvapp, packaged from tv-app/) uses the same client with its
+ * own `tvTransport`: the server's http address for the app, the token in a header, no
+ * cookies.
  */
 import { BUILD_HEADER } from "@/lib/buildVersion";
 import type { TvPairCode, TvPairState, TvScreenKey, TvSelection } from "@/api/tvTypes";
@@ -25,6 +28,14 @@ export const tvEnv = {
   ownBuild: (import.meta.env.VITE_BUILD_ID as string | undefined) ?? "",
 };
 
+/** where and how the display routes are called: the page uses its own origin and the
+ * cookie; the TV app sets an absolute base and its headers (X-SMT-TV-Token, X-SMT-TV-App) */
+export const tvTransport: {
+  base: string;
+  credentials: RequestCredentials;
+  headers: () => Record<string, string>;
+} = { base: "", credentials: "same-origin", headers: () => ({}) };
+
 /** the bundle is older than the server's: reload to pick up the new one */
 let buildListener: (() => void) | null = null;
 export function onNewBuild(cb: (() => void) | null): void {
@@ -34,7 +45,12 @@ export function onNewBuild(cb: (() => void) | null): void {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(path, { credentials: "same-origin", cache: "no-store", ...init, headers: { Accept: "application/json", ...(init.headers ?? {}) } });
+    res = await fetch(tvTransport.base + path, {
+      credentials: tvTransport.credentials,
+      cache: "no-store",
+      ...init,
+      headers: { Accept: "application/json", ...tvTransport.headers(), ...(init.headers ?? {}) },
+    });
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") throw err;
     throw new TvFetchError(0, "server non raggiungibile");
@@ -65,8 +81,9 @@ export function requestCode(signal?: AbortSignal): Promise<TvPairCode> {
   return request<TvPairCode>("/api/tv-display/code", { method: "POST", signal });
 }
 
-/** whether the code was written in the portal; `claimed` comes with the display cookie */
-export function codeState(pollId: string, signal?: AbortSignal): Promise<{ state: TvPairState }> {
+/** whether the code was written in the portal; `claimed` comes with the display cookie
+ * (the TV app on its http entry: with `token` in the body instead) */
+export function codeState(pollId: string, signal?: AbortSignal): Promise<{ state: TvPairState; token?: string }> {
   return request(`/api/tv-display/code/${encodeURIComponent(pollId)}`, { signal });
 }
 
