@@ -5,6 +5,12 @@ closes and answers with the GARCH(1,1)-t range (the model that won Neurograph's 
 209 symbols: the time-series foundation models lost to it). It is a risk measure, not a
 direction: the range is symmetric and no order ever follows from it.
 
+SMTrading sends the symbol, its asset class, the timeframe and the OHLC bars; Neurograph picks the model: on daily
+bars HAR plus the scheduled events in the horizon (earnings, Fed, ECB, US CPI, US jobs report) for equities and forex,
+GARCH for crypto and for other timeframes. Neurograph's test (T0-f, US equities): in the windows that contain an
+earnings release, GARCH's 80 % range held the next-day price 29 % of the time, HAR + events 75 %. The tool's
+description and schema are unchanged (frozen catalog); the answer lists the events in `events`.
+
 `SMT_NEUROGRAPH_URL` (e.g. http://192.168.4.4:18088/api/serie, over the WireGuard VPN) must
 be set; unset or unreachable answers PROVIDER_UNAVAILABLE. The call goes from SMTrading to
 Neurograph, so SMTrading's own MCP stays closed to the network.
@@ -18,6 +24,8 @@ from mcp.types import CallToolResult
 
 from smtrading.common.config import get_settings
 from smtrading.common.errors import ErrorCode, SMTError
+from smtrading.instruments.models import Instrument
+from smtrading.instruments.service import canonical_symbol
 from smtrading.marketdata.indicators_service import fetch_bars
 from smtrading.mcp.instruments import ensure_instrument
 from smtrading.mcp.runtime import ToolCtx, run_tool
@@ -27,6 +35,14 @@ MAX_HORIZON = 20
 N_BARS = 600  # GARCH is fitted on the last closes (Neurograph uses at most 2000)
 MIN_BARS = 101
 TIMEOUT_S = 20.0
+
+
+_EVENT_NAMES = {"utili": "earnings", "fed": "fed", "bce": "ecb", "inflazione": "us_cpi", "lavoro": "us_jobs"}
+
+
+def _events(out: dict) -> list[dict]:
+    return [{"type": _EVENT_NAMES.get(e["tipo"], e["tipo"]), "date": e["data"], "in_bars": int(e["fra_barre"])}
+            for e in out.get("eventi") or []]
 
 
 def _pct(x: float) -> str:
@@ -46,10 +62,13 @@ async def _get_forecast(ctx: ToolCtx, symbol: Any, timeframe: Any, horizon: Any)
         raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE,
                        f"not enough bars for a forecast ({len(bars)} < {MIN_BARS})",
                        {"symbol": sym, "bars": len(bars)})
-    closes = [float(b.close) for b in bars]
+    instr = await ctx.session.get(Instrument, canonical_symbol(sym))
+    payload = {"simbolo": sym, "classe": instr.asset_class.value if instr else "", "timeframe": tf.value, "h": h,
+               "barre": [{"t": b.ts.isoformat(), "o": float(b.open), "h": float(b.high), "l": float(b.low),
+                          "c": float(b.close)} for b in bars]}
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_S) as client:
-            r = await client.post(f"{base.rstrip('/')}/rischio", json={"chiusure": closes, "h": h})
+            r = await client.post(f"{base.rstrip('/')}/rischio", json=payload)
         r.raise_for_status()
         out = r.json()
     except (httpx.HTTPError, ValueError) as exc:
@@ -66,6 +85,7 @@ async def _get_forecast(ctx: ToolCtx, symbol: Any, timeframe: Any, horizon: Any)
         model, bars_used, sigma = out["modello"], out["barre_usate"], float(out["sigma_h"])
         range_price = [steps[-1]["price"]["q10"], steps[-1]["price"]["q90"]]
         lo, hi = float(lo), float(hi)
+        events = _events(out)
     except (KeyError, TypeError, ValueError, IndexError) as exc:  # an answer of an unexpected shape
         raise SMTError(ErrorCode.PROVIDER_UNAVAILABLE,
                        f"Neurograph answered in an unexpected shape: {type(exc).__name__}") from exc
@@ -76,9 +96,12 @@ async def _get_forecast(ctx: ToolCtx, symbol: Any, timeframe: Any, horizon: Any)
         "range80_pct": [_pct(lo), _pct(hi)],
         "range80_price": range_price,
         "steps": steps,
+        "events": events,
         "note": ("Risk range, not a direction: 8 times out of 10 the price at `horizon` bars should "
                  "fall inside range80. Use it for sizing, stops and alert levels; it never "
-                 "justifies an order by itself."),
+                 "justifies an order by itself."
+                 + (" Scheduled events inside the horizon (see `events`) are already priced into the range: "
+                    "earnings especially can move the price several times a normal day." if events else "")),
     }
 
 
