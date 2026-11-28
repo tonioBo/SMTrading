@@ -43,7 +43,9 @@ export interface TvArea {
     portal_url: string | null;
   };
   sound: TvSound;
-  link: { active: boolean; created_at: string | null; url: string | null };
+  /** `url` null with `reason`: why there is no address to show (e.g. the portal address is
+   * not https: the TV's session cookie needs it) */
+  link: { active: boolean; created_at: string | null; url: string | null; reason?: string | null };
   portal_url_detected: string | null;
   can_discover: boolean;
   suggested_subnet: string | null;

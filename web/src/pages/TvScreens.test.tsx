@@ -229,6 +229,36 @@ describe("Schermo TV (portal)", () => {
     expect(await within(row).findByRole("img", { name: "Codice QR del link della TV" })).toHaveAttribute("src", expect.stringMatching(/^data:image\/png/));
   });
 
+  it("no https portal address: the reason instead of a link or a QR", async () => {
+    area = baseArea({ link: { active: true, created_at: "2026-11-28T09:00:00Z", url: null, reason: "serve l'indirizzo https del portale" } });
+    renderApp("/schermo-tv");
+    expect(await screen.findByText("serve l'indirizzo https del portale")).toBeInTheDocument();
+    expect(screen.queryByTestId("tv-link-url")).not.toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: "Codice QR del link della TV" })).not.toBeInTheDocument();
+  });
+
+  it("an http link is never shown (the TV needs https)", async () => {
+    area = baseArea({ link: { active: true, created_at: "2026-11-28T09:00:00Z", url: "http://192.168.30.7/tv#token=x" } });
+    renderApp("/schermo-tv");
+    expect(await screen.findByText(/Serve l'indirizzo https del portale/)).toBeInTheDocument();
+    expect(screen.queryByTestId("tv-link-url")).not.toBeInTheDocument();
+  });
+
+  it("«Manda alla TV» refused for a non-https portal: the server's message, no QR", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.post("*/api/tv/screens/:id/send", () =>
+        HttpResponse.json({ code: "TV_NEEDS_HTTPS", message: "serve l'indirizzo https del portale", details: { field: "portal_url" } }, { status: 400 }),
+      ),
+    );
+    area = baseArea({ tvs: [tv({ paired: true })] });
+    renderApp("/schermo-tv");
+    await user.click(await screen.findByRole("button", { name: "Manda alla TV" }));
+    const row = screen.getByRole("listitem", { name: "Salotto" });
+    expect(await within(row).findByText("serve l'indirizzo https del portale")).toBeInTheDocument();
+    expect(within(row).queryByTestId("tv-link-url")).not.toBeInTheDocument();
+  });
+
   it("screen choice: rotation with its interval, saved without contacting the TV", async () => {
     const user = userEvent.setup();
     renderApp("/schermo-tv");

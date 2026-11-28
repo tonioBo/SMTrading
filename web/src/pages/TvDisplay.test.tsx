@@ -242,6 +242,34 @@ describe("TvDisplay", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Collegamento revocato: apri di nuovo il link dal portale");
   });
 
+  it("a refused link is cleared from the address bar too", async () => {
+    const { router } = renderApp("/tv#token=bad");
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(router.state.location.hash).toBe("");
+  });
+
+  it("a new link in the fragment (rotated) opens the session again without a reload", async () => {
+    const { router } = renderApp("/tv#token=bad");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Collegamento revocato");
+    await act(async () => {
+      await router.navigate("/tv#token=good");
+    });
+    expect(await screen.findByRole("heading", { name: "Campagna e portafogli" })).toBeInTheDocument();
+    expect(seen.filter((r) => r.method === "POST").map((r) => r.body)).toEqual([{ token: "bad" }, { token: "good" }]);
+    expect(router.state.location.hash).toBe("");
+  });
+
+  it("a plain `hashchange` with a new link is followed as well", async () => {
+    renderApp("/tv#token=bad");
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    act(() => {
+      window.location.hash = "#token=good";
+    });
+    expect(await screen.findByRole("heading", { name: "Campagna e portafogli" })).toBeInTheDocument();
+    expect(seen.filter((r) => r.method === "POST").at(-1)?.body).toEqual({ token: "good" });
+    window.location.hash = "";
+  });
+
   it("a link revoked while shown: the revoked message, the screen goes away", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     renderApp("/tv");

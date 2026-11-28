@@ -33,6 +33,10 @@ import { formatDateTime } from "@/lib/format";
  * link. Admins also search the network and see (and revoke) every user's TVs. */
 
 export const PAIR_HINT = "Sulla TV comparirà una richiesta: accettala con il telecomando.";
+export const NEED_HTTPS = "Serve l'indirizzo https del portale: la TV apre le schermate solo in modo sicuro. Scrivilo qui sotto (per esempio https://192.168.1.10).";
+
+/** the TV page needs https (its session cookie is Secure): an http address is never shown */
+const isHttps = (url: string | null | undefined): url is string => !!url && url.startsWith("https://");
 
 const POWER_TEXT: Record<string, string> = {
   on: "accesa",
@@ -139,7 +143,8 @@ function TvRow({ tv, choice, linkUrl }: { tv: Tv; choice: Choice; linkUrl: strin
   const waiting = tv.pairing.state === "waiting";
   const power = useTvPower(tv.id, !revoked && !waiting);
   const outcome = waiting ? null : pairingOutcome(tv);
-  const fallbackUrl = sent && (!sent.ok || !sent.confirmed) ? sent.url || linkUrl : null;
+  const candidate = sent && (!sent.ok || !sent.confirmed) ? sent.url || linkUrl : null;
+  const fallbackUrl = isHttps(candidate) ? candidate : null;
 
   return (
     <li className="space-y-3 rounded-md border border-border p-4" aria-label={tv.name}>
@@ -441,8 +446,12 @@ function DisplayLink({ area }: { area: TvArea }) {
           La TV apre le schermate con un link personale, di sola lettura, senza password. «Manda alla TV» lo usa da solo; se non riesce, aprilo a mano
           sulla TV una volta.
         </p>
-        {link.active && link.url && <LinkFallback url={link.url} />}
-        {link.active && !link.url && <Message tone="warn">Il link c&apos;è, ma manca l&apos;indirizzo del portale visto dalla TV: scrivilo qui sotto.</Message>}
+        {link.active && isHttps(link.url) && <LinkFallback url={link.url} />}
+        {link.active && !isHttps(link.url) && (
+          <Message tone="warn">
+            {link.reason || (link.url ? NEED_HTTPS : "Il link c'è, ma manca l'indirizzo del portale visto dalla TV: scrivilo qui sotto.")}
+          </Message>
+        )}
         {!link.active && <p>Nessun link attivo: la TV non può aprire le schermate.</p>}
         <div className="flex flex-wrap gap-2">
           <Button variant={link.active ? "outline" : "default"} disabled={rotate.isPending} onClick={() => (link.active ? setConfirm("rotate") : rotate.mutate())}>

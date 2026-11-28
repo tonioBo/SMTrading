@@ -53,6 +53,27 @@ export default function TvDisplay() {
   const sounds = useMemo(() => new TvSounds(), []);
   const [blocked, setBlocked] = useState(false);
   const clock = useClock();
+  /** bumped when a new link arrives in the fragment: the read loop starts again with it */
+  const [run, setRun] = useState(0);
+
+  // a new `#token=` while the page is open (a rotated link): open the session again, no
+  // reload needed; router and plain `hashchange` both covered
+  const takeToken = useRef<(hash: string) => void>(() => {});
+  takeToken.current = (hash: string) => {
+    const t = tokenFromHash(hash);
+    if (!t || t === token.current) return;
+    token.current = t;
+    setPhase("session");
+    setRun((r) => r + 1);
+  };
+  useEffect(() => {
+    takeToken.current(location.hash);
+  }, [location.hash]);
+  useEffect(() => {
+    const onHash = () => takeToken.current(window.location.hash);
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   useEffect(() => {
     document.title = "SMTrading · Schermo TV";
@@ -114,19 +135,20 @@ export default function TvDisplay() {
       }
     };
 
+    // the link stays out of the address bar and the history
+    const clearHash = () => navigate({ pathname: location.pathname, search: "", hash: "" }, { replace: true });
     const session = async () => {
+      const mine = token.current!;
       try {
-        await openSession(token.current!, ctl.signal);
+        await openSession(mine, ctl.signal);
         if (ctl.signal.aborted) return;
-        token.current = null;
         failures = 0;
-        // the link stays out of the address bar and the history
-        navigate({ pathname: location.pathname, search: "", hash: "" }, { replace: true });
+        clearHash();
         void poll();
       } catch (err) {
         if (ctl.signal.aborted) return;
         if (err instanceof TvFetchError && err.status >= 400 && err.status < 500) {
-          token.current = null;
+          clearHash();
           setPhase("revoked");
           later(REVOKED_RETRY_MS, poll);
           return;
@@ -136,6 +158,8 @@ export default function TvDisplay() {
       }
     };
 
+    // a token stays in `token` (not cleared on success): the same link seen again in the
+    // fragment does not restart the loop
     if (token.current) void session();
     else void poll();
     return () => {
@@ -143,9 +167,9 @@ export default function TvDisplay() {
       if (timer) clearTimeout(timer);
       onNewBuild(null);
     };
-    // once per page: the poll loop owns its state
+    // once per link: the poll loop owns its state
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [run]);
 
   const order = sel ? screenOrder(sel) : [];
   const rotKey = sel ? `${sel.version}|${order.join(",")}|${sel.interval_s}` : "";
