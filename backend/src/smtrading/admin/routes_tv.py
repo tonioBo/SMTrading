@@ -18,6 +18,9 @@ Own area (any active user; only their own rows, another user's TV is a 404):
     POST   /api/tv/link/rotate                   a new personal display link (the old one
                                                  stops working at once)
     POST   /api/tv/link/revoke                   no display link (every TV locked out)
+    POST   /api/tv/claim  {code}                 «Abbina con codice»: the code shown by a
+                                                 TV page opens the caller's own display
+                                                 link there (`tv.codes`; CLAIM_LIMIT tries)
 
 Admins only:
 
@@ -42,7 +45,7 @@ from smtrading.admin.common import _invalid, _transaction
 from smtrading.admin.models import AdminUser
 from smtrading.agents.service import write_audit
 from smtrading.common.errors import ErrorCode, SMTError
-from smtrading.tv import discovery, samsung, sounds
+from smtrading.tv import codes, discovery, samsung, sounds
 from smtrading.tv import service as tv
 from smtrading.tv.models import TvScreen
 
@@ -70,6 +73,10 @@ class DisplayIn(SelectionIn):
     sound_volume: int | None = None
     quiet_start: str | None = None
     quiet_end: str | None = None
+
+
+class ClaimIn(BaseModel):
+    code: str | None = None
 
 
 class DiscoverIn(BaseModel):
@@ -223,8 +230,10 @@ def _apply_selection(d, body: SelectionIn, user: AdminUser) -> bool:
 async def send_tv(tv_id: str, body: SelectionIn, request: Request, user: CurrentUser,
                   session: DbSession, redis: RedisClient) -> dict:
     """Wake the TV if in standby (only here), then open its browser on the user's display
-    link. `{ok, message, url, powered_on, app_id, confirmed}`: when `ok` is false or
-    `confirmed` false, `url` is the address to open by hand (QR)."""
+    link. `{ok, message, url, short_url, powered_on, app_id, confirmed, last_page}`: when
+    `ok` is false or `confirmed` false, `url` is the address to open by hand (QR);
+    `last_page`: the TV opened its browser on its own last page (a model that ignores the
+    URL), `short_url` (`<host>/tv`) is what to type on the TV, then «Abbina con codice»."""
     async with _transaction(session, redis):
         t = await tv.own_tv(session, user.id, _uuid(tv_id))
         token = tv.decrypt_token(t.token_encrypted)
@@ -239,7 +248,7 @@ async def send_tv(tv_id: str, body: SelectionIn, request: Request, user: Current
             raise _invalid("portal_url", problem)  # nothing changed, the TV not contacted
         url = tv.display_url(base, d)
         host, mac, tid = t.host, t.mac, t.id
-    result, new_token = await tv.send(host, token, mac, url)
+    result, new_token = await tv.send(host, token, mac, url, tv.short_address(base))
     async with _transaction(session, redis):
         t = await tv.own_tv(session, user.id, tid, lock=True)
         d = await tv.get_display(session, user.id)
@@ -249,9 +258,11 @@ async def send_tv(tv_id: str, body: SelectionIn, request: Request, user: Current
         tv.record_event(session, user.id, tid, "send", d, result["ok"])
         await _audit(session, "send", user, tv_id=str(tid), ok=result["ok"],
                      screen=d.screen, rotation=d.rotation)
+    short = tv.short_address(base)
     return {"ok": result["ok"], "message": result["message"], "url": url,
+            "short_url": f"{short}/tv" if short else None,
             "powered_on": result["powered_on"], "app_id": result["app_id"],
-            "confirmed": result["confirmed"]}
+            "confirmed": result["confirmed"], "last_page": result["last_page"]}
 
 
 @router.post("/tv/screens/{tv_id}/power-off")
@@ -316,6 +327,19 @@ async def revoke_link(request: Request, user: CurrentUser, session: DbSession,
         tv.revoke_link(d)
         await _audit(session, "link_revoke", user)
     return await _area(session, request, user)
+
+
+@router.post("/tv/claim")
+async def claim_code(body: ClaimIn, request: Request, user: CurrentUser, session: DbSession,
+                     redis: RedisClient) -> dict:
+    """The code on a TV page becomes that page's display cookie for the caller's own link
+    (created if missing); never another user's. The code is not audited."""
+    await codes.claim(redis, user.id, body.code)
+    async with _transaction(session, redis):
+        d = await tv.get_display(session, user.id, lock=True)
+        tv.ensure_link(d)
+        await _audit(session, "claim", user)
+    return {"ok": True, "message": "TV abbinata: tra pochi secondi mostra le schermate"}
 
 
 # -- admins ------------------------------------------------------------------------------

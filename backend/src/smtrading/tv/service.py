@@ -10,7 +10,11 @@ own rows: `own_tv` / `get_display` filter on the user id).
   without someone accepting with its remote.
 - «Manda alla TV» (`send`): the only action that wakes a TV in standby (KEY_POWER, then a
   Wake-on-LAN packet when the TV gives its MAC), then the TV browser opens the user's
-  display link; everything within SEND_TIMEOUT_S. A screen change or the rotation only
+  display link; everything within SEND_TIMEOUT_S. The browser is found by REST
+  (`samsung.find_browser`, once per TV) and opened by REST; models that ignore any URL
+  (UE85DU7190, 2024) open it on its own last page, so the message says to open
+  `<portal host>/tv` there once and pair it with a code (`tv.codes`); the WebSocket launch
+  with the URL stays as a second attempt (the only one when REST finds no browser). A screen change or the rotation only
   changes the selection the TV page polls: never a TV command, never a wake-up.
 - The display link (`tv.link`) and the selection (`tv_displays`).
 
@@ -210,6 +214,15 @@ def url_problem(base: str | None) -> str | None:
     return None
 
 
+def short_address(base: str | None) -> str | None:
+    """The portal address as typed on a TV: the host (and port), no scheme."""
+    from urllib.parse import urlsplit
+
+    if not base:
+        return None
+    return urlsplit(base).netloc or None
+
+
 def display_url(base: str | None, d: TvDisplay) -> str | None:
     """`<base>/tv#token=<link>` (a fragment: never sent to a server), or None without an
     https portal address or an active link."""
@@ -338,48 +351,97 @@ async def _wait_power(host: str, seconds: float) -> bool:
     return False
 
 
-async def _drive_send(host: str, token: str, mac: str | None, url: str) -> tuple[dict, str]:
-    """(result, token after the commands): wake the TV if in standby, open the browser."""
-    result: dict[str, Any] = {"ok": False, "message": "", "powered_on": False,
-                              "app_id": None, "confirmed": False}
+# the browser app id found by REST, per TV address (`samsung.find_browser`); only found
+# ids are kept, dropped when the TV no longer opens it
+_browser_ids: dict[str, str] = {}
+
+
+def last_page_message(short: str | None) -> str:
+    where = f"{short}/tv" if short else "l'indirizzo del portale seguito da /tv"
+    return ("browser aperto sulla TV — la TV riapre l'ultima pagina del browser: se non vedi "
+            f"la schermata, apri {where} sulla TV")
+
+
+async def _browser_by_rest(host: str) -> str | None:
+    """Open the TV's browser by REST (the id detected once per TV): its id, else None."""
+    app_id = _browser_ids.get(host)
+    if app_id is None:
+        app_id = await samsung.find_browser(host)
+        if app_id is None:
+            return None
+        _browser_ids[host] = app_id
+    if await samsung.open_app_rest(host, app_id):
+        return app_id
+    _browser_ids.pop(host, None)
+    return None
+
+
+def _empty_result() -> dict[str, Any]:
+    return {"ok": False, "message": "", "powered_on": False, "app_id": None,
+            "confirmed": False, "last_page": False}
+
+
+async def _drive_send(host: str, token: str, mac: str | None, url: str, short: str | None,
+                      result: dict[str, Any], state: dict[str, str]) -> None:
+    """Wake the TV if in standby, open the browser: by REST first (models that ignore a
+    URL: the browser opens on its last page), then the WebSocket launch with the URL (a
+    secondary attempt once REST worked). Fills `result` and `state["token"]` as it goes,
+    so a timeout after the browser opened keeps what was done."""
     dev = await samsung.device_info(host)
     if dev is None:
         result["message"] = NOT_SAMSUNG
-        return result, token
+        return
     if dev["power"] != "on":
         async with samsung.open_session(host, token) as s:
             await s.key("KEY_POWER")
-            token = s.token or token
+            state["token"] = token = s.token or token
         on = await _wait_power(host, POWER_WAIT_S)
         if not on and (mac or dev.get("mac")):
             samsung.wake_on_lan(mac or dev["mac"], _wol_targets(host))
             on = await _wait_power(host, WOL_WAIT_S)
         if not on:
             result["message"] = NOT_ON
-            return result, token
+            return
         result["powered_on"] = True
+    try:
+        rest_app = await _browser_by_rest(host)
+    except samsung.TvError:
+        rest_app = None
+    if rest_app is not None:
+        result.update(ok=True, app_id=rest_app, last_page=True,
+                      message=last_page_message(short))
+        try:
+            async with samsung.open_session(host, token) as s:
+                await s.launch_browser(url, (rest_app,))
+                state["token"] = s.token or token
+        except samsung.TvError:
+            pass  # the browser is open already: the URL launch was a bonus
+        return
     async with samsung.open_session(host, token) as s:
         app_id, confirmed = await s.launch_browser(url)
-        token = s.token or token
+        state["token"] = s.token or token
     result.update(ok=True, app_id=app_id, confirmed=confirmed,
                   message="schermata aperta sulla TV" if confirmed else
                   "comando inviato: se la TV non mostra la pagina, apri l'indirizzo a mano "
                   "(codice QR)")
-    return result, token
 
 
-async def send(host: str, token: str, mac: str | None, url: str) -> tuple[dict, str]:
+async def send(host: str, token: str, mac: str | None, url: str,
+               short: str | None = None) -> tuple[dict, str]:
     """«Manda alla TV», bounded by SEND_TIMEOUT_S; never raises a TvError (the result
-    carries the message)."""
+    carries the message). `short`: the portal address without the scheme, for the
+    message of a TV that reopens the browser's last page."""
+    result, state = _empty_result(), {"token": token}
     try:
         async with asyncio.timeout(SEND_TIMEOUT_S):
-            return await _drive_send(host, token, mac, url)
+            await _drive_send(host, token, mac, url, short, result, state)
     except samsung.TvError as e:
-        return {"ok": False, "message": e.message, "powered_on": False, "app_id": None,
-                "confirmed": False, "reason": e.kind}, token
+        if not result["ok"]:
+            result.update(message=e.message, reason=e.kind)
     except TimeoutError:
-        return {"ok": False, "message": samsung.NO_ANSWER, "powered_on": False,
-                "app_id": None, "confirmed": False, "reason": "timeout"}, token
+        if not result["ok"]:
+            result.update(message=samsung.NO_ANSWER, reason="timeout")
+    return result, state["token"]
 
 
 async def power_off(host: str, token: str) -> tuple[dict, str]:

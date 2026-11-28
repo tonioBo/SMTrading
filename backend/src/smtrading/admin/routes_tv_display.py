@@ -7,6 +7,11 @@ user sees in the portal, nothing else. A missing, revoked or foreign link is 401
 (each request checks the stored link, also behind a cookie set before).
 
     POST /api/tv-display/session {token}   {"ok": true} + the cookie (401 if invalid)
+    POST /api/tv-display/code              {poll_id, code, expires_in_s, poll_s}: a pairing
+                                           code to show (no login; CREATE_LIMIT per
+                                           client address, `tv.codes`)
+    GET  /api/tv-display/code/{poll_id}    {state: pending | claimed | expired}; claimed
+                                           (once): the cookie of the claiming user's link
 
     GET /api/tv-display/selection?after=   {screen, rotation, interval_s, version,
                                            screens, updated_at, poll_s, now, sound,
@@ -29,7 +34,7 @@ from smtrading.admin.models import AdminUser
 from smtrading.common.errors import ErrorCode
 from smtrading.flow.health import flow_health
 from smtrading.mcp.dto import to_jsonable
-from smtrading.tv import display, link, sounds
+from smtrading.tv import codes, display, link, sounds
 from smtrading.tv import service as tv
 from smtrading.tv.models import TvDisplay
 
@@ -100,9 +105,37 @@ async def open_session(body: SessionIn, response: Response, session: DbSession) 
     """The TV page's first call: the link from the URL fragment becomes the cookie."""
     if await tv.display_owner(session, body.token) is None:
         raise DisplayRefused(401, INVALID_LINK)
-    response.set_cookie(COOKIE, body.token, max_age=COOKIE_MAX_AGE_S, httponly=True,
-                        secure=True, samesite="strict", path="/api/tv-display")
+    _set_cookie(response, body.token)
     return {"ok": True}
+
+
+def _set_cookie(response: Response, token: str) -> None:
+    response.set_cookie(COOKIE, token, max_age=COOKIE_MAX_AGE_S, httponly=True,
+                        secure=True, samesite="strict", path="/api/tv-display")
+
+
+@router.post("/code")
+async def new_code(request: Request, redis: RedisClient) -> dict:
+    """A code for the TV page to show (`/tv` without a session): the user writes it in
+    the portal; the page polls `GET /code/{poll_id}`."""
+    return await codes.create(redis, request.client.host if request.client else None)
+
+
+@router.get("/code/{poll_id}")
+async def code_state(poll_id: str, response: Response, session: DbSession,
+                     redis: RedisClient) -> dict:
+    state, user_id = await codes.poll(redis, poll_id)
+    if state != "claimed":
+        return {"state": state}
+    user = await session.get(AdminUser, user_id)
+    if user is None or not user.active:
+        return {"state": "expired"}
+    d = await tv.get_display(session, user_id, lock=True)
+    tv.ensure_link(d)  # the claim made it; revoked since: a new one
+    token = link.token_for(d.link_id, d.link_secret_encrypted)
+    await session.commit()
+    _set_cookie(response, token)
+    return {"state": "claimed"}
 
 
 @router.get("/selection")

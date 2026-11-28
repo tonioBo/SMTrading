@@ -4,8 +4,12 @@ the remote-control WebSocket (TLS with a self-signed certificate, like the real 
 
 `mode` on a connection without a known token: "accept" (a new token in
 `ms.channel.connect`), "refuse" (`ms.channel.unauthorized`), "silent" (no answer).
-Records every connection (name, token), key and launch."""
+`installed`: the app ids `GET /api/v2/applications/<id>` knows (404 for the others);
+`POST /api/v2/applications/<id>` opens one (recorded in `rest_launches`, the body too: a
+URL there is ignored, like on the real 2024 model). Records every connection (name,
+token), key and launch."""
 
+import asyncio
 import base64
 import contextlib
 import datetime
@@ -47,12 +51,15 @@ def _server_ssl() -> ssl.SSLContext:
 class FakeSamsungTv:
     def __init__(self, *, mode: str = "accept", power: str = "on",
                  power_key_works: bool = True, launch_replies: dict | None = None,
-                 samsung: bool = True) -> None:
+                 samsung: bool = True, installed: set[str] | None = None) -> None:
         self.mode, self.power, self.power_key_works = mode, power, power_key_works
         # appId -> reply code (None: no reply); unknown ids answer 404
         self.launch_replies = ({"org.tizen.browser": 200} if launch_replies is None
                                else launch_replies)
         self.samsung = samsung
+        self.installed: set[str] = set(installed or ())
+        self.app_probes: list[str] = []
+        self.rest_launches: list[dict] = []
         self.tokens: set[str] = set()
         self.issued = 0
         self.connections: list[dict] = []
@@ -73,13 +80,47 @@ class FakeSamsungTv:
                            "ip": "127.0.0.1"},
                 "name": DEVICE_NAME, "type": "Samsung SmartTV", "version": "2.0.25"}
 
-    def _rest(self, connection, request):
-        if request.path.startswith("/api/v2"):
-            return connection.respond(200, json.dumps(self.device_json()))
-        return connection.respond(404, "not found")
+    def _route(self, method: str, path: str, body: bytes) -> tuple[int, str]:
+        if method == "GET" and path in ("/api/v2", "/api/v2/"):
+            return 200, json.dumps(self.device_json())
+        prefix = "/api/v2/applications/"
+        if path.startswith(prefix) and path[len(prefix):]:
+            app_id = path[len(prefix):]
+            if method == "GET":
+                self.app_probes.append(app_id)
+                if app_id in self.installed:
+                    return 200, json.dumps({"id": app_id, "name": "Browser",
+                                            "running": False, "version": "1.0",
+                                            "visible": True})
+                return 404, json.dumps({"code": 404, "message": "Not found"})
+            if method == "POST":
+                self.rest_launches.append({"appId": app_id, "body": body.decode() or None})
+                if app_id in self.installed:
+                    return 200, "true"
+                return 404, json.dumps({"code": 404, "message": "Not found"})
+        return 404, "not found"
 
-    async def _rest_handler(self, ws):  # never reached: every request is answered above
-        await ws.close()
+    async def _http(self, reader, writer) -> None:
+        """A minimal HTTP/1.1 server (one request per connection)."""
+        try:
+            head = await reader.readuntil(b"\r\n\r\n")
+            lines = head.decode("latin-1").split("\r\n")
+            method, target = lines[0].split(" ")[:2]
+            length = 0
+            for line in lines[1:]:
+                if line.lower().startswith("content-length:"):
+                    length = int(line.split(":", 1)[1])
+            body = await reader.readexactly(length) if length else b""
+            status, text = self._route(method, urlsplit(target).path, body)
+            raw = text.encode()
+            writer.write(f"HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n"
+                         f"Content-Length: {len(raw)}\r\nConnection: close\r\n\r\n"
+                         .encode() + raw)
+            await writer.drain()
+        except (asyncio.IncompleteReadError, ConnectionError, ValueError):
+            pass
+        finally:
+            writer.close()
 
     # -- WebSocket ---------------------------------------------------------------------
 
@@ -129,7 +170,7 @@ class FakeSamsungTv:
             pass
 
     async def start(self) -> "FakeSamsungTv":
-        rest = await serve(self._rest_handler, "127.0.0.1", 0, process_request=self._rest)
+        rest = await asyncio.start_server(self._http, "127.0.0.1", 0)
         wss = await serve(self._ws, "127.0.0.1", 0, ssl=_server_ssl())
         self._servers = [rest, wss]
         self.rest_port = rest.sockets[0].getsockname()[1]

@@ -12,6 +12,11 @@
          "data": {"appId": <browser>, "action_type": "NATIVE_LAUNCH", "metaTag": <url>}}}
          tried with each id of BROWSER_APPS: the TV answers `ed.apps.launch` with 200 (opened)
          or an error code (unknown app: the next id); no answer in time is «not confirmed».
+    GET  http://<tv>:8001/api/v2/applications/<id>   JSON when the app is installed, 404
+         otherwise (`find_browser`: the first id of BROWSER_APPS that answers)
+    POST http://<tv>:8001/api/v2/applications/<id>   opens the app (`open_app_rest`). Newer
+         models (UE85DU7190, 2024: «Browser» is 3202010022079) ignore any URL passed, by
+         REST or WebSocket: the browser opens on its own last page.
 
 Every failure is a `TvError` with a plain Italian message that never holds the token or the
 address with its query (the WebSocket URL carries the token): callers show `message` as is.
@@ -43,7 +48,9 @@ BODY_MAX = 64 * 1024  # the device description is ~2 KB: anything bigger is not 
 WS_PORT = 8002
 WS_SCHEME = "wss"
 APP_NAME = "SMTrading"
-BROWSER_APPS = ("org.tizen.browser", "com.samsung.tv.browser")
+# «Browser» of the 2024 models first (3202010022079), then the older Tizen ids
+BROWSER_APPS = ("3202010022079", "org.tizen.browser", "com.samsung.tv.browser")
+APP_PROBE_TIMEOUT_S = 1.5
 SAMSUNG_TYPE = "Samsung SmartTV"
 
 PROBE_TIMEOUT_S = 2.0
@@ -124,6 +131,41 @@ async def device_info(host: str, *, client: httpx.AsyncClient | None = None,
     return _device(raw)
 
 
+def _app_url(host: str, app_id: str) -> str:
+    return f"http://{host}:{REST_PORT}/api/v2/applications/{app_id}"
+
+
+async def app_installed(host: str, app_id: str, *, timeout: float = APP_PROBE_TIMEOUT_S
+                        ) -> bool:
+    """True when `GET /api/v2/applications/<id>` answers JSON (the app is installed);
+    TvError `unreachable` when nothing answers."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as c:
+            raw = await _read_capped(c, _app_url(host, app_id), timeout)
+    except (httpx.HTTPError, OSError):
+        raise TvError(UNREACHABLE, "unreachable") from None
+    return isinstance(raw, dict)
+
+
+async def find_browser(host: str, apps: tuple[str, ...] = BROWSER_APPS) -> str | None:
+    """The first id of `apps` installed on the TV (None: none answers by REST)."""
+    for app_id in apps:
+        if await app_installed(host, app_id):
+            return app_id
+    return None
+
+
+async def open_app_rest(host: str, app_id: str, *, timeout: float = PROBE_TIMEOUT_S) -> bool:
+    """Open an installed app (`POST /api/v2/applications/<id>`): True on a 2xx. TvError
+    `unreachable` when nothing answers."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as c:
+            r = await c.post(_app_url(host, app_id))
+    except (httpx.HTTPError, OSError):
+        raise TvError(UNREACHABLE, "unreachable") from None
+    return 200 <= r.status_code < 300
+
+
 def _ws_url(host: str, token: str | None) -> str:
     name = base64.b64encode(APP_NAME.encode()).decode("ascii")
     url = (f"{WS_SCHEME}://{host}:{WS_PORT}/api/v2/channels/samsung.remote.control"
@@ -159,10 +201,11 @@ class _Session:
                 return msg
         return None
 
-    async def launch_browser(self, url: str) -> tuple[str, bool]:
-        """(app id, confirmed): each browser id in turn until the TV opens one; the first
-        one left unanswered stops the round (not confirmed)."""
-        for app_id in BROWSER_APPS:
+    async def launch_browser(self, url: str, apps: tuple[str, ...] = BROWSER_APPS
+                             ) -> tuple[str, bool]:
+        """(app id, confirmed): each browser id of `apps` in turn until the TV opens one;
+        the first one left unanswered stops the round (not confirmed)."""
+        for app_id in apps:
             await self.send({"method": "ms.channel.emit", "params": {
                 "event": "ed.apps.launch", "to": "host",
                 "data": {"appId": app_id, "action_type": "NATIVE_LAUNCH", "metaTag": url}}})

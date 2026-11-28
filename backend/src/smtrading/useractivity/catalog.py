@@ -156,6 +156,8 @@ LABELS: dict[str, str] = {
     "tv.discover": "Ricerca delle TV in rete",
     "tv.admin_revoke": "Revoca di una TV di un utente",
     "tv.display_session": "Apertura delle schermate sulla TV",
+    "tv.display_code": "Codice di abbinamento chiesto dalla TV",
+    "tv.claim": "Abbinamento di una TV con codice",
     # paperclip
     "paperclip.config": "Configurazione Paperclip",
     "paperclip.verify": "Verifica lettura Paperclip",
@@ -287,6 +289,8 @@ ROUTE_ACTIONS: dict[tuple[str, str], str] = {
     ("POST", "/api/tv/discover"): "tv.discover",
     ("POST", "/api/tv/admin/screens/{tv_id}/revoke"): "tv.admin_revoke",
     ("POST", "/api/tv-display/session"): "tv.display_session",
+    ("POST", "/api/tv-display/code"): "tv.display_code",
+    ("POST", "/api/tv/claim"): "tv.claim",
 }
 
 LOGIN = ("POST", "/api/auth/login")

@@ -23,7 +23,7 @@ from smtrading.flow.cache import clear_all
 from smtrading.instruments.models import AssetClass, Instrument
 from smtrading.ledger.models import Journal, JournalType
 from smtrading.portfolios.models import Portfolio
-from smtrading.tv import display, link, samsung, sounds
+from smtrading.tv import codes, display, link, samsung, sounds
 from smtrading.tv import service as tvs
 from smtrading.tv.models import TvDisplay, TvEvent, TvScreen
 from smtrading.useractivity.models import UserActivity
@@ -57,8 +57,10 @@ def _no_wol(monkeypatch):
                         lambda mac, targets: sent.append((mac, targets)) or len(targets))
     clear_all()
     display._health_cache.clear()
+    tvs._browser_ids.clear()
     yield sent
     clear_all()
+    tvs._browser_ids.clear()
 
 
 async def _client(env, role="admin"):
@@ -550,3 +552,179 @@ def test_health_incidents_once_per_incident_and_back_to_ok():
                            "UTC")
     assert not sounds.is_quiet("22:00", "08:00", datetime(2026, 11, 28, 12, tzinfo=UTC), "UTC")
     assert sounds.is_quiet("13:00", "14:00", datetime(2026, 11, 28, 13, 5, tzinfo=UTC), "UTC")
+
+
+# -- a TV that ignores the URL (UE85DU7190, 2024): the browser opened by REST ------------
+
+
+LAST_PAGE = ("la TV riapre l'ultima pagina del browser: se non vedi la schermata, apri "
+             "192.168.30.7/tv sulla TV")
+
+
+async def test_send_to_a_tv_ignoring_urls_opens_its_browser_by_rest(env, tv):
+    tv.installed = {"3202010022079"}  # «Browser»; org.tizen.browser & co. are 404
+    tv.launch_replies = {"3202010022079": 200}
+    c, _, _ = await _client(env)
+    t = await _paired(c, tv)
+    tv.power = "standby"
+    body = (await c.post(f"/api/tv/screens/{t['id']}/send", json={})).json()
+    assert body["ok"] is True, body
+    assert body["powered_on"] is True and tv.keys == ["KEY_POWER"]
+    assert body["app_id"] == "3202010022079" and body["last_page"] is True
+    assert body["confirmed"] is False and LAST_PAGE in body["message"]
+    assert body["short_url"] == "192.168.30.7/tv"
+    assert tv.app_probes == ["3202010022079"]  # detection: the first id answers
+    assert tv.rest_launches == [{"appId": "3202010022079", "body": None}]
+    # the WebSocket launch with the URL stays, as a second attempt, on the found id only
+    assert [x["appId"] for x in tv.launches] == ["3202010022079"]
+    assert tv.launches[0]["metaTag"] == body["url"]
+
+    # the id is kept per TV: the next send asks nothing; a WebSocket refusal is no failure
+    tv.launch_replies = {}
+    body = (await c.post(f"/api/tv/screens/{t['id']}/send", json={})).json()
+    assert body["ok"] is True and body["last_page"] is True, body
+    assert tv.app_probes == ["3202010022079"] and len(tv.rest_launches) == 2
+    # the portal address configured: its host in the message
+    await c.put("/api/tv/display", json={"portal_url": "https://smt.lan:8443"})
+    body = (await c.post(f"/api/tv/screens/{t['id']}/send", json={})).json()
+    assert "apri smt.lan:8443/tv sulla TV" in body["message"]
+    assert body["short_url"] == "smt.lan:8443/tv"
+    area = (await c.get("/api/tv")).json()
+    assert area["tvs"][0]["last_ok"] is True
+
+
+async def test_send_detects_the_browser_among_the_known_ids(env, tv):
+    # an older model: the REST answers for the Tizen browser only
+    tv.installed = {"org.tizen.browser"}
+    c, _, _ = await _client(env)
+    t = await _paired(c, tv)
+    body = (await c.post(f"/api/tv/screens/{t['id']}/send", json={})).json()
+    assert body["ok"] is True and body["app_id"] == "org.tizen.browser", body
+    assert tv.app_probes == ["3202010022079", "org.tizen.browser"]
+    assert tv.rest_launches[-1]["appId"] == "org.tizen.browser"
+    # nothing by REST at all: the WebSocket launch alone, as before
+    tv.installed = set()
+    tvs._browser_ids.clear()
+    body = (await c.post(f"/api/tv/screens/{t['id']}/send", json={})).json()
+    assert body["ok"] is True and body["last_page"] is False and body["confirmed"] is True
+    assert body["message"] == "schermata aperta sulla TV"
+
+
+# -- code pairing -----------------------------------------------------------------------
+
+
+@pytest.fixture
+async def redis(env):
+    from redis.asyncio import Redis
+
+    r = Redis.from_url(env.redis_url)
+    keys = [k async for k in r.scan_iter("tv:pair:*")]
+    if keys:
+        await r.delete(*keys)
+    yield r
+    await r.aclose()
+
+
+def _bare(env) -> httpx.AsyncClient:
+    page = httpx.AsyncClient(transport=env.transport, base_url="https://192.168.30.7")
+    env.clients.append(page)
+    return page
+
+
+async def test_code_pairing_gives_the_tv_page_the_claiming_users_own_link(env, redis, caplog):
+    caplog.set_level(logging.DEBUG)
+    admin, _, admin_id = await _client(env)
+    viewer, _, viewer_id = await _client(env, "viewer")
+    admin_url = (await admin.post("/api/tv/link/rotate")).json()["link"]["url"]
+    page = _bare(env)
+    r = await page.post("/api/tv-display/code")
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert set(got) == {"poll_id", "code", "expires_in_s", "poll_s"}
+    code, poll_id = got["code"], got["poll_id"]
+    assert len(code) == 6 and code.isdigit() and code not in poll_id
+    assert got["expires_in_s"] == 600 and "set-cookie" not in r.headers
+    r = await page.get(f"/api/tv-display/code/{poll_id}")
+    assert r.json() == {"state": "pending"} and "set-cookie" not in r.headers
+    assert (await page.get("/api/tv-display/selection")).status_code == 401
+
+    # a wrong code: the generic error; the right one (spaces allowed) by a viewer
+    wrong = f"{(int(code) + 1) % 1_000_000:06d}"
+    for bad in (wrong, "12ab56", "", None):
+        r = await viewer.post("/api/tv/claim", json={"code": bad})
+        assert r.status_code == 400, bad
+        assert r.json()["message"] == "codice non valido o scaduto"
+    r = await viewer.post("/api/tv/claim", json={"code": f"{code[:3]} {code[3:]}"})
+    assert r.status_code == 200, r.text
+    assert (await viewer.get("/api/tv")).json()["link"]["active"] is True
+
+    # the page gets the cookie once: the viewer's link, never the admin's
+    r = await page.get(f"/api/tv-display/code/{poll_id}")
+    assert r.json() == {"state": "claimed"}
+    cookie = r.headers["set-cookie"].lower()
+    for part in ("smt_tv=", "httponly", "secure", "samesite=strict",
+                 "path=/api/tv-display"):
+        assert part in cookie, part
+    sel = (await page.get("/api/tv-display/selection")).json()
+    assert sel["screens"] == ["campaign", "health"]  # the viewer's screens
+    async with env.sm() as s:
+        vd = await s.get(TvDisplay, viewer_id)
+        ad = await s.get(TvDisplay, admin_id)
+        assert page.cookies["smt_tv"] == link.token_for(vd.link_id, vd.link_secret_encrypted)
+        assert vd.link_id != ad.link_id
+    assert (await admin.get("/api/tv")).json()["link"]["url"] == admin_url  # untouched
+    # single use: the poll answers once, the code works once
+    r = await page.get(f"/api/tv-display/code/{poll_id}")
+    assert r.json() == {"state": "expired"} and "set-cookie" not in r.headers
+    r = await admin.post("/api/tv/claim", json={"code": code})
+    assert r.status_code == 400 and r.json()["message"] == "codice non valido o scaduto"
+    # nobody else's poll id: junk is just expired
+    for junk in ("x", "a" * 30, code):
+        assert (await _bare(env).get(f"/api/tv-display/code/{junk}")).json() == {
+            "state": "expired"}
+
+    # the code never in a log, the audit or the activity log
+    texts = [caplog.text]
+    async with env.sm() as s:
+        texts += [str(a.params) for a in await s.scalars(select(McpAuditLog))]
+        texts += [f"{a.summary} {a.error_message} {a.target}"
+                  for a in await s.scalars(select(UserActivity))]
+        actions = [a.action for a in await s.scalars(select(UserActivity))]
+    assert not [t for t in texts if code in t]
+    assert "tv.claim" in actions and "tv.display_code" in actions
+
+
+async def test_a_code_expires(env, redis, monkeypatch):
+    monkeypatch.setattr(codes, "CODE_TTL_S", 1)
+    viewer, _, _ = await _client(env, "viewer")
+    page = _bare(env)
+    got = (await page.post("/api/tv-display/code")).json()
+    await asyncio.sleep(1.3)
+    assert (await page.get(f"/api/tv-display/code/{got['poll_id']}")).json() == {
+        "state": "expired"}
+    r = await viewer.post("/api/tv/claim", json={"code": got["code"]})
+    assert r.status_code == 400 and r.json()["message"] == "codice non valido o scaduto"
+    assert "set-cookie" not in r.headers
+
+
+async def test_code_rate_limits(env, redis):
+    page = _bare(env)
+    for _ in range(codes.CREATE_LIMIT):
+        assert (await page.post("/api/tv-display/code")).status_code == 200
+    r = await page.post("/api/tv-display/code")
+    assert r.status_code == 429 and r.json()["code"] == "RATE_LIMITED"
+    good = None
+    keys = [k async for k in redis.scan_iter("tv:pair:code:*")]
+    good = keys[0].decode().rsplit(":", 1)[1]
+    # a user's tries: wrong ones count, beyond the limit even the right code is refused
+    viewer, _, _ = await _client(env, "viewer")
+    wrong = f"{(int(good) + 1) % 1_000_000:06d}"
+    while wrong.encode() in [k.rsplit(b":", 1)[1] for k in keys]:
+        wrong = f"{(int(wrong) + 1) % 1_000_000:06d}"
+    for _ in range(codes.CLAIM_LIMIT):
+        assert (await viewer.post("/api/tv/claim", json={"code": wrong})).status_code == 400
+    r = await viewer.post("/api/tv/claim", json={"code": good})
+    assert r.status_code == 429 and r.json()["code"] == "RATE_LIMITED"
+    # another user is not locked out by it
+    admin, _, _ = await _client(env)
+    assert (await admin.post("/api/tv/claim", json={"code": good})).status_code == 200

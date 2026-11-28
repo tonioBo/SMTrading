@@ -89,6 +89,8 @@ async def test_power_key_and_browser_launch_with_the_token(tv):
         app, confirmed = await s.launch_browser("https://portal.lan/tv?token=abc")
     assert (app, confirmed) == ("com.samsung.tv.browser", True)
     assert tv.launches == [
+        {"appId": "3202010022079", "metaTag": "https://portal.lan/tv?token=abc",
+         "action_type": "NATIVE_LAUNCH"},
         {"appId": "org.tizen.browser", "metaTag": "https://portal.lan/tv?token=abc",
          "action_type": "NATIVE_LAUNCH"},
         {"appId": "com.samsung.tv.browser", "metaTag": "https://portal.lan/tv?token=abc",
@@ -100,12 +102,35 @@ async def test_launch_unanswered_is_not_confirmed_and_all_refused_is_an_error(tv
     token = await samsung.pair("127.0.0.1", wait_s=2)
     tv.launch_replies = {"org.tizen.browser": None}
     async with samsung.open_session("127.0.0.1", token) as s:
-        assert await s.launch_browser("http://x/tv") == ("org.tizen.browser", False)
+        assert await s.launch_browser("http://x/tv", ("org.tizen.browser",)) == (
+            "org.tizen.browser", False)
     tv.launch_replies = {}
     async with samsung.open_session("127.0.0.1", token) as s:
         with pytest.raises(samsung.TvError) as e:
             await s.launch_browser("http://x/tv")
     assert e.value.kind == "launch" and "QR" in e.value.message
+
+
+async def test_the_browser_is_found_by_rest_and_opened_by_rest(tv):
+    # the 2024 model: only «Browser» 3202010022079 answers; the Tizen ids are 404
+    tv.installed = {"3202010022079"}
+    assert await samsung.app_installed("127.0.0.1", "3202010022079") is True
+    assert await samsung.app_installed("127.0.0.1", "org.tizen.browser") is False
+    assert await samsung.find_browser("127.0.0.1") == "3202010022079"
+    assert tv.app_probes[-1] == "3202010022079"
+    assert await samsung.open_app_rest("127.0.0.1", "3202010022079") is True
+    assert tv.rest_launches == [{"appId": "3202010022079", "body": None}]
+    # an older model: the Tizen browser only
+    tv.installed, tv.app_probes = {"org.tizen.browser"}, []
+    assert await samsung.find_browser("127.0.0.1") == "org.tizen.browser"
+    assert tv.app_probes == ["3202010022079", "org.tizen.browser"]
+    assert await samsung.open_app_rest("127.0.0.1", "com.samsung.tv.browser") is False
+    tv.installed = set()
+    assert await samsung.find_browser("127.0.0.1") is None
+    await tv.stop()
+    with pytest.raises(samsung.TvError) as e:
+        await samsung.find_browser("127.0.0.1")
+    assert e.value.kind == "unreachable"
 
 
 async def test_a_forgotten_token_asks_again_without_hanging(tv, monkeypatch):

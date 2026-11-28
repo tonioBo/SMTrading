@@ -51,8 +51,11 @@ VIEWER_UNSAFE_EXCEPTIONS = {
     ("PUT", "/api/tv/display"),
     ("POST", "/api/tv/link/rotate"),
     ("POST", "/api/tv/link/revoke"),
-    # the TV page turns its display link into a cookie: no portal session at all
+    ("POST", "/api/tv/claim"),  # binds a TV page's code to the caller's own link only
+    # the TV page turns its display link (or a pairing code) into a cookie: no portal
+    # session at all
     ("POST", "/api/tv-display/session"),
+    ("POST", "/api/tv-display/code"),
 }
 # reads only an admin may make
 ADMIN_ONLY_READS = {
