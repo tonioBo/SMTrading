@@ -518,8 +518,8 @@
         },
         {
           "title": "Decisioni più ricche",
-          "status": "in_corso",
-          "detail": "Ogni decisione degli agenti indicherà la fiducia (da 0 a 100) e il risultato atteso (rendimento in % e in quanti giorni); ogni ordine porterà il riferimento della decisione che l'ha generato. Così si potrà misurare quali decisioni portano a risultati buoni.",
+          "status": "fatto",
+          "detail": "In linea dal 28/11 alle 16:25: ogni decisione degli agenti indica la fiducia (da 0 a 100) e il risultato atteso (rendimento in % e in quanti giorni); ogni ordine porta il riferimento della decisione che l'ha generato. Così si potrà misurare quali decisioni portano a risultati buoni.",
           "refs": [
             "docs/superpowers/specs/2026-11-28-smtrading-neurograph-dati-design.md",
             "docs/superpowers/plans/2026-11-28-smtrading-neurograph-dati.md"
@@ -529,7 +529,7 @@
         {
           "title": "Invio notturno dei dati a Neurograph",
           "status": "in_corso",
-          "detail": "Ogni notte dopo la mezzanotte SMTrading manderà a Neurograph le decisioni, gli ordini e le esecuzioni del giorno: solo i portafogli della campagna, nessun segreto, a partire dal 23/11. Recupera fino a 30 giorni mancanti, ogni giorno una volta sola, e compare nel Fiume dei flussi.",
+          "detail": "In linea dal 28/11 alle 16:25 ma spento finché non arriva la chiave di Neurograph: poi prova con un giorno solo e accensione con lo storico dal 23/11. Ogni notte alle 00:30 manda decisioni, ordini ed esecuzioni; rimanda le giornate cambiate; avvisa dopo 3 notti senza risposta.",
           "refs": [
             "docs/superpowers/specs/2026-11-28-smtrading-neurograph-dati-design.md",
             "docs/superpowers/plans/2026-11-28-smtrading-neurograph-dati.md"
